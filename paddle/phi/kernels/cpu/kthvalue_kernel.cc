@@ -16,9 +16,9 @@
 
 #include "paddle/phi/backends/cpu/cpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/eigen/common.h"
 #include "paddle/phi/kernels/funcs/math_function.h"
-
 namespace phi {
 template <typename T, typename Type>
 static void getKthvalue(Type input_height,
@@ -27,7 +27,7 @@ static void getKthvalue(Type input_height,
                         const DenseTensor* input,
                         T* t_out,
                         Type* t_indices,
-                        const int& k) {
+                        const int64_t& k) {
   bool partial_sort_flag = (k * 64) < input_width;
 #ifdef PADDLE_WITH_MKLML
 #pragma omp parallel for
@@ -75,11 +75,16 @@ static void getKthvalue(Type input_height,
 template <typename T, typename Context>
 void KthvalueKernel(const Context& dev_ctx,
                     const DenseTensor& x,
-                    int k,
+                    int64_t k,
                     int axis,
                     bool keepdim,
                     DenseTensor* output,
                     DenseTensor* indices) {
+  if (x.numel() == 0) {
+    Full<T, Context>(dev_ctx, output->dims(), NAN, output);
+    Full<int64_t, Context>(dev_ctx, indices->dims(), 0, indices);
+    return;
+  }
   const auto& in_dims = x.dims();
   if (axis < 0) axis += in_dims.size();
 
@@ -91,17 +96,17 @@ void KthvalueKernel(const Context& dev_ctx,
                       1,
                       common::errors::InvalidArgument(
                           "the k in the kthvalue must less equal than the "
-                          "elements number of the input X, but received %d .",
+                          "elements number of the input X, but received %lld .",
                           k));
 
-    phi::Copy<Context>(dev_ctx, x, dev_ctx.GetPlace(), false, output);
-    phi::funcs::set_constant(dev_ctx, indices, static_cast<int64_t>(0));
+    Copy<Context>(dev_ctx, x, dev_ctx.GetPlace(), false, output);
+    funcs::set_constant(dev_ctx, indices, static_cast<int64_t>(0));
     return;
   }
   auto out_dims = output->dims();
   if (axis == in_dims.size() - 1) {
     const int64_t& input_height =
-        common::product(common::slice_ddim(in_dims, 0, in_dims.size() - 1));
+        common::product(slice_ddim(in_dims, 0, in_dims.size() - 1));
     const int64_t& input_width = in_dims[in_dims.size() - 1];
     getKthvalue<T, int64_t>(input_height,
                             input_width,
@@ -129,7 +134,7 @@ void KthvalueKernel(const Context& dev_ctx,
       for (int i = axis + 1; i < in_dims.size(); i++) {
         tmp_out_shape.emplace_back(in_dims[i]);
       }
-      DDim tmp_out_dims = common::make_ddim(tmp_out_shape);
+      DDim tmp_out_dims = make_ddim(tmp_out_shape);
       output->Resize(tmp_out_dims);
       indices->Resize(tmp_out_dims);
     }
@@ -145,11 +150,10 @@ void KthvalueKernel(const Context& dev_ctx,
     trans_inp.Resize(trans_dims);
     dev_ctx.template Alloc<T>(&trans_inp);
     int ndims = static_cast<int>(trans.size());
-    funcs::TransCompute<phi::CPUContext, T>(
-        ndims, dev_ctx, x, &trans_inp, trans);
+    funcs::TransCompute<CPUContext, T>(ndims, dev_ctx, x, &trans_inp, trans);
 
-    const int64_t input_height = common::product(
-        common::slice_ddim(trans_dims, 0, trans_dims.size() - 1));
+    const int64_t input_height =
+        common::product(slice_ddim(trans_dims, 0, trans_dims.size() - 1));
     const int64_t input_width = trans_dims[trans_dims.size() - 1];
     DenseTensor tmp_out, tmp_indices;
     tmp_out.Resize(trans_out_dims);
@@ -158,10 +162,9 @@ void KthvalueKernel(const Context& dev_ctx,
     int64_t* t_ind = dev_ctx.template Alloc<int64_t>(&tmp_indices);
     getKthvalue<T, int64_t>(
         input_height, input_width, in_dims.size(), &trans_inp, t_out, t_ind, k);
-    funcs::TransCompute<phi::CPUContext, int64_t>(
+    funcs::TransCompute<CPUContext, int64_t>(
         ndims, dev_ctx, tmp_indices, indices, trans);
-    funcs::TransCompute<phi::CPUContext, T>(
-        ndims, dev_ctx, tmp_out, output, trans);
+    funcs::TransCompute<CPUContext, T>(ndims, dev_ctx, tmp_out, output, trans);
     if (!keepdim) {
       output->Resize(out_dims);
       indices->Resize(out_dims);

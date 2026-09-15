@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal, Tuple
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     import numpy.typing as npt
@@ -35,6 +35,7 @@ import paddle
 from paddle.dataset.common import _check_exists_and_download
 from paddle.io import Dataset
 from paddle.utils import try_import
+from paddle.utils.download import _safe_extract_tar
 
 __all__ = []
 
@@ -51,7 +52,7 @@ SETID_MD5 = 'a5357ecc9cb78c4bef273ce3793fc85c'
 MODE_FLAG_MAP = {'train': 'tstid', 'test': 'trnid', 'valid': 'valid'}
 
 
-class Flowers(Dataset[Tuple["_ImageDataType", "npt.NDArray[np.int64]"]]):
+class Flowers(Dataset[tuple["_ImageDataType", "npt.NDArray[np.int64]"]]):
     """
     Implementation of `Flowers102 <https://www.robots.ox.ac.uk/~vgg/data/flowers/>`_
     dataset.
@@ -76,10 +77,11 @@ class Flowers(Dataset[Tuple["_ImageDataType", "npt.NDArray[np.int64]"]]):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +TIMEOUT(60)
             >>> import itertools
+            >>> import paddle
             >>> import paddle.vision.transforms as T
             >>> from paddle.vision.datasets import Flowers
 
@@ -114,7 +116,8 @@ class Flowers(Dataset[Tuple["_ImageDataType", "npt.NDArray[np.int64]"]]):
 
             >>> for img, label in itertools.islice(iter(flowers_test), 5):  # only show first 5 images
             ...     # do something with img and label
-            ...     print(type(img), img.shape, label) # type: ignore
+            ...     assert isinstance(img, paddle.Tensor)
+            ...     print(type(img), img.shape, label)
             ...     # <class 'paddle.Tensor'> [3, 64, 96] [1]
     """
 
@@ -152,25 +155,25 @@ class Flowers(Dataset[Tuple["_ImageDataType", "npt.NDArray[np.int64]"]]):
         flag = MODE_FLAG_MAP[mode.lower()]
 
         if not data_file:
-            assert (
-                download
-            ), "data_file is not set and downloading automatically is disabled"
+            assert download, (
+                "data_file is not set and downloading automatically is disabled"
+            )
             data_file = _check_exists_and_download(
                 data_file, DATA_URL, DATA_MD5, 'flowers', download
             )
 
         if not label_file:
-            assert (
-                download
-            ), "label_file is not set and downloading automatically is disabled"
+            assert download, (
+                "label_file is not set and downloading automatically is disabled"
+            )
             label_file = _check_exists_and_download(
                 label_file, LABEL_URL, LABEL_MD5, 'flowers', download
             )
 
         if not setid_file:
-            assert (
-                download
-            ), "setid_file is not set and downloading automatically is disabled"
+            assert download, (
+                "setid_file is not set and downloading automatically is disabled"
+            )
             setid_file = _check_exists_and_download(
                 setid_file, SETID_URL, SETID_MD5, 'flowers', download
             )
@@ -183,7 +186,7 @@ class Flowers(Dataset[Tuple["_ImageDataType", "npt.NDArray[np.int64]"]]):
             os.mkdir(self.data_path)
         jpg_path = os.path.join(self.data_path, "jpg")
         if not os.path.exists(jpg_path):
-            data_tar.extractall(self.data_path)
+            _safe_extract_tar(data_tar, self.data_path, on_unsafe='raise')
 
         scio = try_import('scipy.io')
         self.labels = scio.loadmat(label_file)['labels'][0]

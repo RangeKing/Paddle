@@ -62,7 +62,7 @@ OpKernelType TransPhiKernelKeyToOpKernelType(const phi::KernelKey& kernel_key) {
   proto::VarType::Type data_type =
       paddle::framework::TransToProtoVarType(kernel_key.dtype());
   // no need to set current device id here
-  phi::Place place = phi::TransToPhiPlace(kernel_key.backend(), false);
+  Place place = phi::TransToPhiPlace(kernel_key.backend(), false);
   DataLayout data_layout = kernel_key.layout();
   LibraryType library_type = LibraryType::kPlain;
   if (kernel_key.backend() == phi::Backend::ONEDNN) {
@@ -199,10 +199,10 @@ KernelArgsNameMakerByOpProto::GetAttrsArgsNames() {
   for (int i = 0; i < op_proto_->attrs_size(); ++i) {
     auto& attr = op_proto_->attrs()[i];
     auto& attr_name = attr.name();
-    if (attr_name == "use_mkldnn" || attr_name == "use_cudnn" ||
-        attr_name == "op_role" || attr_name == "op_role_var" ||
-        attr_name == "op_namescope" || attr_name == "op_callstack" ||
-        attr_name == "op_device") {
+    if (attr_name == "use_mkldnn" || attr_name == "use_onednn" ||
+        attr_name == "use_cudnn" || attr_name == "op_role" ||
+        attr_name == "op_role_var" || attr_name == "op_namescope" ||
+        attr_name == "op_callstack" || attr_name == "op_device") {
       continue;
     }
     if ((attr.has_extra() && attr.extra()) ||
@@ -248,8 +248,8 @@ void InitDefaultKernelSignatureMap() {
   });
 }
 
-static void SetAllocationForUninitializedDenseTensor(
-    phi::DenseTensor* dense_tensor, const phi::Place& place) {
+static void SetAllocationForUninitializedDenseTensor(DenseTensor* dense_tensor,
+                                                     const Place& place) {
   int dtype_size = static_cast<int>(dense_tensor->dtype() == DataType::UNDEFINED
                                         ? 0
                                         : phi::SizeOf(dense_tensor->dtype()));
@@ -266,8 +266,8 @@ static void SetAllocationForUninitializedDenseTensor(
 
 phi::Scalar MakePhiScalarFromVar(const framework::Variable& variable) {
   auto expected_place = phi::TransToPhiPlace(phi::Backend::CPU);
-  if (variable.IsType<phi::DenseTensor>()) {
-    const auto& tensor = variable.Get<phi::DenseTensor>();
+  if (variable.IsType<DenseTensor>()) {
+    const auto& tensor = variable.Get<DenseTensor>();
     PADDLE_ENFORCE_EQ(
         tensor.numel(),
         1UL,
@@ -276,7 +276,7 @@ phi::Scalar MakePhiScalarFromVar(const framework::Variable& variable) {
                                         "value, it contains `%d` values.",
                                         tensor.numel()));
     if (!phi::is_same_place(tensor.place(), expected_place)) {
-      phi::DenseTensor tmp_tensor;
+      DenseTensor tmp_tensor;
       framework::TensorCopySync(tensor, expected_place, &tmp_tensor);
       return {tmp_tensor};
     } else {
@@ -284,19 +284,19 @@ phi::Scalar MakePhiScalarFromVar(const framework::Variable& variable) {
     }
   } else {
     PADDLE_THROW(common::errors::Unimplemented(
-        "Unsupport casting input `%s` type to Scalar when call pt "
+        "Unsupported casting input `%s` type to Scalar when call pt "
         "kernel.",
         framework::ToTypeName(variable.Type())));
   }
 }
 
 phi::IntArray MakePhiIntArrayFromVar(const framework::Variable& variable) {
-  if (variable.IsType<phi::DenseTensor>()) {
-    const auto& tensor = variable.Get<phi::DenseTensor>();
+  if (variable.IsType<DenseTensor>()) {
+    const auto& tensor = variable.Get<DenseTensor>();
     return phi::IntArray(tensor);
   } else {
     PADDLE_THROW(common::errors::Unimplemented(
-        "Unsupport casting input `%s` type to IntArray when call pt "
+        "Unsupported casting input `%s` type to IntArray when call pt "
         "kernel.",
         framework::ToTypeName(variable.Type())));
   }
@@ -314,25 +314,25 @@ phi::IntArray MakePhiIntArrayFromVarList(
   vector_data.reserve(variable_list.size());
 
   for (auto* var : variable_list) {
-    phi::DataType data_type;
-    if (var->IsType<phi::DenseTensor>()) {
-      const auto& tensor = var->Get<phi::DenseTensor>();
+    DataType data_type;
+    if (var->IsType<DenseTensor>()) {
+      const auto& tensor = var->Get<DenseTensor>();
       data_type = tensor.dtype();
-      if (data_type == phi::DataType::INT64) {
-        const auto& tensor = var->Get<phi::DenseTensor>();
+      if (data_type == DataType::INT64) {
+        const auto& tensor = var->Get<DenseTensor>();
         if (tensor.IsInitialized() &&
             !phi::is_same_place(tensor.place(), expected_place)) {
-          phi::DenseTensor tmp_tensor;
+          DenseTensor tmp_tensor;
           framework::TensorCopySync(tensor, expected_place, &tmp_tensor);
           vector_data.push_back(*tmp_tensor.data<int64_t>());
         } else {
           vector_data.push_back(*tensor.data<int64_t>());
         }
-      } else if (data_type == phi::DataType::INT32) {
-        const auto& tensor = var->Get<phi::DenseTensor>();
+      } else if (data_type == DataType::INT32) {
+        const auto& tensor = var->Get<DenseTensor>();
         if (tensor.IsInitialized() &&
             !phi::is_same_place(tensor.place(), expected_place)) {
-          phi::DenseTensor tmp_tensor;
+          DenseTensor tmp_tensor;
           framework::TensorCopySync(tensor, expected_place, &tmp_tensor);
           vector_data.push_back(*tmp_tensor.data<int32_t>());
         } else {
@@ -347,7 +347,7 @@ phi::IntArray MakePhiIntArrayFromVarList(
       }
     } else {
       PADDLE_THROW(common::errors::Unimplemented(
-          "Unsupport casting input `%s` type to VectorTensor when call pt "
+          "Unsupported casting input `%s` type to VectorTensor when call pt "
           "kernel.",
           framework::ToTypeName(var->Type())));
     }

@@ -19,7 +19,9 @@ limitations under the License. */
 
 #include "glog/logging.h"
 #include "paddle/common/exception.h"
+#include "paddle/phi/backends/device_manager.h"
 #include "paddle/phi/backends/gpu/gpu_info.h"
+#include "paddle/phi/backends/xpu/xpu_info.h"
 
 namespace phi {
 
@@ -35,6 +37,8 @@ const char *AllocationTypeStr(AllocationType type) {
       return "gpu_pinned";
     case AllocationType::XPU:
       return "xpu";
+    case AllocationType::XPUPINNED:
+      return "xpu_pinned";
     case AllocationType::IPU:
       return "ipu";
     case AllocationType::CUSTOM:
@@ -43,6 +47,15 @@ const char *AllocationTypeStr(AllocationType type) {
       PD_THROW("Invalid phi device type.");
       return {};
   }
+}
+
+std::ostream &operator<<(std::ostream &os, AllocationType type) {
+  os << AllocationTypeStr(type);
+  return os;
+}
+
+bool operator==(AllocationType lhs, AllocationType rhs) {
+  return static_cast<int>(lhs) == static_cast<int>(rhs);
 }
 
 Place::Place(AllocationType type, const std::string &dev_type)
@@ -61,6 +74,7 @@ std::string Place::DebugString() const {
     os << AllocationTypeStr(alloc_type_);
   }
   if (alloc_type_ == AllocationType::GPUPINNED ||
+      alloc_type_ == AllocationType::XPUPINNED ||
       alloc_type_ == AllocationType::CPU) {
     os << ")";
   } else {
@@ -77,9 +91,15 @@ std::ostream &operator<<(std::ostream &os, const Place &p) {
 Place GetPinnedPlace(const Place &place) {
   switch (place.GetType()) {
     case AllocationType::GPU:
+      VLOG(10) << "GPUPinnedPlace";
       return phi::GPUPinnedPlace();
       break;
+    case AllocationType::XPU:
+      VLOG(10) << "XPUPinnedPlace";
+      return phi::XPUPinnedPlace();
+      break;
     default:
+      VLOG(10) << "Not GPU/XPU PinnedPlace";
       return place;
   }
 }
@@ -171,8 +191,17 @@ TEST_API bool is_cpu_place(const Place &p) {
   return p.GetType() == phi::AllocationType::CPU;
 }
 
+bool is_pinned_place(const Place &p) {
+  return p.GetType() == phi::AllocationType::GPUPINNED ||
+         p.GetType() == phi::AllocationType::XPUPINNED;
+}
+
 bool is_cuda_pinned_place(const Place &p) {
   return p.GetType() == phi::AllocationType::GPUPINNED;
+}
+
+bool is_xpu_pinned_place(const Place &p) {
+  return p.GetType() == phi::AllocationType::XPUPINNED;
 }
 
 bool is_custom_place(const Place &p) {
@@ -201,7 +230,8 @@ bool places_are_same_class(const Place &p1, const Place &p2) {
 
 bool is_same_place(const Place &p1, const Place &p2) {
   if (places_are_same_class(p1, p2)) {
-    if (is_cpu_place(p1) || is_cuda_pinned_place(p1)) {
+    if (is_cpu_place(p1) || is_cuda_pinned_place(p1) ||
+        is_xpu_pinned_place(p1)) {
       return true;
     } else {
       return p1 == p2;
@@ -271,6 +301,25 @@ GPUPlace DefaultGPUPlace() {
       phi::backends::gpu::GetCurrentDeviceId());
 #else
       0);
+#endif
+}
+
+phi::XPUPlace DefaultXPUPlace() {
+  return phi::XPUPlace(
+#ifdef PADDLE_WITH_XPU
+      phi::backends::xpu::GetXPUCurrentDeviceId());
+#else
+      0);
+#endif
+}
+
+phi::CustomPlace DefaultCustomPlace() {
+#ifdef PADDLE_WITH_CUSTOM_DEVICE
+  auto dev_types = phi::DeviceManager::GetAllCustomDeviceTypes();
+  int device_id = phi::DeviceManager::GetDevice(dev_types[0]);
+  return phi::CustomPlace(dev_types[0], device_id);
+#else
+  PADDLE_THROW(common::errors::Unavailable("Unsupported custom device"));
 #endif
 }
 

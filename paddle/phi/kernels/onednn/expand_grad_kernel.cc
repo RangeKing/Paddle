@@ -16,6 +16,7 @@
 
 #include "paddle/phi/backends/onednn/onednn_reuse.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/full_kernel.h"
 
 namespace phi {
 template <typename T, typename Context>
@@ -26,8 +27,14 @@ void ExpandGradKernel(const Context& dev_ctx,
                       DenseTensor* in_grad) {
   const auto& onednn_engine = dev_ctx.GetEngine();
 
-  auto in_grad_vec_dims = common::vectorize(in_grad->dims());
-  auto out_grad_vec_dims = common::vectorize(out_grad.dims());
+  if ((in_grad && in_grad->numel() == 0) || out_grad.numel() == 0) {
+    dev_ctx.template Alloc<T>(in_grad);
+    Full<T, Context>(dev_ctx, in_grad->dims(), 0, in_grad);
+    return;
+  }
+
+  auto in_grad_vec_dims = vectorize(in_grad->dims());
+  auto out_grad_vec_dims = vectorize(out_grad.dims());
 
   if (in_grad_vec_dims.size() != out_grad_vec_dims.size()) {
     in_grad_vec_dims.insert(in_grad_vec_dims.begin(),
@@ -46,7 +53,8 @@ void ExpandGradKernel(const Context& dev_ctx,
         out_grad_vec_dims, out_grad.dtype(), out_grad_type, onednn_engine);
 
     auto reorder_src_memory_p = reorder_handler.AcquireSrcMemory(
-        out_grad.mem_desc(), funcs::to_void_cast(out_grad.data<T>()));
+        phi::funcs::GetOneDNNMemDesc(out_grad),
+        funcs::to_void_cast(out_grad.data<T>()));
 
     auto reorder_dst_memory_p = reorder_handler.AcquireDstMemory(
         in_grad,
@@ -59,7 +67,7 @@ void ExpandGradKernel(const Context& dev_ctx,
     reorder_p->execute(astream, *reorder_src_memory_p, *reorder_dst_memory_p);
     astream.wait();
 
-    in_grad->set_mem_desc(reorder_dst_memory_p->get_desc());
+    phi::funcs::SetOneDNNMemDesc(in_grad, reorder_dst_memory_p->get_desc());
   } else {
     funcs::ReductionOneDNNHandler<T> handler(dnnl::algorithm::reduction_sum,
                                              0.0f,
@@ -81,18 +89,14 @@ void ExpandGradKernel(const Context& dev_ctx,
     reduction_p->execute(astream, reduction_args);
     astream.wait();
     in_grad->set_layout(DataLayout::ONEDNN);
-    const auto in_grad_md_dims =
-        in_grad->dims().size() != 0
-            ? common::vectorize<int64_t>(in_grad->dims())
-            : std::vector<int64_t>{1};
-    in_grad->set_mem_desc(dst_memory_p->get_desc().reshape(in_grad_md_dims));
+    const auto in_grad_md_dims = in_grad->dims().size() != 0
+                                     ? vectorize<int64_t>(in_grad->dims())
+                                     : std::vector<int64_t>{1};
+    phi::funcs::SetOneDNNMemDesc(
+        in_grad, dst_memory_p->get_desc().reshape(in_grad_md_dims));
   }
 }
 }  // namespace phi
 
-PD_REGISTER_KERNEL(expand_grad,
-                   OneDNN,
-                   ONEDNN,
-                   phi::ExpandGradKernel,
-                   float,
-                   phi::dtype::bfloat16) {}
+PD_REGISTER_KERNEL(
+    expand_grad, OneDNN, ONEDNN, phi::ExpandGradKernel, float, phi::bfloat16) {}

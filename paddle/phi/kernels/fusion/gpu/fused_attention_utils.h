@@ -17,9 +17,9 @@
 #if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL)
 #include "paddle/phi/core/distributed/collective/process_group.h"
 #include "paddle/phi/core/distributed/nccl_comm_context.h"
-#include "paddle/phi/kernels/funcs/reduce_function.h"
 #endif
 #include "paddle/common/errors.h"
+#include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/core/platform/collective_helper.h"
 #include "paddle/phi/core/tensor_utils.h"
 
@@ -27,9 +27,9 @@ namespace phi {
 namespace fusion {
 
 template <typename T>
-static void AllReduce(phi::DenseTensor &tensor,  // NOLINT
+static void AllReduce(DenseTensor &tensor,  // NOLINT
                       const int ring_id,
-                      const phi::GPUContext &dev_ctx) {
+                      const GPUContext &dev_ctx) {
   if (ring_id == -1) return;
 #if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL)
   distributed::ProcessGroup *pg = nullptr;
@@ -39,7 +39,7 @@ static void AllReduce(phi::DenseTensor &tensor,  // NOLINT
     pg = map->get(ring_id);
   } else {
     PADDLE_THROW(common::errors::Unimplemented(
-        "ring_id %d is not in ProcessGroupMap, please check releated"
+        "ring_id %d is not in ProcessGroupMap, please check related "
         "configurations and retry.",
         ring_id));
   }
@@ -57,11 +57,11 @@ static void AllReduce(phi::DenseTensor &tensor,  // NOLINT
 }
 
 template <typename T>
-static void AllReduce(phi::DenseTensor &tensor,  // NOLINT
+static void AllReduce(DenseTensor &tensor,  // NOLINT
                       const int ring_id,
                       const int count UNUSED,
-                      const phi::GPUContext &ctx) {
-  AllReduce<T>(tensor, ring_id, ctx);
+                      const GPUContext &dev_ctx) {
+  AllReduce<T>(tensor, ring_id, dev_ctx);
 }
 
 }  // namespace fusion

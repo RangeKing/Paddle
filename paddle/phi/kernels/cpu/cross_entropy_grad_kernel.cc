@@ -34,15 +34,20 @@ void CrossEntropyWithSoftmaxGradCPUKernel(const CPUContext& dev_ctx,
                                           int ignore_index,
                                           int axis,
                                           DenseTensor* logits_grad) {
+  if (logits_grad->numel() == 0) {
+    dev_ctx.template Alloc<T>(logits_grad);
+    return;
+  }
+
   const DenseTensor* out_grad = &loss_grad;
   DenseTensor* logit_grad = logits_grad;
 
   if (logit_grad != &softmax || !use_softmax) {
-    phi::Copy(dev_ctx, softmax, dev_ctx.GetPlace(), false, logit_grad);
+    Copy(dev_ctx, softmax, dev_ctx.GetPlace(), false, logit_grad);
   }
 
   const int rank = logit_grad->dims().size();
-  const int axis_v = phi::funcs::CanonicalAxis(axis, rank);
+  const int axis_v = funcs::CanonicalAxis(axis, rank);
   int axis_dim = static_cast<int>(logit_grad->dims()[axis_v]);
   PADDLE_ENFORCE_GT(
       axis_dim,
@@ -52,7 +57,7 @@ void CrossEntropyWithSoftmaxGradCPUKernel(const CPUContext& dev_ctx,
           "axis dimension is %d.",
           axis_dim));
 
-  const int n = phi::funcs::SizeToAxis(axis_v, logit_grad->dims());
+  const int n = funcs::SizeToAxis(axis_v, logit_grad->dims());
   PADDLE_ENFORCE_GT(
       n,
       0,
@@ -61,7 +66,7 @@ void CrossEntropyWithSoftmaxGradCPUKernel(const CPUContext& dev_ctx,
           "SizeToAxis of logit_grad is %d.",
           n));
 
-  const int d = phi::funcs::SizeFromAxis(axis_v, logit_grad->dims());
+  const int d = funcs::SizeFromAxis(axis_v, logit_grad->dims());
   DenseTensor logit_grad_2d(*logit_grad);
   logit_grad_2d.Resize({n, d});
   DenseTensor labels_2d(label);
@@ -87,11 +92,11 @@ void CrossEntropyWithSoftmaxGradCPUKernel(const CPUContext& dev_ctx,
       const auto* label_data = label.data<LabelT>();
       T* logit_grad_data = logit_grad->data<T>();
       const T* out_grad_data = out_grad->data<T>();
-      const int remain = d / axis_dim;
-      for (int i = 0; i < n; ++i) {         // for each sample_1_dim
-        for (int j = 0; j < remain; j++) {  // for each sample_other_dims
-          int idx = i * remain + j;  // this sample's label_idx. for 1d case,
-                                     // remain=1 and j=0, so, idx = i
+      const int64_t remain = d / axis_dim;
+      for (int64_t i = 0; i < n; ++i) {         // for each sample_1_dim
+        for (int64_t j = 0; j < remain; j++) {  // for each sample_other_dims
+          int64_t idx = i * remain + j;  // this sample's label_idx. for 1d
+                                         // case, remain=1 and j=0, so, idx = i
           auto lbl = static_cast<int64_t>(label_data[idx]);  // NOLINT
           if (lbl == ignore_index) {
             for (int k = 0; k < axis_dim; ++k) {  // for each class id's label
@@ -139,11 +144,11 @@ void CrossEntropyWithSoftmaxGradCPUKernel(const CPUContext& dev_ctx,
     const auto* label_data = label.data<LabelT>();
     T* logit_grad_data = logit_grad->data<T>();
     const T* out_grad_data = out_grad->data<T>();
-    const int remain = d / axis_dim;
-    for (int i = 0; i < n; ++i) {         // for each sample_1_dim
-      for (int j = 0; j < remain; j++) {  // for each sample_other_dims
-        int idx = i * remain + j;  // this sample's label_idx. for 1d case,
-                                   // remain=1 and j=0, so, idx = i
+    const int64_t remain = d / axis_dim;
+    for (int64_t i = 0; i < n; ++i) {         // for each sample_1_dim
+      for (int64_t j = 0; j < remain; j++) {  // for each sample_other_dims
+        int64_t idx = i * remain + j;  // this sample's label_idx. for 1d case,
+                                       // remain=1 and j=0, so, idx = i
         auto lbl = static_cast<int64_t>(label_data[idx]);  // NOLINT
         if (lbl == ignore_index) {
           for (int k = 0; k < axis_dim; ++k) {  // for each class id's label
@@ -184,7 +189,7 @@ void CrossEntropyWithSoftmaxGradKernel(const Context& dev_ctx,
   if (soft_label) {
     PADDLE_ENFORCE_EQ(
         dtype,
-        phi::CppTypeToDataType<T>::Type(),
+        CppTypeToDataType<T>::Type(),
         common::errors::InvalidArgument("The Input(Label) should be with the "
                                         "same data type as kernel data type."));
     CrossEntropyWithSoftmaxGradCPUKernel<T, T>(dev_ctx,

@@ -14,7 +14,6 @@
 
 #include "paddle/cinn/hlir/pe/ir_schedule_pe.h"
 
-#include <absl/container/flat_hash_map.h>
 #include <isl/cpp.h>
 
 #include <algorithm>
@@ -24,7 +23,6 @@
 #include <numeric>
 #include <utility>
 
-#include "paddle/cinn/common/cas.h"
 #include "paddle/cinn/common/common.h"
 #include "paddle/cinn/common/target.h"
 #include "paddle/cinn/hlir/pe/load_x86_params.h"
@@ -34,9 +32,9 @@
 #include "paddle/cinn/ir/utils/ir_copy.h"
 #include "paddle/cinn/optim/ir_simplify.h"
 #include "paddle/cinn/optim/replace_var_with_expr.h"
-#include "paddle/cinn/poly/isl_utils.h"
 #include "paddle/cinn/utils/string.h"
 #include "paddle/common/enforce.h"
+#include "paddle/utils/flat_hash_map.h"
 
 namespace cinn {
 namespace hlir {
@@ -55,7 +53,7 @@ void SetReduceAxis(ir::Expr loop, ir::Expr block) {
       ::common::errors::InvalidArgument(
           "The size of iter_vars and iter_values should be equal."));
   for (int i = 0; i < iter_values.size(); ++i) {
-    std::set<Expr> contains = ir::ir_utils::CollectIRNodesWithoutTensor(
+    std::vector<Expr> contains = ir::ir_utils::CollectIRNodesWithoutTensor(
         iter_values[i],
         [&var_name](const Expr *expr) {
           return expr->As<ir::_Var_>() != nullptr &&
@@ -73,7 +71,7 @@ void IRElementwiseSchedule(ir::IRSchedule &ir_sch,  // NOLINT
                            const cinn::common::Target &target) {
   VLOG(3) << "Before IRElementwiseSchedule, new ir is : "
           << ir_sch.GetModule().GetExprs().at(0);
-  auto schedule_nv_hygon = [&] {
+  auto schedule_nv_hygon_custom = [&] {
     auto blocks = ir_sch.GetAllBlocks();
     std::vector<ir::Expr> loops = ir_sch.GetLoops(blocks[0]);
     ir::Expr loop = ir_sch.Fuse(loops);
@@ -89,14 +87,15 @@ void IRElementwiseSchedule(ir::IRSchedule &ir_sch,  // NOLINT
     }
   };
   target.arch.Match(
-      [&](common::NVGPUArch) { schedule_nv_hygon(); },
+      [&](common::NVGPUArch) { schedule_nv_hygon_custom(); },
+      [&](common::CustomDeviceArch) { schedule_nv_hygon_custom(); },
       [&](std::variant<common::UnknownArch, common::X86Arch, common::ARMArch>) {
         // IRScheduleInjectiveCPU(ir_sch, output_shape, target, false);
         auto blocks = ir_sch.GetAllBlocks();
         ir_sch.FlattenLoops(ir_sch.GetLoops(blocks[0]), true);
       },
       [&](std::variant<common::HygonDCUArchHIP, common::HygonDCUArchSYCL>) {
-        schedule_nv_hygon();
+        schedule_nv_hygon_custom();
       });
   VLOG(3) << "After IRElementwiseSchedule, new ir is : "
           << ir_sch.GetModule().GetExprs().at(0);
@@ -107,7 +106,7 @@ void IRInjectiveSchedule(ir::IRSchedule &ir_sch,  // NOLINT
                          const cinn::common::Target &target) {
   VLOG(3) << "Before IRInjectiveSchedule, new ir is : "
           << ir_sch.GetModule().GetExprs().at(0);
-  auto schedule_nv_hygon = [&] {
+  auto schedule_nv_hygon_custom = [&] {
     auto blocks = ir_sch.GetAllBlocks();
     std::vector<ir::Expr> loops = ir_sch.GetLoops(blocks[0]);
     ir::Expr loop = ir_sch.Fuse(loops);
@@ -123,7 +122,8 @@ void IRInjectiveSchedule(ir::IRSchedule &ir_sch,  // NOLINT
     }
   };
   target.arch.Match(
-      [&](common::NVGPUArch) { schedule_nv_hygon(); },
+      [&](common::NVGPUArch) { schedule_nv_hygon_custom(); },
+      [&](common::CustomDeviceArch) { schedule_nv_hygon_custom(); },
       [&](std::variant<common::UnknownArch,
                        common::X86Arch,
                        common::ARMArch>) {  // IRScheduleInjectiveCPU(ir_sch,
@@ -132,7 +132,7 @@ void IRInjectiveSchedule(ir::IRSchedule &ir_sch,  // NOLINT
         ir_sch.FlattenLoops(ir_sch.GetLoops(blocks[0]), false);
       },
       [&](std::variant<common::HygonDCUArchHIP, common::HygonDCUArchSYCL>) {
-        schedule_nv_hygon();
+        schedule_nv_hygon_custom();
       });
 
   VLOG(3) << "After IRInjectiveSchedule, new ir is : "
@@ -211,6 +211,7 @@ std::vector<cinn::common::CINNValue> IRGpuScheduleMatMul(
     const cinn::common::Target &target) {
   target.arch.Match(
       [&](common::NVGPUArch) {},
+      [&](common::CustomDeviceArch) {},
       [&](std::variant<common::UnknownArch, common::X86Arch, common::ARMArch>) {
         CINN_NOT_IMPLEMENTED;
       },
@@ -337,7 +338,7 @@ void IRCudaSplitSchedule(ir::IRSchedule &ir_sch,  // NOLINT
     block_names.push_back(get_block_name(block));
   }
 
-  auto SplitScheduleGpuDcu = [&] {
+  auto SplitScheduleGpuDcuCustom = [&] {
     // if output with same shape.
     if (with_same_shape) {
       auto tsize = std::accumulate(output_shapes[0].begin(),
@@ -389,7 +390,8 @@ void IRCudaSplitSchedule(ir::IRSchedule &ir_sch,  // NOLINT
   };
 
   target.arch.Match(
-      [&](common::NVGPUArch) { SplitScheduleGpuDcu(); },
+      [&](common::NVGPUArch) { SplitScheduleGpuDcuCustom(); },
+      [&](common::CustomDeviceArch) { SplitScheduleGpuDcuCustom(); },
       [&](std::variant<common::UnknownArch, common::X86Arch, common::ARMArch>) {
         {
           for (auto &block_name : block_names) {
@@ -398,7 +400,7 @@ void IRCudaSplitSchedule(ir::IRSchedule &ir_sch,  // NOLINT
         }
       },
       [&](std::variant<common::HygonDCUArchHIP, common::HygonDCUArchSYCL>) {
-        SplitScheduleGpuDcu();
+        SplitScheduleGpuDcuCustom();
       });
   VLOG(3) << "In IRCudaSplitSchedule, After schedule expr is : "
           << ir_sch.GetModule().GetExprs().at(0);
@@ -1300,9 +1302,9 @@ void IRCudaScheduleConv(ir::IRSchedule &ir_sch,  // NOLINT
 
   int n = output->shape[0].as_int32();
   int c = output->shape[1].as_int32();
-  optim::Simplify(&(output->shape[2]));
+  output->shape[2] = optim::ArithSimplify(output->shape[2]);
   int h = output->shape[2].as_int32();
-  optim::Simplify(&(output->shape[3]));
+  output->shape[3] = optim::ArithSimplify(output->shape[3]);
   int w = output->shape[3].as_int32();
   int rc = input_pad->shape[1].as_int32();
 
@@ -1480,8 +1482,8 @@ void IRCudaScheduleConv2(ir::IRSchedule &ir_sch,  // NOLINT
 
   // stages[input_pad]->ComputeInline();
 
-  optim::Simplify(&(output->shape[2]));
-  optim::Simplify(&(output->shape[3]));
+  output->shape[2] = optim::ArithSimplify(output->shape[2]);
+  output->shape[3] = optim::ArithSimplify(output->shape[3]);
 
   VLOG(3) << "Begin IRCudaScheduleConv2 with expr : "
           << ir_sch.GetModule().GetExprs().at(0);

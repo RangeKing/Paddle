@@ -38,7 +38,7 @@ namespace phi {
 namespace fusion {
 
 template <typename T>
-using CudnnDataType = phi::backends::gpu::CudnnDataType<T>;
+using CudnnDataType = backends::gpu::CudnnDataType<T>;
 template <typename T>
 using BatchNormParamType = typename CudnnDataType<T>::BatchNormParamType;
 
@@ -60,11 +60,6 @@ void FusedBatchNormAddActGradKernel(const Context &dev_ctx,
                                     DenseTensor *scale_grad,
                                     DenseTensor *bias_grad) {
 #if defined(PADDLE_WITH_CUDA) and CUDNN_VERSION >= 7401
-  bool is_gpu_place = dev_ctx.GetPlace().GetType() == phi::AllocationType::GPU;
-  PADDLE_ENFORCE_EQ(
-      is_gpu_place,
-      true,
-      common::errors::PreconditionNotMet("It must use CUDAPlace."));
   double epsilon1 = static_cast<double>(epsilon);
 
   const auto *x_ptr = &x;
@@ -77,8 +72,8 @@ void FusedBatchNormAddActGradKernel(const Context &dev_ctx,
   const auto &in_dims = x_ptr->dims();
 
   int N, C, H, W, D;
-  const DataLayout data_layout = DataLayout::kNHWC;
-  phi::funcs::ExtractNCWHD(in_dims, data_layout, &N, &C, &H, &W, &D);
+  const DataLayout data_layout = DataLayout::NHWC;
+  funcs::ExtractNCWHD(in_dims, data_layout, &N, &C, &H, &W, &D);
 
   // init output
   auto *d_x = x_grad;
@@ -115,10 +110,9 @@ void FusedBatchNormAddActGradKernel(const Context &dev_ctx,
   cudnnTensorDescriptor_t bn_param_desc_;
   cudnnBatchNormMode_t mode_ = CUDNN_BATCHNORM_SPATIAL_PERSISTENT;
 
+  PADDLE_ENFORCE_GPU_SUCCESS(dynload::cudnnCreateTensorDescriptor(&data_desc_));
   PADDLE_ENFORCE_GPU_SUCCESS(
-      phi::dynload::cudnnCreateTensorDescriptor(&data_desc_));
-  PADDLE_ENFORCE_GPU_SUCCESS(
-      phi::dynload::cudnnCreateTensorDescriptor(&bn_param_desc_));
+      dynload::cudnnCreateTensorDescriptor(&bn_param_desc_));
   if (epsilon1 <= CUDNN_BN_MIN_EPSILON - FLT_EPSILON) {
     LOG(ERROR) << "Provided epsilon is smaller than "
                << "CUDNN_BN_MIN_EPSILON. Setting it to "
@@ -126,13 +120,13 @@ void FusedBatchNormAddActGradKernel(const Context &dev_ctx,
   }
   epsilon1 = std::max(epsilon1, CUDNN_BN_MIN_EPSILON);
 
-  PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cudnnSetTensorNdDescriptor(
+  PADDLE_ENFORCE_GPU_SUCCESS(dynload::cudnnSetTensorNdDescriptor(
       data_desc_,
       CudnnDataType<T>::type,
       in_dims.size() > 3 ? in_dims.size() : 4,
       dims.data(),
       strides.data()));
-  PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cudnnDeriveBNTensorDescriptor(
+  PADDLE_ENFORCE_GPU_SUCCESS(dynload::cudnnDeriveBNTensorDescriptor(
       bn_param_desc_, data_desc_, mode_));
 
   const auto *saved_mean_ptr = &saved_mean;
@@ -144,15 +138,15 @@ void FusedBatchNormAddActGradKernel(const Context &dev_ctx,
 
   size_t workspace_size = 0;
   void *workspace_ptr = nullptr;
-  phi::DenseTensor workspace_tensor;
+  DenseTensor workspace_tensor;
   auto reserve_space_size = reserve_space_ptr->memory_size();
   cudnnBatchNormOps_t bnOps_ = CUDNN_BATCHNORM_OPS_BN_ADD_ACTIVATION;
-  phi::backends::gpu::ScopedActivationDescriptor scope_act_desc;
+  backends::gpu::ScopedActivationDescriptor scope_act_desc;
   cudnnActivationDescriptor_t activation_desc_ =
       scope_act_desc.descriptor<T>(act_type);
   // --------------- cudnn batchnorm workspace ---------------
   PADDLE_ENFORCE_GPU_SUCCESS(
-      phi::dynload::cudnnGetBatchNormalizationBackwardExWorkspaceSize(
+      dynload::cudnnGetBatchNormalizationBackwardExWorkspaceSize(
           /*handle=*/dev_ctx.cudnn_handle(),
           /*mode=*/mode_,
           /*bnOps=*/bnOps_,
@@ -168,7 +162,7 @@ void FusedBatchNormAddActGradKernel(const Context &dev_ctx,
   workspace_tensor.Resize({static_cast<int64_t>(workspace_size)});
   workspace_ptr = dev_ctx.template Alloc<T>(&workspace_tensor);
 
-  PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cudnnBatchNormalizationBackwardEx(
+  PADDLE_ENFORCE_GPU_SUCCESS(dynload::cudnnBatchNormalizationBackwardEx(
       /*handle=*/dev_ctx.cudnn_handle(),
       /*mode=*/mode_,
       /*bnOps=*/bnOps_,
@@ -201,10 +195,9 @@ void FusedBatchNormAddActGradKernel(const Context &dev_ctx,
       /*reserveSpaceSizeInBytes=*/reserve_space_size));
 
   // clean when exit.
+  PADDLE_ENFORCE_GPU_SUCCESS(dynload::cudnnDestroyTensorDescriptor(data_desc_));
   PADDLE_ENFORCE_GPU_SUCCESS(
-      phi::dynload::cudnnDestroyTensorDescriptor(data_desc_));
-  PADDLE_ENFORCE_GPU_SUCCESS(
-      phi::dynload::cudnnDestroyTensorDescriptor(bn_param_desc_));
+      dynload::cudnnDestroyTensorDescriptor(bn_param_desc_));
 #else
   PADDLE_THROW(common::errors::Unimplemented(
       "The fused_bn_add_activation operator is not supported on GPU "
@@ -219,7 +212,7 @@ PD_REGISTER_KERNEL(fused_bn_add_activation_grad,
                    GPU,
                    ALL_LAYOUT,
                    phi::fusion::FusedBatchNormAddActGradKernel,
-                   phi::dtype::float16) {
+                   phi::float16) {
   kernel->OutputAt(2).SetDataType(phi::DataType::FLOAT32);
   kernel->OutputAt(3).SetDataType(phi::DataType::FLOAT32);
 }

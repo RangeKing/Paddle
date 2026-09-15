@@ -67,9 +67,9 @@ def _exchange_all_service_infos(world_size):
     s = set()
     for rank in range(world_size):
         info = pickle.loads(_barrier_store.get(str(rank)))
-        assert (
-            info.name not in s
-        ), "The Worker name must be unique, but name `{}` is repeated."
+        assert info.name not in s, (
+            "The Worker name must be unique, but name `{}` is repeated."
+        )
         s.add(info.name)
         all_infos.append(info)
     return all_infos
@@ -89,7 +89,8 @@ def init_rpc(
     master_endpoint: str | None = None,
 ) -> None:
     """
-    init rpc.
+    init rpc. Warning: All RPC API should only be used internally within a secure network environment and
+    must not be accessible via the public internet.
 
     Args:
         name (str): worker name.
@@ -102,13 +103,17 @@ def init_rpc(
         None.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env:DISTRIBUTED)
             >>> import paddle.distributed.rpc as rpc
 
-            >>> rpc.init_rpc("worker0", rank=0, world_size=1,
-            ...             master_endpoint="127.0.0.1:8001")
+            >>> rpc.init_rpc(
+            ...     "worker0",
+            ...     rank=0,
+            ...     world_size=1,
+            ...     master_endpoint="127.0.0.1:8001",
+            ... )
 
             >>> rpc.shutdown()
 
@@ -165,7 +170,9 @@ def rpc_sync(
     timeout: int = _DEFAULT_RPC_TIMEOUT,
 ) -> _RetT:
     """
-    Make a blocking RPC call to run function ``fn`` on worker ``to``. Attention: Users must use this API in a secure network environment.
+    Make a blocking RPC call to run function ``fn`` on worker ``to``. Warning: All RPC API should
+    only be used internally within a secure network environment and must not be accessible via
+    the public internet.
 
     Args:
         to (str): name of the destination worker.
@@ -184,7 +191,7 @@ def rpc_sync(
         Returns the result of running ``fn`` with ``args`` and ``kwargs``.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env:DISTRIBUTED)
             >>> import paddle.distributed.rpc as rpc
@@ -192,8 +199,12 @@ def rpc_sync(
             >>> def add(a, b):
             ...     return a + b
 
-            >>> rpc.init_rpc("worker0", rank=0, world_size=1,
-            ...         master_endpoint="127.0.0.1:8002")
+            >>> rpc.init_rpc(
+            ...     "worker0",
+            ...     rank=0,
+            ...     world_size=1,
+            ...     master_endpoint="127.0.0.1:8002",
+            ... )
 
             >>> ret = rpc.rpc_sync("worker0", add, args=(2, 3))
             >>> rpc.shutdown()
@@ -211,7 +222,8 @@ def rpc_async(
     timeout: int = _DEFAULT_RPC_TIMEOUT,
 ) -> _FutureWrapper[_RetT]:
     """
-    Make a non-blocking RPC call to run function ``fn`` on worker ``to``. Attention: Users must use this API in a secure network environment.
+    Make a non-blocking RPC call to run function ``fn`` on worker ``to``. Warning: All RPC API should
+    only be used internally within a secure network environment and must not be accessible via the public internet.
 
     Args:
         to (str): name of the destination worker.
@@ -232,7 +244,7 @@ def rpc_async(
         ``kwargs`` can be got by `fut.wait()`.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env:DISTRIBUTED)
             >>> import paddle.distributed.rpc as rpc
@@ -240,8 +252,12 @@ def rpc_async(
             >>> def add(a, b):
             ...     return a + b
 
-            >>> rpc.init_rpc("worker0", rank=0, world_size=1,
-            ...         master_endpoint="127.0.0.1:8003")
+            >>> rpc.init_rpc(
+            ...     "worker0",
+            ...     rank=0,
+            ...     world_size=1,
+            ...     master_endpoint="127.0.0.1:8003",
+            ... )
 
             >>> fut = rpc.rpc_async("worker0", add, args=(2, 3))
             >>> print(fut.wait())
@@ -282,7 +298,7 @@ def _barrier_never_timeout(global_rank, global_world_size):
             elapse_time = time.time() - start_time
             if datetime.timedelta(seconds=elapse_time) > timeout:
                 raise RuntimeError(
-                    f"Keys {wait_keys} are not ready sinck rank {global_rank} is waiting them."
+                    f"Keys {wait_keys} are not ready since rank {global_rank} is waiting them."
                 )
             wait_keys = list(
                 filter(lambda key: int(_barrier_store.get(key)) != 1, wait_keys)
@@ -306,19 +322,25 @@ def shutdown() -> None:
     """
     Perform a shutdown of the RPC agent, stop the worker and destroy the agent.
     This will block until all local and remote RPC processes reach this method
-    and wait for all outstanding work to complete.
+    and wait for all outstanding work to complete. Warning: All RPC API should
+    only be used internally within a secure network environment and must not be
+    accessible via the public internet.
 
     Returns:
         None.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env:DISTRIBUTED)
             >>> import paddle.distributed.rpc as rpc
 
-            >>> rpc.init_rpc("worker0", rank=0, world_size=1,
-            ...             master_endpoint="127.0.0.1:8004")
+            >>> rpc.init_rpc(
+            ...     "worker0",
+            ...     rank=0,
+            ...     world_size=1,
+            ...     master_endpoint="127.0.0.1:8004",
+            ... )
 
             >>> rpc.shutdown()
 
@@ -335,7 +357,9 @@ def shutdown() -> None:
 
 def get_worker_info(name: str) -> WorkerInfo:
     """
-    Get worker information by worker name.
+    Get worker information by worker name. Warning: All RPC API should
+    only be used internally within a secure network environment and must
+    not be accessible via the public internet.
 
     Args:
         name (str): name of the worker.
@@ -344,15 +368,19 @@ def get_worker_info(name: str) -> WorkerInfo:
         class `WorkerInfo` with attribute `name`, `rank`, `ip` and `port`.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env:DISTRIBUTED)
             >>> import paddle.distributed.rpc as rpc
             >>> import os
 
             >>> os.environ["PADDLE_WORKER_ENDPOINT"] = "127.0.0.1:9002"
-            >>> rpc.init_rpc("worker0", rank=0, world_size=1,
-            ...             master_endpoint="127.0.0.1:8005")
+            >>> rpc.init_rpc(
+            ...     "worker0",
+            ...     rank=0,
+            ...     world_size=1,
+            ...     master_endpoint="127.0.0.1:8005",
+            ... )
 
             >>> print(rpc.get_worker_info("worker0"))
             {name: worker0, rank: 0, ip: 127.0.0.1, port: 9002}
@@ -365,21 +393,27 @@ def get_worker_info(name: str) -> WorkerInfo:
 
 def get_all_worker_infos() -> list[WorkerInfo]:
     """
-    Get all worker informations.
+    Get all worker information. Warning: All RPC API should only be used
+    internally within a secure network environment and must not be
+    accessible via the public internet.
 
     Returns:
         List[WorkerInfo].
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env:DISTRIBUTED)
             >>> import paddle.distributed.rpc as rpc
             >>> import os
 
             >>> os.environ["PADDLE_WORKER_ENDPOINT"] = "127.0.0.1:9003"
-            >>> rpc.init_rpc("worker0", rank=0, world_size=1,
-            ...         master_endpoint="127.0.0.1:8006")
+            >>> rpc.init_rpc(
+            ...     "worker0",
+            ...     rank=0,
+            ...     world_size=1,
+            ...     master_endpoint="127.0.0.1:8006",
+            ... )
 
             >>> print(rpc.get_all_worker_infos())
             [{name: worker0, rank: 0, ip: 127.0.0.1, port: 9003}]
@@ -392,21 +426,26 @@ def get_all_worker_infos() -> list[WorkerInfo]:
 
 def get_current_worker_info() -> WorkerInfo:
     """
-    Get current worker information.
+    Get current worker information. Warning: All RPC API should only be used internally
+    within a secure network environment and must not be accessible via the public internet.
 
     Returns:
         class `WorkerInfo` with attribute `name`, `rank`, `ip` and `port`.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env:DISTRIBUTED)
             >>> import paddle.distributed.rpc as rpc
             >>> import os
 
             >>> os.environ["PADDLE_WORKER_ENDPOINT"] = "127.0.0.1:9004"
-            >>> rpc.init_rpc("worker0", rank=0, world_size=1,
-            ...             master_endpoint="127.0.0.1:8007")
+            >>> rpc.init_rpc(
+            ...     "worker0",
+            ...     rank=0,
+            ...     world_size=1,
+            ...     master_endpoint="127.0.0.1:8007",
+            ... )
 
             >>> print(rpc.get_current_worker_info())
             {name: worker0, rank: 0, ip: 127.0.0.1, port: 9004}

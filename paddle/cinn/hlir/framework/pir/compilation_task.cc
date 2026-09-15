@@ -15,6 +15,7 @@
 #pragma once
 
 #include "paddle/cinn/hlir/framework/pir/compilation_task.h"
+#include "paddle/cinn/ir/utils/ir_copy.h"
 
 #include "paddle/cinn/backends/codegen_device_util.h"
 #include "paddle/cinn/common/dim_expr_converter.h"
@@ -22,6 +23,8 @@
 #include "paddle/cinn/hlir/framework/op_lowering.h"
 #include "paddle/cinn/hlir/framework/pir/op_lowering_group.h"
 #include "paddle/cinn/hlir/framework/pir/utils.h"
+#include "paddle/cinn/hlir/op/use_ops.h"
+#include "paddle/cinn/ir/utils/stmt_converter.h"
 #include "paddle/common/enforce.h"
 namespace cinn {
 namespace hlir {
@@ -39,6 +42,13 @@ void GroupCompilationContext::SetLoweredFuncs(
        funcs.predicate2funcsCX86) {
     CX86_predicates_.push_back(std::move(predicate2func.first));
     CX86_lowered_funcs_.push_back(std::move(predicate2func.second));
+  }
+  // TODO(Dmovic): remove expr body after update all the backend.
+  for (ir::LoweredFunc& func : lowered_funcs_) {
+    func->body_block = ir::ConvertExprBlockToStmtBlock(func->body);
+  }
+  for (ir::LoweredFunc& func : CX86_lowered_funcs_) {
+    func->body_block = ir::ConvertExprBlockToStmtBlock(func->body);
   }
   infer_shape_lowered_func_ = std::move(funcs.infer_shape_func);
 
@@ -63,7 +73,7 @@ void GroupCompilationContext::PrepareModuleBuilder() {
   PADDLE_ENFORCE_EQ(predicates_.size(),
                     priorities_.size(),
                     ::common::errors::InvalidArgument(
-                        "The size of predicates and priorites should be "
+                        "The size of predicates and priorities should be "
                         "the same."));
   for (const ir::Expr& predicate : predicates_) {
     module_builder_.AddPredicate(predicate);
@@ -93,7 +103,7 @@ void GroupCompilationContext::PrepareModuleBuilder() {
 /**
  * For functions belonging to different broadcast groups, int args and the name
  * of the tensor args may be variate, but the number of the tensor args should
- * be fixed. So we need to unify the tensor args and symbol args. For exmaple,
+ * be fixed. So we need to unify the tensor args and symbol args. For example,
  * func1(_var, _var_1, S4, S5); func2(_var, _var_2, S1) would be unified to
  * func1(_var, _var_1, S4, S5, S1); func2(_var, _var_2, S4, S5, S1).
  */
@@ -149,8 +159,25 @@ void UnifyBroadcastGroupFuncArgs(
   };
 
   const auto& UpdateAllFuncArgs = [&](GroupCompilationContext& context) {
+    std::unordered_map<std::string, cinn::common::Type> old_type_map;
     for (ir::LoweredFunc& func : context.lowered_funcs_) {
+      old_type_map.clear();
+      // record old func arg type.
+      for (auto& old_arg : func->args) {
+        if (old_arg.is_var() && old_arg.var_arg()->is_symbolic_constant) {
+          old_type_map[old_arg.name()] = old_arg.var_arg()->type();
+        }
+      }
+      // update func args.
       func->args = new_args_vec;
+      // reset arg type to old type.
+      for (auto& new_arg : func->args) {
+        if (new_arg.is_var() && new_arg.var_arg()->is_symbolic_constant &&
+            old_type_map.count(new_arg.name())) {
+          new_arg.set_var(ir::ir_utils::IRCopy(new_arg.var_arg()));
+          new_arg.var_arg()->set_type(old_type_map[new_arg.name()]);
+        }
+      }
     }
   };
 
@@ -215,6 +242,74 @@ void CompilationTask::Lowering() {
 
     context_->broadcast_condition_ = ChangeBroadcastConditionToExpr();
   }
+
+  auto SimplifyPredicate = [](GroupCompilationContext* context) {
+    for (auto& expr : context->predicates_) {
+      optim::SimplifyLogical(&expr);
+    }
+    if (context->broadcast_condition_.defined())
+      optim::SimplifyLogical(&context->broadcast_condition_);
+    for (auto& expr : context->CX86_predicates_) {
+      optim::SimplifyLogical(&expr);
+    }
+  };
+
+  // remove unreachable predicates.
+  auto RemoveUnreachPredicate = [](GroupCompilationContext* context) {
+    // remove unreachable predicate.
+    std::vector<ir::Expr> new_predicates;
+    std::vector<int> new_priorities;
+    std::vector<ir::LoweredFunc> new_lowered_funcs;
+    bool has_true_predicate = false;
+    for (size_t i = 0; i < context->predicates_.size(); ++i) {
+      if (has_true_predicate) continue;
+      if (common::IsZero(context->predicates_[i])) continue;
+      if (common::IsOne(context->predicates_[i])) has_true_predicate = true;
+      new_predicates.push_back(context->predicates_[i]);
+      new_priorities.push_back(context->priorities_[i]);
+      new_lowered_funcs.push_back(context->lowered_funcs_[i]);
+    }
+    // CINN does not support returning an empty module now. if all predicates
+    // are false, we push the first predicate as result.
+    if (new_predicates.empty() && !context->predicates_.empty()) {
+      new_predicates.push_back(context->predicates_[0]);
+      new_priorities.push_back(context->priorities_[0]);
+      new_lowered_funcs.push_back(context->lowered_funcs_[0]);
+    }
+    context->predicates_ = std::move(new_predicates);
+    context->priorities_ = std::move(new_priorities);
+    context->lowered_funcs_ = std::move(new_lowered_funcs);
+
+    // remove unreachable CX86 predicate.
+    std::vector<ir::Expr> new_CX86_predicates;
+    std::vector<ir::LoweredFunc> new_CX86_lowered_funcs;
+    bool has_true_CX86_predicate = false;
+    for (size_t i = 0; i < context->CX86_predicates_.size(); ++i) {
+      if (has_true_CX86_predicate) continue;
+      if (common::IsZero(context->CX86_predicates_[i])) continue;
+      if (common::IsOne(context->CX86_predicates_[i]))
+        has_true_CX86_predicate = true;
+      new_CX86_predicates.push_back(context->CX86_predicates_[i]);
+      new_CX86_lowered_funcs.push_back(context->CX86_lowered_funcs_[i]);
+    }
+    // CINN does not support returning an empty module now. if all predicates
+    // are false, we push the first predicate as result.
+    if (new_CX86_predicates.empty() && !context->CX86_predicates_.empty()) {
+      new_CX86_predicates.push_back(context->CX86_predicates_[0]);
+      new_CX86_lowered_funcs.push_back(context->CX86_lowered_funcs_[0]);
+    }
+    context->CX86_predicates_ = std::move(new_CX86_predicates);
+    context->CX86_lowered_funcs_ = std::move(new_CX86_lowered_funcs);
+  };
+  // Logical Simplifysimplify predicates, such as:
+  // false && ... ==> false
+  // true || ...  ==> true
+  // 1 <= 1       ==> true
+  SimplifyPredicate(context_);
+  // Remove unreachable predicates, unreachable predicates means that predicate
+  // is false, or a true predicate already existed before.
+  RemoveUnreachPredicate(context_);
+
   VLOG(5) << "End to lowering: " << context_->PrintPredicate2Funcs();
 }
 
@@ -223,6 +318,8 @@ std::shared_ptr<pir::CompilationResult> CompilationTask::CodegenAndJit() {
 
   ir::Module ir_module = context_->module_builder_.Build();
   ir::Module ir_moduleCX86 = context_->CX86_module_builder_.Build();
+  cinn::common::OpDataTypePromote(&ir_module);
+  cinn::common::OpDataTypePromote(&ir_moduleCX86);
   return BuildPirCINNKernelInfo(
       ir_module, ir_moduleCX86, context_->NeedCompileCX86Kernel());
 }
@@ -233,16 +330,19 @@ std::shared_ptr<pir::CompilationResult> CompilationTask::BuildPirCINNKernelInfo(
     bool need_x86_kernel) {
   auto compilation_result = std::make_shared<pir::CompilationResult>(
       context_->target_, need_x86_kernel);
+
   auto backend_resource = std::make_shared<pir::BackendResource>(
       context_->target_,
       context_->group_->FuncName(),
       context_->group_->FuncName() + "_infer_shape",
       context_->group_->symbol_args_map(),
       context_->group_->temp_space_sizes());
-  VLOG(5) << "Start to compile module into cuda kernel...";
-  backend_resource->GetBackendCompiler()->Build(module, "");
+  backend_resource->GetBackendCompiler()->SetFusionHash(
+      context_->GetFusionHash());
+  backend_resource->GetBackendCompiler()->Build(module,
+                                                "");  // Generate device Code
   backend_resource->GetBackendCompiler()->AppendCX86(CX86module);
-  backend_resource->GetBackendCompiler()->EndCompile();
+  backend_resource->GetBackendCompiler()->EndCompile();  // Generate llvm IR
   compilation_result->SetBackendResource(backend_resource);
 
   VLOG(5) << "End to compile module into cuda kernel.";
@@ -255,6 +355,7 @@ CompilationTask::CompileBroadcastModules(
     const std::unordered_map<int, ir::Var>& symbolic_shape_var_index) {
   auto compilation_result =
       std::make_shared<pir::CompilationResult>(context_->target_);
+
   auto backend_resource = std::make_shared<pir::BackendResource>(
       context_->target_,
       context_->group_->FuncName(),
@@ -270,6 +371,8 @@ CompilationTask::CompileBroadcastModules(
     broadcast_conditions.emplace_back(context.broadcast_condition_);
     ir::Module ir_module = context.module_builder_.Build();
     ir::Module ir_moduleCX86 = context.CX86_module_builder_.Build();
+    backend_resource->GetBackendCompiler()->SetFusionHash(
+        context.GetFusionHash());
     backend_resource->GetBackendCompiler()->Build(ir_module, "");
     backend_resource->GetBackendCompiler()->AppendCX86(ir_moduleCX86);
   }

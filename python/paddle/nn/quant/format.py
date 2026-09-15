@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Define some layers used to export quantization model with ONNX style."""
+
 from __future__ import annotations
 
 import abc
@@ -35,15 +36,11 @@ def fake_fp8_quant(input, scale, axis=-1, type='e4m3'):
     if type == 'e4m3':
         return paddle.cast(
             (inp * 448 / scale).clip(-448, 448), "float8_e4m3fn"
-        ).astype(
-            input.dtype
-        )  # clip then cast
+        ).astype(input.dtype)  # clip then cast
     elif type == 'e5m2':
         return paddle.cast(
             (inp * 57344 / scale).clip(-57344, 57344), "float8_e5m2"
-        ).astype(
-            input.dtype
-        )  # clip then cast
+        ).astype(input.dtype)  # clip then cast
     else:
         raise NotImplementedError("only support e4m3 or e5m2 now")
 
@@ -107,7 +104,7 @@ class LinearQuanter(Layer):
         self._scales.set_value(scales)
         self.in_accum = paddle.to_tensor(0.0, dtype="float32")
         self.in_state = paddle.to_tensor(0.0, dtype="float32")
-        zero_point = zero_point if zero_point is not None else zero_point
+        zero_point = zero_point if zero_point is not None else 0.0
         zero_point = paddle.to_tensor(zero_point, dtype="float32")
         zp_attr = paddle.framework.ParamAttr(
             name=paddle.utils.unique_name.generate('quant_dequant.zero_point'),
@@ -148,7 +145,15 @@ class LinearQuanter(Layer):
 
     def forward(self, input):
         if in_dynamic_mode():
-            if len(self._scales.shape) > 1:
+            if self._qmax == 448:
+                return fake_fp8_quant(
+                    input, self._scales, self._quant_axis, type='e4m3'
+                )
+            elif self._qmax == 57344:
+                return fake_fp8_quant(
+                    input, self._scales, self._quant_axis, type='e5m2'
+                )
+            elif len(self._scales.shape) > 1:
                 if self._zero_point.sum() != 0:
                     quant_weight = paddle.clip(
                         paddle.round(input.cast('float32') / self._scales)
@@ -170,15 +175,6 @@ class LinearQuanter(Layer):
                         self._qmax,
                     )
                 return quant_weight.cast(input.dtype)
-
-            if self._qmax == 448:
-                return fake_fp8_quant(
-                    input, self._scales, self._quant_axis, type='e4m3'
-                )
-            elif self._qmax == 57344:
-                return fake_fp8_quant(
-                    input, self._scales, self._quant_axis, type='e5m2'
-                )
 
             return _legacy_C_ops.quantize_linear(
                 input.cast('float32'),
@@ -269,7 +265,7 @@ class LinearDequanter(Layer):
         self._scales.set_value(scales)
         self.in_accum = paddle.to_tensor(0.0, dtype="float32")
         self.in_state = paddle.to_tensor(0.0, dtype="float32")
-        zero_point = zero_point if zero_point is not None else zero_point
+        zero_point = zero_point if zero_point is not None else 0.0
         zero_point = paddle.to_tensor(zero_point, dtype="float32")
         zp_attr = paddle.framework.ParamAttr(
             name=paddle.utils.unique_name.generate('quant_dequant.zero_point'),
@@ -310,7 +306,15 @@ class LinearDequanter(Layer):
 
     def forward(self, input):
         if in_dynamic_mode():
-            if len(self._scales.shape) > 1:
+            if self._qmax == 448:
+                return fake_fp8_dequant(
+                    input, self._scales, self._quant_axis, type='e4m3'
+                )
+            elif self._qmax == 57344:
+                return fake_fp8_dequant(
+                    input, self._scales, self._quant_axis, type='e5m2'
+                )
+            elif len(self._scales.shape) > 1:
                 if self._zero_point.sum() != 0:
                     quant_dequant_weight = (
                         input.cast('float32') - self._zero_point
@@ -326,15 +330,6 @@ class LinearDequanter(Layer):
                         (input.cast('float32') - new_zp) / self._qmax * new_s
                     )
                 return quant_dequant_weight.cast(input.dtype)
-
-            if self._qmax == 448:
-                return fake_fp8_dequant(
-                    input, self._scales, self._quant_axis, type='e4m3'
-                )
-            elif self._qmax == 57344:
-                return fake_fp8_dequant(
-                    input, self._scales, self._quant_axis, type='e5m2'
-                )
 
             return _legacy_C_ops.dequantize_linear(
                 input.cast('float32'),
@@ -412,7 +407,7 @@ class ConvertibleQuantedLayer(Layer, metaclass=abc.ABCMeta):
     during inference.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # Given codes in ./customized_quanter.py
             >>> class CustomizedQuantedLayer(ConvertibleQuantedLayer):

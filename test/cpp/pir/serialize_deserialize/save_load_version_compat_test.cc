@@ -13,8 +13,8 @@
 // limitations under the License.
 
 #include <gtest/gtest.h>
+
 #include <stdio.h>
-#include <filesystem>
 #include <iostream>
 #include <map>
 #include <sstream>
@@ -22,14 +22,15 @@
 #include <vector>
 
 #include "paddle/common/enforce.h"
+#include "paddle/fluid/pir/dialect/operator/ir/op_attribute.h"
 #include "paddle/fluid/pir/dialect/operator/ir/op_dialect.h"
 #include "paddle/fluid/pir/dialect/operator/ir/op_type.h"
 #include "paddle/fluid/pir/dialect/operator/utils/utils.h"
 #include "paddle/fluid/pir/serialize_deserialize/include/interface.h"
 #include "paddle/fluid/pir/serialize_deserialize/include/ir_deserialize.h"
+#include "paddle/fluid/pir/serialize_deserialize/include/schema.h"
 #include "paddle/fluid/pir/serialize_deserialize/include/version_compat.h"
 #include "paddle/phi/common/port.h"
-
 #include "paddle/phi/core/tensor_meta.h"
 #include "paddle/pir/include/core/block.h"
 #include "paddle/pir/include/core/builder.h"
@@ -55,8 +56,17 @@
 #define TRAINABLE "trainable"
 #define PIR "pir"
 
+namespace {
+void RegisterTestDialectIdsForTest() {
+  auto *dialect_id_map = pir::DialectIdMap::Instance();
+  dialect_id_map->insert(test::TestDialect::name(), "-1");
+  dialect_id_map->insert(test1::Test1Dialect::name(), "-2");
+}
+}  // namespace
+
 // Test for building patches.
 TEST(save_load_version_compat, op_patch_test) {
+  RegisterTestDialectIdsForTest();
   // (1) Init environment.
   pir::IrContext *ctx = pir::IrContext::Instance();
 
@@ -67,9 +77,9 @@ TEST(save_load_version_compat, op_patch_test) {
   const uint64_t pir_version = 0;
   pir::PatchBuilder builder(pir_version);
   builder.SetFileVersion(1);
-  std::filesystem::path patch_path("patch");
+  std::string patch_path = "patch";
   VLOG(8) << "Patch path: " << patch_path;
-  builder.BuildPatch(2, 2, patch_path.string());
+  builder.BuildPatch(2, 2, patch_path);
 }
 
 bool ReadModuleForTest(const std::string &file_path,
@@ -85,9 +95,9 @@ bool ReadModuleForTest(const std::string &file_path,
         data.at(BASE_CODE).at(PIRVERSION).template get<uint64_t>();
     if (file_version != pir_version) {
       builder.SetFileVersion(file_version);
-      std::filesystem::path patch_path("patch");
+      std::string patch_path = "patch";
       VLOG(8) << "Patch path: " << patch_path;
-      builder.BuildPatch(2, 2, patch_path.string());
+      builder.BuildPatch(2, 2, patch_path);
     }
   } else {
     PADDLE_THROW(::common::errors::InvalidArgument("Invalid model file: %s.",
@@ -106,6 +116,7 @@ bool ReadModuleForTest(const std::string &file_path,
 
 // Test for attribute patch and op attribute modification.
 TEST(save_load_version_compat, attribute_patch_test1) {
+  RegisterTestDialectIdsForTest();
   pir::IrContext *ctx = pir::IrContext::Instance();
   ctx->GetOrRegisterDialect<test::TestDialect>();
   ctx->GetOrRegisterDialect<paddle::dialect::OperatorDialect>();
@@ -138,7 +149,7 @@ TEST(save_load_version_compat, attribute_patch_test1) {
 
   // Save the program into file
   pir::WriteModule(
-      program, "./test_save_load", /*pir_version*/ 1, true, false, true);
+      program, "./test_save_load", true, false, true, /*pir_version*/ 1);
   // Load the program from file
   pir::Program new_program(ctx);
   ReadModuleForTest("./test_save_load", &new_program, 2);
@@ -179,8 +190,88 @@ TEST(save_load_version_compat, attribute_patch_test1) {
             pir::Float64Type::get(ctx));
 }
 
+TEST(save_load_version_compat, attribute_patch_test2) {
+  RegisterTestDialectIdsForTest();
+  pir::IrContext *ctx = pir::IrContext::Instance();
+  ctx->GetOrRegisterDialect<test1::Test1Dialect>();
+  ctx->GetOrRegisterDialect<paddle::dialect::OperatorDialect>();
+
+  pir::Program program(ctx);
+  auto block = program.block();
+  pir::Builder builder(ctx, block);
+
+  pir::Type dtype = pir::Float32Type::get(ctx);
+
+  // Get registered operations.
+  pir::OpInfo op4_info = ctx->GetRegisteredOpInfo(test1::Operation4::name());
+  std::unordered_map<std::string, pir::Attribute> op4_attribute{
+      {"op4_attr1",
+       pir::ArrayAttribute::get(ctx, {pir::Int32Attribute::get(ctx, 3)})}};
+
+  pir::Operation *op4 =
+      pir::Operation::Create({}, op4_attribute, {dtype}, op4_info);
+  block->push_back(op4);
+
+  // Save the program into file
+  pir::WriteModule(
+      program, "./test_save_load", /*pir_version*/ 1, true, false, true);
+  // Load the program from file
+  pir::Program new_program(ctx);
+  ReadModuleForTest("./test_save_load", &new_program, 2);
+  EXPECT_EQ(new_program.block()
+                ->front()
+                .attribute("op4_attr1")
+                .dyn_cast<::pir::ArrayAttribute>()
+                .AsVector()[0]
+                .dyn_cast<::pir::Int64Attribute>()
+                .data(),
+            3);
+  EXPECT_EQ(new_program.block()
+                ->front()
+                .attribute("op4_attr2")
+                .dyn_cast<::paddle::dialect::DataTypeAttribute>()
+                .data(),
+            phi::DataType::UNDEFINED);
+  EXPECT_EQ(new_program.block()
+                ->front()
+                .attribute("op4_attr3")
+                .dyn_cast<::paddle::dialect::PlaceAttribute>()
+                .data()
+                .GetType(),
+            phi::AllocationType::UNDEFINED);
+  EXPECT_EQ(new_program.block()
+                ->front()
+                .attribute("op4_attr4")
+                .dyn_cast<::paddle::dialect::IntArrayAttribute>()
+                .data()
+                .size(),
+            3);
+  EXPECT_EQ(new_program.block()
+                ->front()
+                .attribute("op4_attr5")
+                .dyn_cast<::paddle::dialect::ScalarAttribute>()
+                .data()
+                .to<phi::dtype::complex<float>>()
+                .real,
+            1.0);
+  EXPECT_EQ(new_program.block()
+                ->front()
+                .attribute("op4_attr6")
+                .dyn_cast<::pir::TypeAttribute>()
+                .data()
+                .isa<pir::Float64Type>(),
+            true);
+  EXPECT_EQ(new_program.block()
+                ->front()
+                .attribute("op4_attr7")
+                .dyn_cast<::paddle::dialect::DataLayoutAttribute>()
+                .data(),
+            phi::DataLayout::NHWC);
+}
+
 // Test for op I/O and op attribute modification.
 TEST(save_load_version_compat, op_patch_test1) {
+  RegisterTestDialectIdsForTest();
   pir::IrContext *ctx = pir::IrContext::Instance();
   ctx->GetOrRegisterDialect<test::TestDialect>();
   ctx->GetOrRegisterDialect<test1::Test1Dialect>();
@@ -207,7 +298,7 @@ TEST(save_load_version_compat, op_patch_test1) {
   program.block()->push_back(op2);
 
   pir::WriteModule(
-      program, "./test_save_load", /*pir_version*/ 1, true, false, true);
+      program, "./test_save_load", true, false, true, /*pir_version*/ 1);
   // Load the program from file
   pir::Program new_program(ctx);
   ReadModuleForTest("./test_save_load", &new_program, 2);
@@ -239,6 +330,7 @@ TEST(save_load_version_compat, op_patch_test1) {
 
 // Test for the combination of op I/O and op_pair patch for deleting value.
 TEST(save_load_version_compat, op_patch_test2) {
+  RegisterTestDialectIdsForTest();
   pir::IrContext *ctx = pir::IrContext::Instance();
   ctx->GetOrRegisterDialect<test::TestDialect>();
   ctx->GetOrRegisterDialect<test1::Test1Dialect>();
@@ -262,7 +354,7 @@ TEST(save_load_version_compat, op_patch_test2) {
   block->push_back(op2);
 
   pir::WriteModule(
-      program, "./test_save_load", /*pir_version*/ 1, true, false, true);
+      program, "./test_save_load", true, false, true, /*pir_version*/ 1);
   // Load the program from file
   pir::Program new_program(ctx);
   ReadModuleForTest("./test_save_load", &new_program, 2);
@@ -279,6 +371,7 @@ TEST(save_load_version_compat, op_patch_test2) {
 
 // Test for op_pair patch for adding value.
 TEST(save_load_version_compat, op_patch_test3) {
+  RegisterTestDialectIdsForTest();
   pir::IrContext *ctx = pir::IrContext::Instance();
   ctx->GetOrRegisterDialect<test::TestDialect>();
   ctx->GetOrRegisterDialect<test1::Test1Dialect>();
@@ -304,7 +397,7 @@ TEST(save_load_version_compat, op_patch_test3) {
   block->push_back(op2);
 
   pir::WriteModule(
-      program, "./test_save_load", /*pir_version*/ 1, true, false, true);
+      program, "./test_save_load", true, false, true, /*pir_version*/ 1);
   // Load the program from file
   pir::Program new_program(ctx);
   ReadModuleForTest("./test_save_load", &new_program, 2);

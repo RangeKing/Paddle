@@ -15,8 +15,8 @@ limitations under the License. */
 #pragma once
 
 #include "paddle/phi/backends/cpu/cpu_context.h"
+#include "paddle/phi/common/memory_utils.h"
 #include "paddle/phi/core/dense_tensor.h"
-#include "paddle/phi/kernels/funcs/blas/blas.h"
 #include "paddle/phi/kernels/funcs/eigen/common.h"
 #include "paddle/phi/kernels/funcs/elementwise_grad_base.h"
 
@@ -75,6 +75,7 @@ void ElemwiseExplicitGradCompute(const CPUContext& dev_ctx,
 */
 template <typename T>
 struct IdentityGrad {
+  static constexpr bool kGradTermIsDout = true;
   HOSTDEVICE T operator()(T x UNUSED, T y UNUSED, T out UNUSED, T dout) const {
     return dout;
   }
@@ -82,7 +83,7 @@ struct IdentityGrad {
 
 template <typename T>
 typename std::enable_if<std::is_floating_point<T>::value>::type
-ElementwiseAddGrad(const CPUContext& ctx,
+ElementwiseAddGrad(const CPUContext& dev_ctx,
                    const DenseTensor& x,
                    const DenseTensor& y,
                    const DenseTensor& out,
@@ -90,19 +91,33 @@ ElementwiseAddGrad(const CPUContext& ctx,
                    DenseTensor* dx,
                    DenseTensor* dy,
                    int axis = -1) {
-  auto blas = phi::funcs::GetBlas<CPUContext, T>(ctx);
+  auto* dout_data = dout.data<T>();
   if (dx) {
-    blas.VCOPY(dout.numel(), dout.data<T>(), ctx.template Alloc<T>(dx));
+    auto* dx_data = dev_ctx.template Alloc<T>(dx);
+    if (dx_data != dout_data) {
+      memory_utils::Copy(dev_ctx.GetPlace(),
+                         dx_data,
+                         dev_ctx.GetPlace(),
+                         dout_data,
+                         static_cast<size_t>(dout.numel()) * sizeof(T));
+    }
   }
 
   if (dy) {
-    blas.VCOPY(dout.numel(), dout.data<T>(), ctx.template Alloc<T>(dy));
+    auto* dy_data = dev_ctx.template Alloc<T>(dy);
+    if (dy_data != dout_data) {
+      memory_utils::Copy(dev_ctx.GetPlace(),
+                         dy_data,
+                         dev_ctx.GetPlace(),
+                         dout_data,
+                         static_cast<size_t>(dout.numel()) * sizeof(T));
+    }
   }
 }
 
 template <typename T>
 typename std::enable_if<!std::is_floating_point<T>::value>::type
-ElementwiseAddGrad(const CPUContext& ctx,
+ElementwiseAddGrad(const CPUContext& dev_ctx,
                    const DenseTensor& x,
                    const DenseTensor& y,
                    const DenseTensor& out,
@@ -111,7 +126,16 @@ ElementwiseAddGrad(const CPUContext& ctx,
                    DenseTensor* dy,
                    int axis = -1) {
   ElemwiseExplicitGradCompute<T, IdentityGrad<T>, IdentityGrad<T>>(
-      ctx, x, y, out, dout, axis, dx, dy, IdentityGrad<T>(), IdentityGrad<T>());
+      dev_ctx,
+      x,
+      y,
+      out,
+      dout,
+      axis,
+      dx,
+      dy,
+      IdentityGrad<T>(),
+      IdentityGrad<T>());
 }
 
 /*
@@ -122,6 +146,7 @@ ElementwiseAddGrad(const CPUContext& ctx,
 
 template <typename T>
 struct SubGradDX {
+  static constexpr bool kGradTermIsDout = true;
   HOSTDEVICE T operator()(T x UNUSED, T y UNUSED, T out UNUSED, T dout) const {
     return dout;
   }
@@ -135,7 +160,7 @@ struct SubGradDY {
 };
 
 template <typename T>
-void ElementwiseSubGrad(const CPUContext& ctx,
+void ElementwiseSubGrad(const CPUContext& dev_ctx,
                         const DenseTensor& x,
                         const DenseTensor& y,
                         const DenseTensor& out,
@@ -144,7 +169,7 @@ void ElementwiseSubGrad(const CPUContext& ctx,
                         DenseTensor* dy,
                         int axis = -1) {
   ElemwiseExplicitGradCompute<T, SubGradDX<T>, SubGradDY<T>>(
-      ctx, x, y, out, dout, axis, dx, dy, SubGradDX<T>(), SubGradDY<T>());
+      dev_ctx, x, y, out, dout, axis, dx, dy, SubGradDX<T>(), SubGradDY<T>());
 }
 
 }  // namespace phi

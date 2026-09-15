@@ -24,56 +24,54 @@ namespace phi {
 
 template <typename T>
 struct LabelSmoothFunctor {
-  using MPType = typename phi::dtype::MPTypeTrait<T>::Type;
-  MPType epsilon;
-  MPType label_dim;
+  using MT = typename MPTypeTrait<T>::Type;
+  MT epsilon;
+  MT label_dim;
 
   __forceinline__ LabelSmoothFunctor(float epsilon_data, int label_dim_data) {
-    epsilon = static_cast<MPType>(epsilon_data);
-    label_dim = static_cast<MPType>(label_dim_data);
+    epsilon = static_cast<MT>(epsilon_data);
+    label_dim = static_cast<MT>(label_dim_data);
   }
 
   __device__ __forceinline__ T operator()(const T x) const {
-    return static_cast<T>(
-        static_cast<MPType>(static_cast<MPType>(1) - epsilon) *
-            static_cast<MPType>(x) +
-        static_cast<MPType>(epsilon / label_dim));
+    return static_cast<T>(static_cast<MT>(static_cast<MT>(1) - epsilon) *
+                              static_cast<MT>(x) +
+                          static_cast<MT>(epsilon / label_dim));
   }
 };
 
 template <typename T>
-__global__ void LabelSmoothRunDistKernel(const int N,
+__global__ void LabelSmoothRunDistKernel(const int64_t N,
                                          const float epsilon,
                                          const int dist_numel,
                                          const T* src,
                                          const T* dist_data,
                                          T* dst) {
-  using MPType = typename phi::dtype::MPTypeTrait<T>::Type;
-  CUDA_KERNEL_LOOP(idx, N) {
-    int dist_idx = idx % dist_numel;
-    dst[idx] =
-        static_cast<T>((static_cast<MPType>(1) - static_cast<MPType>(epsilon)) *
-                           static_cast<MPType>(src[idx]) +
-                       static_cast<MPType>(epsilon) *
-                           static_cast<MPType>(dist_data[dist_idx]));
+  using MT = typename MPTypeTrait<T>::Type;
+  CUDA_KERNEL_LOOP_TYPE(idx, N, int64_t) {
+    int64_t dist_idx = idx % dist_numel;
+    dst[idx] = static_cast<T>((static_cast<MT>(1) - static_cast<MT>(epsilon)) *
+                                  static_cast<MT>(src[idx]) +
+                              static_cast<MT>(epsilon) *
+                                  static_cast<MT>(dist_data[dist_idx]));
   }
 }
 
 template <typename T, typename Context>
-void LabelSmoothKernel(const Context& ctx,
+void LabelSmoothKernel(const Context& dev_ctx,
                        const DenseTensor& label,
-                       const paddle::optional<DenseTensor>& prior_dist,
+                       const optional<DenseTensor>& prior_dist,
                        float epsilon,
                        DenseTensor* out) {
   auto label_dim = label.dims()[label.dims().size() - 1];
   auto size_prob = label.numel();
   const T* in_data = label.data<T>();
-  T* out_data = ctx.template Alloc<T>(out);
+  T* out_data = dev_ctx.template Alloc<T>(out);
 
   if (prior_dist.get_ptr()) {
     int threads = 512;
     int grid = (size_prob + threads - 1) / threads;
-    auto stream = ctx.stream();
+    auto stream = dev_ctx.stream();
     const auto* dist_t = prior_dist.get_ptr();
     auto dist_numel = dist_t->numel();
     const T* dist_data = dist_t->data<T>();
@@ -84,7 +82,7 @@ void LabelSmoothKernel(const Context& ctx,
     std::vector<const DenseTensor*> ins = {&label};
     std::vector<DenseTensor*> outs = {out};
     auto functor = LabelSmoothFunctor<T>(epsilon, label_dim);
-    phi::funcs::ElementwiseKernel<T>(ctx, ins, &outs, functor);
+    funcs::ElementwiseKernel<T>(dev_ctx, ins, &outs, functor);
   }
 }
 
@@ -96,5 +94,5 @@ PD_REGISTER_KERNEL(label_smooth,
                    phi::LabelSmoothKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}

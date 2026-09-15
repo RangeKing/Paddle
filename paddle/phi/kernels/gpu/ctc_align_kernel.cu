@@ -60,7 +60,9 @@ __global__ void PaddingMergeAndDelCudaKernel(const int64_t num_token,
                                              const int64_t batch_size,
                                              T* output,
                                              T* output_length) {
-  int ind = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t ind =
+      static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x) +
+      static_cast<int64_t>(threadIdx.x);
   if (ind >= batch_size) return;
   int output_idx = ind * num_token;
   T prev_token = -1;
@@ -81,17 +83,12 @@ __global__ void PaddingMergeAndDelCudaKernel(const int64_t num_token,
 template <typename T, typename Context>
 void CTCAlignOpCUDAKernel(const Context& dev_ctx,
                           const DenseTensor& input,
-                          const paddle::optional<DenseTensor>& input_length,
+                          const optional<DenseTensor>& input_length,
                           int blank,
                           bool merge_repeated,
                           int padding_value,
                           DenseTensor* output,
                           DenseTensor* output_length) {
-  PADDLE_ENFORCE_EQ(dev_ctx.GetPlace().GetType() == phi::AllocationType::GPU,
-                    true,
-                    common::errors::InvalidArgument(
-                        "CTCAlign operator CUDA kernel must use CUDAPlace "
-                        "rather than CPUPlace."));
   const T* tokens = input.data<T>();
   auto stream = dev_ctx.stream();
 
@@ -115,7 +112,7 @@ void CTCAlignOpCUDAKernel(const Context& dev_ctx,
                                                            output_length_data);
   } else {
     const size_t level = 0;
-    auto input_lod = phi::ToAbsOffset(input.lod());
+    auto input_lod = ToAbsOffset(input.lod());
 
     const int64_t num_tokens = input.dims()[0];
     const size_t num_seq = input_lod[level].size() - 1;
@@ -128,7 +125,7 @@ void CTCAlignOpCUDAKernel(const Context& dev_ctx,
     output->Resize({num_tokens, 1});
     T* output_data = dev_ctx.template Alloc<T>(output);
 
-    phi::MixVector<size_t> mixv_input_lod(&input_lod[level]);
+    MixVector<size_t> mixv_input_lod(&input_lod[level]);
     MergeAndDelCudaKernel<T><<<1, 1, 0, stream>>>(
         num_tokens,
         tokens,
@@ -142,7 +139,7 @@ void CTCAlignOpCUDAKernel(const Context& dev_ctx,
 
     // set output lod
     std::vector<size_t> host_out_lod0(dev_out_lod0.begin(), dev_out_lod0.end());
-    phi::LegacyLoD out_lod;
+    LegacyLoD out_lod;
     out_lod.push_back(host_out_lod0);
     output->set_lod(out_lod);
 
@@ -152,7 +149,7 @@ void CTCAlignOpCUDAKernel(const Context& dev_ctx,
     if (host_out_lod0.back() == 0) {
       output->Resize({1, 1});
       dev_ctx.template Alloc<T>(output);
-      phi::funcs::SetConstant<phi::GPUContext, T> set_constant;
+      funcs::SetConstant<GPUContext, T> set_constant;
       set_constant(dev_ctx, output, -1);
     }
   }

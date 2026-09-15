@@ -46,7 +46,7 @@ void Stream::set_stream(stream_t stream) { stream_ = stream; }
 // For compatible
 Stream::Stream(const Place& place, stream_t stream)
     : place_(place),
-      device_(phi::DeviceManager::GetDeviceWithPlace(place)),
+      device_(DeviceManager::GetDeviceWithPlace(place)),
       stream_(stream),
       callback_manager_(new CallbackManager(this)),
       own_data_(false) {}
@@ -55,11 +55,11 @@ bool Stream::Init(const Place& place,
                   const Priority& priority,
                   const Flag& flag) {
   place_ = place;
-  device_ = phi::DeviceManager::GetDeviceWithPlace(place);
+  device_ = DeviceManager::GetDeviceWithPlace(place);
 
   // note(wangran16): bind device to the current thread. fix npu plugin null
   // context bug.
-  phi::DeviceManager::SetDevice(place_);
+  DeviceManager::SetDevice(place_);
   device_->CreateStream(this, priority, flag);
 
   callback_manager_ = std::make_unique<CallbackManager>(this);
@@ -87,10 +87,10 @@ void Stream::WaitEvent(event::Event* event) const {
 
 void Stream::Wait() const {
 #if !defined(_WIN32)
-  device_->SynchronizeStream(this);
+  device_->SynchronizeStream(this->raw_stream());
 #else
   while (1) {
-    if (device_->QueryStream(this)) {
+    if (device_->QueryStream(this->raw_stream())) {
       break;
     }
   }
@@ -101,10 +101,9 @@ void Stream::WaitCallback() const { callback_manager_->Wait(); }
 
 void Stream::Destroy() {
   if (device_) {
-    if (own_data_ &&
-        phi::DeviceManager::HasDeviceType(place_.GetDeviceType())) {
-      phi::DeviceManager::SetDevice(place_);
-      device_->DestroyStream(this);
+    if (own_data_ && DeviceManager::HasDeviceType(place_.GetDeviceType())) {
+      DeviceManager::SetDevice(place_);
+      device_->DestroyStream(this->raw_stream());
     }
     own_data_ = false;
     stream_ = nullptr;
@@ -112,10 +111,14 @@ void Stream::Destroy() {
   }
 }
 
-bool Stream::Query() const { return device_->QueryStream(this); }
+bool Stream::Query() const { return device_->QueryStream(this->raw_stream()); }
 
-void Stream::Synchronize() const { device_->SynchronizeStream(this); }
+void Stream::Synchronize() const {
+  device_->SynchronizeStream(this->raw_stream());
+}
 
 const Place& Stream::GetPlace() const { return place_; }
+
+StreamId Stream::id() const { return id_; }
 
 }  // namespace phi::stream

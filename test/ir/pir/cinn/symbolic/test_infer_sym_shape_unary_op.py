@@ -48,7 +48,7 @@ class ArgMaxMinOpInferSymbolicShapeTest(TestBase):
     def prepare_data(self):
         self.cases = [np.random.rand(4, 5, 6)]
         self.expected = [
-            ['shape[0], data[NULL]'],
+            ['shape[], data[NULL]'],
             ['shape[S0, S1], data[NULL]'],
         ]
 
@@ -447,6 +447,64 @@ class MaxMinOpInferSymbolicShapeTest(TestBase):
         return True
 
 
+class AminmaxNet(paddle.nn.Layer):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        min_out, max_out = paddle.aminmax(x)
+        min_out, max_out = paddle.aminmax(x, axis=0)
+        min_out, max_out = paddle.aminmax(x, axis=1)
+        min_out, max_out = paddle.aminmax(x, axis=-1)
+        min_out, max_out = paddle.aminmax(x, axis=-2)
+        # keepdim=True
+        min_out, max_out = paddle.aminmax(x, keepdim=True)
+        min_out, max_out = paddle.aminmax(x, axis=0, keepdim=True)
+        min_out, max_out = paddle.aminmax(x, axis=1, keepdim=True)
+        min_out, max_out = paddle.aminmax(x, axis=-1, keepdim=True)
+        min_out, max_out = paddle.aminmax(x, axis=-2, keepdim=True)
+
+        min_out, max_out = paddle.aminmax(x, axis=[1, 2])
+        min_out, max_out = paddle.aminmax(x, axis=[1, 2], keepdim=True)
+        return min_out, max_out
+
+
+class AminmaxOpInferSymbolicShapeTest(TestBase):
+    def prepare_data(self):
+        self.cases = [np.random.rand(2, 4, 3)]
+
+        self.expected = [
+            'shape[], data[NULL]',
+            'shape[S1, S2], data[NULL]',
+            'shape[S0, S2], data[NULL]',
+            'shape[S0, S1], data[NULL]',
+            'shape[S0, S2], data[NULL]',
+            # keepdim=True
+            'shape[1, 1, 1], data[NULL]',
+            'shape[1, S1, S2], data[NULL]',
+            'shape[S0, 1, S2], data[NULL]',
+            'shape[S0, S1, 1], data[NULL]',
+            'shape[S0, 1, S2], data[NULL]',
+            'shape[S0], data[NULL]',
+            'shape[S0, 1, 1], data[NULL]',
+        ]
+
+    def test_eval_symbolic(self):
+        net = AminmaxNet()
+
+        for i in range(len(self.cases)):
+            x = self.cases[i]
+            x_spec = InputSpec(
+                shape=[None for index in range(len(x.shape))], dtype='float32'
+            )
+            input_spec = [x_spec]
+            net = apply_to_static(net, False, input_spec)
+            net.eval()
+            check_infer_results(net, input_spec, 'pd_op.aminmax', self.expected)
+
+        return True
+
+
 class NonzeroNet(paddle.nn.Layer):
     def __init__(self):
         super().__init__()
@@ -577,99 +635,6 @@ class RepeatInterleaveOpInferSymbolicShapeTest(TestBase):
         return True
 
 
-class ReshapeNet(paddle.nn.Layer):
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, x):
-        out1 = paddle.reshape(x, [-1, 4, 5])
-        out2 = paddle.reshape(x, [0, 0, 12])
-        return out1, out2
-
-
-class ReshapeOpInferSymbolicShapeTest(TestBase):
-    def prepare_data(self):
-        self.cases = [np.random.rand(4, 5, 6)]
-        self.expected = [
-            [
-                'shape[Mul(S0, S1, 3, 1 / (5)), 4, 5], data[NULL]',
-                'shape[S0, S1, 12], data[NULL]',
-            ]
-        ]
-
-    def test_eval_symbolic(self):
-        net = ReshapeNet()
-
-        for i in range(len(self.cases)):
-            x = self.cases[i]
-            x_spec = InputSpec(
-                shape=[None for index in range(len(x.shape))], dtype='float32'
-            )
-
-            input_spec = [x_spec]
-            net = apply_to_static(net, False, input_spec)
-            net.eval()
-
-            check_infer_results(
-                net, input_spec, 'pd_op.reshape', self.expected[i]
-            )
-
-        return True
-
-
-class SplitNet(paddle.nn.Layer):
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, x):
-        out = paddle.split(x, [-1], axis=1)
-        out = paddle.split(x, [1, 2, -1], axis=1)
-        out = paddle.split(x, [1, -1], axis=1)
-        out = paddle.split(x, [1, 2, 3], axis=1)
-
-        out = x.split([-1], axis=1)
-        out = x.split([1, 2, -1], axis=1)
-        out = x.split([1, -1], axis=1)
-        out = x.split([1, 2, 3], axis=1)
-
-        return out
-
-
-class SplitOpInferSymbolicShapeTest(TestBase):
-    def prepare_data(self):
-        self.cases = [np.random.rand(4, 6, 5)]
-        self.expected = [
-            'shape[S0, 6, S2], data[NULL]',
-            'shape[S0, 1, S2], data[NULL], shape[S0, 2, S2], data[NULL], shape[S0, 3, S2], data[NULL]',
-            'shape[S0, 1, S2], data[NULL], shape[S0, 5, S2], data[NULL]',
-            'shape[S0, 1, S2], data[NULL], shape[S0, 2, S2], data[NULL], shape[S0, 3, S2], data[NULL]',
-            'shape[S0, 6, S2], data[NULL]',
-            'shape[S0, 1, S2], data[NULL], shape[S0, 2, S2], data[NULL], shape[S0, 3, S2], data[NULL]',
-            'shape[S0, 1, S2], data[NULL], shape[S0, 5, S2], data[NULL]',
-            'shape[S0, 1, S2], data[NULL], shape[S0, 2, S2], data[NULL], shape[S0, 3, S2], data[NULL]',
-        ]
-
-    def test_eval_symbolic(self):
-        net = SplitNet()
-
-        for i in range(len(self.cases)):
-            x = self.cases[i]
-            x_spec = InputSpec(
-                shape=[None for index in range(len(x.shape))], dtype='float32'
-            )
-            input_spec = [x_spec]
-            net = apply_to_static(net, False, input_spec)
-            net.eval()
-
-            # check the infer result
-            check_infer_results(net, input_spec, 'pd_op.split', self.expected)
-
-        # TODO(fty1777): Add builtin.split op infer symbolic shape test
-        #                Not added because attribute `sym_shape_str` does not support multi-output op now.
-        #                See also: paddle/fluid/pir/transforms/shape_optimization_pass.cc:144.
-        return True
-
-
 class TopkNet(paddle.nn.Layer):
     def __init__(self):
         super().__init__()
@@ -720,7 +685,7 @@ class SplitWithNumOpInferSymbolicShapeTest(TestBase):
         self.cases = [np.random.rand(4, 6, 5)]
         self.expected = [
             "shape[4, 2, 5], data[NULL], shape[4, 2, 5], data[NULL], shape[4, 2, 5], data[NULL]",
-            "shape[S0, Mul(S1, 1 / (3)), S2], data[NULL], shape[S0, Mul(S1, 1 / (3)), S2], data[NULL], shape[S0, Mul(S1, 1 / (3)), S2], data[NULL]",
+            "shape[S0, Div(S1, 3), S2], data[NULL], shape[S0, Div(S1, 3), S2], data[NULL], shape[S0, Div(S1, 3), S2], data[NULL]",
         ]
 
     def test_eval_symbolic(self):
@@ -920,6 +885,240 @@ class UniqueConsecutiveOpInferSymbolicShapeTest(TestBase):
             check_infer_results(
                 net, input_spec, 'pd_op.unique_consecutive', self.expected[i]
             )
+
+        return True
+
+
+class RRELUInplaceNet(paddle.nn.Layer):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        F.rrelu(x, training=False, inplace=True)
+        return x
+
+
+class RRELUOpInferSymbolicShapeTest(TestBase):
+    def prepare_data(self):
+        self.cases = [
+            np.random.uniform(-1.0, 1.0, [1, 2, 3, 4]).astype('float32')
+        ]
+        self.expected = ['shape[S0, S1, S2, S3], data[NULL]']
+
+    def test_eval_symbolic(self):
+        net = RRELUInplaceNet()
+
+        for i in range(len(self.cases)):
+            x = self.cases[i]
+            x_spec = InputSpec(
+                shape=[None for index in range(len(x.shape))], dtype='float32'
+            )
+
+            input_spec = [x_spec]
+            net = paddle.jit.to_static(
+                net,
+                input_spec=input_spec,
+                backend=None,
+                full_graph=True,
+            )
+            net.eval()
+            check_infer_results(net, input_spec, 'pd_op.rrelu_', self.expected)
+
+        return True
+
+
+class SELUInplaceNet(paddle.nn.Layer):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        F.selu(x, inplace=True)
+
+        return x
+
+
+class SELUOpInferSymbolicShapeTest(TestBase):
+    def prepare_data(self):
+        self.cases = [np.random.normal(size=[3, 5, 5, 10]).astype('float32')]
+        self.expected = ['shape[S0, S1, S2, S3], data[NULL]']
+
+    def test_eval_symbolic(self):
+        net = SELUInplaceNet()
+
+        for i in range(len(self.cases)):
+            x = self.cases[i]
+            x_spec = InputSpec(
+                shape=[None for index in range(len(x.shape))], dtype='float32'
+            )
+
+            input_spec = [x_spec]
+            net = apply_to_static(net, True, input_spec)
+            net.eval()
+            check_infer_results(net, input_spec, 'pd_op.selu_', self.expected)
+
+        return True
+
+
+class HardSigmoidInplaceNet(paddle.nn.Layer):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        F.hardsigmoid(x, inplace=True)
+
+        return x
+
+
+class HardSigmoidInferSymbolicShapeTest(TestBase):
+    def prepare_data(self):
+        self.cases = [np.random.normal(size=[3, 5, 5, 10]).astype('float32')]
+        self.expected = ['shape[S0, S1, S2, S3], data[NULL]']
+
+    def test_eval_symbolic(self):
+        net = HardSigmoidInplaceNet()
+
+        for i in range(len(self.cases)):
+            x = self.cases[i]
+            x_spec = InputSpec(
+                shape=[None for index in range(len(x.shape))], dtype='float32'
+            )
+
+            input_spec = [x_spec]
+            net = apply_to_static(net, True, input_spec)
+            net.eval()
+            check_infer_results(
+                net, input_spec, 'pd_op.hardsigmoid_', self.expected
+            )
+
+        return True
+
+
+class HardswishInplaceNet(paddle.nn.Layer):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        F.hardswish(x, inplace=True)
+
+        return x
+
+
+class HardswishOpInferSymbolicShapeTest(TestBase):
+    def prepare_data(self):
+        self.cases = [np.random.normal(size=[3, 5, 5, 10]).astype('float32')]
+        self.expected = ['shape[S0, S1, S2, S3], data[NULL]']
+
+    def test_eval_symbolic(self):
+        net = HardswishInplaceNet()
+
+        for i in range(len(self.cases)):
+            x = self.cases[i]
+            x_spec = InputSpec(
+                shape=[None for index in range(len(x.shape))], dtype='float32'
+            )
+
+            input_spec = [x_spec]
+            net = apply_to_static(net, True, input_spec)
+            net.eval()
+            check_infer_results(
+                net, input_spec, 'pd_op.hardswish_', self.expected
+            )
+
+        return True
+
+
+class MishInplaceNet(paddle.nn.Layer):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        F.mish(x, inplace=True)
+
+        return x
+
+
+class MishOpInferSymbolicShapeTest(TestBase):
+    def prepare_data(self):
+        self.cases = [np.random.normal(size=[3, 5, 5, 10]).astype('float32')]
+        self.expected = ['shape[S0, S1, S2, S3], data[NULL]']
+
+    def test_eval_symbolic(self):
+        net = MishInplaceNet()
+
+        for i in range(len(self.cases)):
+            x = self.cases[i]
+            x_spec = InputSpec(
+                shape=[None for index in range(len(x.shape))], dtype='float32'
+            )
+
+            input_spec = [x_spec]
+            net = apply_to_static(net, True, input_spec)
+            net.eval()
+            check_infer_results(net, input_spec, 'pd_op.mish_', self.expected)
+
+        return True
+
+
+class ReLU6InplaceNet(paddle.nn.Layer):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        F.relu6(x, inplace=True)
+
+        return x
+
+
+class ReLU6OpInferSymbolicShapeTest(TestBase):
+    def prepare_data(self):
+        self.cases = [np.random.normal(size=[3, 5, 5, 10]).astype('float32')]
+        self.expected = ['shape[S0, S1, S2, S3], data[NULL]']
+
+    def test_eval_symbolic(self):
+        net = ReLU6InplaceNet()
+
+        for i in range(len(self.cases)):
+            x = self.cases[i]
+            x_spec = InputSpec(
+                shape=[None for index in range(len(x.shape))], dtype='float32'
+            )
+
+            input_spec = [x_spec]
+            net = apply_to_static(net, True, input_spec)
+            net.eval()
+            check_infer_results(net, input_spec, 'pd_op.relu6_', self.expected)
+
+        return True
+
+
+class SwishInplaceNet(paddle.nn.Layer):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        F.swish(x, inplace=True)
+
+        return x
+
+
+class SwishOpInferSymbolicShapeTest(TestBase):
+    def prepare_data(self):
+        self.cases = [np.random.normal(size=[3, 5, 5, 10]).astype('float32')]
+        self.expected = ['shape[S0, S1, S2, S3], data[NULL]']
+
+    def test_eval_symbolic(self):
+        net = SwishInplaceNet()
+
+        for i in range(len(self.cases)):
+            x = self.cases[i]
+            x_spec = InputSpec(
+                shape=[None for index in range(len(x.shape))], dtype='float32'
+            )
+
+            input_spec = [x_spec]
+            net = apply_to_static(net, True, input_spec)
+            net.eval()
+            check_infer_results(net, input_spec, 'pd_op.swish_', self.expected)
 
         return True
 

@@ -15,7 +15,6 @@
 #include "paddle/phi/kernels/scatter_nd_add_kernel.h"
 
 #include "paddle/phi/backends/gpu/gpu_context.h"
-#include "paddle/phi/common/bfloat16.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/core/tensor_utils.h"
 #include "paddle/phi/kernels/funcs/scatter.cu.h"
@@ -23,27 +22,31 @@
 namespace phi {
 
 template <typename T, typename Context>
-void ScatterNdAddKernel(const Context &ctx,
+void ScatterNdAddKernel(const Context &dev_ctx,
                         const DenseTensor &x,
                         const DenseTensor &index,
                         const DenseTensor &updates,
                         DenseTensor *out) {
-  Copy(ctx, x, ctx.GetPlace(), false, out);
+  if (out && out->numel() == 0) {
+    dev_ctx.template Alloc<T>(out);
+    return;
+  }
+  Copy(dev_ctx, x, dev_ctx.GetPlace(), false, out);
   const auto &index_type = index.dtype();
   bool index_type_match =
-      index_type == phi::DataType::INT32 || index_type == phi::DataType::INT64;
+      index_type == DataType::INT32 || index_type == DataType::INT64;
   PADDLE_ENFORCE_EQ(index_type_match,
                     true,
                     common::errors::InvalidArgument(
                         "Index holds the wrong type, it holds [%s], but "
                         "desires to be [%s] or [%s].",
                         index_type,
-                        phi::DataType::INT32,
-                        phi::DataType::INT64));
-  if (index_type == phi::DataType::INT32) {
-    phi::funcs::GPUScatterNdAdd<T, int32_t>(ctx, updates, index, out);
+                        DataType::INT32,
+                        DataType::INT64));
+  if (index_type == DataType::INT32) {
+    funcs::GPUScatterNdAdd<T, int32_t>(dev_ctx, updates, index, out);
   } else {
-    phi::funcs::GPUScatterNdAdd<T, int64_t>(ctx, updates, index, out);
+    funcs::GPUScatterNdAdd<T, int64_t>(dev_ctx, updates, index, out);
   }
 }
 
@@ -57,5 +60,5 @@ PD_REGISTER_KERNEL(scatter_nd_add,
                    double,
                    int64_t,
                    int,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}

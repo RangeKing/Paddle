@@ -43,9 +43,9 @@ template <typename Context, typename T>
 class ConcatFunctor {
  public:
   void operator()(const Context& context,
-                  const std::vector<phi::DenseTensor>& input,
+                  const std::vector<DenseTensor>& input,
                   int axis,
-                  phi::DenseTensor* output);
+                  DenseTensor* output);
 };
 
 /*
@@ -64,27 +64,27 @@ template <typename Context, typename T>
 class SplitFunctor {
  public:
   void operator()(const Context& context,
-                  const phi::DenseTensor& input,
-                  const std::vector<const phi::DenseTensor*>& ref_inputs,
+                  const DenseTensor& input,
+                  const std::vector<const DenseTensor*>& ref_inputs,
                   int axis,
-                  std::vector<phi::DenseTensor*>* outputs);
+                  std::vector<DenseTensor*>* outputs);
 };
 
 }  // namespace funcs
 }  // namespace phi
 
-#define FOR_ALL_TYPES(macro)          \
-  macro(int);                         \
-  macro(float);                       \
-  macro(double);                      \
-  macro(bool);                        \
-  macro(int64_t);                     \
-  macro(int16_t);                     \
-  macro(uint8_t);                     \
-  macro(int8_t);                      \
-  macro(phi::dtype::float16);         \
-  macro(phi::dtype::bfloat16);        \
-  macro(phi::dtype::complex<float>);  \
-  macro(phi::dtype::complex<double>); \
-  macro(phi::dtype::float8_e4m3fn);   \
-  macro(phi::dtype::float8_e5m2);
+#define FOR_ALL_TYPES(macro) \
+  macro(int);                \
+  macro(float);              \
+  macro(double);             \
+  macro(bool);               \
+  macro(int64_t);            \
+  macro(int16_t);            \
+  macro(uint8_t);            \
+  macro(int8_t);             \
+  macro(phi::float16);       \
+  macro(phi::bfloat16);      \
+  macro(phi::complex64);     \
+  macro(phi::complex128);    \
+  macro(phi::float8_e4m3fn); \
+  macro(phi::float8_e5m2);

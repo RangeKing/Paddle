@@ -20,12 +20,14 @@ import numpy as np
 
 import paddle
 from paddle import _C_ops
+from paddle._C_ops import imag, real  # noqa: F401
+from paddle.utils.decorator_utils import param_one_alias
 
 from ..base.data_feeder import check_type, check_variable_and_dtype
 from ..base.framework import in_dynamic_or_pir_mode, use_pir_api
 from ..common_ops_import import Variable
 from ..framework import LayerHelper, core
-from .creation import _complex_to_real_dtype, assign
+from .creation import assign
 
 if TYPE_CHECKING:
     from paddle import Tensor
@@ -45,7 +47,7 @@ def rank(input: Tensor) -> Tensor:
         Tensor, the output data type is int32.: The 0-D tensor with the dimensions of the input Tensor.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -83,14 +85,14 @@ def shape(input: Tensor) -> Tensor:
                 input.shape = [3, 2]
 
     Args:
-        input (Variable): The input can be N-D Tensor or SelectedRows with data type bool, bfloat16, float16, float32, float64, int32, int64.
+        input (Tensor): The input can be N-D Tensor or SelectedRows with data type bool, bfloat16, float16, float32, float64, int32, int64.
                           If input variable is type of SelectedRows, returns the shape of it's inner tensor.
 
     Returns:
-        Variable (Tensor): The shape of the input variable.
+        Tensor: The shape of the input variable.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import numpy as np
             >>> import paddle
@@ -102,11 +104,11 @@ def shape(input: Tensor) -> Tensor:
             >>> exe = paddle.static.Executor(paddle.CPUPlace())
             >>> exe.run(paddle.static.default_startup_program())
 
-            >>> img = np.ones((3, 100, 100)).astype(np.float32) # type: ignore[var-annotated]
+            >>> img = np.ones((3, 100, 100)).astype(np.float32)
 
-            >>> res = exe.run(paddle.static.default_main_program(), feed={'x':img}, fetch_list=[output])
+            >>> res = exe.run(paddle.static.default_main_program(), feed={'x': img}, fetch_list=[output])
             >>> print(res)
-            [array([  3, 100, 100], dtype=int32)]
+            [array([  3, 100, 100], dtype=int64)]
     """
     if in_dynamic_or_pir_mode():
         out = _C_ops.shape64(input)  # type: ignore
@@ -144,17 +146,24 @@ def shape(input: Tensor) -> Tensor:
         return out
 
 
+@param_one_alias(["x", "input"])
 def is_complex(x: Tensor) -> bool:
     """Return whether x is a tensor of complex data type(complex64 or complex128).
 
+
+    .. note::
+    Alias Support: The parameter name ``input`` can be used as an alias for ``x``.
+    For example, ``input=tensor_x`` is equivalent to ``x=tensor_x``.
+
     Args:
         x (Tensor): The input tensor.
+        input: An alias for ``x`` , with identical behavior.
 
     Returns:
         bool: True if the data type of the input is complex data type, otherwise false.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -184,22 +193,27 @@ def is_complex(x: Tensor) -> bool:
     return is_complex_dtype
 
 
+@param_one_alias(["x", "input"])
 def is_floating_point(x: Tensor) -> bool:
     """
     Returns whether the dtype of `x` is one of paddle.float64, paddle.float32, paddle.float16, and paddle.bfloat16.
 
+    .. note::
+        Alias Support: The parameter name ``input`` can be used as an alias for ``x``.
+        For example, ``is_floating_point(input=tensor_x)`` is equivalent to ``is_floating_point(x=tensor_x)``.
+
     Args:
-        x (Tensor): The input tensor.
+        x (Tensor): The input tensor. alias: ``input``.
 
     Returns:
         bool: True if the dtype of `x` is floating type, otherwise false.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
-            >>> x = paddle.arange(1., 5., dtype='float32')
+            >>> x = paddle.arange(1.0, 5.0, dtype='float32')
             >>> y = paddle.arange(1, 5, dtype='int32')
             >>> print(paddle.is_floating_point(x))
             True
@@ -234,7 +248,7 @@ def is_integer(x: Tensor) -> bool:
         bool: True if the data type of the input is integer data type, otherwise false.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -275,99 +289,3 @@ def is_integer(x: Tensor) -> bool:
         )
 
     return is_int_dtype
-
-
-def real(x: Tensor, name: str | None = None) -> Tensor:
-    """
-    Returns a new Tensor containing real values of the input Tensor.
-
-    Args:
-        x (Tensor): the input Tensor, its data type could be complex64 or complex128.
-        name (str|None, optional): The default value is None. Normally there is no need for
-            user to set this property. For more information, please refer to :ref:`api_guide_Name` .
-
-    Returns:
-        Tensor: a Tensor containing real values of the input Tensor.
-
-    Examples:
-        .. code-block:: python
-
-            >>> import paddle
-
-            >>> x = paddle.to_tensor(
-            ...     [[1 + 6j, 2 + 5j, 3 + 4j], [4 + 3j, 5 + 2j, 6 + 1j]])
-            >>> print(x)
-            Tensor(shape=[2, 3], dtype=complex64, place=Place(cpu), stop_gradient=True,
-            [[(1+6j), (2+5j), (3+4j)],
-             [(4+3j), (5+2j), (6+1j)]])
-
-            >>> real_res = paddle.real(x)
-            >>> print(real_res)
-            Tensor(shape=[2, 3], dtype=float32, place=Place(cpu), stop_gradient=True,
-            [[1., 2., 3.],
-             [4., 5., 6.]])
-
-            >>> real_t = x.real()
-            >>> print(real_t)
-            Tensor(shape=[2, 3], dtype=float32, place=Place(cpu), stop_gradient=True,
-            [[1., 2., 3.],
-             [4., 5., 6.]])
-    """
-    if in_dynamic_or_pir_mode():
-        return _C_ops.real(x)
-    else:
-        check_variable_and_dtype(x, 'x', ['complex64', 'complex128'], 'real')
-        helper = LayerHelper('real', **locals())
-        out = helper.create_variable_for_type_inference(
-            dtype=_complex_to_real_dtype(helper.input_dtype())
-        )
-        helper.append_op(type='real', inputs={'X': x}, outputs={'Out': out})
-        return out
-
-
-def imag(x: Tensor, name: str | None = None) -> Tensor:
-    """
-    Returns a new tensor containing imaginary values of input tensor.
-
-    Args:
-        x (Tensor): the input tensor, its data type could be complex64 or complex128.
-        name (str|None, optional): The default value is None. Normally there is no need for
-            user to set this property. For more information, please refer to :ref:`api_guide_Name` .
-
-    Returns:
-        Tensor: a tensor containing imaginary values of the input tensor.
-
-    Examples:
-        .. code-block:: python
-
-            >>> import paddle
-
-            >>> x = paddle.to_tensor(
-            ...     [[1 + 6j, 2 + 5j, 3 + 4j], [4 + 3j, 5 + 2j, 6 + 1j]])
-            >>> print(x)
-            Tensor(shape=[2, 3], dtype=complex64, place=Place(cpu), stop_gradient=True,
-            [[(1+6j), (2+5j), (3+4j)],
-             [(4+3j), (5+2j), (6+1j)]])
-
-            >>> imag_res = paddle.imag(x)
-            >>> print(imag_res)
-            Tensor(shape=[2, 3], dtype=float32, place=Place(cpu), stop_gradient=True,
-            [[6., 5., 4.],
-             [3., 2., 1.]])
-
-            >>> imag_t = x.imag()
-            >>> print(imag_t)
-            Tensor(shape=[2, 3], dtype=float32, place=Place(cpu), stop_gradient=True,
-            [[6., 5., 4.],
-             [3., 2., 1.]])
-    """
-    if in_dynamic_or_pir_mode():
-        return _C_ops.imag(x)
-    else:
-        check_variable_and_dtype(x, 'x', ['complex64', 'complex128'], 'imag')
-        helper = LayerHelper('imag', **locals())
-        out = helper.create_variable_for_type_inference(
-            dtype=_complex_to_real_dtype(helper.input_dtype())
-        )
-        helper.append_op(type='imag', inputs={'X': x}, outputs={'Out': out})
-        return out

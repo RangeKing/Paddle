@@ -12,26 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifdef __NVCC__
-#include "cub/cub.cuh"
-#endif
-#ifdef __HIPCC__
-#include <hipcub/hipcub.hpp>
-namespace cub = hipcub;
-#endif
-
 #include "paddle/phi/kernels/distribute_fpn_proposals_kernel.h"
-
+#include "paddle/common/enforce.h"
+#include "paddle/phi/backends/gpu/cuda/cuda_graph_with_memory_pool.h"
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/backends/gpu/gpu_primitives.h"
+#include "paddle/phi/common/memory_utils.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/funcs/cub.h"
 #include "paddle/phi/kernels/funcs/detection/bbox_util.h"
 #include "paddle/phi/kernels/funcs/distribute_fpn_proposals_functor.h"
 #include "paddle/phi/kernels/funcs/for_range.h"
 #include "paddle/phi/kernels/funcs/gather.cu.h"
 #include "paddle/phi/kernels/funcs/math_function.h"
-
-#include "paddle/phi/common/memory_utils.h"
 
 namespace phi {
 
@@ -79,7 +72,7 @@ __global__ void GPUDistFpnProposalsHelper(const int nthreads,
     tgt_lvl = min(max_level, max(tgt_lvl, min_level));
     target_lvls[i] = tgt_lvl;
     // compute number of rois in the same batch and same target level
-    phi::CudaAtomicAdd(
+    CudaAtomicAdd(
         sub_lod_list + (tgt_lvl - min_level) * lod_size + roi_batch_ind, 1);
   }
 }
@@ -88,7 +81,7 @@ template <typename T, typename Context>
 void DistributeFpnProposalsKernel(
     const Context& dev_ctx,
     const DenseTensor& fpn_rois,
-    const paddle::optional<DenseTensor>& rois_num,
+    const optional<DenseTensor>& rois_num,
     int min_level,
     int max_level,
     int refer_level,
@@ -104,9 +97,25 @@ void DistributeFpnProposalsKernel(
     PADDLE_ENFORCE_EQ(
         fpn_rois.lod().size(),
         1UL,
-        errors::InvalidArgument("DistributeFpnProposalsOp needs LoD"
+        errors::InvalidArgument("DistributeFpnProposalsOp needs LoD "
                                 "with one level"));
+  } else {
+    int64_t rois_num_numel = rois_num.get_ptr()->numel();
+    PADDLE_ENFORCE_LE(rois_num_numel,
+                      std::numeric_limits<int>::max(),
+                      ::common::errors::PreconditionNotMet(
+                          "The number of images should be less than "
+                          "2^31, but got %lld. Please check the input tensor. ",
+                          rois_num_numel));
   }
+
+  int64_t fpn_rois_numel = fpn_rois.numel();
+  PADDLE_ENFORCE_LE(fpn_rois_numel,
+                    std::numeric_limits<int>::max(),
+                    ::common::errors::PreconditionNotMet(
+                        "The number of proposals in FPN should be less than "
+                        "2^31, but got %lld. Please check the input tensor. ",
+                        fpn_rois_numel));
 
   std::vector<size_t> fpn_rois_lod;
   if (rois_num.get_ptr()) {
@@ -137,7 +146,7 @@ void DistributeFpnProposalsKernel(
   DenseTensor sub_lod_list;
   sub_lod_list.Resize({num_level, lod_size});
   int* sub_lod_list_data = dev_ctx.template Alloc<int>(&sub_lod_list);
-  phi::funcs::SetConstant<phi::GPUContext, int> set_zero;
+  funcs::SetConstant<GPUContext, int> set_zero;
   set_zero(dev_ctx, &sub_lod_list, static_cast<int>(0));
 
   DenseTensor target_lvls;
@@ -164,7 +173,7 @@ void DistributeFpnProposalsKernel(
   DenseTensor index_in_t;
   index_in_t.Resize({roi_num});
   int* idx_in = dev_ctx.template Alloc<int>(&index_in_t);
-  funcs::ForRange<phi::GPUContext> for_range(dev_ctx, roi_num);
+  funcs::ForRange<GPUContext> for_range(dev_ctx, roi_num);
   for_range(funcs::RangeInitFunctor{0, 1, idx_in});
 
   DenseTensor keys_out_t;
@@ -187,7 +196,7 @@ void DistributeFpnProposalsKernel(
                                             sizeof(int) * 8,
                                             dev_ctx.stream());
   // Allocate temporary storage
-  auto d_temp_storage = phi::memory_utils::Alloc(place, temp_storage_bytes);
+  auto d_temp_storage = memory_utils::Alloc(place, temp_storage_bytes);
 
   // Run sorting operation
   // sort target level to get corresponding index
@@ -216,10 +225,19 @@ void DistributeFpnProposalsKernel(
                                             sizeof(int) * 8,
                                             dev_ctx.stream());
 
-  int start = 0;
+  size_t start = 0;
 
+  PADDLE_ENFORCE_EQ(
+      backends::gpu::IsCUDAGraphCapturing(),
+      false,
+      common::errors::InvalidArgument(
+          "DistributeFpnProposals does not support CUDA Graph capture: async "
+          "D2H copy to local vector 'sub_lod_list_cpu' will bake the "
+          "destination address into the graph; on replay the vector is "
+          "re-created at a different address, causing a dangling-pointer "
+          "write."));
   std::vector<int> sub_lod_list_cpu(lod_size * num_level);
-  memory_utils::Copy(phi::CPUPlace(),
+  memory_utils::Copy(CPUPlace(),
                      sub_lod_list_cpu.data(),
                      place,
                      sub_lod_list_data,
@@ -231,19 +249,19 @@ void DistributeFpnProposalsKernel(
     DenseTensor sub_lod = sub_lod_list.Slice(i, i + 1);
     // transfer length-based lod to offset-based lod
     std::vector<size_t> offset(1, 0);
-    for (int j = 0; j < lod_size; ++j) {
+    for (size_t j = 0; j < lod_size; ++j) {
       offset.emplace_back(offset.back() + sub_lod_list_cpu[i * lod_size + j]);
     }
 
-    int sub_rois_num = offset.back();
+    int64_t sub_rois_num = offset.back();
 
-    int end = start + sub_rois_num;
+    size_t end = start + sub_rois_num;
     if (end > start) {
       DenseTensor sub_idx = index_out_t.Slice(start, end);
       start = end;
       multi_fpn_rois[i]->Resize({sub_rois_num, funcs::kBoxDim});
       dev_ctx.template Alloc<T>(multi_fpn_rois[i]);
-      phi::funcs::GPUGather<T>(dev_ctx, fpn_rois, sub_idx, multi_fpn_rois[i]);
+      funcs::GPUGather<T>(dev_ctx, fpn_rois, sub_idx, multi_fpn_rois[i]);
     } else {
       multi_fpn_rois[i]->Resize({sub_rois_num, funcs::kBoxDim});
       dev_ctx.template Alloc<T>(multi_fpn_rois[i]);

@@ -30,7 +30,10 @@ __global__ void CosSimDyKernel(const T* x_norm,
                                T* dy) {
   int grid_size = blockDim.x * gridDim.x;
   T y_norm_data = y_norm[0];
-  for (int row_id = blockIdx.x * blockDim.x + threadIdx.x; row_id < rows;
+  for (size_t row_id =
+           static_cast<size_t>(blockIdx.x) * static_cast<size_t>(blockDim.x) +
+           static_cast<size_t>(threadIdx.x);
+       row_id < rows;
        row_id += grid_size) {
     T xy_norm_prod = x_norm[row_id] * y_norm_data;
     T dz_data = dz[row_id];
@@ -43,14 +46,14 @@ __global__ void CosSimDyKernel(const T* x_norm,
     for (size_t i = 0; i < cols; ++i) {
       T dy_data = dz_data * (x_data[i] * reciprocal_xy_norm_prod -
                              z_data * y[i] * reciprocal_y_norm_square);
-      phi::CudaAtomicAdd(dy + i, dy_data);
+      CudaAtomicAdd(dy + i, dy_data);
     }
   }
 }
 
 template <typename T>
-struct CosSimDyFunctor<phi::GPUContext, T> {
-  void operator()(const phi::GPUContext& ctx,
+struct CosSimDyFunctor<GPUContext, T> {
+  void operator()(const GPUContext& dev_ctx,
                   const T* x_norm,
                   const T* y_norm,
                   const T* x,
@@ -63,12 +66,12 @@ struct CosSimDyFunctor<phi::GPUContext, T> {
     const int block_size = 512;
     dim3 threads(block_size, 1);
     dim3 grid((rows + block_size - 1) / block_size, 1);
-    CosSimDyKernel<T><<<grid, threads, 0, ctx.stream()>>>(
+    CosSimDyKernel<T><<<grid, threads, 0, dev_ctx.stream()>>>(
         x_norm, y_norm, x, y, z, dz, rows, cols, dy);
   }
 };
 
-template struct CosSimDyFunctor<phi::GPUContext, float>;
-template struct CosSimDyFunctor<phi::GPUContext, double>;
+template struct CosSimDyFunctor<GPUContext, float>;
+template struct CosSimDyFunctor<GPUContext, double>;
 }  // namespace math
 }  // namespace phi

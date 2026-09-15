@@ -66,7 +66,7 @@ def scatter(
         None.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env: DISTRIBUTED)
             >>> import paddle
@@ -96,7 +96,7 @@ def scatter_object_list(
 ) -> None:
     """
 
-    Scatter picklable objects from the source to all others. Similiar to scatter(), but python object can be passed in.
+    Scatter picklable objects from the source to all others. Similar to scatter(), but python object can be passed in.
 
     Args:
         out_object_list (list): The list of objects to store the scattered objects.
@@ -111,13 +111,13 @@ def scatter_object_list(
         This API only supports the dygraph mode.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env: DISTRIBUTED)
             >>> import paddle.distributed as dist
 
             >>> dist.init_parallel_env()
-            >>> out_object_list = [] # type: ignore
+            >>> out_object_list = []  # type: ignore
             >>> if dist.get_rank() == 0:
             ...     in_object_list = [{'foo': [1, 2, 3]}, {'foo': [4, 5, 6]}]
             >>> else:
@@ -127,9 +127,9 @@ def scatter_object_list(
             >>> # [{'bar': [1, 2, 3]}] (2 GPUs, out for rank 0)
             >>> # [{'bar': [4, 5, 6]}] (2 GPUs, out for rank 1)
     """
-    assert (
-        framework.in_dynamic_mode()
-    ), "scatter_object_list doesn't support static graph mode."
+    assert framework.in_dynamic_mode(), (
+        "scatter_object_list doesn't support static graph mode."
+    )
 
     rank = dist.get_rank()
     in_obj_tensors = []

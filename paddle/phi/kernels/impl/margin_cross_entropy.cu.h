@@ -13,18 +13,11 @@
 // limitations under the License.
 #pragma once
 
-// old op include, fluid should be removed
-#ifdef PADDLE_WITH_HIP
-#include <hipcub/hipcub.hpp>
-namespace cub = hipcub;
-#else
-#include <cub/cub.cuh>
-#endif
-
 #include <vector>
 #include "paddle/phi/common/amp_type_traits.h"
 #include "paddle/phi/core/dense_tensor.h"
 #include "paddle/phi/kernels/funcs/axis_utils.h"
+#include "paddle/phi/kernels/funcs/cub.h"
 #include "paddle/phi/kernels/funcs/math_function.h"
 #include "paddle/phi/kernels/funcs/reduce_function.h"
 #include "paddle/phi/kernels/impl/softmax_kernel_impl.h"
@@ -46,18 +39,17 @@ namespace cub = hipcub;
 #include "paddle/phi/backends/gpu/gpu_context.h"
 
 namespace phi {
+static constexpr int64_t kNumCUDAThreads = 512;
+static constexpr int64_t kNumMaximumNumBlocks = 4096;
 
-static constexpr int kNumCUDAThreads = 512;
-static constexpr int kNumMaximumNumBlocks = 4096;
-
-static inline int NumBlocks(const int N) {
+static inline int NumBlocks(const int64_t N) {
   return std::min((N + kNumCUDAThreads - 1) / kNumCUDAThreads,
                   kNumMaximumNumBlocks);
 }
 
 template <typename T, typename Context>
 void GetClassInterval(const gpuStream_t& stream,
-                      const phi::Place& place,
+                      const Place& place,
                       const Context& dev_ctx,
                       const int rid,
                       const int rank,
@@ -67,21 +59,21 @@ void GetClassInterval(const gpuStream_t& stream,
   std::vector<int> shard_dim_vec(nranks + 1, 0);
   shard_dim_vec[rank + 1] = D;
   if (nranks <= 1) {
-    phi::TensorFromVector(shard_dim_vec, dev_ctx, class_interval);
+    TensorFromVector(shard_dim_vec, dev_ctx, class_interval);
     return;
   }
 
 #if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL)
   DenseTensor num_classes_per_device;
-  phi::TensorFromVector(shard_dim_vec, dev_ctx, &num_classes_per_device);
+  TensorFromVector(shard_dim_vec, dev_ctx, &num_classes_per_device);
   int* num_classes_per_device_ptr = num_classes_per_device.data<int>();
 
   auto map = distributed::ProcessGroupMapFromGid::getInstance();
   if (map->has(rid)) {
     // Use ProcessGroup
     distributed::ProcessGroup* pg = map->get(rid);
-    std::vector<phi::DenseTensor> in_tensor;
-    std::vector<phi::DenseTensor> out_tensor;
+    std::vector<DenseTensor> in_tensor;
+    std::vector<DenseTensor> out_tensor;
     in_tensor.push_back(num_classes_per_device);
     out_tensor.push_back(num_classes_per_device);
 
@@ -90,21 +82,8 @@ void GetClassInterval(const gpuStream_t& stream,
     auto task = pg->AllReduce(in_tensor, out_tensor, opts);
     task->Wait();
   } else {
-    const auto& comm_context_manager =
-        phi::distributed::CommContextManager::GetInstance();
-    phi::distributed::NCCLCommContext* comm_ctx = nullptr;
-
-    PADDLE_ENFORCE_EQ(comm_context_manager.Has(std::to_string(rid)),
-                      true,
-                      common::errors::InvalidArgument(
-                          "You choose to use new communication library by "
-                          "setting environment "
-                          "variable FLAGS_dynamic_static_unified_comm True. "
-                          "But ring_id(%d) is "
-                          "not found in comm_context_manager.",
-                          std::to_string(rid)));
-    comm_ctx = static_cast<phi::distributed::NCCLCommContext*>(
-        comm_context_manager.Get(std::to_string(rid)));
+    distributed::NCCLCommContext* comm_ctx =
+        static_cast<distributed::NCCLCommContext*>(dev_ctx.GetCommContext());
     PADDLE_ENFORCE_NE(comm_ctx,
                       nullptr,
                       common::errors::Unavailable(
@@ -113,7 +92,7 @@ void GetClassInterval(const gpuStream_t& stream,
 
     // use global calculate stream
     const auto calcu_stream =
-        static_cast<GPUContext*>(phi::DeviceContextPool::Instance().Get(place))
+        static_cast<GPUContext*>(DeviceContextPool::Instance().Get(place))
             ->stream();
     comm_ctx->AllReduce(
         &num_classes_per_device, num_classes_per_device, ncclSum, calcu_stream);
@@ -124,8 +103,7 @@ void GetClassInterval(const gpuStream_t& stream,
   size_t cub_temp_storage_bytes = 0;
   cub::DeviceScan::InclusiveSum<int*, int*>(
       nullptr, cub_temp_storage_bytes, nullptr, nullptr, nranks + 1, stream);
-  auto cub_temp_storage =
-      phi::memory_utils::Alloc(place, cub_temp_storage_bytes);
+  auto cub_temp_storage = memory_utils::Alloc(place, cub_temp_storage_bytes);
   cub::DeviceScan::InclusiveSum<int*, int*>(cub_temp_storage->ptr(),
                                             cub_temp_storage_bytes,
                                             num_classes_per_device_ptr,

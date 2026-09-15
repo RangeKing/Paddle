@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "paddle/phi/core/memory/allocation/stream_safe_custom_device_allocator.h"
 #include <thread>
+#include "glog/logging.h"
 
 #include "paddle/phi/api/profiler/event_tracing.h"
 #include "paddle/phi/backends/context_pool.h"
+#include "paddle/phi/core/memory/allocation/stream_safe_custom_device_allocator.h"
 
 namespace paddle {
 namespace memory {
@@ -58,6 +59,18 @@ bool StreamSafeCustomDeviceAllocation::RecordStream(
   return true;
 }
 
+void StreamSafeCustomDeviceAllocation::EraseStream(
+    phi::stream::stream_t stream) {
+  VLOG(8) << "Try remove stream " << stream << " for address " << ptr();
+  std::lock_guard<SpinLock> lock_guard(outstanding_event_map_lock_);
+  auto it = outstanding_event_map_.find(stream);
+  if (it == outstanding_event_map_.end()) {
+    return;
+  }
+  it->second->Destroy();
+  outstanding_event_map_.erase(it);
+}
+
 bool StreamSafeCustomDeviceAllocation::CanBeFreed() {
   std::lock_guard<SpinLock> lock_guard(outstanding_event_map_lock_);
   if (!phi::DeviceManager::HasDeviceType(place_.GetDeviceType())) {
@@ -92,7 +105,7 @@ void StreamSafeCustomDeviceAllocation::SetOwningStream(
 
 StreamSafeCustomDeviceAllocator::StreamSafeCustomDeviceAllocator(
     std::shared_ptr<Allocator> underlying_allocator,
-    phi::CustomPlace place,
+    CustomPlace place,
     phi::stream::stream_t default_stream)
     : underlying_allocator_(std::move(underlying_allocator)),
       place_(std::move(place)),
@@ -177,7 +190,7 @@ void StreamSafeCustomDeviceAllocator::FreeImpl(phi::Allocation* allocation) {
   }
 }
 
-uint64_t StreamSafeCustomDeviceAllocator::ReleaseImpl(const phi::Place& place) {
+uint64_t StreamSafeCustomDeviceAllocator::ReleaseImpl(const Place& place) {
   std::lock_guard<SpinLock> lock_guard(allocator_map_lock_);
   std::vector<StreamSafeCustomDeviceAllocator*>& allocators =
       allocator_map_[place];
@@ -191,7 +204,8 @@ uint64_t StreamSafeCustomDeviceAllocator::ReleaseImpl(const phi::Place& place) {
 
 void StreamSafeCustomDeviceAllocator::ProcessUnfreedAllocations() {
   // NOTE(Ruibiao): This condition is to reduce lock completion. It does not
-  // need to be thread-safe since here occasional misjudgments are permissible.
+  // need to be thread-safe since here occasional misjudgments are
+  // permissible.
   if (unfreed_allocations_.empty()) {
     return;
   }
@@ -216,7 +230,7 @@ StreamSafeCustomDeviceAllocator::ProcessUnfreedAllocationsAndRelease() {
 
 thread_local std::once_flag StreamSafeCustomDeviceAllocation::once_flag_;
 
-std::map<phi::Place, std::vector<StreamSafeCustomDeviceAllocator*>>
+std::map<Place, std::vector<StreamSafeCustomDeviceAllocator*>>
     StreamSafeCustomDeviceAllocator::allocator_map_;
 SpinLock StreamSafeCustomDeviceAllocator::allocator_map_lock_;
 

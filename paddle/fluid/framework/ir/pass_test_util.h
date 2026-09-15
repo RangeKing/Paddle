@@ -46,8 +46,8 @@ using OpTypeCountPair = std::pair<std::string, int>;
 /// @param[in]  inputs        The vector of input pairs: {input_name, variable
 ///                           name}
 /// @param[in]  outputs       The vector of output pairs {output_name, variable}
-/// @param[in]  use_mkldnn    The flag deciding whether or not to set
-///                           'use_mkldnn' attribute.
+/// @param[in]  use_onednn    The flag deciding whether or not to set
+///                           'use_onednn' attribute.
 ///
 /// @return     Returns pointer to the created operator descriptor.
 ///
@@ -55,7 +55,7 @@ OpDesc* CreateOp(ProgramDesc* prog,
                  const std::string& op_type_name,
                  const std::vector<InOutVarNamePair>& inputs,
                  const std::vector<InOutVarNamePair>& outputs,
-                 bool use_mkldnn = true);
+                 bool use_onednn = true);
 
 ///
 /// @brief      Check whether node 'to' is reachable from node 'from' in graph.
@@ -129,11 +129,11 @@ bool RunPassAndAssert(Graph* graph,
 /// @param[in]  var_name  The variable name.
 /// @param[in]  dims      The dimensions of allocated tensor.
 ///
-/// @tparam     T         phi::DenseTensor data type.
+/// @tparam     T         DenseTensor data type.
 ///
 template <typename T>
 void InitDenseTensorHolder(const Scope& scope,
-                           const phi::Place& place,
+                           const Place& place,
                            const std::string& var_name,
                            const std::vector<int64_t>& dims,
                            const T* data = nullptr);

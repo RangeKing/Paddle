@@ -15,6 +15,10 @@ limitations under the License. */
 #include "paddle/fluid/framework/data_layout_transform.h"
 #include "paddle/fluid/framework/feed_fetch_type.h"
 #include "paddle/fluid/framework/op_registry.h"
+#ifdef PADDLE_WITH_DNNL
+#include "paddle/phi/backends/onednn/onednn_context.h"
+#include "paddle/phi/kernels/funcs/data_layout_transform.h"
+#endif
 #include "paddle/phi/core/platform/device_context.h"
 #include "paddle/phi/core/platform/profiler/event_tracing.h"
 
@@ -23,14 +27,14 @@ namespace operators {
 
 // FIXME(yuyang18): Should we assume the fetch operator always generate
 // CPU outputs?
-static void DataCopy(const phi::DenseTensor &src_item,
+static void DataCopy(const DenseTensor &src_item,
                      const std::string &fetch_var_name,
-                     phi::DenseTensor *dst_item) {
+                     DenseTensor *dst_item) {
   if (src_item.IsInitialized() && src_item.numel() > 0) {
 #ifdef PADDLE_WITH_DNNL
     // Conversion from MKL-DNN to Paddle
     if (src_item.layout() == phi::DataLayout::ONEDNN) {
-      phi::DenseTensor out;
+      DenseTensor out;
       // Convert to desired Paddle layout, apart from grads of filter
       // as params are not a subject to paddle's data_format
       VLOG(4) << "TransDataLayoutFromOneDNN";
@@ -113,8 +117,8 @@ class FetchOp : public framework::OperatorBase {
       fetch_list->resize(col + 1);
     }
 
-    if (fetch_var->IsType<phi::DenseTensor>()) {
-      auto &src_item = fetch_var->Get<phi::DenseTensor>();
+    if (fetch_var->IsType<DenseTensor>()) {
+      auto &src_item = fetch_var->Get<DenseTensor>();
       auto *dst_item = &(PADDLE_GET(phi::DenseTensor, fetch_list->at(col)));
       DataCopy(src_item, fetch_var_name, dst_item);
     } else if (fetch_var->IsType<framework::Vocab>()) {
@@ -140,12 +144,12 @@ class FetchOpInfoMaker : public framework::OpProtoAndCheckerMaker {
  public:
   void Make() override {
     AddInput("X",
-             "(phi::DenseTensor) The resulted phi::DenseTensor which is "
+             "(phi::DenseTensor) The resulted DenseTensor which is "
              "expected to return "
              "to users.");
     AddOutput(
         "Out",
-        "(vector<phi::DenseTensor>|unordered_map<string, int32_t>) A fetching "
+        "(vector<DenseTensor>|unordered_map<string, int32_t>) A fetching "
         "list"
         " of phi::DenseTensor|unordered_map<string, int32_t> which may have "
         "different dimension, shape and data type.");

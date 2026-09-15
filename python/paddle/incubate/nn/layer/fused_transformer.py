@@ -20,7 +20,7 @@ import numpy as np
 import paddle
 from paddle.base import core
 from paddle.base.dygraph import no_grad
-from paddle.base.framework import convert_np_dtype_to_dtype_
+from paddle.base.framework import convert_nptype_to_datatype_or_vartype
 from paddle.framework import in_dynamic_mode
 from paddle.incubate.nn import functional as incubate_f
 from paddle.nn import Layer
@@ -59,11 +59,11 @@ def _to_dtype(t, dtype):
         return t
 
     if not isinstance(dtype, (core.VarDesc.VarType, core.DataType)):
-        dtype = convert_np_dtype_to_dtype_(dtype)
+        dtype = convert_nptype_to_datatype_or_vartype(dtype)
 
     if t.place.is_gpu_place():
-        proto_dtype = paddle.base.framework.convert_to_proto_type(dtype)
-        size_dtype = core.size_of_dtype(proto_dtype)
+        var_dtype = paddle.base.framework.convert_to_vartype(dtype)
+        size_dtype = core.size_of_dtype(var_dtype)
         waiting_alloc_memory = (
             ((np.prod(t.shape) * size_dtype) / 256 + 1) * 256 * 1.2
         )
@@ -115,7 +115,7 @@ class FusedBiasDropoutResidualLayerNorm(Layer):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env:GPU)
             >>> import paddle
@@ -127,7 +127,7 @@ class FusedBiasDropoutResidualLayerNorm(Layer):
             >>> fused_bias_dropout_residual_ln = paddle.incubate.nn.FusedBiasDropoutResidualLayerNorm(128)
             >>> output = fused_bias_dropout_residual_ln(x, residual)
             >>> print(output.shape)
-            [2, 4, 128]
+            paddle.Size([2, 4, 128])
     """
 
     embed_dim: int
@@ -148,8 +148,7 @@ class FusedBiasDropoutResidualLayerNorm(Layer):
     ) -> None:
         super().__init__()
         assert embed_dim > 0, (
-            "Expected embed_dim to be greater than 0, "
-            f"but received {embed_dim}"
+            f"Expected embed_dim to be greater than 0, but received {embed_dim}"
         )
         self._dtype = self._helper.get_default_dtype()
         self._bias_attr = bias_attr
@@ -277,7 +276,7 @@ class FusedMultiHeadAttention(Layer):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env:GPU)
             >>> import paddle
@@ -289,7 +288,7 @@ class FusedMultiHeadAttention(Layer):
             >>> multi_head_attn = paddle.incubate.nn.FusedMultiHeadAttention(128, 2)
             >>> output = multi_head_attn(query, None, None, attn_mask=attn_mask)
             >>> print(output.shape)
-            [2, 4, 128]
+            paddle.Size([2, 4, 128])
     """
 
     normalize_before: bool
@@ -339,11 +338,10 @@ class FusedMultiHeadAttention(Layer):
         super().__init__()
 
         assert embed_dim > 0, (
-            "Expected embed_dim to be greater than 0, "
-            f"but received {embed_dim}"
+            f"Expected embed_dim to be greater than 0, but received {embed_dim}"
         )
         assert num_heads > 0, (
-            "Expected nhead to be greater than 0, " f"but received {num_heads}"
+            f"Expected nhead to be greater than 0, but received {num_heads}"
         )
 
         self.normalize_before = normalize_before
@@ -357,9 +355,9 @@ class FusedMultiHeadAttention(Layer):
         self.kdim = kdim
         self.vdim = vdim
         self.need_weights = need_weights
-        assert (
-            self.head_dim * num_heads == embed_dim
-        ), "embed_dim must be divisible by num_heads"
+        assert self.head_dim * num_heads == embed_dim, (
+            "embed_dim must be divisible by num_heads"
+        )
         assert need_weights is False, "Only support need_weight is False now."
 
         # tensor model parallel
@@ -537,7 +535,7 @@ class FusedFeedForward(Layer):
         d_model (int): The expected feature size in the input and output.
         dim_feedforward (int): The hidden layer size.
         dropout_rate (float, optional): The dropout probability used in pre-process
-            and post-precess. Default 0.1
+            and post-process. Default 0.1
         epsilon (float, optional): he small value added to the variance to prevent
             division by zero. Default: 1e-05.
         activation (str, optional): The activation function. Default relu.
@@ -579,7 +577,7 @@ class FusedFeedForward(Layer):
             this property. For more information, please refer to :ref:`api_guide_Name`.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env:GPU)
             >>> import paddle
@@ -590,7 +588,7 @@ class FusedFeedForward(Layer):
             >>> x = paddle.rand((1, 8, 8))
             >>> out = fused_feedforward_layer(x)
             >>> print(out.shape)
-            [1, 8, 8]
+            paddle.Size([1, 8, 8])
     """
 
     name: str | None
@@ -617,12 +615,12 @@ class FusedFeedForward(Layer):
         name: str | None = None,
     ) -> None:
         super().__init__()
-        assert (
-            d_model > 0
-        ), f"Expected d_model to be greater than 0, but received {d_model}"
-        assert (
-            dim_feedforward > 0
-        ), f"Expected dim_feedforward to be greater than 0, but received {dim_feedforward}"
+        assert d_model > 0, (
+            f"Expected d_model to be greater than 0, but received {d_model}"
+        )
+        assert dim_feedforward > 0, (
+            f"Expected dim_feedforward to be greater than 0, but received {dim_feedforward}"
+        )
 
         self._dtype = self._helper.get_default_dtype()
         self._d_model = d_model
@@ -752,9 +750,9 @@ class FusedTransformerEncoderLayer(Layer):
 
     FusedTransformerEncoderLayer is composed of two sub-layers which are self (multi-head)
     attention and feedforward network. Before and after each sub-layer, pre-process
-    and post-precess would be applied on the input and output accordingly. If
-    `normalize_before` is True, pre-process is layer normalization and post-precess
-    includes dropout, residual connection. Otherwise, no pre-process and post-precess
+    and post-process would be applied on the input and output accordingly. If
+    `normalize_before` is True, pre-process is layer normalization and post-process
+    includes dropout, residual connection. Otherwise, no pre-process and post-process
     includes dropout, residual connection, layer normalization.
 
     Parameters:
@@ -762,7 +760,7 @@ class FusedTransformerEncoderLayer(Layer):
         nhead (int): The number of heads in multi-head attention(MHA).
         dim_feedforward (int): The hidden layer size in the feedforward network(FFN).
         dropout_rate (float, optional): The dropout probability used in pre-process
-            and post-precess of MHA and FFN sub-layer. Default 0.1
+            and post-process of MHA and FFN sub-layer. Default 0.1
         activation (str, optional): The activation function in the feedforward
             network. Default relu.
         attn_dropout_rate (float, optional): The dropout probability used
@@ -772,8 +770,8 @@ class FusedTransformerEncoderLayer(Layer):
             activation.  If None, use the value of `dropout`. Default None
         normalize_before (bool, optional): Indicate whether to put layer normalization
             into preprocessing of MHA and FFN sub-layers. If True, pre-process is layer
-            normalization and post-precess includes dropout, residual connection.
-            Otherwise, no pre-process and post-precess includes dropout, residual
+            normalization and post-process includes dropout, residual connection.
+            Otherwise, no pre-process and post-process includes dropout, residual
             connection, layer normalization. Default False
         weight_attr(ParamAttr|list|tuple, optional): To specify the weight parameter property.
             If it is a list/tuple, `weight_attr[0]` would be used as `weight_attr` for
@@ -791,7 +789,7 @@ class FusedTransformerEncoderLayer(Layer):
 
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env:GPU)
             >>> import paddle
@@ -805,7 +803,7 @@ class FusedTransformerEncoderLayer(Layer):
             >>> encoder_layer = FusedTransformerEncoderLayer(128, 2, 512)
             >>> enc_output = encoder_layer(enc_input, attn_mask)
             >>> print(enc_output.shape)
-            [2, 4, 128]
+            paddle.Size([2, 4, 128])
 
     """
 
@@ -831,10 +829,10 @@ class FusedTransformerEncoderLayer(Layer):
 
         super().__init__()
         assert d_model > 0, (
-            "Expected d_model to be greater than 0, " f"but received {d_model}"
+            f"Expected d_model to be greater than 0, but received {d_model}"
         )
         assert nhead > 0, (
-            "Expected nhead to be greater than 0, " f"but received {nhead}"
+            f"Expected nhead to be greater than 0, but received {nhead}"
         )
         assert dim_feedforward > 0, (
             "Expected dim_feedforward to be greater than 0, "
@@ -959,7 +957,7 @@ class FusedTransformer(Layer):
 
     Users can configure the model architecture with corresponding parameters.
     Note the usage of `normalize_before` representing where to apply layer
-    normalization (in pre-process or post-precess of multi-head attention or FFN),
+    normalization (in pre-process or post-process of multi-head attention or FFN),
     and some transformer like models are different on this, such as
     `BERT <https://arxiv.org/abs/1810.04805>`_ and `GPT2 <https://d4mucfpksywv.cloudfront.net/better-language-models/language-models.pdf>`_ .
     The default architecture here places layer normalization in post-process and
@@ -973,7 +971,7 @@ class FusedTransformer(Layer):
         num_decoder_layers (int, optional): The number of layers in decoder. Default 6
         dim_feedforward (int, optional): The hidden layer size in the feedforward network(FFN). Default 2048
         dropout (float, optional): The dropout probability used in pre-process
-            and post-precess of MHA and FFN sub-layer. Default 0.1
+            and post-process of MHA and FFN sub-layer. Default 0.1
         activation (str, optional): The activation function in the feedforward
             network. Default relu.
         attn_dropout (float, optional): The dropout probability used
@@ -983,8 +981,8 @@ class FusedTransformer(Layer):
             activation.  If None, use the value of `dropout`. Default None
         normalize_before (bool, optional): Indicate whether to put layer normalization
             into preprocessing of MHA and FFN sub-layers. If True, pre-process is layer
-            normalization and post-precess includes dropout, residual connection.
-            Otherwise, no pre-process and post-precess includes dropout, residual
+            normalization and post-process includes dropout, residual connection.
+            Otherwise, no pre-process and post-process includes dropout, residual
             connection, layer normalization. Default False
         weight_attr(ParamAttr|list|tuple, optional): To specify the weight parameter property.
             If it is a list/tuple, the length of `weight_attr` could be 1, 2 or 3. If it is 3,
@@ -1019,7 +1017,7 @@ class FusedTransformer(Layer):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.nn import Transformer
@@ -1035,13 +1033,15 @@ class FusedTransformer(Layer):
             >>> # memory_mask: [batch_size, n_head, tgt_len, src_len]
             >>> cross_attn_mask = paddle.rand((2, 2, 6, 4))
             >>> transformer = Transformer(128, 2, 4, 4, 512)
-            >>> output = transformer(enc_input,
-            ...                      dec_input,
-            ...                      enc_self_attn_mask,
-            ...                      dec_self_attn_mask,
-            ...                      cross_attn_mask)
+            >>> output = transformer(
+            ...     enc_input,
+            ...     dec_input,
+            ...     enc_self_attn_mask,
+            ...     dec_self_attn_mask,
+            ...     cross_attn_mask,
+            ... )
             >>> print(output.shape)
-            [2, 6, 128]
+            paddle.Size([2, 6, 128])
     """
 
     def __init__(
@@ -1074,7 +1074,7 @@ class FusedMultiTransformer(Layer):
     sub-layers which are self (multi-head) attention and feedforward network. The
     function of one transformer layer is consistent with the following pseudo code:
 
-    .. code-block:: python
+    .. code-block:: pycon
 
         >>> # doctest: +SKIP('This is not an example')
         >>> if pre_layer_norm:
@@ -1087,7 +1087,7 @@ class FusedMultiTransformer(Layer):
         >>> q = out[0:1, ::]
         >>> k = out[1:2, ::]
         >>> v = out[2:3, ::]
-        >>> out = q * k^t
+        >>> out = q * k ^ t
         >>> out = attn_mask + out
         >>> out = softmax(out)
         >>> out = dropout(out)
@@ -1099,7 +1099,7 @@ class FusedMultiTransformer(Layer):
         ... else:
         ...     out = layer_norm(x + dropout(out + bias))
 
-        >>> residual = out;
+        >>> residual = out
         >>> if pre_layer_norm:
         ...     out = ffn_layer_norm(out)
         >>> out = ffn1_linear(out)
@@ -1114,13 +1114,13 @@ class FusedMultiTransformer(Layer):
         num_heads (int): The number of heads in multi-head attention(MHA).
         dim_feedforward (int): The hidden layer size in the feedforward network(FFN).
         dropout_rate (float, optional): The dropout probability used in pre-process
-            and post-precess of MHA and FFN sub-layer. Default 0.0
+            and post-process of MHA and FFN sub-layer. Default 0.0
         activation (str, optional): The activation function in the feedforward
             network. Default "gelu".
         normalize_before (bool, optional): Indicate whether to put layer normalization
             into preprocessing of MHA and FFN sub-layers. If True, pre-process is layer
-            normalization and post-precess includes dropout, residual connection.
-            Otherwise, no pre-process and post-precess includes dropout, residual
+            normalization and post-process includes dropout, residual connection.
+            Otherwise, no pre-process and post-process includes dropout, residual
             connection, layer normalization. Default True
         ln_scale_attrs(ParamAttr|list|tuple, optional): To specify the weight parameter property
             for Attention layer_norm. For Attention layer_norm weight, if it is a list/tuple, `attrs[0]`
@@ -1219,7 +1219,7 @@ class FusedMultiTransformer(Layer):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +SKIP('Need compile flash attention')
             >>> # doctest: +REQUIRES(env:GPU)
@@ -1234,7 +1234,7 @@ class FusedMultiTransformer(Layer):
             >>> encoder_layers = FusedMultiTransformer(128, 2, 512, num_layers=1)
             >>> enc_output = encoder_layers(enc_input, attn_mask)
             >>> print(enc_output.shape)
-            [2, 4, 128]
+            paddle.Size([2, 4, 128])
     """
 
     normalize_before: bool
@@ -1307,15 +1307,14 @@ class FusedMultiTransformer(Layer):
         super().__init__()
 
         assert embed_dim > 0, (
-            "Expected embed_dim to be greater than 0, "
-            f"but received {embed_dim}"
+            f"Expected embed_dim to be greater than 0, but received {embed_dim}"
         )
         assert num_heads > 0, (
-            "Expected nhead to be greater than 0, " f"but received {num_heads}"
+            f"Expected nhead to be greater than 0, but received {num_heads}"
         )
-        assert (
-            dim_feedforward > 0
-        ), f"Expected dim_feedforward to be greater than 0, but received {dim_feedforward}"
+        assert dim_feedforward > 0, (
+            f"Expected dim_feedforward to be greater than 0, but received {dim_feedforward}"
+        )
 
         self.normalize_before = normalize_before
         self._dtype = self._helper.get_default_dtype()
@@ -1333,9 +1332,9 @@ class FusedMultiTransformer(Layer):
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
-        assert (
-            self.head_dim * num_heads == embed_dim
-        ), "embed_dim must be divisible by num_heads"
+        assert self.head_dim * num_heads == embed_dim, (
+            "embed_dim must be divisible by num_heads"
+        )
 
         # tensor model parallel
         if nranks > 1:

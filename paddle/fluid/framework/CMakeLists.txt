@@ -11,7 +11,7 @@ function(windows_symbolic TARGET)
     if(NOT EXISTS ${final_path}/${src}.cc OR NOT EXISTS ${final_path}/${src}.cu)
       message(
         FATAL
-        " ${src}.cc and ${src}.cu must exsits, and ${src}.cu must be symbolic file."
+        " ${src}.cc and ${src}.cu must exists, and ${src}.cu must be symbolic file."
       )
     endif()
 
@@ -109,7 +109,7 @@ cc_library(
 cc_library(
   tensor
   SRCS tensor_util.cc
-  DEPS data_type device_context phi common)
+  DEPS data_type dlpack_tensor phi common)
 
 cc_library(
   lod_tensor
@@ -119,7 +119,7 @@ cc_library(
 cc_library(
   garbage_collector
   SRCS garbage_collector.cc
-  DEPS device_context phi common glog)
+  DEPS phi common glog)
 
 cc_library(
   var_type_traits
@@ -132,21 +132,6 @@ if(WITH_ONEDNN)
   add_dependencies(var_type_traits onednn)
 endif()
 
-set(BRPC_DEPS "")
-if(WITH_PSCORE)
-  set(BRPC_DEPS ${EXTERNAL_BRPC_DEPS})
-endif()
-if(WITH_PSLIB)
-  if(WITH_PSLIB_BRPC)
-    set(BRPC_DEPS pslib_brpc)
-  elseif(NOT WITH_HETERPS)
-    set(BRPC_DEPS ${EXTERNAL_BRPC_DEPS})
-  endif()
-  if(WITH_ARM_BRPC)
-    set(BRPC_DEPS arm_brpc)
-  endif()
-endif()
-
 cc_library(
   scope
   SRCS scope.cc
@@ -154,7 +139,7 @@ cc_library(
 cc_library(
   device_worker
   SRCS device_worker.cc
-  DEPS lod_tensor scope ${BRPC_DEPS})
+  DEPS lod_tensor scope)
 cc_library(
   scope_pool
   SRCS scope_pool.cc
@@ -235,7 +220,7 @@ cc_library(
 cc_library(
   no_need_buffer_vars_inference
   SRCS no_need_buffer_vars_inference.cc
-  DEPS attribute device_context)
+  DEPS attribute phi)
 cc_library(
   op_info
   SRCS op_info.cc
@@ -254,7 +239,7 @@ endif()
 cc_library(
   op_kernel_type
   SRCS op_kernel_type.cc
-  DEPS device_context phi common)
+  DEPS phi common)
 
 if(WITH_XPU)
   cc_library(
@@ -268,71 +253,36 @@ else()
     DEPS lod_tensor selected_rows_utils phi common var_type_traits op_info)
 endif()
 
-if(WITH_XPU)
-  cc_library(
-    operator
-    SRCS operator.cc transfer_scope_cache.cc unused_var_check.cc
-         infershape_utils.cc
-    DEPS op_info
-         proto_desc
-         tensor
-         scope
-         glog
-         shape_inference
-         data_transform
-         lod_tensor
-         op_kernel_type
-         op_call_stack
-         detail_op_handle
-         phi_utils
-         phi
-         common
-         op_compat_infos
-         type_info)
-elseif(WITH_NCCL OR WITH_RCCL)
-  cc_library(
-    operator
-    SRCS operator.cc transfer_scope_cache.cc unused_var_check.cc
-         infershape_utils.cc
-    DEPS op_info
-         proto_desc
-         tensor
-         scope
-         glog
-         shape_inference
-         data_transform
-         lod_tensor
-         op_kernel_type
-         op_call_stack
-         detail_op_handle
-         phi_utils
-         phi
-         common
-         op_compat_infos
-         type_info
-         process_group_nccl)
-else()
-  cc_library(
-    operator
-    SRCS operator.cc transfer_scope_cache.cc unused_var_check.cc
-         infershape_utils.cc
-    DEPS op_info
-         proto_desc
-         tensor
-         scope
-         glog
-         shape_inference
-         data_transform
-         lod_tensor
-         op_kernel_type
-         op_call_stack
-         detail_op_handle
-         phi_utils
-         phi
-         common
-         op_compat_infos
-         type_info)
+set(OPERETER_DEPS
+    op_info
+    proto_desc
+    tensor
+    scope
+    glog
+    shape_inference
+    data_transform
+    lod_tensor
+    op_kernel_type
+    op_call_stack
+    detail_op_handle
+    phi_utils
+    phi
+    common
+    op_compat_infos
+    type_info
+    supplement_tracing)
+
+if(WITH_NCCL OR WITH_RCCL)
+  set(OPERETER_DEPS ${OPERETER_DEPS} process_group_nccl)
+elseif(WITH_CUSTOM_DEVICE)
+  set(OPERETER_DEPS ${OPERETER_DEPS} process_group_custom)
 endif()
+
+cc_library(
+  operator
+  SRCS operator.cc transfer_scope_cache.cc unused_var_check.cc
+       infershape_utils.cc
+  DEPS ${OPERETER_DEPS})
 
 cc_library(version SRCS version.cc)
 
@@ -384,7 +334,7 @@ cc_library(
 
 if(WITH_PYTHON)
   py_proto_compile(framework_py_proto SRCS framework.proto data_feed.proto)
-  py_proto_compile(trainer_py_proto SRCS trainer_desc.proto data_feed.proto)
+  py_proto_compile(trainer_py_proto SRCS trainer_desc.proto)
   py_proto_compile(distributed_strategy_py_proto SRCS
                    distributed_strategy.proto)
   py_proto_compile(pass_desc_py_proto SRCS pass_desc.proto)
@@ -393,6 +343,7 @@ if(WITH_PYTHON)
   add_custom_target(fleet_proto_init)
   add_custom_command(
     TARGET fleet_proto_init
+    POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory
             ${PADDLE_BINARY_DIR}/python/paddle/distributed/fleet/proto
     COMMAND
@@ -419,18 +370,6 @@ if(WITH_PYTHON)
               ${PADDLE_BINARY_DIR}/python/paddle/distributed/fleet/proto
       COMMENT "Copy generated python proto into directory paddle/fluid/proto."
       WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
-    if(NOT WITH_ROCM)
-      add_custom_target(
-        fleet_executor_proto_init ALL
-        DEPENDS fleet_proto_init fleet_executor_desc_py_proto
-        COMMAND
-          cp
-          ${PADDLE_BINARY_DIR}/paddle/fluid/distributed/fleet_executor/fleet_executor_*.py
-          ${PADDLE_BINARY_DIR}/python/paddle/distributed/fleet/proto
-        COMMENT
-          "Copy generated python proto into directory paddle/distributed/fleet/proto."
-      )
-    endif()
   else()
     string(REPLACE "/" "\\" proto_dstpath
                    "${PADDLE_BINARY_DIR}/python/paddle/base/proto/")
@@ -444,24 +383,10 @@ if(WITH_PYTHON)
               ${PADDLE_BINARY_DIR}/python/paddle/base/proto
       COMMAND copy /Y *.py ${proto_dstpath}
       COMMAND copy /Y distributed_strategy_*.py ${fleet_proto_dstpath}
-      COMMENT "Copy generated python proto into directory paddle/fluid/proto."
       COMMENT
-        "Copy generated python proto into directory paddle/distributed/fleet/proto."
+        "Copy generated python proto into paddle/fluid/proto and paddle/distributed/fleet/proto directories."
       WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
   endif()
-endif()
-
-if(WITH_PSCORE)
-  add_custom_target(
-    index_dataset_proto_init ALL
-    DEPENDS fleet_proto_init index_dataset_py_proto
-    COMMAND
-      cp
-      ${PADDLE_BINARY_DIR}/paddle/fluid/distributed/index_dataset/index_dataset_*.py
-      ${PADDLE_BINARY_DIR}/python/paddle/distributed/fleet/proto
-    COMMENT
-      "Copy generated python proto into directory paddle/distributed/fleet/proto."
-  )
 endif()
 
 cc_library(
@@ -515,193 +440,6 @@ cc_library(
        garbage_collector
        op_registry)
 if(WITH_DISTRIBUTE)
-  if(WITH_PSLIB)
-    cc_library(
-      executor
-      SRCS executor.cc
-           multi_trainer.cc
-           pipeline_trainer.cc
-           dataset_factory.cc
-           dist_multi_trainer.cc
-           trainer_factory.cc
-           trainer.cc
-           data_feed_factory.cc
-           heterxpu_trainer.cc
-           data_feed.cc
-           device_worker.cc
-           hogwild_worker.cc
-           hetercpu_worker.cc
-           ps_gpu_worker.cc
-           ps_gpu_trainer.cc
-           downpour_worker.cc
-           downpour_worker_opt.cc
-           data_feed.cu
-           pull_dense_worker.cc
-           section_worker.cc
-           device_worker_factory.cc
-           data_set.cc
-      DEPS fleet_wrapper
-           op_registry
-           scope
-           glog
-           framework_io
-           heter_wrapper
-           ps_gpu_wrapper
-           box_wrapper
-           metrics
-           densetensor_printer
-           feed_fetch_method
-           feed_hook
-           ${GLOB_DISTRIBUTE_DEPS}
-           graph_to_program_pass
-           variable_helper
-           ${BRPC_DEP})
-    set(DISTRIBUTE_COMPILE_FLAGS "")
-    if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 7.0)
-      set(DISTRIBUTE_COMPILE_FLAGS "${DISTRIBUTE_COMPILE_FLAGS} -faligned-new")
-    endif()
-    set_source_files_properties(
-      executor.cc PROPERTIES COMPILE_FLAGS ${DISTRIBUTE_COMPILE_FLAGS})
-    set_source_files_properties(
-      device_worker.cc PROPERTIES COMPILE_FLAGS ${DISTRIBUTE_COMPILE_FLAGS})
-    set_source_files_properties(
-      hetercpu_worker.cc PROPERTIES COMPILE_FLAGS ${DISTRIBUTE_COMPILE_FLAGS})
-    set_source_files_properties(
-      heterxpu_trainer.cc PROPERTIES COMPILE_FLAGS ${DISTRIBUTE_COMPILE_FLAGS})
-  elseif(WITH_PSCORE)
-    # cc_library(executor SRCS executor.cc multi_trainer.cc pipeline_trainer.cc dataset_factory.cc
-    #         dist_multi_trainer.cc trainer_factory.cc trainer.cc data_feed_factory.cc
-    #         heterxpu_trainer.cc heter_pipeline_trainer.cc
-    #         data_feed.cc device_worker.cc hogwild_worker.cc hetercpu_worker.cc
-    #         downpour_worker.cc downpour_lite_worker.cc downpour_worker_opt.cc data_feed.cu
-    #         pull_dense_worker.cc section_worker.cc heter_section_worker.cc device_worker_factory.cc data_set.cc DEPS op_registry
-    #         device_context scope framework_proto data_feed_proto heter_service_proto trainer_desc_proto glog
-    #         index_sampler index_wrapper sampler index_dataset_proto
-    #         framework_io fleet_wrapper heter_wrapper box_wrapper metrics densetensor_printer feed_fetch_method feed_hook
-    #         graph_to_program_pass variable_helper
-    #         heter_service_proto fleet heter_server brpc fleet_executor
-    #         graph_gpu_wrapper)
-
-    cc_library(
-      executor
-      SRCS executor.cc
-           multi_trainer.cc
-           pipeline_trainer.cc
-           dataset_factory.cc
-           dist_multi_trainer.cc
-           trainer_factory.cc
-           trainer.cc
-           data_feed_factory.cc
-           heterxpu_trainer.cc
-           heter_pipeline_trainer.cc
-           data_feed.cc
-           device_worker.cc
-           hogwild_worker.cc
-           hetercpu_worker.cc
-           downpour_worker.cc
-           downpour_lite_worker.cc
-           downpour_worker_opt.cc
-           data_feed.cu
-           pull_dense_worker.cc
-           section_worker.cc
-           heter_section_worker.cc
-           device_worker_factory.cc
-           data_set.cc
-      DEPS op_registry
-           scope
-           glog
-           index_sampler
-           index_wrapper
-           index_dataset_proto
-           framework_io
-           fleet_wrapper
-           heter_wrapper
-           box_wrapper
-           metrics
-           densetensor_printer
-           feed_fetch_method
-           feed_hook
-           graph_to_program_pass
-           variable_helper
-           fleet
-           heter_server
-           ${${EXTERNAL_BRPC_DEPS}}
-           phi
-           common)
-    set(DISTRIBUTE_COMPILE_FLAGS "")
-    if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 7.0)
-      set(DISTRIBUTE_COMPILE_FLAGS "${DISTRIBUTE_COMPILE_FLAGS} -faligned-new")
-    endif()
-    set_source_files_properties(
-      executor.cc PROPERTIES COMPILE_FLAGS ${DISTRIBUTE_COMPILE_FLAGS})
-    set_source_files_properties(
-      device_worker.cc PROPERTIES COMPILE_FLAGS ${DISTRIBUTE_COMPILE_FLAGS})
-    set_source_files_properties(
-      multi_trainer.cc PROPERTIES COMPILE_FLAGS ${DISTRIBUTE_COMPILE_FLAGS})
-    set_source_files_properties(
-      hogwild_worker.cc PROPERTIES COMPILE_FLAGS ${DISTRIBUTE_COMPILE_FLAGS})
-    set_source_files_properties(
-      downpour_lite_worker.cc PROPERTIES COMPILE_FLAGS
-                                         ${DISTRIBUTE_COMPILE_FLAGS})
-    set_source_files_properties(
-      heter_section_worker.cc PROPERTIES COMPILE_FLAGS
-                                         ${DISTRIBUTE_COMPILE_FLAGS})
-    set_source_files_properties(
-      heter_pipeline_trainer.cc PROPERTIES COMPILE_FLAGS
-                                           ${DISTRIBUTE_COMPILE_FLAGS})
-  else()
-    cc_library(
-      executor
-      SRCS executor.cc
-           multi_trainer.cc
-           pipeline_trainer.cc
-           dataset_factory.cc
-           dist_multi_trainer.cc
-           trainer_factory.cc
-           trainer.cc
-           data_feed_factory.cc
-           heterxpu_trainer.cc
-           data_feed.cc
-           device_worker.cc
-           hogwild_worker.cc
-           hetercpu_worker.cc
-           ps_gpu_worker.cc
-           ps_gpu_trainer.cc
-           downpour_worker.cc
-           downpour_worker_opt.cc
-           data_feed.cu
-           pull_dense_worker.cc
-           section_worker.cc
-           device_worker_factory.cc
-           data_set.cc
-      DEPS op_registry
-           scope
-           glog
-           framework_io
-           fleet_wrapper
-           heter_wrapper
-           ps_gpu_wrapper
-           box_wrapper
-           metrics
-           densetensor_printer
-           feed_fetch_method
-           feed_hook
-           graph_to_program_pass
-           variable_helper)
-  endif()
-elseif(WITH_PSLIB)
-  set(DISTRIBUTE_COMPILE_FLAGS "")
-  if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 7.0)
-    set(DISTRIBUTE_COMPILE_FLAGS "${DISTRIBUTE_COMPILE_FLAGS} -faligned-new")
-  endif()
-  set_source_files_properties(
-    executor.cc PROPERTIES COMPILE_FLAGS ${DISTRIBUTE_COMPILE_FLAGS})
-  set_source_files_properties(
-    device_worker.cc PROPERTIES COMPILE_FLAGS ${DISTRIBUTE_COMPILE_FLAGS})
-  set_source_files_properties(
-    hetercpu_worker.cc PROPERTIES COMPILE_FLAGS ${DISTRIBUTE_COMPILE_FLAGS})
-  set_source_files_properties(
-    heterxpu_trainer.cc PROPERTIES COMPILE_FLAGS ${DISTRIBUTE_COMPILE_FLAGS})
   cc_library(
     executor
     SRCS executor.cc
@@ -712,16 +450,13 @@ elseif(WITH_PSLIB)
          trainer_factory.cc
          trainer.cc
          data_feed_factory.cc
-         heterxpu_trainer.cc
          data_feed.cc
          device_worker.cc
          hogwild_worker.cc
-         hetercpu_worker.cc
          ps_gpu_worker.cc
          ps_gpu_trainer.cc
          downpour_worker.cc
          downpour_worker_opt.cc
-         data_feed.cu
          pull_dense_worker.cc
          section_worker.cc
          device_worker_factory.cc
@@ -731,15 +466,12 @@ elseif(WITH_PSLIB)
          glog
          framework_io
          fleet_wrapper
-         heter_wrapper
-         ps_gpu_wrapper
-         box_wrapper
+         gloo_wrapper
          densetensor_printer
          feed_fetch_method
          feed_hook
          graph_to_program_pass
-         variable_helper
-         ${BRPC_DEP})
+         variable_helper)
 else()
   cc_library(
     executor
@@ -751,16 +483,13 @@ else()
          trainer_factory.cc
          trainer.cc
          data_feed_factory.cc
-         heterxpu_trainer.cc
          data_feed.cc
          device_worker.cc
          hogwild_worker.cc
-         hetercpu_worker.cc
          ps_gpu_worker.cc
          ps_gpu_trainer.cc
          downpour_worker.cc
          downpour_worker_opt.cc
-         data_feed.cu
          pull_dense_worker.cc
          section_worker.cc
          device_worker_factory.cc
@@ -770,9 +499,6 @@ else()
          glog
          framework_io
          fleet_wrapper
-         heter_wrapper
-         ps_gpu_wrapper
-         box_wrapper
          densetensor_printer
          feed_fetch_method
          feed_hook
@@ -811,12 +537,7 @@ cc_library(
 cc_library(
   dlpack_tensor
   SRCS dlpack_tensor.cc
-  DEPS tensor dlpack)
-
-cc_library(
-  op_compatible_info
-  SRCS op_compatible_info.cc
-  DEPS string_helper proto_desc)
+  DEPS dlpack phi)
 
 # Get the current working branch
 execute_process(
@@ -839,7 +560,7 @@ configure_file(commit.h.in commit.h)
 
 cc_library(
   custom_operator
-  SRCS custom_operator.cc
+  SRCS custom_operator.cc python_operator.cc
   DEPS tensor
        attribute
        op_registry

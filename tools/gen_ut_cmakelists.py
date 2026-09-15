@@ -31,7 +31,7 @@ def _process_envs(envs):
     """
     Desc:
         Input a str and output a str with the same function to specify some environment variables.
-    Here we can give a specital process for some variable if needed.
+    Here we can give a special process for some variable if needed.
     Example 1:
         Input: "http_proxy=;PYTHONPATH=.."
         Output: "http_proxy=;PYTHONPATH=..:${PADDLE_BINARY_DIR}/python"
@@ -64,7 +64,7 @@ However the var's format is '{p}'."""
 def _process_conditions(conditions):
     """
     Desc:
-        Input condition expression in cmake grammer and return a string warpped by 'AND ()'.
+        Input condition expression in cmake grammar and return a string wrapped by 'AND ()'.
         If the conditions string is empty, return an empty string.
     Example 1:
         Input: "LINUX"
@@ -80,10 +80,10 @@ def _process_conditions(conditions):
     return [c.strip() for c in conditions]
 
 
-def _proccess_archs(arch):
+def _process_archs(arch):
     """
     desc:
-        Input archs options and warp it with 'WITH_', 'OR' and '()' in cmakelist grammer.
+        Input archs options and warp it with 'WITH_', 'OR' and '()' in cmakelist grammar.
         The case is ignored.
         If the input is empty, return "LOCAL_ALL_ARCH".
     Example 1:
@@ -99,11 +99,9 @@ def _proccess_archs(arch):
         for a in arch.split(";"):
             if '' == a:
                 continue
-            assert a in [
-                "GPU",
-                "ROCM",
-                "XPU",
-            ], f"""Supported arhc options are "GPU", "ROCM", and "XPU", but the options is {a}"""
+            assert a in ["GPU", "ROCM", "XPU"], (
+                f"""Supported arch options are "GPU", "ROCM", and "XPU", but the options is {a}"""
+            )
             archs += "WITH_" + a.upper() + " OR "
         arch = "(" + archs[:-4] + ")"
     else:
@@ -114,7 +112,7 @@ def _proccess_archs(arch):
 def _process_os(os_):
     """
     Desc:
-        Input os options and output warpped options with 'OR' and '()'
+        Input os options and output wrapped options with 'OR' and '()'
         If the input is empty, return "LOCAL_ALL_PLAT"
     Example 1:
         Input: "WIN32"
@@ -127,11 +125,9 @@ def _process_os(os_):
     if len(os_) > 0:
         os_ = os_.upper()
         for p in os_.split(';'):
-            assert p in [
-                "WIN32",
-                "APPLE",
-                "LINUX",
-            ], f"""Supported os options are 'WIN32', 'APPLE' and 'LINUX', but the options is {p}"""
+            assert p in ["WIN32", "APPLE", "LINUX"], (
+                f"""Supported os options are 'WIN32', 'APPLE' and 'LINUX', but the options is {p}"""
+            )
         os_ = os_.replace(";", " OR ")
         os_ = "(" + os_ + ")"
     else:
@@ -146,7 +142,9 @@ def _process_run_serial(run_serial):
         "1",
         "0",
         "",
-    ], f"""the value of run_serial must be one of 0, 1 or empty. But this value is {rs}"""
+    ], (
+        f"""the value of run_serial must be one of 0, 1 or empty. But this value is {rs}"""
+    )
     if rs == "":
         return ""
     return rs
@@ -166,7 +164,7 @@ def _file_with_extension(prefix, suffixes):
 def _process_name(name, curdir):
     """
     Desc:
-        check whether name is with a legal format and check whther the test file exists.
+        check whether name is with a legal format and check whether the test file exists.
     """
     name = name.strip()
     assert re.compile("^test_[0-9a-zA-Z_]+").search(name), (
@@ -175,9 +173,9 @@ def _process_name(name, curdir):
     )
     filepath_prefix = os.path.join(curdir, name)
     suffix = [".py", ".sh"]
-    assert _file_with_extension(
-        filepath_prefix, suffix
-    ), f""" Please ensure the test file with the prefix '{filepath_prefix}' and one of the suffix {suffix} exists, because you specified a unittest named '{name}'"""
+    assert _file_with_extension(filepath_prefix, suffix), (
+        f""" Please ensure the test file with the prefix '{filepath_prefix}' and one of the suffix {suffix} exists, because you specified a unittest named '{name}'"""
+    )
 
     return name
 
@@ -218,10 +216,10 @@ class DistUTPortManager:
     def reset_current_port(self, port=None):
         self.dist_ut_port = 21200 if port is None else port
 
-    def get_currnt_port(self):
+    def get_current_port(self):
         return self.dist_ut_port
 
-    def gset_port(self, test_name, port):
+    def get_set_port(self, test_name, port):
         '''
         Get and set a port for unit test named test_name. If the test has been already holding a port, return the port it holds.
         Else assign the input port as a new port to the test.
@@ -238,7 +236,9 @@ class DistUTPortManager:
             re.compile("^[0-9]+$").search(port_num)
             and int(port_num) > 0
             or port_num.strip() == ""
-        ), f"""port_num must be foramt as a positive integer or empty, but this port_num is '{port_num}'"""
+        ), (
+            f"""port_num must be format as a positive integer or empty, but this port_num is '{port_num}'"""
+        )
         port_num = port_num.strip()
         if len(port_num) == 0:
             return 0
@@ -270,14 +270,16 @@ class DistUTPortManager:
                         break
                 name = lines[k - 1].strip()
 
-                # matcg right tets name format, the name must start with 'test_' follwed bu at least one char of
+                # match right tests name format, the name must start with 'test_' followed by at least one char of
                 # '0-9'. 'a-z'. 'A-Z' or '_'
-                assert re.compile("^test_[0-9a-zA-Z_]+").search(
+                assert re.compile(
+                    "^test_[0-9a-zA-Z_]+"
+                ).search(
                     name
                 ), f'''we found a test for initial the latest dist_port but the test name '{name}' seems to be wrong
                     at line {k - 1}, in file {cmake_file_name}
                     '''
-                self.gset_port(name, port)
+                self.get_set_port(name, port)
 
                 # get the test_name which latest assigned port belongs to
                 if self.assigned_ports[name] == self.dist_ut_port:
@@ -320,7 +322,7 @@ class DistUTPortManager:
             # 1. Get the num_port of last added test and set DIST_UT_PORT+=num_port
             #    to guarantee the DIST_UT_PORT is not assigned
             # 2. Summary all the directories which include csv but no cmake and show an error
-            #    if such a drectory exists
+            #    if such a directory exists
 
             # step 1
             if (
@@ -349,9 +351,9 @@ class DistUTPortManager:
                         if name == self.last_test_name:
                             found = True
                             break
-                assert (
-                    found
-                ), f"no such test named '{self.last_test_name}' in file '{self.last_test_cmake_file}'"
+                assert found, (
+                    f"no such test named '{self.last_test_name}' in file '{self.last_test_cmake_file}'"
+                )
                 if launcher[-2:] == ".sh":
                     self.process_dist_port_num(num_port)
 
@@ -366,7 +368,7 @@ class DistUTPortManager:
         If the directories are newly created or there is no CMakeLists.txt before, or ignore this error, you
         must specify the directories using the args option --ignore-cmake-dirs/-i.
         If you want to keep the dist ports of old tests unchanged, please ensure the old
-        verson CMakeLists.txt file existing before using the gen_ut_cmakelists tool to
+        version CMakeLists.txt file existing before using the gen_ut_cmakelists tool to
         generate new CmakeLists.txt files.
     ====================================================================================
     """
@@ -387,7 +389,7 @@ class CMakeGenerator:
 
     def parse_csvs(self):
         '''
-        parse csv files, return the lists of craeted or modified files
+        parse csv files, return the lists of created or modified files
         '''
         self.modified_or_created_files = []
         for c in self.current_dirs:
@@ -397,7 +399,7 @@ class CMakeGenerator:
     def _find_root_dirs(self):
         root_dirs = []
         # for each current directory, find its highest ancient directory (at least itself)
-        # which includes CMakeLists.txt or testslist.csv.txt in the filesys tree
+        # which includes CMakeLists.txt or testslist.csv.txt in the file system tree
         for c in self.current_dirs:
             while True:
                 ppath = os.path.dirname(c)
@@ -415,7 +417,7 @@ class CMakeGenerator:
     def _parse_line(self, line, curdir):
         """
         Desc:
-            Input a line in csv file and output a string in cmake grammer, adding the specified test and setting its properties.
+            Input a line in csv file and output a string in cmake grammar, adding the specified test and setting its properties.
         Example:
             Input: "test_allreduce,linux,gpu;rocm,120,DIST,test_runner.py,20071,1,PYTHONPATH=..;http_proxy=;https_proxy=,"
             Output:
@@ -451,7 +453,7 @@ class CMakeGenerator:
 
         envs = _process_envs(envs)
         conditions = _process_conditions(conditions)
-        archs = _proccess_archs(archs)
+        archs = _process_archs(archs)
         os_ = _process_os(os_)
         run_serial = _process_run_serial(run_serial)
 
@@ -467,7 +469,7 @@ class CMakeGenerator:
         if launcher[-3:] == ".sh":
             run_type = _process_run_type(run_type)
             dist_ut_port = self.port_manager.process_dist_port_num(num_port)
-            dist_ut_port = self.port_manager.gset_port(name, dist_ut_port)
+            dist_ut_port = self.port_manager.get_set_port(name, dist_ut_port)
             cmd += f'''if({archs} AND {os_})
         bash_test_modules(
         {name}
@@ -485,9 +487,9 @@ class CMakeGenerator:
             try:
                 run_type = _process_run_type(run_type)
             except Exception as e:
-                assert (
-                    run_type.strip() == ""
-                ), f"{e}\nIf use test_runner.py, the run_type can be ''"
+                assert run_type.strip() == "", (
+                    f"{e}\nIf use test_runner.py, the run_type can be ''"
+                )
             cmd += f'''if({archs} AND {os_})
         py_test_modules(
         {name}
@@ -565,8 +567,8 @@ class CMakeGenerator:
         for sub in sub_dirs:
             cmds += f"add_subdirectory({sub})\n"
 
-        # check whether the generated file are thge same with the existing file, ignoring the blank chars
-        # if the are same, skip the weiting process
+        # check whether the generated file are the same with the existing file, ignoring the blank chars
+        # if they are same, skip the waiting process
         if os.path.isfile(f"{current_work_dir}/CMakeLists.txt"):
             with open(
                 f"{current_work_dir}/CMakeLists.txt", "r"
@@ -580,7 +582,9 @@ class CMakeGenerator:
             assert (
                 f"{current_work_dir}/CMakeLists.txt"
                 not in self.modified_or_created_files
-            ), f"the file {current_work_dir}/CMakeLists.txt are modified twice, which may cause some error"
+            ), (
+                f"the file {current_work_dir}/CMakeLists.txt are modified twice, which may cause some error"
+            )
             self.modified_or_created_files.append(
                 f"{current_work_dir}/CMakeLists.txt"
             )
@@ -600,7 +604,7 @@ if __name__ == "__main__":
         required=False,
         default=[],
         nargs="+",
-        help="Input a list of files named testslist.csv and output files named CmakeLists.txt in the same directories as the csv files respectly",
+        help="Input a list of files named testslist.csv and output files named CMakeLists.txt in the same directories as the csv files respectively",
     )
     parser.add_argument(
         "--dirpaths",
@@ -609,7 +613,7 @@ if __name__ == "__main__":
         required=False,
         default=[],
         nargs="+",
-        help="Input a list of dir paths including files named testslist.csv and output CmakeLists.txt in these directories respectly",
+        help="Input a list of dir paths including files named testslist.csv and output CMakeLists.txt in these directories respectively",
     )
     parser.add_argument(
         "--ignore-cmake-dirs",
@@ -618,7 +622,7 @@ if __name__ == "__main__":
         required=False,
         default=[],
         nargs='*',
-        help="To keep dist ports the same with old version cmake, old cmakelists.txt files are needed to parse dist_ports. If a directories are newly created and there is no cmakelists.txt file, the directory path must be specified by this option. The dirs are not recursive.",
+        help="To keep dist ports the same with old version cmake, old CMakeLists.txt files are needed to parse dist_ports. If a directories are newly created and there is no CMakeLists.txt file, the directory path must be specified by this option. The dirs are not recursive.",
     )
     parser.add_argument(
         "--only-check-changed",
@@ -626,19 +630,19 @@ if __name__ == "__main__":
         type=lambda x: x.lower() not in ["false", "0", "off"],
         required=False,
         default=False,
-        help="Only check wheather the CMake files should be rewriten, do not write it enven if it should be write",
+        help="Only check whether the CMake files should be rewritten, do not write it even if it should be write",
     )
     args = parser.parse_args()
 
-    assert not (
-        len(args.files) == 0 and len(args.dirpaths) == 0
-    ), "You must provide at leate one file or dirpath"
+    assert not (len(args.files) == 0 and len(args.dirpaths) == 0), (
+        "You must provide at least one file or dirpath"
+    )
     current_work_dirs = []
     if len(args.files) >= 1:
         for p in args.files:
-            assert (
-                os.path.basename(p) == "testslist.csv"
-            ), "you must input file named testslist.csv"
+            assert os.path.basename(p) == "testslist.csv", (
+                "you must input file named testslist.csv"
+            )
         current_work_dirs = current_work_dirs + [
             os.path.dirname(file) for file in args.files
         ]

@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 import unittest
 
 import numpy as np
+from op_test import get_places
 from test_imperative_base import new_program_scope
 
 import paddle
@@ -72,9 +72,7 @@ class SimpleNet(paddle.nn.Layer):
         x_emb = self.embedding(input)
         fc = paddle.matmul(x_emb, self.softmax_weight)
         fc = paddle.add(fc, self.softmax_bias)
-        projection = paddle.matmul(
-            fc, paddle.transpose(self.embedding.weight, perm=[1, 0])
-        )
+        projection = paddle.matmul(fc, self.embedding.weight, transpose_y=True)
         projection = paddle.reshape(projection, shape=[-1, self.vocab_size])
         loss = paddle.nn.functional.softmax_with_cross_entropy(
             logits=projection, label=label, soft_label=False
@@ -214,17 +212,7 @@ class TestDygraphSimpleNet(unittest.TestCase):
             np.testing.assert_array_equal(value, dy_param_updated[key])
 
     def simple_net_float(self, is_sparse, dtype):
-        places = []
-        if (
-            os.environ.get('FLAGS_CI_both_cpu_and_gpu', 'False').lower()
-            in ['1', 'true', 'on']
-            or not core.is_compiled_with_cuda()
-        ):
-            places.append(base.CPUPlace())
-        if core.is_compiled_with_cuda():
-            places.append(base.CUDAPlace(0))
-
-        for place in places:
+        for place in get_places():
             for is_sort_sum_gradient in [True, False]:
                 self.run_case(place, is_sort_sum_gradient, is_sparse, dtype)
 

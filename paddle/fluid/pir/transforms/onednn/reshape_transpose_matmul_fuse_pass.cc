@@ -21,7 +21,7 @@
 #include "paddle/pir/include/pass/pass.h"
 #include "paddle/pir/include/pass/pass_registry.h"
 
-namespace {
+namespace pir {
 class ReshapeTransposeMatmulFusePattern : public paddle::drr::DrrPatternBase {
  private:
   std::string matmul_name_;
@@ -93,6 +93,7 @@ class ReshapeTransposeMatmulFusePattern : public paddle::drr::DrrPatternBase {
         {"fused_reshape_out", res.VectorInt32Attr({})},
         {"fused_transpose_out", res.VectorInt32Attr({})},
         {"mkldnn_data_type", res.StrAttr("float32")},
+        {"onednn_data_type", res.StrAttr("")},
         {"scale_x", res.Float32Attr(1.0f)},
         {"scale_y", res.Float32Attr(1.0f)},
         {"scale_in_eltwise", res.Float32Attr(0.0f)},
@@ -192,6 +193,7 @@ class ReshapeTransposeFusedMatmulFusePattern
                 {"fused_reshape_out", pat.Attr("fused_reshape_out")},
                 {"fused_transpose_out", pat.Attr("fused_transpose_out")},
                 {"mkldnn_data_type", pat.Attr("mkldnn_data_type")},
+                {"onednn_data_type", pat.Attr("onednn_data_type")},
                 {"scale_x", pat.Attr("scale_x")},
                 {"scale_y", pat.Attr("scale_y")},
                 {"scale_in_eltwise", pat.Attr("scale_in_eltwise")},
@@ -243,6 +245,7 @@ class ReshapeTransposeFusedMatmulFusePattern
         {"fused_reshape_out", pat.Attr("fused_reshape_out")},
         {"fused_transpose_out", pat.Attr("fused_transpose_out")},
         {"mkldnn_data_type", pat.Attr("mkldnn_data_type")},
+        {"onednn_data_type", pat.Attr("onednn_data_type")},
         {"scale_x", pat.Attr("scale_x")},
         {"scale_y", pat.Attr("scale_y")},
         {"scale_in_eltwise", pat.Attr("scale_in_eltwise")},
@@ -287,13 +290,13 @@ class ReshapeTransposeFusedMatmulFusePattern
   }
 };
 
-class ReshapeTransposeMatmulFusePass : public pir::PatternRewritePass {
+class ReshapeTransposeMatmulFusePass : public PatternRewritePass {
  public:
   ReshapeTransposeMatmulFusePass()
-      : pir::PatternRewritePass("reshape_transpose_matmul_fuse_pass", 2) {}
+      : PatternRewritePass("reshape_transpose_matmul_fuse_pass", 2) {}
 
-  pir::RewritePatternSet InitializePatterns(pir::IrContext *context) override {
-    pir::RewritePatternSet ps(context);
+  RewritePatternSet InitializePatterns(IrContext *context) override {
+    RewritePatternSet ps(context);
     std::vector<bool> bool_set = {false, true};
     int benefit_idx = 5;
     for (auto as_x : bool_set) {
@@ -319,10 +322,6 @@ class ReshapeTransposeMatmulFusePass : public pir::PatternRewritePass {
   }
 };
 
-}  // namespace
-
-namespace pir {
-
 std::unique_ptr<Pass> CreateReshapeTransposeMatmulFusePass() {
   // pd_op.reshape + pd_op.transpose + pd_op.matmul -> onednn_op.fused_matmul
   // pd_op.reshape + pd_op.transpose + pd_op.fused_matmul ->
@@ -332,4 +331,4 @@ std::unique_ptr<Pass> CreateReshapeTransposeMatmulFusePass() {
 }  // namespace pir
 
 REGISTER_IR_PASS(reshape_transpose_matmul_fuse_pass,
-                 ReshapeTransposeMatmulFusePass);
+                 pir::ReshapeTransposeMatmulFusePass);

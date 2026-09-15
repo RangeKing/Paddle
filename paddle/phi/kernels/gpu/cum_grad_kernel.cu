@@ -19,20 +19,11 @@
 #include <thrust/device_vector.h>
 #include <thrust/reverse.h>
 #include <thrust/scan.h>
-#ifdef __NVCC__
-#include <cub/cub.cuh>
-#endif
-#ifdef __HIPCC__
-#include <hipcub/hipcub.hpp>
-namespace cub = hipcub;
-#endif
-
 #include "paddle/common/hostdevice.h"
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/common/amp_type_traits.h"
-#include "paddle/phi/common/bfloat16.h"
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/funcs/cub.h"
 
 namespace phi {
 
@@ -70,7 +61,7 @@ PD_REGISTER_KERNEL(cumsum_grad,
                    phi::CumsumGradKernel,
                    float,
                    double,
-                   phi::dtype::float16,
+                   phi::float16,
                    int16_t,
                    int,
                    int64_t) {}
@@ -81,9 +72,13 @@ PD_REGISTER_KERNEL(cumsum_grad,
                    phi::CumsumGradKernel,
                    float,
                    double,
+                   uint8_t,
+                   int8_t,
                    int16_t,
                    int,
                    int64_t,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::complex64,
+                   phi::complex128) {}
 #endif

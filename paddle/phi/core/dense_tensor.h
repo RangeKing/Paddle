@@ -34,8 +34,8 @@ class DistTensor;
 /// arrays are used in math operators.
 /// During the entire life cycle of a DenseTensor, its device type and key
 /// metadata are set unchanged.
-class TEST_API DenseTensor : public TensorBase,
-                             public TypeInfoTraits<TensorBase, DenseTensor> {
+class PADDLE_API DenseTensor : public TensorBase,
+                               public TypeInfoTraits<TensorBase, DenseTensor> {
  public:
   /// \brief Construct a dense tensor and allocate space.
   /// \param a The allocator used to allocate space.
@@ -84,6 +84,46 @@ class TEST_API DenseTensor : public TensorBase,
   /// \brief Returns the dims of the tensor.
   /// \return The dims of the tensor.
   const DDim& dims() const noexcept override { return meta_.dims; }
+
+  /// \brief Returns the size of the tensor along the specified dimension.
+  ///        Supports negative indices, which count from the last dimension.
+  /// \param dim The dimension index to retrieve. Must be in the range [0, ndim)
+  /// or [-ndim, -1]. \return The size of the tensor along the given dimension.
+  /// \throws common::errors::OutOfRange if the tensor is empty or the index is
+  /// out of range.
+  int64_t dims(int dim) const {
+    int ndim = meta_.dims.size();
+
+    // Ensure the tensor has at least one dimension
+    PADDLE_ENFORCE_GE(ndim,
+                      1,
+                      common::errors::OutOfRange(
+                          "dims expects at least a 1-dimensional tensor"));
+
+    // Check if the index is within the valid range [-ndim, ndim)
+    PADDLE_ENFORCE_GE(
+        dim,
+        -ndim,
+        common::errors::OutOfRange(
+            "dims: dimension index (%d) must be in range [-%d, %d)",
+            dim,
+            ndim,
+            ndim));
+    PADDLE_ENFORCE_LT(
+        dim,
+        ndim,
+        common::errors::OutOfRange(
+            "dims: dimension index (%d) must be in range [-%d, %d)",
+            dim,
+            ndim,
+            ndim));
+
+    // Handle negative indices
+    if (dim < 0) {
+      dim += ndim;
+    }
+    return meta_.dims[dim];
+  }
 
   /// \brief Returns the stride of the tensor.
   /// \return The stride of the tensor.
@@ -152,6 +192,12 @@ class TEST_API DenseTensor : public TensorBase,
 
   DenseTensor& Resize(const DDim& dims);
 
+  DenseTensor& Resize(const std::initializer_list<int64_t> dims);
+
+  DenseTensor& Resize(const std::vector<int64_t>& dims);
+
+  DenseTensor& Resize(const std::vector<int>& dims);
+
   /// \brief Change the lod information in the metadata.
   /// \param legacy_lod The new lod of the dense tensor.
   void ResetLoD(const LegacyLoD& legacy_lod);
@@ -180,6 +226,8 @@ class TEST_API DenseTensor : public TensorBase,
   /// \return The init status of storage_properties.
   bool storage_properties_initialized() const;
 
+  bool has_storage_properties() const { return storage_properties_ != nullptr; }
+
   /// \brief Returns the storage_properties of the tensor.
   /// \return The storage_properties of the tensor.
   template <typename DeviceT>
@@ -189,6 +237,11 @@ class TEST_API DenseTensor : public TensorBase,
   /// \param storage_properties The storage_properties of the tensor.
   void set_storage_properties(
       std::unique_ptr<StorageProperties>&& storage_properties);
+
+  const std::shared_ptr<phi::Allocation>& Holder() const { return holder_; }
+
+  /*! The internal of two tensors share the same memory block. */
+  DenseTensor& ShareDataWith(const DenseTensor& src);
 
   void clear() {
     holder_.reset();
@@ -294,3 +347,7 @@ class TEST_API DenseTensor : public TensorBase,
 };
 
 }  // namespace phi
+
+namespace paddle {
+using DenseTensor = phi::DenseTensor;
+}

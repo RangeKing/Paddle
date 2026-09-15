@@ -26,7 +26,6 @@
 #include "paddle/fluid/framework/op_registry.h"
 #include "paddle/fluid/framework/operator.h"
 #include "paddle/fluid/framework/variable.h"
-#include "paddle/fluid/operators/custom_device_common_op_registry.h"
 #include "paddle/fluid/pybind/eager_generator.h"
 #include "paddle/fluid/pybind/eager_legacy_op_function_generator.h"
 #include "paddle/fluid/pybind/pybind.h"
@@ -116,6 +115,7 @@ static PyObject * %s(PyObject *self, PyObject *args, PyObject *kwargs)
     %s
     framework::AttributeMap attrs;
     ConstructAttrMapFromPyArgs("%s", args, %d, PyTuple_GET_SIZE(args) , attrs);
+    paddle::memory::MemStackGuard __mem_stack_guard(paddle::pybind::CaptureCurrentPyStack());
     tstate = PyEval_SaveThread();
     %s
     PyEval_RestoreThread(tstate);
@@ -474,12 +474,6 @@ GenerateOpFunctions() {
 }
 
 int run_legacy_generator(int argc, char* argv[]) {
-#ifdef PADDLE_WITH_CUSTOM_DEVICE
-  // We need a fake device to trigger the registration of the common kernel and
-  // generate api
-  paddle::operators::RegisterCustomDeviceCommonKernel("fake_device");
-#endif
-
   const std::string str = "\"paddle/fluid/eager/api/generated/fluid_generated/";
   std::vector<std::string> headers{
       "<Python.h>",
@@ -490,6 +484,7 @@ int run_legacy_generator(int argc, char* argv[]) {
       "\"paddle/fluid/pybind/exception.h\"",
       "\"paddle/fluid/pybind/op_function_common.h\"",
       "\"paddle/fluid/pybind/eager_legacy_custom_python_api.h\"",
+      "\"paddle/fluid/pybind/mem_py_stack.h\"",
       "\"paddle/fluid/pybind/eager.h\""};
 
   std::ofstream out(argv[1], std::ios::out);

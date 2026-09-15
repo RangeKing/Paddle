@@ -22,18 +22,18 @@ namespace phi::funcs {
 
 template <class T>
 struct LstmUnitFunctor<CPUContext, T> {
-  static void compute(const CPUContext& context,
+  static void compute(const CPUContext& dev_ctx,
                       LstmMetaValue<T> value,
                       int frame_size,
                       int batch_size,
                       T cell_clip,
-                      const phi::funcs::detail::ActivationType& gate_act,
-                      const phi::funcs::detail::ActivationType& cell_act,
-                      const phi::funcs::detail::ActivationType& cand_act,
+                      const funcs::detail::ActivationType& gate_act,
+                      const funcs::detail::ActivationType& cell_act,
+                      const funcs::detail::ActivationType& cand_act,
                       bool old_api_version = true) {
     for (int b = 0; b < batch_size; b++) {
-      detail::cpu_lstm_forward(context,
-                               phi::funcs::detail::forward::lstm<T>(),
+      detail::cpu_lstm_forward(dev_ctx,
+                               funcs::detail::forward::lstm<T>(),
                                value,
                                frame_size,
                                cell_clip,
@@ -54,19 +54,19 @@ struct LstmUnitFunctor<CPUContext, T> {
 
 template <class T>
 struct LstmUnitGradFunctor<CPUContext, T> {
-  static void compute(const CPUContext& context,
+  static void compute(const CPUContext& dev_ctx,
                       LstmMetaValue<T> value,
                       LstmMetaGrad<T> grad,
                       int frame_size,
                       int batch_size,
                       T cell_clip,
-                      const phi::funcs::detail::ActivationType& gate_act,
-                      const phi::funcs::detail::ActivationType& cell_act,
-                      const phi::funcs::detail::ActivationType& cand_act,
+                      const funcs::detail::ActivationType& gate_act,
+                      const funcs::detail::ActivationType& cell_act,
+                      const funcs::detail::ActivationType& cand_act,
                       bool old_api_version = true) {
     for (int b = 0; b < batch_size; b++) {
-      detail::cpu_lstm_backward(context,
-                                phi::funcs::detail::backward::lstm<T>(),
+      detail::cpu_lstm_backward(dev_ctx,
+                                funcs::detail::backward::lstm<T>(),
                                 value,
                                 grad,
                                 frame_size,

@@ -13,30 +13,12 @@
 # limitations under the License.
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Union
-
-from typing_extensions import TypeAlias
+from typing import TYPE_CHECKING, TypeAlias, Union
 
 if TYPE_CHECKING:
-    from paddle import (
-        CPUPlace,
-        CUDAPinnedPlace,
-        CUDAPlace,
-        CustomPlace,
-        IPUPlace,
-        XPUPlace,
-    )
-
-_Place: TypeAlias = Union[
-    "CPUPlace",
-    "CUDAPlace",
-    "CUDAPinnedPlace",
-    "IPUPlace",
-    "CustomPlace",
-    "XPUPlace",
-]
+    from paddle.base.core import Place
 
 PlaceLike: TypeAlias = Union[
-    _Place,
+    "Place",
     str,  # some string like "cpu", "gpu:0", etc.
 ]

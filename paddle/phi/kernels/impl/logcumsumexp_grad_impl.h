@@ -50,6 +50,10 @@ void LogcumsumexpGradKernel(const Context& dev_ctx,
                             bool exclusive,
                             bool reverse,
                             DenseTensor* d_x) {
+  if (d_x && d_x->numel() == 0) {
+    dev_ctx.template Alloc<T>(d_x);
+    return;
+  }
   reverse = !reverse;
   dev_ctx.template Alloc<T>(d_x);
 
@@ -58,7 +62,7 @@ void LogcumsumexpGradKernel(const Context& dev_ctx,
   auto eigen_d_out = EigenVector<T>::Flatten(d_out);
   auto& place = *dev_ctx.eigen_device();
 
-  using MT = typename phi::dtype::MPTypeTrait<T>::Type;
+  using MT = typename MPTypeTrait<T>::Type;
   DenseTensor output_pos;
   output_pos.Resize(d_out.dims());
   dev_ctx.template Alloc<MT>(&output_pos);

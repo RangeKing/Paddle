@@ -20,6 +20,10 @@ limitations under the License. */
 
 #include "paddle/phi/common/data_type.h"
 #include "paddle/phi/core/enforce.h"
+
+#ifdef PADDLE_WITH_FLAGCX
+#include <flagcx.h>
+#endif
 namespace phi {
 
 #define _PhiForEachDataTypeHelper_(callback, cpp_type, data_type) \
@@ -52,7 +56,7 @@ namespace phi {
   _PhiForEachDataTypeHelper_(callback, int64_t, DataType::INT64);
 
 template <typename Visitor>
-inline void VisitDataType(phi::DataType type, Visitor visitor) {
+inline void VisitDataType(DataType type, Visitor visitor) {
 #define PhiVisitDataTypeCallback(cpp_type, data_type) \
   do {                                                \
     if (type == data_type) {                          \
@@ -64,11 +68,11 @@ inline void VisitDataType(phi::DataType type, Visitor visitor) {
   _PhiForEachDataType_(PhiVisitDataTypeCallback);
 #undef PhiVisitDataTypeCallback
   PADDLE_THROW(common::errors::Unimplemented(
-      "Not supported phi::DataType(%d) as data type.", static_cast<int>(type)));
+      "Not supported DataType(%d) as data type.", static_cast<int>(type)));
 }
 
 template <typename Visitor>
-inline void VisitDataTypeTiny(phi::DataType type, Visitor visitor) {
+inline void VisitDataTypeTiny(DataType type, Visitor visitor) {
 #define PhiVisitDataTypeCallbackTiny(cpp_type, data_type) \
   do {                                                    \
     if (type == data_type) {                              \
@@ -80,7 +84,7 @@ inline void VisitDataTypeTiny(phi::DataType type, Visitor visitor) {
   _PhiForEachDataTypeTiny_(PhiVisitDataTypeCallbackTiny);
 #undef PhiVisitDataTypeCallbackTiny
   PADDLE_THROW(common::errors::Unimplemented(
-      "Not supported phi::DataType(%d) as data type.", static_cast<int>(type)));
+      "Not supported DataType(%d) as data type.", static_cast<int>(type)));
 }
 
 inline bool IsComplexType(const DataType& type) {
@@ -115,7 +119,7 @@ inline DataType ToRealType(const DataType& type) {
   }
 }
 
-// In some cases we need to use the conversion between phi::DataType and
+// In some cases we need to use the conversion between DataType and
 // fluid proto::VarType::Type, but can't depend on the proto::VarType::Type.
 // So here we defined an enum type ProtoDataType which corresponds to
 // proto::VarType::Type in fluid, but keeps only the data types we need.
@@ -137,7 +141,10 @@ enum ProtoDataType {
   COMPLEX128 = 24,
   PSTRING = 29,
   FP8_E4M3FN = 32,
-  FP8_E5M2 = 33
+  FP8_E5M2 = 33,
+  UINT16 = 36,
+  UINT32 = 37,
+  UINT64 = 38,
 };
 
 inline DataType TransToPhiDataType(const int& dtype) {
@@ -197,6 +204,12 @@ inline int TransToProtoVarType(const DataType& dtype) {
       return ProtoDataType::INT8;
     case DataType::UINT8:
       return ProtoDataType::UINT8;
+    case DataType::UINT16:
+      return ProtoDataType::UINT16;
+    case DataType::UINT32:
+      return ProtoDataType::UINT32;
+    case DataType::UINT64:
+      return ProtoDataType::UINT64;
     case DataType::INT16:
       return ProtoDataType::INT16;
     case DataType::COMPLEX64:
@@ -241,7 +254,8 @@ inline ncclDataType_t ToNCCLDataType(DataType type) {
     return ncclUint8;
   } else if (type == DataType::INT8) {
     return ncclInt8;
-  } else if (type == DataType::BOOL) {
+  } else if (type == DataType::BOOL || type == DataType::FLOAT8_E4M3FN ||
+             type == DataType::FLOAT8_E5M2) {
     return ncclUint8;
 #if (NCCL_VERSION_CODE >= 21000 && CUDA_VERSION >= 11000) || \
     defined(PADDLE_WITH_HIP)
@@ -260,6 +274,8 @@ inline BKCLDataType ToBKCLDataType(DataType type) {
     return BKCL_FLOAT;
   } else if (type == DataType::FLOAT64) {
     return BKCL_FLOAT64;
+  } else if (type == DataType::INT8) {
+    return BKCL_UINT8;
   } else if (type == DataType::INT32) {
     return BKCL_INT32;
   } else if (type == DataType::INT64) {
@@ -275,6 +291,32 @@ inline BKCLDataType ToBKCLDataType(DataType type) {
   } else {
     PADDLE_THROW(
         errors::Unimplemented("This datatype in bkcl is not supported."));
+  }
+}
+#endif
+#if defined(PADDLE_WITH_FLAGCX)
+inline flagcxDataType_t ToFlagcxDataType(DataType type) {
+  if (type == DataType::FLOAT32) {
+    return flagcxFloat;
+  } else if (type == DataType::FLOAT64) {
+    return flagcxDouble;
+  } else if (type == DataType::INT32) {
+    return flagcxInt;
+  } else if (type == DataType::INT64) {
+    return flagcxInt64;
+  } else if (type == DataType::FLOAT16) {
+    return flagcxFloat16;
+  } else if (type == DataType::UINT8) {
+    return flagcxUint8;
+  } else if (type == DataType::INT8) {
+    return flagcxInt8;
+  } else if (type == DataType::BOOL) {
+    return flagcxUint8;
+  } else if (type == DataType::BFLOAT16) {
+    return flagcxBfloat16;
+  } else {
+    PADDLE_THROW(
+        errors::Unimplemented("This datatype in flagcx is not supported."));
   }
 }
 #endif

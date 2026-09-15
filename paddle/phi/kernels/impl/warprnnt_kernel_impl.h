@@ -16,6 +16,7 @@
 
 #include <vector>
 
+#include "paddle/common/enforce.h"
 #include "paddle/phi/backends/dynload/warprnnt.h"
 #include "paddle/phi/core/dense_tensor.h"
 #include "paddle/phi/core/tensor_utils.h"
@@ -55,16 +56,16 @@ class ComputeRnntLossFunctor<Context, float> {
                           float* costs,
                           void* workspace,
                           rnntOptions options) {
-    return phi::dynload::compute_rnnt_loss(activations,
-                                           gradients,
-                                           label,
-                                           label_lengths,
-                                           input_lengths,
-                                           static_cast<int>(alphabet_size),
-                                           static_cast<int>(minibatch),
-                                           costs,
-                                           workspace,
-                                           options);
+    return dynload::compute_rnnt_loss(activations,
+                                      gradients,
+                                      label,
+                                      label_lengths,
+                                      input_lengths,
+                                      static_cast<int>(alphabet_size),
+                                      static_cast<int>(minibatch),
+                                      costs,
+                                      workspace,
+                                      options);
   }
 };
 
@@ -81,16 +82,16 @@ class ComputeRnntLossFunctor<Context, double> {
                           double* costs,
                           void* workspace,
                           rnntOptions options) {
-    return phi::dynload::compute_rnnt_loss_fp64(activations,
-                                                gradients,
-                                                label,
-                                                label_lengths,
-                                                input_lengths,
-                                                static_cast<int>(alphabet_size),
-                                                static_cast<int>(minibatch),
-                                                costs,
-                                                workspace,
-                                                options);
+    return dynload::compute_rnnt_loss_fp64(activations,
+                                           gradients,
+                                           label,
+                                           label_lengths,
+                                           input_lengths,
+                                           static_cast<int>(alphabet_size),
+                                           static_cast<int>(minibatch),
+                                           costs,
+                                           workspace,
+                                           options);
   }
 };
 
@@ -104,7 +105,7 @@ class WarpRNNTFunctor {
    * If gradient is nullptr, it only computes the rnnt loss,
    * or computes both rnnt loss and gradient.
    *
-   * \param ctx               execution context of this functor
+   * \param dev_ctx           execution context of this functor
    * \param input             batch matrix of input probabilities, in
    *                          (B, Tmax, Umax, D), (row-major) format
    * \param gradient          batch matrix of gradient, with the same shape as
@@ -133,12 +134,16 @@ class WarpRNNTFunctor {
                   T* cpu_loss) {
     // Init warp-rnnt options
     init(dev_ctx, maxT, maxU, blank, fastemit_lambda, num_threads);
+    PADDLE_ENFORCE_LE_INT_MAX(D, "warprnnt D");
+    PADDLE_ENFORCE_LE_INT_MAX(B, "warprnnt B");
+    const int D_int = static_cast<int>(D);
+    const int B_int = static_cast<int>(B);
 
     // Compute the required workspace size.
     // There is no memory allocated operations within warp-rnnt.
     rnntStatus_t status = RNNT_STATUS_UNKNOWN_ERROR;
     bool gpu = false;
-    if (dev_ctx.GetPlace().GetType() == phi::AllocationType::GPU) {
+    if (dev_ctx.GetPlace().GetType() == AllocationType::GPU) {
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
       gpu = true;
 #else
@@ -148,7 +153,7 @@ class WarpRNNTFunctor {
     }
 
     size_t workspace_bytes = 0;
-    status = phi::dynload::get_rnnt_workspace_size(
+    status = dynload::get_rnnt_workspace_size(
         maxT, maxU, B, gpu, &workspace_bytes, sizeof(T));
 
     PADDLE_ENFORCE_EQ(
@@ -157,7 +162,7 @@ class WarpRNNTFunctor {
         errors::PreconditionNotMet(
             "warp-rnnt [version %d] Error in get_rnnt_workspace_size: %s",
             warprnnt_version_,
-            phi::dynload::rnntGetStatusString(status)));
+            dynload::rnntGetStatusString(status)));
     PADDLE_ENFORCE_GT(
         workspace_bytes,
         0UL,
@@ -167,7 +172,7 @@ class WarpRNNTFunctor {
                                 workspace_bytes));
 
     size_t workspace_elements = workspace_bytes / sizeof(T) + 1UL;
-    DenseTensor workspace = phi::Full<T, Context>(
+    DenseTensor workspace = Full<T, Context>(
         dev_ctx, {static_cast<int64_t>(workspace_elements)}, static_cast<T>(0));
     T* workspace_data = workspace.data<T>();
 
@@ -177,8 +182,8 @@ class WarpRNNTFunctor {
                                                   label,
                                                   label_lengths,
                                                   input_lengths,
-                                                  static_cast<int>(D),
-                                                  static_cast<int>(B),
+                                                  D_int,
+                                                  B_int,
                                                   cpu_loss,
                                                   workspace_data,
                                                   options_);
@@ -189,7 +194,7 @@ class WarpRNNTFunctor {
         errors::PreconditionNotMet(
             "warp-rnnt [version %d] Error in get_workspace_size: %s",
             warprnnt_version_,
-            phi::dynload::rnntGetStatusString(status)));
+            dynload::rnntGetStatusString(status)));
   }
 
  protected:
@@ -199,19 +204,21 @@ class WarpRNNTFunctor {
             const size_t blank,
             const float fastemit_lambda,
             const int num_threads) {
-    warprnnt_version_ = phi::dynload::get_warprnnt_version();
+    warprnnt_version_ = dynload::get_warprnnt_version();
+    PADDLE_ENFORCE_LE_INT_MAX(maxT, "warprnnt maxT");
+    PADDLE_ENFORCE_LE_INT_MAX(maxU, "warprnnt maxU");
+    PADDLE_ENFORCE_LE_INT_MAX(blank, "warprnnt blank_label");
 
-    options_.maxT = maxT;
-    options_.maxU = maxU;
-    options_.blank_label = blank;
+    options_.maxT = static_cast<int>(maxT);
+    options_.maxU = static_cast<int>(maxU);
+    options_.blank_label = static_cast<int>(blank);
     options_.fastemit_lambda = fastemit_lambda;
     options_.batch_first = true;
 
-    if (dev_ctx.GetPlace().GetType() == phi::AllocationType::GPU) {
+    if (dev_ctx.GetPlace().GetType() == AllocationType::GPU) {
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
       options_.loc = RNNT_GPU;
-      options_.stream =
-          reinterpret_cast<const phi::GPUContext&>(dev_ctx).stream();
+      options_.stream = reinterpret_cast<const GPUContext&>(dev_ctx).stream();
 #else
       PADDLE_THROW(
           errors::PreconditionNotMet("[warprnnt init] GPU is not enabled."));
@@ -309,11 +316,10 @@ void WarprnntKernel(const Context& dev_ctx,
 
   warprnntgrad->Resize(input.dims());
   T* warprnntgrad_data = dev_ctx.template Alloc<T>(warprnntgrad);
-  phi::funcs::SetConstant<Context, T>()(
-      dev_ctx, warprnntgrad, static_cast<T>(0));
+  funcs::SetConstant<Context, T>()(dev_ctx, warprnntgrad, static_cast<T>(0));
 
   // loss on cpu (B,)
-  auto loss_dims = common::make_ddim({static_cast<int64_t>(B)});
+  auto loss_dims = make_ddim({static_cast<int64_t>(B)});
   DenseTensor warprnnt_loss;
   warprnnt_loss.Resize(loss_dims);
   T* warprnnt_loss_data = dev_ctx.template HostAlloc<T>(&warprnnt_loss);
@@ -333,7 +339,7 @@ void WarprnntKernel(const Context& dev_ctx,
                                 1 /*num_threads*/,
                                 warprnnt_loss_data);
 
-  phi::Copy(dev_ctx, warprnnt_loss, dev_ctx.GetPlace(), true, loss);
+  Copy(dev_ctx, warprnnt_loss, dev_ctx.GetPlace(), true, loss);
 }
 
 }  // namespace phi

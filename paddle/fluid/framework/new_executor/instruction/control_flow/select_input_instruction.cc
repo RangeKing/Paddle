@@ -16,13 +16,16 @@
 #include "paddle/fluid/framework/new_executor/instruction/instruction_util.h"
 #include "paddle/fluid/framework/new_executor/new_executor_defs.h"
 #include "paddle/fluid/framework/new_executor/pir_adaptor/pir_adaptor_util.h"
+#include "paddle/fluid/framework/var_type.h"
+
+COMMON_DECLARE_bool(check_cuda_error);
 
 namespace paddle::framework {
 
 SelectInputInstruction::SelectInputInstruction(
     size_t id,
-    const phi::Place &place,
-    ::pir::Operation *op,
+    const Place &place,
+    pir::Operation *op,
     ValueExecutionInfo *value_exe_info)
     : InstructionBase(id, place),
       op_(op),
@@ -48,7 +51,7 @@ SelectInputInstruction::SelectInputInstruction(
   SetOutputs(outputs);
 }
 
-inline int GetBranchNumber(const phi::DenseTensor &mask) {
+inline int GetBranchNumber(const DenseTensor &mask) {
   PADDLE_ENFORCE_EQ(
       mask.numel(),
       1,
@@ -61,10 +64,10 @@ inline int GetBranchNumber(const phi::DenseTensor &mask) {
     return mask.data<int>()[0];
   }
   // when phi::is_gpu_place(mask.place()) is true
-  std::unique_ptr<phi::DenseTensor> cpu_mask{new phi::DenseTensor()};
+  std::unique_ptr<DenseTensor> cpu_mask{new DenseTensor()};
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP) || \
     defined(PADDLE_WITH_CUSTOM_DEVICE) || defined(PADDLE_WITH_XPU)
-  framework::TensorCopySync(mask, phi::CPUPlace(), cpu_mask.get());
+  framework::TensorCopySync(mask, CPUPlace(), cpu_mask.get());
 #else
   PADDLE_THROW(common::errors::Fatal(
       "This version of PaddlePaddle does NOT support GPU, "
@@ -78,8 +81,8 @@ class AssignFunctor {
  public:
   explicit AssignFunctor(Variable *out) : out_(out) {}
 
-  void operator()(const phi::DenseTensor &dense_tensor) const {
-    auto &out_tensor = *out_->GetMutable<phi::DenseTensor>();
+  void operator()(const DenseTensor &dense_tensor) const {
+    auto &out_tensor = *out_->GetMutable<DenseTensor>();
     copy_tensor(dense_tensor, &out_tensor);
   }
 
@@ -110,8 +113,7 @@ class AssignFunctor {
   }
 
  private:
-  void copy_tensor(const phi::DenseTensor &dense_tensor,
-                   phi::DenseTensor *out) const {
+  void copy_tensor(const DenseTensor &dense_tensor, DenseTensor *out) const {
     if (!dense_tensor.IsInitialized()) return;
     auto &out_tensor = *out;
     TensorCopy(dense_tensor, dense_tensor.place(), &out_tensor);
@@ -123,7 +125,11 @@ class AssignFunctor {
 
 void SelectInputInstruction::Run() {
   VLOG(6) << "run select_input instruction";
-  auto &mask = mask_->Get<phi::DenseTensor>();
+  if (FLAGS_check_cuda_error) [[unlikely]] {
+    CUDAErrorCheck("SelectInputInstruction begin");
+  }
+
+  auto &mask = mask_->Get<DenseTensor>();
   size_t output_branch = static_cast<size_t>(GetBranchNumber(mask));
   PADDLE_ENFORCE_LT(
       output_branch,
@@ -136,6 +142,9 @@ void SelectInputInstruction::Run() {
           inputs_.size()));
   Variable *selected = inputs_[output_branch];
   VisitVarType(*selected, AssignFunctor(out_));
+  if (FLAGS_check_cuda_error) [[unlikely]] {
+    CUDAErrorCheck("SelectInputInstruction finish");
+  }
 }
 
 }  // namespace paddle::framework

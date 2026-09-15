@@ -92,8 +92,8 @@ void TransferLayoutElimPass::PutTransferlayoutAfterOp(
   PADDLE_ENFORCE_EQ(
       var2_shape.size() >= 4L,
       true,
-      common::errors::InvalidArgument("var2_shape.size is too small"
-                                      "expected no small than 4L"
+      common::errors::InvalidArgument("var2_shape.size is too small, "
+                                      "expected no small than 4L, "
                                       "received %d",
                                       var2_shape.size()));
   auto new_var2_shape = var2_shape;
@@ -172,7 +172,7 @@ bool TransferLayoutElimPass::AllInputIsTransferlayout(
     // appear before this var, but temporarily disable this if.
     if (var->Var()->Persistable() && false) {
       auto var_dims =
-          scope->FindVar(var->Name())->GetMutable<phi::DenseTensor>()->dims();
+          scope->FindVar(var->Name())->GetMutable<DenseTensor>()->dims();
       if (var_dims.size() == 1) {
         continue;
       }
@@ -221,17 +221,16 @@ void TransferLayoutElimPass::ElimTwoTransferlayout(Node *op_node,
   auto transfer_layout0 = var1->inputs[0];
   auto var0 = transfer_layout0->inputs[0];
   auto var2 = op_node->outputs[0];
-  PADDLE_ENFORCE_EQ(
-      op_node->Name() == "transfer_layout",
-      true,
-      common::errors::InvalidArgument("op_node->Name() must be transfer_layout",
-                                      "received %s",
-                                      op_node->Name()));
+  PADDLE_ENFORCE_EQ(op_node->Name() == "transfer_layout",
+                    true,
+                    common::errors::InvalidArgument(
+                        "op_node->Name() must be transfer_layout, received %s",
+                        op_node->Name()));
   PADDLE_ENFORCE_EQ(
       transfer_layout0->Name() == "transfer_layout",
       true,
       common::errors::InvalidArgument(
-          "op_node->inputs[0]->inputs[0]->Name() must be transfer_layout",
+          "op_node->inputs[0]->inputs[0]->Name() must be transfer_layout, "
           "received %s",
           transfer_layout0->Name()));
   int dst0 = transfer_layout0->Op()->GetAttrIfExists<int>("dst_layout");

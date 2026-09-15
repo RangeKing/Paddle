@@ -20,7 +20,7 @@ from test_case_base import TestCaseBase
 
 import paddle
 from paddle.jit import sot
-from paddle.jit.sot.utils import min_graph_size_guard
+from paddle.jit.sot.utils import min_graph_size_guard, strict_mode_guard
 
 
 def case_for(x, vars):
@@ -77,7 +77,40 @@ class CustomLayer(paddle.nn.Layer):
         return x.numpy()
 
 
+def get_arg_from_kwargs(x, **kwargs):
+    x = x if x is not None else None
+    y = kwargs.get("y", None)
+    paddle.jit.sot.psdb.breakgraph()
+    return x, y
+
+
+def add_with_breakgraph(x, y):
+    sot.psdb.breakgraph()
+    return x + y
+
+
+def restore_same_arg_when_fallback(x):
+    return add_with_breakgraph(x, x)
+
+
+def trim_trailing_to_bool(x, y):
+    return x and y
+
+
+def always_use_load_fast_with_strong_ref(x):
+    y = x + 1
+    # In this case, originally y will be load with LOAD_FAST_BORROW
+    # When breakgraph, the y on the stack, it will be stored and loaded with LOAD_FAST
+    # But since y is not a strong ref, it may be GCed before loaded again
+    # We add a pass to make sure y is a strong ref, so it will not be GCed
+    # when loaded again.
+    _stack_ref = (y, paddle.jit.sot.psdb.breakgraph())
+    x = y + 1
+    return x
+
+
 class TestMinGraphSize(TestCaseBase):
+    @strict_mode_guard(False)
     @min_graph_size_guard(10)
     def test_cases(self):
         x = paddle.to_tensor(1)
@@ -93,9 +126,37 @@ class TestMinGraphSize(TestCaseBase):
         self.assert_results(layer.forward, x)
 
     @min_graph_size_guard(10)
+    def test_layer_multiple_times(self):
+        x = paddle.to_tensor(1)
+        layer = CustomLayer()
+        for _ in range(8):
+            self.assert_results(layer.forward, x)
+
+    @min_graph_size_guard(10)
     def test_call_with_kwargs(self):
         x = paddle.to_tensor(1)
         self.assert_results(call_with_kwargs, x)
+
+    @min_graph_size_guard(10)
+    def test_get_arg_from_kwargs(self):
+        self.assert_results(get_arg_from_kwargs, None)
+        self.assert_results(get_arg_from_kwargs, None, y=1)
+
+    @min_graph_size_guard(10)
+    def test_restore_same_arg_when_fallback(self):
+        x = paddle.to_tensor(1)
+        self.assert_results(restore_same_arg_when_fallback, x)
+
+    @min_graph_size_guard(10)
+    def test_trim_trailing_to_bool(self):
+        x = paddle.to_tensor(False)
+        y = paddle.to_tensor(False)
+        self.assert_results(trim_trailing_to_bool, x, y)
+
+    @min_graph_size_guard(10)
+    def test_always_use_load_fast_with_strong_ref(self):
+        x = paddle.to_tensor(1)
+        self.assert_results(always_use_load_fast_with_strong_ref, x)
 
 
 if __name__ == "__main__":

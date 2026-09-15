@@ -23,7 +23,7 @@ namespace phi {
 template <typename T>
 struct CudaLgammaFunctor {
   __device__ __forceinline__ T operator()(const T x) const {
-    using MT = typename phi::dtype::MPTypeTrait<T>::Type;
+    using MT = typename MPTypeTrait<T>::Type;
     const MT mp_x = static_cast<MT>(x);
     return static_cast<T>(Eigen::numext::lgamma(mp_x));
   }
@@ -34,10 +34,13 @@ void LgammaKernel(const Context& dev_ctx,
                   DenseTensor* out) {
   // XKTODO( add gpu kernel implementation. )
   dev_ctx.template Alloc<T>(out);
+  if (out && out->numel() == 0) {
+    return;
+  }
   std::vector<const DenseTensor*> ins = {&x};
   std::vector<DenseTensor*> outs = {out};
   auto functor = CudaLgammaFunctor<T>();
-  phi::funcs::ElementwiseKernel<T>(dev_ctx, ins, &outs, functor);
+  funcs::ElementwiseKernel<T>(dev_ctx, ins, &outs, functor);
 }
 }  // namespace phi
 
@@ -47,5 +50,5 @@ PD_REGISTER_KERNEL(lgamma,
                    phi::LgammaKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}

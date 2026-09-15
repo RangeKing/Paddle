@@ -19,11 +19,20 @@ from typing import TYPE_CHECKING, Any
 import os
 import copy
 import concurrent
+import functools
 import re
+import shlex
+import subprocess
 import setuptools
+import sys
+import paddle
+import site
+from distutils.errors import DistutilsExecError, LinkError
+
 from setuptools.command.easy_install import easy_install
 from setuptools.command.build_ext import build_ext
 from distutils.command.build import build
+from setuptools.command.install import install
 
 
 from .extension_utils import (
@@ -32,6 +41,7 @@ from .extension_utils import (
     find_ccache_home,
     find_rocm_home,
     normalize_extension_kwargs,
+    define_paddle_extension_name,
 )
 from .extension_utils import (
     is_cuda_file,
@@ -51,9 +61,9 @@ from .extension_utils import (
 )
 from .extension_utils import _reset_so_rpath, clean_object_if_change_cflags
 from .extension_utils import (
-    bootstrap_context,
     get_build_directory,
     add_std_without_repeat,
+    custom_write_stub,
 )
 
 from .extension_utils import (
@@ -76,17 +86,27 @@ if TYPE_CHECKING:
 # The solution is: 1.User add function PyInit_[name] 2. set not to export
 # refer to https://stackoverflow.com/questions/34689210/error-exporting-symbol-when-building-python-c-extension-in-windows
 if IS_WINDOWS:
+    from setuptools import distutils
+    from setuptools._distutils._msvccompiler import _get_vc_env
     from distutils.command.build_ext import build_ext as _du_build_ext
     from unittest.mock import Mock
 
     _du_build_ext.get_export_symbols = Mock(return_value=None)
+
+    PLAT_TO_VCVARS = {
+        'win32': 'x86',
+        'win-amd64': 'x86_amd64',
+    }
 
 CUDA_HOME = find_cuda_home()
 if core.is_compiled_with_rocm():
     ROCM_HOME = find_rocm_home()
     CUDA_HOME = ROCM_HOME
 
-CCACHE_HOME = find_ccache_home()
+
+@functools.cache
+def _get_ccache_home():
+    return find_ccache_home()
 
 
 def setup(**attr: Any) -> None:
@@ -210,17 +230,17 @@ def setup(**attr: Any) -> None:
     if 'name' not in attr:
         raise ValueError(error_msg)
 
-    assert not attr['name'].endswith(
-        'module'
-    ), "Please don't use 'module' as suffix in `name` argument, "
+    assert not attr['name'].endswith('module'), (
+        "Please don't use 'module' as suffix in `name` argument, "
+    )
     "it will be stripped in setuptools.bdist_egg and cause import error."
 
     ext_modules = attr.get('ext_modules', [])
     if not isinstance(ext_modules, list):
         ext_modules = [ext_modules]
-    assert (
-        len(ext_modules) == 1
-    ), f"Required only one Extension, but received {len(ext_modules)}. If you want to compile multi operators, you can include all necessary source files in one Extension."
+    assert len(ext_modules) == 1, (
+        f"Required only one Extension, but received {len(ext_modules)}. If you want to compile multi operators, you can include all necessary source files in one Extension."
+    )
     # replace Extension.name with attr['name] to keep consistent with Package name.
     for ext_module in ext_modules:
         ext_module.name = attr['name']
@@ -230,6 +250,11 @@ def setup(**attr: Any) -> None:
     # Add rename .so hook in easy_install
     assert 'easy_install' not in cmdclass
     cmdclass['easy_install'] = EasyInstallCommand
+
+    # Compatible with wheel installation via `pip install .`
+    # Note: This is rarely used with modern pip, which uses bdist_wheel instead
+    assert 'install' not in cmdclass
+    cmdclass['install'] = InstallCommand
 
     # Note(Aurelius84): Add rename build_base directory hook in build command.
     # To avoid using same build directory that will lead to remove the directory
@@ -242,9 +267,7 @@ def setup(**attr: Any) -> None:
     # See http://peak.telecommunity.com/DevCenter/setuptools#setting-the-zip-safe-flag
     attr['zip_safe'] = False
 
-    # switch `write_stub` to inject paddle api in .egg
-    with bootstrap_context():
-        setuptools.setup(**attr)
+    setuptools.setup(**attr)
 
 
 def CppExtension(
@@ -292,7 +315,7 @@ def CppExtension(
     # be replaced as `setup.name` to keep consistent with package. Because we allow
     # users can not specific name in Extension.
     # See `paddle.utils.cpp_extension.setup` for details.
-    name = kwargs.get('name', None)
+    name = kwargs.pop('name', None)
     if name is None:
         name = _generate_extension_name(sources)
 
@@ -346,7 +369,7 @@ def CUDAExtension(
     # be replaced as `setup.name` to keep consistent with package. Because we allow
     # users can not specific name in Extension.
     # See `paddle.utils.cpp_extension.setup` for details.
-    name = kwargs.get('name', None)
+    name = kwargs.pop('name', None)
     if name is None:
         name = _generate_extension_name(sources)
 
@@ -402,8 +425,16 @@ class BuildExtension(build_ext):
         super().__init__(*args, **kwargs)
         self.no_python_abi_suffix = kwargs.get("no_python_abi_suffix", True)
         self.output_dir = kwargs.get("output_dir", None)
+        self.use_ninja = kwargs.get("use_ninja", True)
+        if self.use_ninja and not _is_ninja_available():
+            print(
+                "Ninja is not available, falling back to the distutils backend."
+            )
+            self.use_ninja = False
         # whether containing cuda source file in Extensions
         self.contain_cuda_file = False
+        # Initialize ccache_home to avoid race condition in multi-thread compilation
+        _get_ccache_home()
 
     def initialize_options(self) -> None:
         super().initialize_options()
@@ -423,6 +454,18 @@ class BuildExtension(build_ext):
         self._check_abi()
         current_extension_builder = self
 
+        # Check nvcc_dlink
+        ext = self.extensions[0]
+        if (
+            isinstance(ext.extra_compile_args, dict)
+            and 'nvcc_dlink' in ext.extra_compile_args
+        ):
+            cuda_dlink_post_cflags = prepare_unix_cudaflags(
+                copy.deepcopy(ext.extra_compile_args['nvcc_dlink'])
+            )
+        else:
+            cuda_dlink_post_cflags = None
+
         # Note(Aurelius84): If already compiling source before, we should check whether
         # cflags have changed and delete the built shared library to re-compile the source
         # even though source file content keep unchanged.
@@ -433,11 +476,20 @@ class BuildExtension(build_ext):
 
         # Consider .cu, .cu.cc as valid source extensions.
         self.compiler.src_extensions += ['.cu', '.cu.cc']
+
+        original_compile = None
+        original_link = None
+
         # Save the original _compile method for later.
         if self.compiler.compiler_type == 'msvc':
             self.compiler._cpp_extensions += ['.cu', '.cuh']
             original_compile = self.compiler.compile
             original_spawn = self.compiler.spawn
+        else:
+            original_compile = self.compiler.__class__.compile
+
+        for extension in self.extensions:
+            define_paddle_extension_name(extension)
 
         def unix_custom_compile_single_file(
             self, obj, src, ext, cc_args, extra_postargs, pp_opts
@@ -454,27 +506,43 @@ class BuildExtension(build_ext):
                 # nvcc or hipcc compile CUDA source
                 if is_cuda_file(src):
                     if core.is_compiled_with_rocm():
-                        assert (
-                            ROCM_HOME is not None
-                        ), "Not found ROCM runtime, \
+                        assert ROCM_HOME is not None, (
+                            "Not found ROCM runtime, \
                             please use `export ROCM_PATH= XXX` to specify it."
-                        if CCACHE_HOME is not None:
+                        )
+                        ccache_home = _get_ccache_home()
+                        if ccache_home is not None:
                             hipcc_cmd = os.path.join(ROCM_HOME, 'bin', 'hipcc')
-                            hipcc_cmd = f'{CCACHE_HOME} {hipcc_cmd}'
+                            hipcc_cmd = f'{ccache_home} {hipcc_cmd}'
                         else:
                             hipcc_cmd = os.path.join(ROCM_HOME, 'bin', 'hipcc')
                         self.set_executable('compiler_so', hipcc_cmd)
                         # {'nvcc': {}, 'cxx: {}}
                         if isinstance(cflags, dict):
                             cflags = cflags['hipcc']
+                    elif core.is_compiled_with_custom_device("iluvatar_gpu"):
+                        ixcc_cmd = os.path.join(
+                            os.getenv("COREX_HOME", "/usr/local/corex/"),
+                            'bin',
+                            'clang++',
+                        )
+                        if not os.path.isfile(ixcc_cmd):
+                            raise ValueError(
+                                "Corex compiler is unavailable, please set `COREX_HOME` to specify it."
+                            )
+                        self.set_executable('compiler_so', ixcc_cmd)
+                        # {'nvcc': {}, 'cxx: {}}
+                        if isinstance(cflags, dict):
+                            cflags = cflags['nvcc']
                     else:
-                        assert (
-                            CUDA_HOME is not None
-                        ), "Not found CUDA runtime, \
+                        assert CUDA_HOME is not None, (
+                            "Not found CUDA runtime, \
                             please use `export CUDA_HOME= XXX` to specify it."
-                        if CCACHE_HOME is not None:
+                        )
+                        ccache_home = _get_ccache_home()
+                        if ccache_home is not None:
                             nvcc_cmd = os.path.join(CUDA_HOME, 'bin', 'nvcc')
-                            nvcc_cmd = f'{CCACHE_HOME} {nvcc_cmd}'
+                            nvcc_cmd = f'{ccache_home} {nvcc_cmd}'
                         else:
                             nvcc_cmd = os.path.join(CUDA_HOME, 'bin', 'nvcc')
                         self.set_executable('compiler_so', nvcc_cmd)
@@ -485,10 +553,10 @@ class BuildExtension(build_ext):
                     cflags = prepare_unix_cudaflags(cflags)
                 # cxx compile Cpp source
                 else:
-                    if CCACHE_HOME is not None:
-                        # self.set_executable('compiler_so', [CCACHE_HOME, *self.executables['compiler_so']])
+                    ccache_home = _get_ccache_home()
+                    if ccache_home is not None:
                         self.set_executable(
-                            'compiler_so', [CCACHE_HOME, *self.compiler_so]
+                            'compiler_so', [ccache_home, *self.compiler_so]
                         )
 
                     if isinstance(cflags, dict):
@@ -527,6 +595,69 @@ class BuildExtension(build_ext):
                 # restore original_compiler
                 self.set_executable('compiler_so', original_compiler)
 
+        def unix_custom_link_shared_object(
+            self,
+            objects: list[str] | tuple[str, ...],
+            output_filename: str,
+            output_dir: str | None = None,
+            libraries: list[str] | tuple[str, ...] | None = None,
+            library_dirs: list[str] | tuple[str, ...] | None = None,
+            runtime_library_dirs: list[str] | tuple[str, ...] | None = None,
+            export_symbols: Any | None = None,
+            debug: bool = False,
+            extra_preargs: list[str] | None = None,
+            extra_postargs: list[str] | None = None,
+            build_temp: str | os.PathLike[str] | None = None,
+            target_lang: str | None = None,
+        ):
+            # Get extension
+            dlink_dir = os.path.dirname(objects[0])
+            dlink_object = os.path.join(dlink_dir, 'dlink.o')
+
+            # Construct command
+            # nvcc <objects> -o <dlink_object> <cuda_dlink_post_cflags>
+
+            if CUDA_HOME is None:
+                raise RuntimeError("CUDA_HOME is not found, please set it.")
+
+            nvcc_cmd = os.path.join(CUDA_HOME, 'bin', 'nvcc')
+
+            cmd = []
+            ccache_home = _get_ccache_home()
+            if ccache_home:
+                cmd.append(ccache_home)
+            cmd.append(nvcc_cmd)
+
+            cmd.extend(objects)
+            cmd.extend(['-o', dlink_object])
+
+            cmd.extend(cuda_dlink_post_cflags)
+
+            # Execute
+            try:
+                self.spawn(cmd)
+            except DistutilsExecError as msg:
+                raise LinkError(msg)
+
+            # Add dlink object to objects
+            objects = [*list(objects), dlink_object]
+
+            return original_link(
+                self,
+                objects,
+                output_filename,
+                output_dir,
+                libraries,
+                library_dirs,
+                runtime_library_dirs,
+                export_symbols,
+                debug,
+                extra_preargs,
+                extra_postargs,
+                build_temp,
+                target_lang,
+            )
+
         def unix_custom_single_compiler(
             self,
             sources,
@@ -552,8 +683,14 @@ class BuildExtension(build_ext):
             )
             cc_args = self._get_cc_args(pp_opts, debug, extra_preargs)
             # Create a thread pool
-            worke_number = min(os.cpu_count(), len(objects))
-            with ThreadPoolExecutor(max_workers=worke_number) as executor:
+            requested_workers = _get_num_workers(verbose=bool(self.verbose))
+            worker_number = _compute_worker_number(
+                requested_workers, os.cpu_count(), len(objects)
+            )
+            print(
+                f"Using {worker_number} workers for compilation. HINT: export MAX_JOBS=n to set the number of workers"
+            )
+            with ThreadPoolExecutor(max_workers=worker_number) as executor:
                 # Submit all compilation tasks to the thread pool.
                 futures = {
                     executor.submit(
@@ -578,6 +715,148 @@ class BuildExtension(build_ext):
                     else:
                         print(f'{obj} is compiled')
             # Return *all* object filenames, not just the ones we just built.
+            return objects
+
+        def unix_custom_ninja_compiler(
+            self,
+            sources,
+            output_dir=None,
+            macros=None,
+            include_dirs=None,
+            debug=False,
+            extra_preargs=None,
+            extra_postargs=None,
+            depends=None,
+        ):
+            macros, objects, extra_postargs, pp_opts, build = (
+                self._setup_compile(
+                    output_dir,
+                    macros,
+                    include_dirs,
+                    sources,
+                    depends,
+                    extra_postargs,
+                )
+            )
+            cc_args = self._get_cc_args(pp_opts, debug, extra_preargs)
+            build_work_directory = os.getcwd()
+            build_directory = os.path.dirname(objects[0]) if objects else "."
+            config = ['ninja_required_version = 1.5', '']
+            ccache_home = _get_ccache_home()
+            cxx = _as_command_list(self.compiler_so)
+            if ccache_home is not None:
+                cxx = [ccache_home, *cxx]
+            config.append(f'cxx = {_join_ninja_shell_list(cxx)}')
+
+            nvcc = None
+            if any(is_cuda_file(build[obj][0]) for obj in objects):
+                if core.is_compiled_with_rocm():
+                    assert ROCM_HOME is not None, (
+                        "Not found ROCM runtime, please use `export ROCM_PATH= XXX` to specify it."
+                    )
+                    nvcc = [os.path.join(ROCM_HOME, 'bin', 'hipcc')]
+                elif core.is_compiled_with_custom_device("iluvatar_gpu"):
+                    ixcc_cmd = os.path.join(
+                        os.getenv("COREX_HOME", "/usr/local/corex/"),
+                        'bin',
+                        'clang++',
+                    )
+                    if not os.path.isfile(ixcc_cmd):
+                        raise ValueError(
+                            "Corex compiler is unavailable, please set `COREX_HOME` to specify it."
+                        )
+                    nvcc = [ixcc_cmd]
+                else:
+                    assert CUDA_HOME is not None, (
+                        "Not found CUDA runtime, please use `export CUDA_HOME= XXX` to specify it."
+                    )
+                    nvcc = [os.path.join(CUDA_HOME, 'bin', 'nvcc')]
+                if ccache_home is not None:
+                    nvcc = [ccache_home, *nvcc]
+                config.append(f'nvcc = {_join_ninja_shell_list(nvcc)}')
+            config.append('')
+            config.extend(
+                [
+                    'rule compile',
+                    '  command = $cxx -MMD -MF $out.d $cflags -c $in -o $out $post_cflags',
+                    '  depfile = $out.d',
+                    '  deps = gcc',
+                ]
+            )
+            if nvcc is not None:
+                config.extend(
+                    [
+                        '',
+                        'rule cuda_compile',
+                        '  command = $nvcc $cuda_cflags -c $in -o $out $cuda_post_cflags',
+                    ]
+                )
+            config.append('')
+
+            for obj in objects:
+                src, _ = build[obj]
+                src = os.path.abspath(src)
+                obj = os.path.abspath(obj)
+                cflags = copy.deepcopy(extra_postargs)
+                if is_cuda_file(src):
+                    if isinstance(cflags, dict):
+                        if core.is_compiled_with_rocm():
+                            cflags = cflags['hipcc']
+                        else:
+                            cflags = cflags['nvcc']
+                    cuda_cflags = list(cc_args)
+                    cuda_post_cflags = prepare_unix_cudaflags(cflags)
+                    config.append(
+                        f'build {_ninja_escape_path(obj)}: cuda_compile {_ninja_escape_path(src)}'
+                    )
+                    config.append(
+                        f'  cuda_cflags = {_join_ninja_shell_list(cuda_cflags)}'
+                    )
+                    config.append(
+                        f'  cuda_post_cflags = {_join_ninja_shell_list(cuda_post_cflags)}'
+                    )
+                else:
+                    if isinstance(cflags, dict):
+                        cflags = cflags['cxx']
+                    cflags = list(cflags)
+                    if core.is_compiled_with_rocm():
+                        cflags.append('-D__HIP_PLATFORM_HCC__')
+                        cflags.append(
+                            '-DTHRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_HIP'
+                        )
+                    add_compile_flag(cflags, ['-D_GLIBCXX_USE_CXX11_ABI=1'])
+                    if current_extension_builder.contain_cuda_file:
+                        if core.is_compiled_with_rocm():
+                            cflags.append('-DPADDLE_WITH_HIP')
+                        else:
+                            cflags.append('-DPADDLE_WITH_CUDA')
+                    add_std_without_repeat(
+                        cflags, self.compiler_type, use_std17=True
+                    )
+                    config.append(
+                        f'build {_ninja_escape_path(obj)}: compile {_ninja_escape_path(src)}'
+                    )
+                    config.append(
+                        f'  cflags = {_join_ninja_shell_list(cc_args)}'
+                    )
+                    config.append(
+                        f'  post_cflags = {_join_ninja_shell_list(cflags)}'
+                    )
+                config.append('')
+
+            config.append(
+                f'default {" ".join(_ninja_escape_path(obj) for obj in objects)}'
+            )
+            _write_ninja_file(
+                os.path.join(build_directory, 'build.ninja'),
+                '\n'.join(config),
+            )
+            _run_ninja_build(
+                build_directory,
+                verbose=bool(current_extension_builder.verbose),
+                error_prefix='Failed to compile C++ extension with ninja',
+                work_directory=build_work_directory,
+            )
             return objects
 
         def win_custom_single_compiler(
@@ -628,10 +907,10 @@ class BuildExtension(build_ext):
                 src = src_list[0]
                 obj = obj_list[0]
                 if is_cuda_file(src):
-                    assert (
-                        CUDA_HOME is not None
-                    ), "Not found CUDA runtime, \
+                    assert CUDA_HOME is not None, (
+                        "Not found CUDA runtime, \
                         please use `export CUDA_HOME= XXX` to specify it."
+                    )
 
                     nvcc_cmd = os.path.join(CUDA_HOME, 'bin', 'nvcc')
                     if isinstance(self.cflags, dict):
@@ -680,6 +959,147 @@ class BuildExtension(build_ext):
             finally:
                 self.compiler.spawn = original_spawn
 
+        def win_custom_ninja_compiler(
+            sources,
+            output_dir=None,
+            macros=None,
+            include_dirs=None,
+            debug=0,
+            extra_preargs=None,
+            extra_postargs=None,
+            depends=None,
+        ):
+            if hasattr(self.compiler, 'initialize') and not getattr(
+                self.compiler, 'initialized', False
+            ):
+                self.compiler.initialize()
+            macros, objects, extra_postargs, pp_opts, build = (
+                self.compiler._setup_compile(
+                    output_dir,
+                    macros,
+                    include_dirs,
+                    sources,
+                    depends,
+                    extra_postargs,
+                )
+            )
+            build_work_directory = os.getcwd()
+            compile_opts = list(extra_preargs or [])
+            compile_opts.append('/c')
+            if debug:
+                compile_opts.extend(
+                    getattr(
+                        self.compiler,
+                        'compile_options_debug',
+                        ['/nologo', '/Od', '/MDd', '/Zi', '/W3', '/D_DEBUG'],
+                    )
+                )
+            else:
+                compile_opts.extend(
+                    getattr(
+                        self.compiler,
+                        'compile_options',
+                        ['/nologo', '/O2', '/W3', '/GL', '/DNDEBUG', '/MD'],
+                    )
+                )
+
+            config = [
+                'ninja_required_version = 1.5',
+                f'cxx = {_join_ninja_shell_list(_as_command_list(self.compiler.cc))}',
+            ]
+            if any(is_cuda_file(build[obj][0]) for obj in objects):
+                assert CUDA_HOME is not None, (
+                    "Not found CUDA runtime, please use `export CUDA_HOME= XXX` to specify it."
+                )
+                config.append(
+                    f'nvcc = {_join_ninja_shell_list([os.path.join(CUDA_HOME, "bin", "nvcc")])}'
+                )
+            config.extend(
+                [
+                    '',
+                    'rule compile',
+                    '  command = $cxx /showIncludes $cflags $source_file_flag $in /Fo$out $post_cflags',
+                    '  deps = msvc',
+                ]
+            )
+            if any(is_cuda_file(build[obj][0]) for obj in objects):
+                config.extend(
+                    [
+                        '',
+                        'rule cuda_compile',
+                        '  command = $nvcc $cuda_cflags -c $in -o $out $cuda_post_cflags',
+                    ]
+                )
+            config.append('')
+
+            for obj in objects:
+                src, ext = build[obj]
+                src = os.path.abspath(src)
+                obj = os.path.abspath(obj)
+                cflags = copy.deepcopy(extra_postargs)
+                if is_cuda_file(src):
+                    if isinstance(cflags, dict):
+                        cflags = cflags['nvcc']
+                    elif not isinstance(cflags, list):
+                        cflags = []
+                    cuda_post_cflags = [
+                        *prepare_win_cudaflags(list(cflags)),
+                        '--use-local-env',
+                    ]
+                    for flag in MSVC_COMPILE_FLAGS:
+                        cuda_post_cflags = [
+                            '-Xcompiler',
+                            flag,
+                            *cuda_post_cflags,
+                        ]
+                    config.append(
+                        f'build {_ninja_escape_path(obj)}: cuda_compile {_ninja_escape_path(src)}'
+                    )
+                    config.append(
+                        f'  cuda_cflags = {_join_ninja_shell_list(pp_opts)}'
+                    )
+                    config.append(
+                        f'  cuda_post_cflags = {_join_ninja_shell_list(cuda_post_cflags)}'
+                    )
+                else:
+                    if isinstance(cflags, dict):
+                        cflags = cflags['cxx']
+                    elif not isinstance(cflags, list):
+                        cflags = []
+                    post_cflags = [*MSVC_COMPILE_FLAGS, *cflags]
+                    if current_extension_builder.contain_cuda_file:
+                        post_cflags.append('/DPADDLE_WITH_CUDA')
+                    cflags = [*compile_opts, *pp_opts]
+                    config.append(
+                        f'build {_ninja_escape_path(obj)}: compile {_ninja_escape_path(src)}'
+                    )
+                    config.append(
+                        f'  cflags = {_join_ninja_shell_list(cflags)}'
+                    )
+                    config.append(
+                        f'  source_file_flag = {"/Tc" if ext == ".c" else "/Tp"}'
+                    )
+                    config.append(
+                        f'  post_cflags = {_join_ninja_shell_list(post_cflags)}'
+                    )
+                config.append('')
+
+            config.append(
+                f'default {" ".join(_ninja_escape_path(obj) for obj in objects)}'
+            )
+            build_directory = os.path.dirname(objects[0]) if objects else "."
+            _write_ninja_file(
+                os.path.join(build_directory, 'build.ninja'),
+                '\n'.join(config),
+            )
+            _run_ninja_build(
+                build_directory,
+                verbose=bool(current_extension_builder.verbose),
+                error_prefix='Failed to compile C++ extension with ninja',
+                work_directory=build_work_directory,
+            )
+            return objects
+
         def object_filenames_with_cuda(original_func, build_directory):
             """
             Decorated the function to add customized naming mechanism.
@@ -703,7 +1123,7 @@ class BuildExtension(build_ext):
                     # if user set build_directory, output objects there.
                     if build_directory is not None:
                         objects = [
-                            os.path.join(build_directory, os.path.basename(obj))
+                            os.path.join(build_directory, obj)
                             for obj in objects
                         ]
                     # ensure to use abspath
@@ -717,24 +1137,39 @@ class BuildExtension(build_ext):
 
         # customized compile process
         if self.compiler.compiler_type == 'msvc':
-            original_compile = self.compiler.compile
-            self.compiler.compile = win_custom_single_compiler
+            if self.use_ninja:
+                self.compiler.compile = win_custom_ninja_compiler
+            else:
+                self.compiler.compile = win_custom_single_compiler
         else:
-            original_compile = self.compiler.__class__.compile
-            self.compiler.__class__.compile = unix_custom_single_compiler
+            if self.use_ninja:
+                self.compiler.__class__.compile = unix_custom_ninja_compiler
+            else:
+                self.compiler.__class__.compile = unix_custom_single_compiler
 
+        # Ensure object files are generated under build_temp, not build_lib,
+        # to avoid accidental inclusion into wheel contents.
         self.compiler.object_filenames = object_filenames_with_cuda(
-            self.compiler.object_filenames, self.build_lib
+            self.compiler.object_filenames, self.build_temp
         )
         self._record_op_info()
 
-        print("Compiling user custom op, it will cost a few seconds.....")
-        build_ext.build_extensions(self)
+        try:
+            if cuda_dlink_post_cflags and self.compiler.compiler_type != 'msvc':
+                original_link = self.compiler.__class__.link_shared_object
+                self.compiler.__class__.link_shared_object = (
+                    unix_custom_link_shared_object
+                )
 
-        if self.compiler.compiler_type == 'msvc':
-            self.compiler.compile = original_compile
-        else:
-            self.compiler.__class__.compile = original_compile
+            print("Compiling user custom op, it will cost a few seconds.....")
+            build_ext.build_extensions(self)
+        finally:
+            if self.compiler.compiler_type == 'msvc':
+                self.compiler.compile = original_compile
+            else:
+                self.compiler.__class__.compile = original_compile
+                if original_link:
+                    self.compiler.__class__.link_shared_object = original_link
 
         # Reset runtime library path on MacOS platform
         so_path = self.get_ext_fullpath(self.extensions[0]._full_name)
@@ -746,9 +1181,9 @@ class BuildExtension(build_ext):
         split_str = '.'
         name_items = ext_name.split(split_str)
         if self.no_python_abi_suffix:
-            assert (
-                len(name_items) > 2
-            ), f"Expected len(name_items) > 2, but received {len(name_items)}"
+            assert len(name_items) > 2, (
+                f"Expected len(name_items) > 2, but received {len(name_items)}"
+            )
             name_items.pop(-2)
             ext_name = split_str.join(name_items)
 
@@ -818,6 +1253,97 @@ class BuildExtension(build_ext):
                 CustomOpInfo.instance().add(
                     op_name, so_name=so_name, so_path=so_path
                 )
+
+    def _clean_intermediate_files(self):
+        for ext in self.extensions:
+            build_dir = os.path.dirname(self.get_ext_fullpath(ext.name))
+            for root, _, files in os.walk(build_dir):
+                for file in files:
+                    if file.endswith(".cu.o") or file.endswith('.o'):
+                        os.remove(os.path.join(root, file))
+                        print(f"Removed: {os.path.join(root, file)}")
+
+    def _generate_python_api_file(self) -> None:
+        """
+        Generate the top-level python api file (package stub) alongside the
+        built shared library in build_lib. This replaces the legacy bdist_egg
+        write_stub mechanism that is no longer triggered in setuptools >= 80.
+        """
+        try:
+            if not self.extensions:
+                return
+
+            # We only support a single extension per setup()
+            ext = self.extensions[0]
+            # Use get_ext_fullpath to handle both standard and inplace builds correctly
+            so_path = os.path.abspath(self.get_ext_fullpath(ext.name))
+            so_name = os.path.basename(so_path)
+            build_dir = os.path.dirname(so_path)
+
+            # Get the extension name from the extension module, not the distribution name
+            # This ensures we use the correct package name from setup.py
+            ext_name = ext.name
+
+            # Extract the last part of the extension name for the Python file
+            # For example, from "custom_setup_ops.my_ops.custom_relu" we get "custom_relu"
+            lib_name = ext_name.split('.')[-1] if '.' in ext_name else ext_name
+
+            pyfile = os.path.join(build_dir, f"{lib_name}.py")
+            # Write stub; it will reference the _pd_ renamed resource at import time
+            custom_write_stub(so_name, pyfile)
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to generate python api file: {e}"
+            ) from e
+
+    def _rename_inplace_shared_library(self) -> None:
+        """
+        Rename the shared library to *_pd_.so if it is an inplace build.
+        This is necessary for editable installs to work correctly with the python stub.
+        """
+        # We only support a single extension per setup()
+        if not self.extensions:
+            return
+
+        ext = self.extensions[0]
+        fullpath = self.get_ext_fullpath(ext.name)
+
+        filename = os.path.basename(fullpath)
+        dirname = os.path.dirname(fullpath)
+        name, ext_suffix = os.path.splitext(filename)
+
+        will_rename = False
+        if OS_NAME.startswith('linux') and ext_suffix == '.so':
+            will_rename = True
+        elif OS_NAME.startswith('darwin') and (
+            ext_suffix == '.dylib' or ext_suffix == '.so'
+        ):
+            will_rename = True
+        elif IS_WINDOWS and ext_suffix == '.pyd':
+            will_rename = True
+
+        if will_rename:
+            new_name = f"{name}_pd_{ext_suffix}"
+            new_path = os.path.join(dirname, new_name)
+
+            if os.path.exists(fullpath):
+                if os.path.exists(new_path):
+                    os.remove(new_path)
+                os.rename(fullpath, new_path)
+                print(
+                    f"Renaming {fullpath} to {new_path} for editable install compatibility"
+                )
+
+    def run(self):
+        super().run()
+
+        # Compatible with wheel installation via `pip install .`
+        self._generate_python_api_file()
+
+        if self.inplace:
+            self._rename_inplace_shared_library()
+
+        self._clean_intermediate_files()
 
 
 class EasyInstallCommand(easy_install):
@@ -890,6 +1416,222 @@ class BuildCommand(build):
         super().initialize_options()
         if self._specified_build_base is not None:
             self.build_base = self._specified_build_base
+
+
+class InstallCommand(install):
+    """
+    Extend install Command to:
+      1) choose an install dir that is actually importable (on sys.path)
+      2) ensure a single top-level entry for the package in site/dist-packages so
+         legacy tests that expect a sole artifact (egg/package) keep working
+      3) rename the compiled library to *_pd_.so to avoid shadowing the python stub
+    """
+
+    def _get_extension_name(self) -> str:
+        """
+        Get the extension name from the extension module, not the distribution name.
+        This ensures we use the correct package name from setup.py.
+
+        Note: This assumes there is only one extension module (len(ext_modules) == 1).
+
+        Returns:
+            str: The extension name
+        """
+        return self.distribution.ext_modules[0].name
+
+    def finalize_options(self) -> None:
+        super().finalize_options()
+
+        install_dir = (
+            getattr(self, 'install_lib', None)
+            or getattr(self, 'install_purelib', None)
+            or getattr(self, 'install_platlib', None)
+        )
+        if not install_dir or not os.path.isdir(install_dir):
+            return
+
+        # Get the extension name
+        ext_name = self._get_extension_name()
+
+        # Extract the first part of the extension name for the shared library
+        # For example, from "custom_setup_ops.my_ops.custom_relu" we get "custom_setup_ops"
+        pkg_name = ext_name.split('.')[0] if '.' in ext_name else ext_name
+
+        # Check if dist-info exists
+        has_dist_info = any(
+            name.endswith('.dist-info') and name.startswith(pkg_name)
+            for name in os.listdir(install_dir)
+        )
+        # If dist-info exists, we are installing a wheel, so we are done
+        if has_dist_info:
+            return
+
+        # Build candidate site dirs: global + user + entries already on sys.path
+        candidates = []
+        candidates.extend(site.getsitepackages())
+        usp = site.getusersitepackages()
+        if usp:
+            candidates.append(usp)
+        for sp in sys.path:
+            if isinstance(sp, str) and sp.endswith(
+                ('site-packages', 'dist-packages')
+            ):
+                candidates.append(sp)
+        # De-dup while preserving order
+        seen = set()
+        ordered = []
+        for c in candidates:
+            if c and c not in seen:
+                seen.add(c)
+                ordered.append(c)
+        # Prefer a candidate that is actually on sys.path
+        target = None
+        for c in ordered:
+            if c in sys.path and os.path.isdir(c):
+                target = c
+                break
+        # Fallback: pick the first existing candidate
+        if target is None:
+            for c in ordered:
+                if os.path.isdir(c):
+                    target = c
+                    break
+        if target:
+            option_dict = self.distribution.get_option_dict('install')
+
+            if 'install_lib' not in option_dict:
+                self.install_lib = target
+
+            if 'install_purelib' not in option_dict:
+                self.install_purelib = target
+
+            if 'install_platlib' not in option_dict:
+                self.install_platlib = target
+
+    def run(self, *args: Any, **kwargs: Any) -> None:
+        super().run(*args, **kwargs)
+
+        install_dir = (
+            getattr(self, 'install_lib', None)
+            or getattr(self, 'install_purelib', None)
+            or getattr(self, 'install_platlib', None)
+        )
+        if not install_dir or not os.path.isdir(install_dir):
+            return
+
+        # Get the extension name
+        ext_name = self._get_extension_name()
+
+        # Extract the first part of the extension name for the shared library
+        # For example, from "custom_setup_ops.my_ops.custom_relu" we get "custom_setup_ops"
+        pkg_name = ext_name.split('.')[0] if '.' in ext_name else ext_name
+
+        # Check if dist-info exists
+        has_egg_info = any(
+            name.endswith('.egg-info') and name.startswith(pkg_name)
+            for name in os.listdir(install_dir)
+        )
+        # If egg-info exists, we are installing a source distribution, we need to
+        # reorganize the files
+        if has_egg_info:
+            # First rename the shared library if present at top-level
+            self._rename_shared_library()
+            # Then canonicalize layout to a single top-level entry for this package
+            self._single_entry_layout()
+
+    def _rename_shared_library(self) -> None:
+        install_dir = (
+            getattr(self, 'install_lib', None)
+            or getattr(self, 'install_purelib', None)
+            or getattr(self, 'install_platlib', None)
+        )
+        if not install_dir or not os.path.isdir(install_dir):
+            return
+
+        # Get the extension name
+        ext_name = self._get_extension_name()
+
+        # Extract the last part of the extension name for the shared library
+        # For example, from "custom_setup_ops.my_ops.custom_relu" we get "custom_relu"
+        names = ext_name.split('.') if '.' in ext_name else [ext_name]
+        lib_name = names[-1]
+
+        suffix = (
+            '.pyd'
+            if IS_WINDOWS
+            else ('.dylib' if OS_NAME.startswith('darwin') else '.so')
+        )
+
+        # Build the directory path for the shared library
+        # For single-level: names[:-1] is empty, so dir_path = install_dir
+        # For multi-level: names[:-1] contains the package path
+        dir_path = os.path.join(install_dir, *names[:-1])
+        old = os.path.join(dir_path, f"{lib_name}{suffix}")
+        new = os.path.join(dir_path, f"{lib_name}_pd_{suffix}")
+        if os.path.exists(old):
+            if os.path.exists(new):
+                os.remove(new)
+            os.rename(old, new)
+
+    def _single_entry_layout(self) -> None:
+        """
+        Ensure only one top-level item in install_dir contains the package name by:
+          - moving {pkg}.py -> {pkg}/__init__.py
+          - moving {pkg}_pd_.so -> {pkg}/{pkg}_pd_.so
+          - removing any {pkg}-*.egg-info left by setuptools install (only if dist-info exists)
+        This keeps legacy tests that scan os.listdir(site_dir) happy.
+        """
+        install_dir = (
+            getattr(self, 'install_lib', None)
+            or getattr(self, 'install_purelib', None)
+            or getattr(self, 'install_platlib', None)
+        )
+        if not install_dir or not os.path.isdir(install_dir):
+            return
+
+        # Get the extension name
+        ext_name = self._get_extension_name()
+
+        # Extract the package path from the extension name
+        # For example, from "custom_setup_ops.my_ops.custom_relu" we get "custom_setup_ops/my_ops"
+        pkg_path_parts = (
+            ext_name.split('.')[:-1] if '.' in ext_name else [ext_name]
+        )
+        pkg_path = os.path.join(*pkg_path_parts)
+
+        # Extract the last part of the extension name for the Python file and shared library
+        # For example, from "custom_setup_ops.my_ops.custom_relu" we get "custom_relu"
+        lib_name = ext_name.split('.')[-1] if '.' in ext_name else ext_name
+
+        # Prepare paths
+        pkg_dir = os.path.join(install_dir, pkg_path)
+        py_src = os.path.join(install_dir, f"{lib_name}.py")
+        # Find compiled lib (renamed or not)
+        suf_so = (
+            '.pyd'
+            if IS_WINDOWS
+            else ('.dylib' if OS_NAME.startswith('darwin') else '.so')
+        )
+        so_candidates = [
+            os.path.join(install_dir, f"{lib_name}_pd_{suf_so}"),
+            os.path.join(install_dir, f"{lib_name}{suf_so}"),
+        ]
+        so_src = next((p for p in so_candidates if os.path.exists(p)), None)
+        # Create package dir
+        if not os.path.isdir(pkg_dir):
+            os.makedirs(pkg_dir, exist_ok=True)
+        # Move python stub to package/__init__.py if exists
+        if os.path.exists(py_src):
+            py_dst = os.path.join(pkg_dir, "__init__.py")
+            if os.path.exists(py_dst):
+                os.remove(py_dst)
+            os.replace(py_src, py_dst)
+        # Move shared lib into the package dir if exists
+        if so_src and os.path.exists(so_src):
+            so_dst = os.path.join(pkg_dir, os.path.basename(so_src))
+            if os.path.exists(so_dst):
+                os.remove(so_dst)
+            os.replace(so_src, so_dst)
 
 
 def load(
@@ -1003,12 +1745,12 @@ def load(
         extra_cxx_cflags = []
     if extra_cuda_cflags is None:
         extra_cuda_cflags = []
-    assert isinstance(
-        extra_cxx_cflags, list
-    ), f"Required type(extra_cxx_cflags) == list[str], but received {extra_cxx_cflags}"
-    assert isinstance(
-        extra_cuda_cflags, list
-    ), f"Required type(extra_cuda_cflags) == list[str], but received {extra_cuda_cflags}"
+    assert isinstance(extra_cxx_cflags, list), (
+        f"Required type(extra_cxx_cflags) == list[str], but received {extra_cxx_cflags}"
+    )
+    assert isinstance(extra_cuda_cflags, list), (
+        f"Required type(extra_cuda_cflags) == list[str], but received {extra_cuda_cflags}"
+    )
 
     log_v(
         "additional extra_cxx_cflags: [{}], extra_cuda_cflags: [{}]".format(
@@ -1038,3 +1780,119 @@ def load(
     custom_op_api = _import_module_from_library(name, build_base_dir, verbose)
 
     return custom_op_api
+
+
+def _is_ninja_available() -> bool:
+    try:
+        subprocess.check_output(['ninja', '--version'])
+    except Exception:
+        return False
+    return True
+
+
+def _ninja_escape_path(path: str) -> str:
+    return str(path).replace('$', '$$').replace(' ', '$ ').replace(':', '$:')
+
+
+def _join_ninja_shell_list(args: Sequence[str] | str) -> str:
+    if isinstance(args, str):
+        return args
+    items = [str(arg) for arg in args if str(arg)]
+    return subprocess.list2cmdline(items) if IS_WINDOWS else shlex.join(items)
+
+
+def _as_command_list(command: Sequence[str] | str) -> list[str]:
+    if isinstance(command, str):
+        return [command]
+    return [str(arg) for arg in command]
+
+
+def _write_ninja_file(path: str, content: str) -> None:
+    build_directory = os.path.dirname(path)
+    if build_directory and not os.path.exists(build_directory):
+        os.makedirs(build_directory)
+    if not content.endswith('\n'):
+        content += '\n'
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(content)
+
+
+def _run_ninja_build(
+    build_directory: str,
+    verbose: bool,
+    error_prefix: str,
+    work_directory: str | None = None,
+) -> None:
+    command = ['ninja', '-v']
+    cwd = build_directory if work_directory is None else work_directory
+    if os.path.abspath(cwd) != os.path.abspath(build_directory):
+        command.extend(['-f', os.path.join(build_directory, 'build.ninja')])
+    num_workers = _get_num_workers(verbose)
+    if num_workers is not None:
+        command.extend(['-j', str(num_workers)])
+
+    env = os.environ.copy()
+    if IS_WINDOWS and 'VSCMD_ARG_TGT_ARCH' not in env:
+        plat_name = distutils.util.get_platform()
+        plat_spec = PLAT_TO_VCVARS.get(plat_name)
+        if plat_spec is not None:
+            vc_env = {k.upper(): v for k, v in _get_vc_env(plat_spec).items()}
+            for k, v in env.items():
+                uk = k.upper()
+                if uk not in vc_env:
+                    vc_env[uk] = v
+            env = vc_env
+
+    try:
+        subprocess.run(
+            command,
+            cwd=cwd,
+            env=env,
+            check=True,
+            stdout=None if verbose else subprocess.PIPE,
+            stderr=None if verbose else subprocess.STDOUT,
+            text=not verbose,
+        )
+    except subprocess.CalledProcessError as error:
+        error_message = f"{error_prefix}: {error}"
+        if not verbose and error.output:
+            error_message = f"{error_message}\n{error.output.rstrip()}"
+        raise RuntimeError(error_message) from error
+
+
+def _get_pybind11_abi_build_flags():
+    abi_cflags = []
+    for pname in ["COMPILER_TYPE", "STDLIB", "BUILD_ABI"]:
+        pval = getattr(paddle._C, f"_PYBIND11_{pname}")
+        if pval is not None and not IS_WINDOWS:
+            abi_cflags.append(f'-DPYBIND11_{pname}=\\"{pval}\\"')
+    return abi_cflags
+
+
+def _get_num_workers(verbose: bool) -> int | None:
+    max_jobs = os.environ.get('MAX_JOBS')
+    if max_jobs is not None and max_jobs.isdigit():
+        if verbose:
+            print(
+                f'Using envvar MAX_JOBS ({max_jobs}) as the number of workers...',
+                file=sys.stderr,
+            )
+        return int(max_jobs)
+    if verbose:
+        print(
+            'Allowing ninja to set a default number of workers... '
+            '(overridable by setting the environment variable MAX_JOBS=N)',
+            file=sys.stderr,
+        )
+    return None
+
+
+def _compute_worker_number(
+    requested_workers: int | None, cpu_count: int | None, num_objects: int
+) -> int:
+    cpu_count = cpu_count or 1
+    if requested_workers is None:
+        worker_number = min(cpu_count, num_objects)
+    else:
+        worker_number = max(1, min(requested_workers, cpu_count, num_objects))
+    return worker_number

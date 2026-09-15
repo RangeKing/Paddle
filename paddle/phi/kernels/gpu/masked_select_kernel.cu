@@ -53,20 +53,26 @@ void MaskedSelectKernel(const Context& dev_ctx,
   DenseTensor mask_expand;
   DenseTensor x_expand;
 
-  auto expanded_size = funcs::MatrixGetBroadcastBatchPortion(
-      common::vectorize(x.dims()), common::vectorize(mask.dims()));
+  if (x.numel() == 0 || mask.numel() == 0) {
+    out->Resize({0});
+    dev_ctx.template Alloc<T>(out);
 
-  DDim epxand_dims = common::make_ddim(expanded_size);
-  if (mask.dims() != epxand_dims) {
-    phi::ExpandKernel<bool, Context>(
+    return;
+  }
+
+  auto expanded_size = funcs::MatrixGetBroadcastBatchPortion(
+      vectorize(x.dims()), vectorize(mask.dims()));
+
+  DDim expand_dims = make_ddim(expanded_size);
+  if (mask.dims() != expand_dims) {
+    ExpandKernel<bool, Context>(
         dev_ctx, mask, IntArray(expanded_size), &mask_expand);
   } else {
     mask_expand = mask;
   }
 
-  if (x.dims() != epxand_dims) {
-    phi::ExpandKernel<T, Context>(
-        dev_ctx, x, IntArray(expanded_size), &x_expand);
+  if (x.dims() != expand_dims) {
+    ExpandKernel<T, Context>(dev_ctx, x, IntArray(expanded_size), &x_expand);
   } else {
     x_expand = x;
   }
@@ -84,7 +90,7 @@ void MaskedSelectKernel(const Context& dev_ctx,
                         mask_dim));
 
   using Functor = MaskedSelectFunctor<bool, T, T>;
-  phi::funcs::SelectKernel<bool, T, T, 1, Functor>(
+  funcs::SelectKernel<bool, T, T, 1, Functor>(
       dev_ctx, mask_expand, x_expand, out, Functor());
 }
 
@@ -102,9 +108,9 @@ PD_REGISTER_KERNEL(masked_select,
                    int64_t,
                    int16_t,
                    uint8_t,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::complex64,
+                   phi::complex128) {
   kernel->InputAt(1).SetDataType(phi::DataType::BOOL);
 }

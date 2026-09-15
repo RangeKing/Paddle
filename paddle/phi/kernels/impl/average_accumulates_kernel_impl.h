@@ -48,18 +48,16 @@ void AverageAccumulatesKernel(const Context& dev_ctx,
   // int64_t num_accumulates = 0;
   // int64_t old_num_accumulates = 0;
 
-  auto num_updates_cpu =
-      phi::memory_utils::Alloc(phi::CPUPlace(), sizeof(int64_t));
+  auto num_updates_cpu = memory_utils::Alloc(CPUPlace(), sizeof(int64_t));
   int64_t* num_updates_cpu_ptr =
       reinterpret_cast<int64_t*>(num_updates_cpu->ptr());
 
-  auto num_accumulates_cpu =
-      phi::memory_utils::Alloc(phi::CPUPlace(), sizeof(int64_t));
+  auto num_accumulates_cpu = memory_utils::Alloc(CPUPlace(), sizeof(int64_t));
   int64_t* num_accumulates_cpu_ptr =
       reinterpret_cast<int64_t*>(num_accumulates_cpu->ptr());
 
   auto old_num_accumulates_cpu =
-      phi::memory_utils::Alloc(phi::CPUPlace(), sizeof(int64_t));
+      memory_utils::Alloc(CPUPlace(), sizeof(int64_t));
   int64_t* old_num_accumulates_cpu_ptr =
       reinterpret_cast<int64_t*>(old_num_accumulates_cpu->ptr());
 
@@ -71,9 +69,9 @@ void AverageAccumulatesKernel(const Context& dev_ctx,
                            num_accumulates_cpu_ptr,
                            old_num_accumulates_cpu_ptr);
   // Get attrs
-  // float average_window = ctx.Attr<float>("average_window");
-  // int64_t max_average_window = ctx.Attr<int64_t>("max_average_window");
-  // int64_t min_average_window = ctx.Attr<int64_t>("min_average_window");
+  // float average_window = dev_ctx.Attr<float>("average_window");
+  // int64_t max_average_window = dev_ctx.Attr<int64_t>("max_average_window");
+  // int64_t min_average_window = dev_ctx.Attr<int64_t>("min_average_window");
   PADDLE_ENFORCE_LE(
       min_average_window,
       max_average_window,
@@ -85,19 +83,19 @@ void AverageAccumulatesKernel(const Context& dev_ctx,
           max_average_window));
 
   // Get inputs
-  // auto* param = ctx.Input<phi::DenseTensor>("param");
-  // auto* in_sum_1 = ctx.Input<phi::DenseTensor>("in_sum_1");
-  // auto* in_sum_2 = ctx.Input<phi::DenseTensor>("in_sum_2");
-  // auto* in_sum_3 = ctx.Input<phi::DenseTensor>("in_sum_3");
+  // auto* param = dev_ctx.Input<DenseTensor>("param");
+  // auto* in_sum_1 = dev_ctx.Input<DenseTensor>("in_sum_1");
+  // auto* in_sum_2 = dev_ctx.Input<DenseTensor>("in_sum_2");
+  // auto* in_sum_3 = dev_ctx.Input<DenseTensor>("in_sum_3");
   auto param_tensor = EigenVector<T>::Flatten(param);
   auto in_sum_1_tensor = EigenVector<T>::Flatten(in_sum_1);
   auto in_sum_2_tensor = EigenVector<T>::Flatten(in_sum_2);
   auto in_sum_3_tensor = EigenVector<T>::Flatten(in_sum_3);
 
   // Get outputs
-  // auto* out_sum_1 = ctx.Output<phi::DenseTensor>("out_sum_1");
-  // auto* out_sum_2 = ctx.Output<phi::DenseTensor>("out_sum_2");
-  // auto* out_sum_3 = ctx.Output<phi::DenseTensor>("out_sum_3");
+  // auto* out_sum_1 = dev_ctx.Output<DenseTensor>("out_sum_1");
+  // auto* out_sum_2 = dev_ctx.Output<DenseTensor>("out_sum_2");
+  // auto* out_sum_3 = dev_ctx.Output<DenseTensor>("out_sum_3");
   dev_ctx.template Alloc<T>(out_sum_1);
   dev_ctx.template Alloc<T>(out_sum_2);
   dev_ctx.template Alloc<T>(out_sum_3);
@@ -106,8 +104,6 @@ void AverageAccumulatesKernel(const Context& dev_ctx,
   auto out_sum_2_tensor = EigenVector<T>::Flatten(*out_sum_2);
   auto out_sum_3_tensor = EigenVector<T>::Flatten(*out_sum_3);
 
-  // Compute
-  // auto& place = *ctx.template device_context<DeviceContext>().eigen_device();
   auto& place = *dev_ctx.eigen_device();
 
   funcs::SetConstant<Context, T> constant_functor;

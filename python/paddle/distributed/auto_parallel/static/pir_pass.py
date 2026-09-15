@@ -43,6 +43,7 @@ from .utils import (
     get_pp_stage_by_process_mesh,
     get_sub_process_mesh_by_program,
     partition_skip_op_list,
+    update_pylayer_output,
 )
 
 _logger = get_logger(
@@ -85,16 +86,16 @@ def reshard_single_value(program, op, operand, attr):
 def reshard_combine_value(program, op, operand, attr):
     prev_var = operand.source()
 
-    assert (
-        prev_var.get_defining_op().name() == 'builtin.combine'
-    ), f"TensorList must be defined by builtin.combine op, but is {prev_var.get_defining_op().name()}."
+    assert prev_var.get_defining_op().name() == 'builtin.combine', (
+        f"TensorList must be defined by builtin.combine op, but is {prev_var.get_defining_op().name()}."
+    )
 
     combine_op = prev_var.get_defining_op()
     array_attr = attr.as_array_attr()
 
-    assert len(combine_op.operands()) == len(
-        array_attr
-    ), "The number of combine op operands and the number of dist array_attr are not equal in op"
+    assert len(combine_op.operands()) == len(array_attr), (
+        "The number of combine op operands and the number of dist array_attr are not equal in op"
+    )
 
     reshard_vars = []
     for inner_operand, inner_attr in zip(combine_op.operands(), array_attr):
@@ -120,12 +121,12 @@ def apply_partition_pass(program, block=None):
         if op.name() in partition_skip_op_list:
             continue
 
-        assert len(op.operands()) == len(
-            op.dist_attr.operands()
-        ), f"The number of operands and the number of op_dist_attr's operands are not equal in op: {op}"
-        assert len(op.results()) == len(
-            op.dist_attr.results()
-        ), f"The number of results and the number of op_dist_attr's results are not equal in op: {op}"
+        assert len(op.operands()) == len(op.dist_attr.operands()), (
+            f"The number of operands and the number of op_dist_attr's operands are not equal in op: {op}"
+        )
+        assert len(op.results()) == len(op.dist_attr.results()), (
+            f"The number of results and the number of op_dist_attr's results are not equal in op: {op}"
+        )
 
         # deal with inplace value
         for out_idx, in_idx in paddle.core.pir.get_op_inplace_info(op).items():
@@ -134,12 +135,16 @@ def apply_partition_pass(program, block=None):
             operand = op.operand(in_idx)
             operand_attr = op.dist_attr.operand(in_idx)
             prev_var = operand.source()
-            if not prev_var.is_dist() or operand_attr == prev_var.dist_attr():
+            if (
+                not prev_var.is_dist()
+                or operand_attr == prev_var.dist_attr()
+                or not prev_var.persistable
+            ):
                 continue
 
-            assert (
-                not prev_var.is_combine()
-            ), f"The current partition pass not support inplace value of {op} is tensor list."
+            assert not prev_var.is_combine(), (
+                f"The current partition pass not support inplace value of {op} is tensor list."
+            )
 
             operand_attr = operand_attr.as_tensor_dist_attr()
 
@@ -151,9 +156,9 @@ def apply_partition_pass(program, block=None):
 
             result = op.result(out_idx)
             result_attr = op.dist_attr.result(out_idx).as_tensor_dist_attr()
-            assert (
-                operand_attr == result_attr
-            ), f"For inplace value, The operend dist attr should be equal to result dist attr , please check your infer_spmd func of {op}"
+            assert operand_attr == result_attr, (
+                f"For inplace value, The operend dist attr should be equal to result dist attr , please check your infer_spmd func of {op}"
+            )
 
             # reshard output
             paddle.pir.set_insertion_point_after(op)
@@ -227,10 +232,9 @@ def apply_partition_pass(program, block=None):
 
 
 class ReshardPasses:
-
     @staticmethod
     def decompose_reshard_pass(dist_program):
-        # split composed reshard op into atomic reshard ops, which would increase the oppotunity of reshard Re-Use in following fold_reshard_pass.
+        # split composed reshard op into atomic reshard ops, which would increase the opportunity of reshard Re-Use in following fold_reshard_pass.
         del_ops = []
         for op in dist_program.global_block().ops:
             if op.name() != 'dist_op.reshard':
@@ -241,9 +245,13 @@ class ReshardPasses:
             # split the reshard compose p2p and collective into one p2p reshard and one collective reshard.
             # avoid global to sub mesh case
             if (
-                input.dist_attr().process_mesh
-                != result.dist_attr().process_mesh
-            ) and input.dist_attr().process_mesh.ndim == result.dist_attr().process_mesh.ndim:
+                (
+                    input.dist_attr().process_mesh
+                    != result.dist_attr().process_mesh
+                )
+                and input.dist_attr().process_mesh.ndim
+                == result.dist_attr().process_mesh.ndim
+            ):
                 if (
                     input.dist_attr().placements
                     != result.dist_attr().placements
@@ -317,7 +325,9 @@ class ReshardPasses:
 
                 assert (
                     not var.initialized() or var.dist_attr() == src_dist_attr
-                ), f"The dist_attr of reshard op's input and operand should be equal, but got {var.dist_attr()} and {src_dist_attr}"
+                ), (
+                    f"The dist_attr of reshard op's input and operand should be equal, but got {var.dist_attr()} and {src_dist_attr}"
+                )
 
                 if src_dist_attr == dst_dist_attr:
                     op.result(0).replace_all_uses_with(var)
@@ -328,21 +338,43 @@ class ReshardPasses:
                     op.erase()
                     continue
 
-                reshard_func = choose_reshard_func(src_dist_attr, dst_dist_attr)
-                assert (
-                    reshard_func is not None
-                ), f'There is no reshard function that matches src_dist_attr: {src_dist_attr} and dst_dist_attr: {dst_dist_attr}, {var.get_defining_op()}'
-
                 paddle.pir.set_insertion_point(op)
                 ref_op_role = op.op_role
 
-                with pir_op_role_guard(ref_op_role):
-                    out_value = reshard_func.reshard(
-                        src_dist_attr,
-                        dst_dist_attr,
-                        op.operand_source(0),
-                        op.result(0).type(),
+                all_to_all_dim = (
+                    dist.auto_parallel.moe_utils._specific_alltoall_dim(
+                        var,
+                        dst_dist_attr.process_mesh,
+                        dst_dist_attr.placements_attr,
                     )
+                )
+
+                if all_to_all_dim is not None:
+                    with pir_op_role_guard(ref_op_role):
+                        out_value = (
+                            dist.auto_parallel.moe_utils._pir_nd_mesh_all2all(
+                                op.operand_source(0),
+                                op.result(0).type(),
+                                dst_dist_attr.process_mesh,
+                                dst_dist_attr.placements_attr,
+                                all_to_all_dim,
+                            )
+                        )
+                else:
+                    reshard_func = choose_reshard_func(
+                        src_dist_attr, dst_dist_attr
+                    )
+                    assert reshard_func is not None, (
+                        f'There is no reshard function that matches src_dist_attr: {src_dist_attr} and dst_dist_attr: {dst_dist_attr}, {var.get_defining_op()}'
+                    )
+
+                    with pir_op_role_guard(ref_op_role):
+                        out_value = reshard_func.reshard(
+                            src_dist_attr,
+                            dst_dist_attr,
+                            op.operand_source(0),
+                            op.result(0).type(),
+                        )
 
                 if out_value is not None:
                     op.result(0).replace_all_uses_with(out_value)
@@ -381,9 +413,9 @@ def replace_moe_sub_mesh_tensors(op):
     for idx, val in enumerate(op.results()):
         val_mesh = val.dist_attr().process_mesh
         if cur_rank in val_mesh.process_ids:
-            assert (
-                out_value is None
-            ), f'{op} has more than one results on rank {cur_rank}'
+            assert out_value is None, (
+                f'{op} has more than one results on rank {cur_rank}'
+            )
             out_value = val
             out_idx = idx
 
@@ -404,47 +436,104 @@ def replace_moe_sub_mesh_tensors(op):
             [op_dist_attr.result(out_idx).as_tensor_dist_attr()],
         )
     )
-
+    for val in op.results():
+        if not val.use_empty():
+            update_pylayer_output(val)
     assert all(val.use_empty() for val in op.results())
     op.erase()
+
+
+def remove_sub_block_unused_inputs(op):
+    inputs_size = op.operand_source.num_operands()
+    inputs = [op.operand_source(i) for i in range(inputs_size)]
+    # remove unused inputs
 
 
 class RemovePasses:
     @staticmethod
     def remove_other_rank_op_pass(dist_program):
         # pruning op and value not belong to cur rank
-        cur_rank = paddle.distributed.get_rank()
+        def prune_op(block):
+            cur_rank = paddle.distributed.get_rank()
+            reverse_block_ops = block.ops[::-1]
+            skip_idx = 0
+            for idx, op in enumerate(reverse_block_ops):
+                if idx < skip_idx:
+                    continue
+                skip_idx += 1
 
-        for op in dist_program.global_block().ops[::-1]:
-            if op.name() == "dist_op.moe_sub_mesh_tensors":
-                replace_moe_sub_mesh_tensors(op)
-                continue
-            elif op.name() == "dist_op.moe_global_mesh_tensor":
-                replace_moe_global_mesh_tensor(op)
-                continue
-            elif op.name() == "cf.tuple_push":
-                stack_create_op = op.operand_source(0).get_defining_op()
-                if stack_create_op.result(2).use_empty():
-                    op.erase()
-                continue
-            elif op.name() == "cf.yield":
-                continue
-            elif op.name() in partition_skip_op_list:
-                can_delete = True
-                for val in op.results():
-                    if not val.use_empty():
-                        can_delete = False
-                if can_delete:
-                    op.erase()
-                continue
+                if op.name() == "dist_op.moe_sub_mesh_tensors":
+                    replace_moe_sub_mesh_tensors(op)
+                    continue
+                elif op.name() == "dist_op.moe_global_mesh_tensor":
+                    replace_moe_global_mesh_tensor(op)
+                    continue
+                elif op.name() == "cf.tuple_push":
+                    stack_create_op = op.operand_source(0).get_defining_op()
+                    if stack_create_op.result(2).use_empty():
+                        op.erase()
+                    continue
+                elif op.name() == "cf.yield":
+                    continue
+                elif op.name() == "pd_op.pylayer":
+                    # if the pylayer op is not on the current rank, we should delete it
+                    is_cur_rank = False
+                    for pylayer_block in list(op.blocks())[::-1]:
+                        for sub_block_op in pylayer_block.ops:
+                            if (
+                                sub_block_op.dist_attr
+                                and cur_rank
+                                in sub_block_op.dist_attr.process_mesh.process_ids
+                            ):
+                                is_cur_rank = True
+                                break
+                    if not is_cur_rank:
+                        op.erase()
+                        continue
+                    for pylayer_block in list(op.blocks())[::-1]:
+                        prune_op(pylayer_block)
+                    # update pylayer op's inputs
+                    op.as_pylayer_op().update_input()
+                    continue
+                elif op.name() == "dist_op.dtensor_from_local":
+                    dtensor_to_local_idx = idx
+                    for i in range(idx, len(reverse_block_ops)):
+                        if (
+                            reverse_block_ops[i].name()
+                            == "dist_op.dtensor_to_local"
+                        ):
+                            dtensor_to_local_idx = i
+                            break
+                    if (
+                        op.dist_attr
+                        and cur_rank
+                        not in op.dist_attr.process_mesh.process_ids
+                    ):
+                        for i in range(idx, dtensor_to_local_idx + 1):
+                            reverse_block_ops[i].erase()
+                    skip_idx = dtensor_to_local_idx + 1
+                    continue
+                elif op.name() in partition_skip_op_list:
+                    can_delete = True
+                    for val in op.results():
+                        if not val.use_empty():
+                            can_delete = False
+                    if can_delete:
+                        op.erase()
+                    continue
 
-            if cur_rank not in op.dist_attr.process_mesh.process_ids:
-                op.erase()
-            elif op.name() == "dist_op.reshard":
-                assert op.result(
-                    0
-                ).use_empty(), f'There should not have useful dist.reshard op in remove_other_rank_op_pass. but find : {op}'
-                op.erase()
+                if (
+                    op.dist_attr
+                    and cur_rank not in op.dist_attr.process_mesh.process_ids
+                ):
+                    op.erase()
+                elif op.name() == "dist_op.reshard":
+                    assert op.result(0).use_empty(), (
+                        f'There should not have useful dist.reshard op in remove_other_rank_op_pass. but find : {op}'
+                    )
+                    op.erase()
+
+        prune_op(dist_program.global_block())
 
         # merge pd.data ops for
         lr_ops = []
@@ -590,9 +679,9 @@ def replace_moe_global_mesh_tensor(op):
         val_mesh = val.dist_attr().process_mesh
         if cur_rank not in val_mesh.process_ids:
             continue
-        assert (
-            in_value is None
-        ), f'{op} has more than one inputs on rank {cur_rank}'
+        assert in_value is None, (
+            f'{op} has more than one inputs on rank {cur_rank}'
+        )
         in_value = val
         in_idx = idx
 
@@ -683,9 +772,9 @@ def eliminate_transpose_by_reshape(program):
 
 
 def complete_op_role(main_program, op_role_scope: list):
-    assert (
-        len(op_role_scope) == 3 and len(op_role_scope[0]) == 2
-    ), "op_role_scope should has the shape[3, 2]"
+    assert len(op_role_scope) == 3 and len(op_role_scope[0]) == 2, (
+        "op_role_scope should has the shape[3, 2]"
+    )
     forward_op_start = op_role_scope[0][0]
     forward_op_end = op_role_scope[0][1]
 
@@ -715,7 +804,7 @@ def complete_op_role(main_program, op_role_scope: list):
             global_op_idx += 1
 
 
-def pipeline_pass(dense_main_program, dense_starup_program, pipeline_strategy):
+def pipeline_pass(dense_main_program, dense_startup_program, pipeline_strategy):
     """
     Pipeline schedule pass for auto parallel. Enables the pipeline parallel scheduling
     strategies like FThenB, 1F1B, VPP, etc.
@@ -727,7 +816,9 @@ def pipeline_pass(dense_main_program, dense_starup_program, pipeline_strategy):
         "FThenB",
         "1F1B",
         "VPP",
-    ], f"pipeline scheduler only support FThenB, 1F1B and VPP now, but receive {pass_name}"
+    ], (
+        f"pipeline scheduler only support FThenB, 1F1B and VPP now, but receive {pass_name}"
+    )
 
     pass_attr = {}
     pass_attr["num_micro_batches"] = pipeline_strategy.accumulate_steps
@@ -750,7 +841,7 @@ def pipeline_pass(dense_main_program, dense_starup_program, pipeline_strategy):
     pass_context = PassContext()
     pipeline_pass.apply(
         dense_main_program,
-        dense_starup_program,
+        dense_startup_program,
         pass_context,
     )
     plan = pass_context.get_attr("plan")
@@ -786,7 +877,7 @@ def _get_seg_struct_names(ops, seg_method):
     seg_op_mesh = collections.OrderedDict()
 
     for i in range(fwd_start_op_index, fwd_end_op_index + 1):
-        if ops[i].name() in dist_skip_op_list:
+        if ops[i].dist_attr is None:
             continue
 
         struct_name = _extract_seg_method(ops[i], seg_method)
@@ -812,7 +903,7 @@ def _analyze_use_custom_mesh(ops, seg_method, pp_degree):
     seg_pp_stages = [-1]
 
     for op in ops:
-        if _extract_seg_method(op, seg_method) and "pd_op" in op.name():
+        if _extract_seg_method(op, seg_method) and op.dist_attr:
             op_mesh = op.dist_attr.process_mesh
             pp_stage = get_pp_stage_by_process_mesh(op_mesh, pp_degree)
             if pp_stage is None:
@@ -831,7 +922,13 @@ def _analyze_use_custom_mesh(ops, seg_method, pp_degree):
     return non_use_custom_mesh
 
 
-def _set_process_mesh_and_chunk_id(op, chunk_process_mesh, chunk_id, set_mesh):
+def _set_process_mesh_and_chunk_id(
+    op,
+    chunk_process_mesh,
+    chunk_id,
+    set_input_mesh=False,
+    set_output_mesh=False,
+):
     def set_var_origin_op_process_mesh(var_origin_op):
         var_origin_op_input_attr = var_origin_op.dist_attr.operands()
         var_origin_op_output_attr = var_origin_op.dist_attr.results()
@@ -883,7 +980,7 @@ def _set_process_mesh_and_chunk_id(op, chunk_process_mesh, chunk_id, set_mesh):
     def get_var_attr_with_process_mesh(
         var_dist_attr, var_origin_op, process_mesh
     ):
-        # Note(luchang): the var generated by builtin.combine will have mutilple dist_attr
+        # Note(luchang): the var generated by builtin.combine will have multiple dist_attr
         if var_dist_attr and var_dist_attr.as_array_attr():
             var_array_attr = var_dist_attr.as_array_attr()
             for i in range(len(var_array_attr)):
@@ -978,7 +1075,8 @@ def _set_process_mesh_and_chunk_id(op, chunk_process_mesh, chunk_id, set_mesh):
 
     op_input_vars = op.operands_source()
     op_output_vars = op.results()
-    # NOTE(zhangwl):dist_skip_op donnot have op_mesh
+
+    # NOTE(zhangwl):dist_skip_op do not have op_mesh
     op_mesh = None
     if op.name() in dist_skip_op_list:
         input_var_process_mesh = None
@@ -995,10 +1093,13 @@ def _set_process_mesh_and_chunk_id(op, chunk_process_mesh, chunk_id, set_mesh):
     op_mesh = op_dist_attr.process_mesh
     op_input_attrs = op_dist_attr.operands()
     op_output_attrs = op_dist_attr.results()
+
     # if op in seq_chunk , vpp need set var and op chunk_process_mesh and chunk_id
-    if set_mesh:
+    if set_input_mesh:
         set_process_mesh(op_input_vars, op_input_attrs, chunk_process_mesh)
+    if set_output_mesh:
         set_process_mesh(op_output_vars, op_output_attrs, chunk_process_mesh)
+    if set_input_mesh or set_output_mesh:
         op_mesh = chunk_process_mesh
 
     op.dist_attr = paddle.base.libpaddle.pir.create_op_dist_attribute(
@@ -1035,11 +1136,6 @@ def complete_chunk_id(dist_program, startup_program, pipeline_strategy):
     )
     ops = dist_program.global_block().ops
 
-    assert (len(seg_struct_names) % num_chunks == 0) or (
-        (len(seg_struct_names) + 1) % num_chunks == 0
-        and (len(seg_struct_names) + 1) // num_chunks != 1
-    ), f"The number of layers[{seg_method}] ({len(seg_struct_names)}) should be divisible by part number ({num_chunks}),or ({len(seg_struct_names)} + 1) should be divisible by {num_chunks} and not equal to {num_chunks}."
-
     # Step2: analysis whether the pp_stage is non-decreasing among segments
     # 1. if non_use_custom_mesh is True, the ops' process_mesh will be changed by vpp strategy
     # 2. if non_use_custom_mesh is False, the ops's process_mesh will not be changed.
@@ -1048,19 +1144,43 @@ def complete_chunk_id(dist_program, startup_program, pipeline_strategy):
     # Step3: Get op index boundary, pp_stage, chunk_id, struct_names of each segment
     seg_pp_stages = [i % pp_degree for i in range(num_chunks)]
     seg_chunk_ids = [i // pp_degree for i in range(num_chunks)]
-    seg_layer_num = [0] * num_chunks
-    for j in range(0, len(seg_struct_names)):
-        i = j % num_chunks
-        seg_layer_num[i] = seg_layer_num[i] + 1
     seg_parts = [0]
+    last_struct_name = None
+    # stage_ids[i] represents the stage number assigned to the i-th layer.
+    stage_ids = []
 
     for idx, op in enumerate(ops):
         if len(seg_parts) == len(seg_struct_names):
             break
         struct_name = _extract_seg_method(op, seg_method)
+        if op.dist_attr is not None and last_struct_name != struct_name:
+            pp_stage = get_pp_stage_by_process_mesh(
+                op.dist_attr.process_mesh, pp_degree
+            )
+            if pp_stage is not None:
+                stage_ids.append(pp_stage)
+            last_struct_name = struct_name
         if struct_name == seg_struct_names[len(seg_parts)]:
             seg_parts.append(idx)
     seg_parts.append(len(ops))
+
+    pp_stage_layer_nums = [0] * pp_degree
+    for i in stage_ids:
+        pp_stage_layer_nums[i] = pp_stage_layer_nums[i] + 1
+    assert all(value >= vpp_degree for value in pp_stage_layer_nums), (
+        "The number of layers on each pp_stage must not be less than the vpp_degree in the pp_stage to ensure that each chunk contains at least one layer."
+    )
+
+    seg_layer_num = [0] * num_chunks
+    for pp_stage in range(
+        0, pp_degree
+    ):  # Each pp_stage is assigned a number of layers based on user intent.
+        pp_stage_layer_num = pp_stage_layer_nums[pp_stage]
+        for i in range(0, pp_stage_layer_num):
+            # The pp_stage uses a Round robin scheduling algorithm to allocate layers one by one.
+            virtual_chunk_id = i % vpp_degree
+            real_chunk_id = (virtual_chunk_id) * pp_degree + pp_stage
+            seg_layer_num[real_chunk_id] = seg_layer_num[real_chunk_id] + 1
 
     # Step4: Set the process_mesh of each op
     seg_id = 0
@@ -1089,12 +1209,42 @@ def complete_chunk_id(dist_program, startup_program, pipeline_strategy):
             f"start op: [{ops[start_idx].name()}], end op: [{ops[end_idx - 1].name()}]"
         )
 
+        skip_idx = 0
         for idx in range(start_idx, end_idx):
-            if ops[idx].name() == "dist_op.reshard":
-                reshard_ops.append(ops[idx])
+            if idx < skip_idx:
                 continue
 
             is_seg_op = _extract_seg_method(ops[idx], seg_method) is not None
+            set_mesh = non_use_custom_mesh & is_seg_op
+
+            if ops[idx].name() == "dist_op.reshard":
+                reshard_ops.append(ops[idx])
+                continue
+            elif ops[idx].name() == "dist_op.dtensor_to_local":
+                _set_process_mesh_and_chunk_id(
+                    ops[idx],
+                    process_mesh,
+                    chunk_id,
+                    set_input_mesh=set_mesh,
+                )
+                dtensor_from_local_idx = idx + 1
+                while (
+                    ops[dtensor_from_local_idx].name()
+                    != "dist_op.dtensor_from_local"
+                ):
+                    dtensor_from_local_idx += 1
+                for local_op_idx in range(idx + 1, dtensor_from_local_idx):
+                    ops[local_op_idx].set_int_attr("chunk_id", chunk_id)
+
+                _set_process_mesh_and_chunk_id(
+                    ops[dtensor_from_local_idx],
+                    process_mesh,
+                    chunk_id,
+                    set_output_mesh=set_mesh,
+                )
+                skip_idx = dtensor_from_local_idx + 1
+                continue
+
             for sub_block in ops[idx].blocks():
                 # TODO(luchang): support condition block
                 pass
@@ -1103,8 +1253,10 @@ def complete_chunk_id(dist_program, startup_program, pipeline_strategy):
                 ops[idx],
                 process_mesh,
                 chunk_id,
-                non_use_custom_mesh & is_seg_op,
+                set_input_mesh=set_mesh,
+                set_output_mesh=set_mesh,
             )
+            skip_idx = idx + 1
 
     # Step5: set right process_mesh for reshard op
     for op in reshard_ops:
@@ -1136,7 +1288,7 @@ def complete_chunk_id(dist_program, startup_program, pipeline_strategy):
                 new_results=[new_dst_dist_attr],
                 new_process_mesh=new_process_mesh,
             )
-        elif reshard_func_name == "GlobaleToSubMeshFunction":
+        elif reshard_func_name == "GlobalToSubMeshFunction":
             result_var = op.result(0)
             new_process_mesh = result_var.dist_attr().process_mesh
             new_dst_dist_attr = copy_dist_attr_with_new_member(
@@ -1174,7 +1326,7 @@ def complete_chunk_id(dist_program, startup_program, pipeline_strategy):
             op.erase()
         else:
             raise ValueError(
-                f"Unsupport reshard function: {reshard_func_name}, reshard op's dist_attr: {op.dist_attr}"
+                f"Unsupported reshard function: {reshard_func_name}, reshard op's dist_attr: {op.dist_attr}"
             )
 
     # Step6: add reshard op between pipeline chunks
@@ -1193,13 +1345,23 @@ def complete_chunk_id(dist_program, startup_program, pipeline_strategy):
 
 def check_chunk_id(dist_program):
     all_ops = dist_program.global_block().ops
-
     for idx, op in enumerate(all_ops):
         if op.op_role in [int(OpRole.Forward), int(OpRole.Backward)]:
             if op.name() in dist_skip_op_list:
                 continue
 
-            if op.dist_attr.chunk_id == -1:
+            if op.has_attr("chunk_id"):
+                # op between dtensor_from_local and dtensor_to_local will
+                # be assigned a chunk_id attribute.
+                continue
+            elif op.name() in [
+                "dist_op.dtensor_from_local",
+                "dist_op.dtensor_to_local",
+            ]:
+                # dtensor_from_local and dtensor_to_local ops will be removed after
+                # converting the program to a dense program.
+                continue
+            elif op.dist_attr.chunk_id == -1:
                 if op.name() in ["pd_op.data", "builtin.parameter"]:
                     op.dist_attr = copy_op_attr_with_new_member(
                         op.dist_attr, new_chunk_id=0
@@ -1430,7 +1592,7 @@ def fuse_attention_ffn_qkv_pass(
         if add_gate is not None and add_up is not None:
             fused_o = paddle.add(fused_o, fused_bias)
             fused_o.get_defining_op().copy_attrs_from(add_gate)
-        out = paddle.incubate.nn.functional.swiglu(fused_o)
+        out = paddle.nn.functional.swiglu(fused_o)
         out.get_defining_op().copy_attrs_from(pat[-1])
         pat[-1].result(0).replace_all_uses_with(out)
 
@@ -1667,7 +1829,7 @@ def fuse_attention_ffn_qkv_pass(
     for op in del_ops:
         op.erase()
 
-    # 4. Initialize fused parameters and delete orignal parameters.
+    # 4. Initialize fused parameters and delete original parameters.
     concated_dy_param_index = []
     # for key, pat_list in fused_name_map.items():
     for key, pat_list in fusion_map.items():
@@ -1699,12 +1861,11 @@ def fuse_attention_ffn_qkv_pass(
 
                 # Fuse params and init pir program fusion params.
                 with paddle.base.dygraph.guard():
-
                     dyparam_dtype = concated_dy_param_list[0].dtype
                     for param in concated_dy_param_list:
-                        assert (
-                            dyparam_dtype == param.dtype
-                        ), "The dtypes of dy parameters to be fused are not the same."
+                        assert dyparam_dtype == param.dtype, (
+                            "The dtypes of dy parameters to be fused are not the same."
+                        )
 
                     dtensor = paddle.zeros(
                         shape=name2pir_param_map[pir_param].shape,
@@ -1743,7 +1904,7 @@ def fuse_attention_ffn_qkv_pass(
                         )
                         concated_param._clear()
 
-                    # Pop and relase original params from concrete_program
+                    # Pop and release original params from concrete_program
                     for param in concated_dy_param_list:
                         param.get_tensor()._clear()
 

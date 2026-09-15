@@ -52,10 +52,10 @@ void SoftmaxKernel(const Context& dev_ctx,
     });
   }
 
-  out->set_mem_desc(dst_memory_p->get_desc());
+  phi::funcs::SetOneDNNMemDesc(out, dst_memory_p->get_desc());
 }
 
 }  // namespace phi
 
 PD_REGISTER_KERNEL(
-    softmax, OneDNN, ONEDNN, phi::SoftmaxKernel, float, phi::dtype::bfloat16) {}
+    softmax, OneDNN, ONEDNN, phi::SoftmaxKernel, float, phi::bfloat16) {}

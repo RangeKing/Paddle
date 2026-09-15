@@ -124,9 +124,9 @@ class FusedAttentionOp : public framework::OperatorWithKernel {
       PADDLE_ENFORCE_EQ(y_dim.size(),
                         2,
                         common::errors::InvalidArgument(
-                            "The dimensions of qkv_weight must be 2 if enable"
-                            "transpose_qkv_wb: (dim_embed, 3 * dim_embed),"
-                            "but received dimensions of"
+                            "The dimensions of qkv_weight must be 2 if enable "
+                            "transpose_qkv_wb: (dim_embed, 3 * dim_embed), "
+                            "but received dimensions of "
                             "Input is [%d]",
                             y_dim.size()));
       PADDLE_ENFORCE_GT(num_heads,
@@ -159,7 +159,7 @@ class FusedAttentionOp : public framework::OperatorWithKernel {
       PADDLE_ENFORCE_EQ(y_dim.size(),
                         4,
                         common::errors::InvalidArgument(
-                            "The dimensions of qkv_weight must be 4 if not"
+                            "The dimensions of qkv_weight must be 4 if not "
                             "enable transpose_qkv_wb: (3, num_head, dim_head, "
                             "dim_embed), but received [%d]",
                             y_dim.size()));
@@ -186,8 +186,8 @@ class FusedAttentionOp : public framework::OperatorWithKernel {
         x_dim.size(),
         3,
         common::errors::InvalidArgument("The dimensions of x must be 3"
-                                        "(batch_size, seq_len, dim_embed),"
-                                        "but received dimensions of"
+                                        "(batch_size, seq_len, dim_embed), "
+                                        "but received dimensions of "
                                         "Input is [%d]",
                                         x_dim.size()));
 
@@ -323,7 +323,7 @@ class FusedAttentionOp : public framework::OperatorWithKernel {
  protected:
   phi::KernelKey GetExpectedKernelType(
       const framework::ExecutionContext &ctx) const override {
-    auto input = ctx.Input<phi::DenseTensor>("X");
+    auto input = ctx.Input<DenseTensor>("X");
     auto input_data_type = framework::TransToProtoVarType(input->dtype());
     return phi::KernelKey(input_data_type, ctx.GetPlace());
   }
@@ -380,7 +380,7 @@ class FusedAttentionOpMaker : public framework::OpProtoAndCheckerMaker {
     AddOutput("BiasDropoutResidualOut",
               "Result of residual + dropout(src + bias).")
         .AsIntermediate();
-    AddOutput("CacheKVOut", "The udpated cache KV.").AsDispensable();
+    AddOutput("CacheKVOut", "The updated cache KV.").AsDispensable();
     AddOutput("Y", "Result after attention.");
 
     AddAttr<int>("num_heads", "The number head for multi_head_attention.")
@@ -431,7 +431,7 @@ class FusedAttentionOpMaker : public framework::OpProtoAndCheckerMaker {
         "attn_dropout_implementation",
         "[\"downgrade_in_infer\"|\"upscale_in_train\"]"
         "There are two kinds of ways to implement dropout"
-        "(the mask below is a tensor have the same shape with input"
+        "(the mask below is a tensor have the same shape with input, "
         "the value of mask is 0 or 1, the ratio of 0 is dropout_rate)"
         "1. downgrade_in_infer(default), downgrade the outcome at inference "
         "time"
@@ -663,7 +663,7 @@ class FusedAttentionGradOp : public framework::OperatorWithKernel {
  protected:
   phi::KernelKey GetExpectedKernelType(
       const framework::ExecutionContext &ctx) const override {
-    auto input = ctx.Input<phi::DenseTensor>("X");
+    auto input = ctx.Input<DenseTensor>("X");
     auto input_data_type = framework::TransToProtoVarType(input->dtype());
     return phi::KernelKey(input_data_type, ctx.GetPlace());
   }

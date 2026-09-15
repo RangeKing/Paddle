@@ -5,14 +5,13 @@ cc_library(
 cc_library(
   var_helper
   SRCS var_helper.cc type_defs.cc
-  DEPS tensor phi common)
+  DEPS tensor phi common type_info)
 if(WITH_XPU_BKCL)
   cc_library(
     prepared_operator
     SRCS prepared_operator.cc
     DEPS proto_desc
          operator
-         device_context
          lod_tensor
          selected_rows_utils
          var_type_traits
@@ -28,7 +27,6 @@ elseif(WITH_NCCL OR WITH_RCCL)
     SRCS prepared_operator.cc
     DEPS proto_desc
          operator
-         device_context
          lod_tensor
          selected_rows_utils
          var_type_traits
@@ -44,7 +42,6 @@ else()
     SRCS prepared_operator.cc
     DEPS proto_desc
          operator
-         device_context
          lod_tensor
          selected_rows_utils
          var_type_traits

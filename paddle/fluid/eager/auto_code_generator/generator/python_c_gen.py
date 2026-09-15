@@ -20,13 +20,30 @@ from codegen_utils import (
     GeneratorBase,
     GetForwardFunctionName,
     GetInplacedFunctionName,
+    IsUsePredefinedOut,
     IsVectorTensorType,
+    ParsePythonAPIInfoFromYAML,
 )
+
+args_default_mapping = {
+    "x": ["input"],
+    "y": ["other"],
+    "axis": ["dim"],
+    "keepdims": ["keepdim"],
+}
 
 #########################
 # Global Configurations #
 #########################
-skipped_forward_api_names = set()
+skipped_forward_api_names = {
+    "scale_grad",
+    "div_scale_grad",
+    "push_gpups_sparse",
+    "multiply_grad",
+    "pull_sparse_v2_grad",
+}
+# The python api info which not in ops.yaml
+python_api_info_from_yaml = {}
 
 
 def SkipAPIGeneration(forward_api_name):
@@ -75,10 +92,13 @@ PARSE_PYTHON_C_TENSORS_TEMPLATE = (
 PARSE_PYTHON_C_TENSOR_REF_TEMPLATE = (
     '    auto& {} = {}("{}", "{}", args, {}, {});\n'
 )
-
+PARSE_PYTHON_C_TENSORS_FROM_ARGS_OR_KWARGS_TEMPLATE = '    auto& {} = GetTensorFromArgsOrKWArgs("{}", "{}", args, {}, kwargs,{},nargs,&remaining_kwargs,{});\n'
+PARSE_PYTHON_C_TENSORS_LIST_FROM_ARGS_OR_KWARGS_TEMPLATE = '    auto {} = GetTensorListFromArgsOrKWArgs("{}", "{}", args, {}, kwargs,{},nargs,&remaining_kwargs,{});\n'
+PARSE_PYTHON_C_OPTIONAL_TENSORS_FROM_ARGS_OR_KWARGS_TEMPLATE = '    auto {} = GetOptionalTensorFromArgsOrKWArgs("{}", "{}", args, {}, kwargs,{},nargs,&remaining_kwargs,{});\n'
 CONVERT_TO_DISTTENSOR_AND_PARSE_PYTHON_C_TENSORS_TEMPLATE = (
     '    {} = {}("{}", "{}", args, {}, {}, mesh);\n'
 )
+CONVERT_TO_DISTTENSOR_AND_PARSE_PYTHON_C_TENSORS_FROM_ARGS_OR_KWARGS_TEMPLATE = '    {} = {}("{}", "{}", args, {}, kwargs,{},nargs,&remaining_kwargs,{},mesh);\n'
 
 CONVERT_INPUT_TENSORS_TO_DIST_TENSOR_WITH_SINGLE_TENSOR_TEMPLATE = """
     const phi::distributed::ProcessMesh* mesh = nullptr;
@@ -98,15 +118,42 @@ CONVERT_INPUT_TENSORS_TO_DIST_TENSOR_WITHOUT_SINGLE_TENSOR_TEMPLATE = """
 PARSE_PYTHON_C_ARGS_TEMPLATE = """    PyObject* {}_obj = PyTuple_GET_ITEM(args, {});
     {} {} = {}({}_obj, \"{}\", {});
 """
+PARSE_PYTHON_C_NUM_ARGS_TEMPLATE = """    int nargs = args ? static_cast<int>(PyTuple_Size(args)) : 0;
+    int remaining_kwargs = kwargs ? static_cast<int>(PyDict_Size(kwargs)) : 0;
+    const int max_args = {};
+    CheckParamsCount(nargs,remaining_kwargs,max_args);
+"""
+PARSE_PYTHON_C_ARGS_KWARGS_WITH_DEFAULT_VALUE_TEMPLATE = """
+    PyObject* {}_obj = GetItemFromArgsOrKWArgs(args, {}, kwargs, {}, nargs,&remaining_kwargs);
+    {} {} = {}({}_obj, \"{}\", {}, {});"""
 
+PARSE_PYTHON_C_ARGS_KWARGS_TEMPLATE = """
+    PyObject* {}_obj = GetItemFromArgsOrKWArgs(args, {}, kwargs, {}, nargs,&remaining_kwargs,false);
+    {} {} = {}({}_obj, \"{}\", {});"""
 
+CHECK_REMAINING_ARGS_VALID_TEMPLATE = """    CheckRemainingParamsValidity(args, kwargs, remaining_kwargs, nargs, {});
+"""
+CALL_PRE_PROCESS_TEMPLATE = """    {};
+"""
+PARAMS_DECLARE_TEMPLE = """    {type} {name};\n"""
+CALL_ARGS_MAPPER_TEMPLATE = """    {func_name}(args,kwargs{params});
+"""
+GET_SINGLE_INPUT_FROM_POINTER_TEMPLATE = """
+    {type}& {name} = *({name}_ptr);
+"""
+DISABLE_TIPS = (
+    "    // This part of the function will be performed by a custom args mapper"
+)
 RECORD_EVENT_TEMPLATE = (
     'phi::RecordEvent {}("{} {}", phi::TracerEventType::UserDefined, 1);'
 )
 
 
-RETURN_INPLACE_PYOBJECT_TEMPLATE = """
+RETURN_INPLACE_INDEX_PYOBJECT_TEMPLATE = """
     inplace_var_idx_map[{}] = {};
+"""
+RETURN_INPLACE_NAME_PYOBJECT_TEMPLATE = """
+    inplace_var_name_map[{}] = {};
 """
 
 
@@ -116,12 +163,28 @@ PyObject * eager_api_{}(PyObject *self, PyObject *args, PyObject *kwargs) {{
   PyThreadState *tstate = nullptr;
   try {{
     VLOG(6) << "Running Eager Final State API: {}";
-
+    // Get Total Params count and check validity if needed
+{}
     VLOG(8) << "args count: " << (PyTuple_Size(args) / 2);
     // Get EagerTensors from args
 {}
     // Parse Attributes if needed
 {}
+    // Check Reminding Params validity if needed
+{}
+    // Custom Args Mapper if need
+{}
+    // Convert to Dist
+{}
+    // Call Pre_Process before calling dygraph function if needed
+{}
+    // Parse predefined_out if needed
+{}
+    // Capture the Python dispatch stack for the memory-history recorder while
+    // the GIL is still held (near-zero cost when recording is disabled). The
+    // RAII guard pushes the id for the whole op (incl. the GIL-released kernel
+    // section) and pops it on scope exit / exception unwind.
+    paddle::memory::MemStackGuard __mem_stack_guard(paddle::pybind::CaptureCurrentPyStack());
     tstate = PyEval_SaveThread();
 
     // Set Device ID
@@ -142,7 +205,7 @@ PyObject * eager_api_{}(PyObject *self, PyObject *args, PyObject *kwargs) {{
 }}
 """
 
-NOAMP_DYGRAPH_FUNCTION_TEMPLATE = "decltype({}({})) out = {}({});"
+NOAMP_DYGRAPH_FUNCTION_TEMPLATE = "decltype({}({})) ad_func_out = {}({});"
 
 
 FUNCTION_SET_DEVICE_TEMPLATE = """{}
@@ -192,11 +255,15 @@ PYTHON_C_WRAPPER_TEMPLATE = """
 #include "paddle/phi/core/platform/profiler/event_tracing.h"
 #include "paddle/fluid/pybind/op_function_common.h"
 #include "paddle/fluid/eager/api/generated/eager_generated/forwards/dygraph_functions.h"
+#include "paddle/fluid/eager/api/generated/eager_generated/forwards/dygraph_grad_functions.h"
 #include "paddle/fluid/eager/api/manual/eager_manual/dygraph_forward_api.h"
 #include "paddle/fluid/eager/utils.h"
 #include "paddle/fluid/pybind/eager_custom_python_api.h"
 #include "paddle/fluid/pybind/eager.h"
 #include "paddle/fluid/pybind/eager_op_function.h"
+#include "paddle/fluid/pybind/arg_pre_process.h"
+#include "paddle/fluid/pybind/args_mapper.h"
+#include "paddle/fluid/pybind/mem_py_stack.h"
 namespace paddle {{
 namespace pybind {{
 
@@ -282,11 +349,6 @@ PYTHON_C_H_TEMPLATE = """
 
 #include <Python.h>
 
-// Avoid a problem with copysign defined in pyconfig.h on Windows.
-#ifdef copysign
-#undef copysign
-#endif
-
 namespace paddle {{
 namespace pybind {{
 
@@ -321,20 +383,73 @@ class PythonCSingleFunctionGenerator(FunctionGeneratorBase):
         # self.forward_inplace_map
         FunctionGeneratorBase.__init__(self, forward_api_contents, namespace)
 
-        self.is_forward_only = True
-
         # Generated Results
         self.python_c_function_str = ""
         self.python_c_function_reg_str = ""
         self.python_c_function_declare_str = ""
 
-    def CollectIsForwardOnly(self):
-        forward_api_contents = self.forward_api_contents
-        self.is_forward_only = (
-            False if 'backward' in forward_api_contents.keys() else True
+    def ParsePythonAPIInfo(self, name, no_parse_python_api_info=False):
+        python_api_info = {}
+        need_parse_python_api_args = False
+        args_alias = {}  # {arg_name: alias_vector, ...}
+        dygraph_pre_process = ""  # pre-process function name
+        args_mapper_func = None  # The custom args parser function
+
+        if no_parse_python_api_info:
+            return (
+                need_parse_python_api_args,
+                args_alias,
+                dygraph_pre_process,
+                args_mapper_func,
+            )
+
+        if name in python_api_info_from_yaml.keys():
+            python_api_info = python_api_info_from_yaml[name]
+        if len(python_api_info) > 0:
+            need_parse_python_api_args = True
+            # parse args_alias
+            if 'args_alias' in python_api_info.keys():
+                for arg, alias_or_mode in python_api_info['args_alias'].items():
+                    if arg == 'use_default_mapping':
+                        args_alias.update({arg: alias_or_mode})
+                        continue
+                    alias_set = set(alias_or_mode)
+                    # Add the original argument name to the alias set
+                    alias_set.add(arg)
+                    # Convert to C++ vector format
+                    alias_vector = (
+                        "{" + ",".join(f'"{name}"' for name in alias_set) + "}"
+                    )
+                    args_alias.update({arg: alias_vector})
+            # parse pre_process
+            if 'pre_process' in python_api_info.keys():
+                pre_process = python_api_info['pre_process']
+                if pre_process is not None:
+                    if 'dygraph_func' in pre_process.keys():
+                        dygraph_pre_process = pre_process['dygraph_func']
+                    elif 'func' in pre_process.keys():
+                        dygraph_pre_process = pre_process['func']
+            # parse args_mapper
+            if 'args_mapper' in python_api_info.keys():
+                args_mapper = python_api_info['args_mapper']
+                if args_mapper is not None:
+                    if 'dygraph_func' in args_mapper.keys():
+                        args_mapper_func = args_mapper['dygraph_func']
+                    elif 'func' in args_mapper.keys():
+                        args_mapper_func = args_mapper['func']
+        return (
+            need_parse_python_api_args,
+            args_alias,
+            dygraph_pre_process,
+            args_mapper_func,
         )
 
-    def GeneratePythonCFunction(self):
+    def GeneratePythonCFunction(
+        self,
+        no_predefined_out_tensor=False,
+        no_parse_python_api_info=False,
+        inplace=False,
+    ):
         namespace = self.namespace
         forward_inplace_map = self.forward_inplace_map
         forward_api_name = self.forward_api_name
@@ -342,14 +457,52 @@ class PythonCSingleFunctionGenerator(FunctionGeneratorBase):
         forward_inputs_position_map = self.forward_inputs_position_map
         forward_outputs_position_map = self.forward_outputs_position_map
         optional_inputs = self.optional_inputs
-        is_forward_only = self.is_forward_only
 
+        if inplace:
+            function_name = GetInplacedFunctionName(forward_api_name)
+        else:
+            function_name = forward_api_name
+        # Get Python API Info
+        (
+            need_parse_python_api_args,
+            args_alias_map,
+            dygraph_pre_process,
+            args_mapper_func,
+        ) = self.ParsePythonAPIInfo(function_name, no_parse_python_api_info)
+
+        max_args = len(orig_forward_attrs_list) + len(
+            forward_inputs_position_map
+        )
         inplace_args_pos_map = {}
         inplace_returns_pos_map = {}
+        get_params_nums_and_check_str = "    // NO NEED"
+        if need_parse_python_api_args:
+            get_params_nums_and_check_str = (
+                PARSE_PYTHON_C_NUM_ARGS_TEMPLATE.format(max_args)
+            )
         # Generate Python-C Tensors Parsing Logic
         get_eager_tensor_str = ""
         input_names = ""
         input_single_tensor_names = ""
+
+        def _get_keywords(name, alias_map):
+            keywords = f'{{"{name}"}}'
+            if name in args_alias_map.keys():
+                keywords = args_alias_map[name]
+            elif (
+                'use_default_mapping' in args_alias_map.keys()
+                and args_alias_map['use_default_mapping']
+            ):
+                # try to use default mapping
+                if name in args_default_mapping.keys():
+                    alias_set = set(args_default_mapping[name])
+                    alias_set.add(name)
+                    # Convert to C++ vector format
+                    keywords = (
+                        "{" + ",".join(f'"{name}"' for name in alias_set) + "}"
+                    )
+            return keywords
+
         for name, (ttype, pos) in forward_inputs_position_map.items():
             input_names = input_names + ", " + name
             if forward_inplace_map and name in forward_inplace_map.keys():
@@ -368,42 +521,206 @@ class PythonCSingleFunctionGenerator(FunctionGeneratorBase):
                         )
                     )
                 else:
-                    get_eager_tensor_str += (
-                        PARSE_PYTHON_C_TENSORS_TEMPLATE.format(
+                    if not need_parse_python_api_args:
+                        get_eager_tensor_str += (
+                            PARSE_PYTHON_C_TENSORS_TEMPLATE.format(
+                                name,
+                                "GetTensorListFromArgs",
+                                forward_api_name,
+                                name,
+                                pos,
+                                "false",
+                            )
+                        )
+                    else:
+                        keywords = _get_keywords(name, args_alias_map)
+                        get_eager_tensor_str += PARSE_PYTHON_C_TENSORS_LIST_FROM_ARGS_OR_KWARGS_TEMPLATE.format(
                             name,
-                            "GetTensorListFromArgs",
                             forward_api_name,
                             name,
                             pos,
+                            keywords,
                             "false",
                         )
-                    )
             else:
                 if is_optional:
-                    get_eager_tensor_str += (
-                        PARSE_PYTHON_C_TENSORS_TEMPLATE.format(
+                    if need_parse_python_api_args:
+                        keywords = _get_keywords(name, args_alias_map)
+                        get_eager_tensor_str += PARSE_PYTHON_C_OPTIONAL_TENSORS_FROM_ARGS_OR_KWARGS_TEMPLATE.format(
                             name,
-                            "GetOptionalTensorFromArgs",
                             forward_api_name,
                             name,
                             pos,
+                            keywords,
                             "true",
                         )
-                    )
+                    else:
+                        get_eager_tensor_str += (
+                            PARSE_PYTHON_C_TENSORS_TEMPLATE.format(
+                                name,
+                                "GetOptionalTensorFromArgs",
+                                forward_api_name,
+                                name,
+                                pos,
+                                "true",
+                            )
+                        )
                 else:
                     input_single_tensor_names = (
                         input_single_tensor_names + ", " + name
                     )
-                    get_eager_tensor_str += (
-                        PARSE_PYTHON_C_TENSOR_REF_TEMPLATE.format(
+                    if not need_parse_python_api_args:
+                        get_eager_tensor_str += (
+                            PARSE_PYTHON_C_TENSOR_REF_TEMPLATE.format(
+                                name,
+                                "GetTensorFromArgs",
+                                forward_api_name,
+                                name,
+                                pos,
+                                "false",
+                            )
+                        )
+                    else:
+                        keywords = _get_keywords(name, args_alias_map)
+                        get_eager_tensor_str += PARSE_PYTHON_C_TENSORS_FROM_ARGS_OR_KWARGS_TEMPLATE.format(
                             name,
-                            "GetTensorFromArgs",
                             forward_api_name,
                             name,
                             pos,
+                            keywords,
                             "false",
                         )
+
+        if forward_inplace_map:
+            for name, (ttype, pos) in forward_outputs_position_map.items():
+                if name in forward_inplace_map.values():
+                    inplace_returns_pos_map[name] = pos
+
+        parse_attributes_str = ""
+        expected_place_str = (
+            "    auto place = egr::Controller::Instance().GetExpectedPlace();\n"
+        )
+
+        # Generate Python-C Attributes Parsing Logic
+        for name, atype, default_value, pos in orig_forward_attrs_list:
+            parsing_function_name = FindParsingFunctionFromAttributeType(atype)
+            # Used input argument place if specified from Python frontend.
+            if (
+                len(expected_place_str) != 0
+                and parsing_function_name == "CastPyArg2Place"
+            ):
+                expected_place_str = ""
+                assert name == "place", (
+                    "Only support 'place' as template argument name in FUNCTION_SET_DEVICE_TEMPLATE."
+                )
+            if need_parse_python_api_args:
+                keywords = _get_keywords(name, args_alias_map)
+                if default_value is None:
+                    parse_attributes_str += (
+                        PARSE_PYTHON_C_ARGS_KWARGS_TEMPLATE.format(
+                            name,
+                            pos,
+                            keywords,
+                            atype,
+                            name,
+                            parsing_function_name,
+                            name,
+                            forward_api_name,
+                            pos,
+                        )
                     )
+                else:
+                    parse_attributes_str += PARSE_PYTHON_C_ARGS_KWARGS_WITH_DEFAULT_VALUE_TEMPLATE.format(
+                        name,
+                        pos,
+                        keywords,
+                        atype,
+                        name,
+                        parsing_function_name,
+                        name,
+                        forward_api_name,
+                        pos,
+                        default_value,
+                    )
+            else:
+                parse_attributes_str += PARSE_PYTHON_C_ARGS_TEMPLATE.format(
+                    name,
+                    pos,
+                    atype,
+                    name,
+                    parsing_function_name,
+                    name,
+                    forward_api_name,
+                    pos,
+                )
+
+        # Generate Remaining Params Checking Logic
+        check_remaining_params_validity_str = "    // NO NEED"
+        if need_parse_python_api_args:
+            if inplace:
+                check_remaining_params_validity_str = (
+                    CHECK_REMAINING_ARGS_VALID_TEMPLATE.format("true")
+                )
+            else:
+                check_remaining_params_validity_str = (
+                    CHECK_REMAINING_ARGS_VALID_TEMPLATE.format("false")
+                )
+
+        # Generate Call Pre-Process Logic
+        pre_process_str = "    // NO NEED"
+        if need_parse_python_api_args and len(dygraph_pre_process) > 0:
+
+            def pre_process_add_ampersand(s):
+                return s.replace('(', '(&').replace(',', ',&').rstrip(')') + ')'
+
+            pre_process_str = CALL_PRE_PROCESS_TEMPLATE.format(
+                pre_process_add_ampersand(dygraph_pre_process)
+            )
+
+        # Generate Call Args Mapper Logic
+        args_mapper_str = "    // NO NEED"
+        if args_mapper_func is not None:
+            all_params_list = []
+            need_using_ref_inputs = {}
+            args_mapper_str = ""
+            for name, (ttype, pos) in forward_inputs_position_map.items():
+                # When the input type is Tensor and is not an optional parameter,
+                # we should avoid copying the Tensor passed in by Python.
+                if name not in optional_inputs and not IsVectorTensorType(
+                    ttype
+                ):
+                    need_using_ref_inputs.update({name: ttype})
+                    name += "_ptr"
+                    ttype += "*"
+                args_mapper_str += PARAMS_DECLARE_TEMPLE.format(
+                    type=ttype, name=name
+                )
+                all_params_list.append(name)
+            for name, atype, default_value, pos in orig_forward_attrs_list:
+                args_mapper_str += PARAMS_DECLARE_TEMPLE.format(
+                    type=atype, name=name
+                )
+                all_params_list.append(name)
+            params = ',&' + ',&'.join(all_params_list)
+            args_mapper_str += CALL_ARGS_MAPPER_TEMPLATE.format(
+                func_name=args_mapper_func, params=params
+            )
+            # Obtain input (Tensor) from a pointer and use references to avoid copy construction
+            if len(need_using_ref_inputs) > 0:
+                for name, ttype in need_using_ref_inputs.items():
+                    args_mapper_str += (
+                        GET_SINGLE_INPUT_FROM_POINTER_TEMPLATE.format(
+                            type=ttype, name=name
+                        )
+                    )
+
+            # disable the generated args parser
+            get_params_nums_and_check_str = DISABLE_TIPS
+            get_eager_tensor_str = DISABLE_TIPS
+            parse_attributes_str = DISABLE_TIPS
+            check_remaining_params_validity_str = DISABLE_TIPS
+
+        convert_to_dist_str = ""
         # No inputs, skip convert to DistTensor
         if len(input_names) > 0:
             optional_and_vector_convert_code = ""
@@ -430,59 +747,37 @@ class PythonCSingleFunctionGenerator(FunctionGeneratorBase):
                         )
                 else:
                     if is_optional:
-                        optional_and_vector_convert_code += CONVERT_TO_DISTTENSOR_AND_PARSE_PYTHON_C_TENSORS_TEMPLATE.format(
-                            name,
-                            "GetOptionalTensorFromArgs",
-                            forward_api_name,
-                            name,
-                            pos,
-                            "true",
-                        )
-
+                        if need_parse_python_api_args:
+                            keywords = _get_keywords(name, args_alias_map)
+                            optional_and_vector_convert_code += CONVERT_TO_DISTTENSOR_AND_PARSE_PYTHON_C_TENSORS_FROM_ARGS_OR_KWARGS_TEMPLATE.format(
+                                name,
+                                "GetOptionalTensorFromArgsOrKWArgs",
+                                forward_api_name,
+                                name,
+                                pos,
+                                keywords,
+                                "true",
+                            )
+                        else:
+                            optional_and_vector_convert_code += CONVERT_TO_DISTTENSOR_AND_PARSE_PYTHON_C_TENSORS_TEMPLATE.format(
+                                name,
+                                "GetOptionalTensorFromArgs",
+                                forward_api_name,
+                                name,
+                                pos,
+                                "true",
+                            )
             if len(input_single_tensor_names) > 0:
-                get_eager_tensor_str += CONVERT_INPUT_TENSORS_TO_DIST_TENSOR_WITH_SINGLE_TENSOR_TEMPLATE.format(
+                convert_to_dist_str += CONVERT_INPUT_TENSORS_TO_DIST_TENSOR_WITH_SINGLE_TENSOR_TEMPLATE.format(
                     input_names=input_names,
                     input_single_tensor_names=input_single_tensor_names,
                     optional_and_vector_convert_code=optional_and_vector_convert_code,
                 )
             else:
-                get_eager_tensor_str += CONVERT_INPUT_TENSORS_TO_DIST_TENSOR_WITHOUT_SINGLE_TENSOR_TEMPLATE.format(
+                convert_to_dist_str += CONVERT_INPUT_TENSORS_TO_DIST_TENSOR_WITHOUT_SINGLE_TENSOR_TEMPLATE.format(
                     input_names=input_names,
                     optional_and_vector_convert_code=optional_and_vector_convert_code,
                 )
-        if forward_inplace_map:
-            for name, (ttype, pos) in forward_outputs_position_map.items():
-                if name in forward_inplace_map.values():
-                    inplace_returns_pos_map[name] = pos
-
-        parse_attributes_str = ""
-        expected_place_str = (
-            "    auto place = egr::Controller::Instance().GetExpectedPlace();\n"
-        )
-
-        # Generate Python-C Attributes Parsing Logic
-        for name, atype, _, pos in orig_forward_attrs_list:
-            parsing_function_name = FindParsingFunctionFromAttributeType(atype)
-            # Used input argument place if specified from Python frontend.
-            if (
-                len(expected_place_str) != 0
-                and parsing_function_name == "CastPyArg2Place"
-            ):
-                expected_place_str = ""
-                assert (
-                    name == "place"
-                ), "Only support 'place' as template argument name in FUNCTION_SET_DEVICE_TEMPLATE."
-
-            parse_attributes_str += PARSE_PYTHON_C_ARGS_TEMPLATE.format(
-                name,
-                pos,
-                atype,
-                name,
-                parsing_function_name,
-                name,
-                forward_api_name,
-                pos,
-            )
 
         set_device_str = FUNCTION_SET_DEVICE_TEMPLATE.format(expected_place_str)
 
@@ -497,18 +792,35 @@ class PythonCSingleFunctionGenerator(FunctionGeneratorBase):
             dygraph_function_call_list[pos] = f"{name}"
         dygraph_function_call_str = ",".join(dygraph_function_call_list)
 
+        # Generate Get predefined_out Logic
+        get_predefined_out_str = ""
+        if (
+            not inplace
+            and not no_predefined_out_tensor
+            and forward_api_name != "empty_like"
+        ):
+            forward_outputs_position_list = list(
+                self.forward_outputs_position_map.values()
+            )
+            if IsUsePredefinedOut(forward_outputs_position_list):
+                length = len(forward_outputs_position_list)
+                if length == 1:
+                    get_predefined_out_str = "    auto predefined_out = GetInputOutTensorFromKwargs(kwargs);"
+                else:
+                    get_predefined_out_str = f"    auto predefined_out = GetPredefinedOutTupleTensorFromKwargs_{length}(kwargs);"
+
+                dygraph_function_call_str = (
+                    dygraph_function_call_str + ", predefined_out"
+                )
+
         # Generate Python-C Function Definitions
         fwd_function_name = FUNCTION_NAME_TEMPLATE.format(
-            "::", namespace, GetForwardFunctionName(forward_api_name)
+            "::",
+            namespace,
+            GetForwardFunctionName(function_name),
         )
 
-        return_str = "    return ToPyObject(out);"
-
-        # Generate Record Event for performance profiling
-        pythonc_record_event_str = RECORD_EVENT_TEMPLATE.format(
-            "pythonc_record_event", forward_api_name, "pybind_imperative_func"
-        )
-
+        # Generate ad_func Call
         noamp_dygraph_function_str = NOAMP_DYGRAPH_FUNCTION_TEMPLATE.format(
             fwd_function_name,
             dygraph_function_call_str,
@@ -516,111 +828,91 @@ class PythonCSingleFunctionGenerator(FunctionGeneratorBase):
             dygraph_function_call_str,
         )
 
+        # Generate Return
+        if inplace:
+            # map of output position and input position
+            return_str = "    std::map<ssize_t, ssize_t> inplace_var_idx_map;"
+            for inplace_input, inplace_output in forward_inplace_map.items():
+                return_str += RETURN_INPLACE_INDEX_PYOBJECT_TEMPLATE.format(
+                    inplace_returns_pos_map[inplace_output],
+                    inplace_args_pos_map[inplace_input],
+                )
+            # map of output position and input arg name
+            return_str += "    std::map<ssize_t, std::vector<std::string>> inplace_var_name_map;"
+            if not need_parse_python_api_args:
+                for (
+                    inplace_input,
+                    inplace_output,
+                ) in forward_inplace_map.items():
+                    return_str += RETURN_INPLACE_NAME_PYOBJECT_TEMPLATE.format(
+                        inplace_returns_pos_map[inplace_output],
+                        '{"' + inplace_input + '"}',
+                    )
+            else:
+                for (
+                    inplace_input,
+                    inplace_output,
+                ) in forward_inplace_map.items():
+                    return_str += RETURN_INPLACE_NAME_PYOBJECT_TEMPLATE.format(
+                        inplace_returns_pos_map[inplace_output],
+                        _get_keywords(inplace_input, args_alias_map),
+                    )
+            return_str += "    return ToPyObject(ad_func_out, args, kwargs, inplace_var_idx_map, inplace_var_name_map);"
+        else:
+            return_str = "    return ToPyObject(ad_func_out);"
+
+        # Generate Record Event for performance profiling
+        pythonc_record_event_str = RECORD_EVENT_TEMPLATE.format(
+            "pythonc_record_event", forward_api_name, "pybind_imperative_func"
+        )
+
+        # Set prefix of forward_api_name to avoid conflicts
+        prefix = self.namespace.removeprefix("::").removesuffix("::")
+        forward_api_name_prefix = "" if prefix == "" else prefix + "_"
+
         # Generate Python-C Function Definition
-        self.python_c_function_str = PYTHON_C_FUNCTION_TEMPLATE.format(
-            forward_api_name,
+        python_c_function_str = PYTHON_C_FUNCTION_TEMPLATE.format(
+            function_name,
             pythonc_record_event_str,
-            forward_api_name,
+            function_name,
+            get_params_nums_and_check_str,
             get_eager_tensor_str,
             parse_attributes_str,
+            check_remaining_params_validity_str,
+            args_mapper_str,
+            convert_to_dist_str,
+            pre_process_str,
+            get_predefined_out_str,
             set_device_str,
             noamp_dygraph_function_str,
             return_str,
         )
-        self.python_c_function_declare_str = (
-            PYTHON_C_FUNCTION_DECLARE_TEMPLATE.format(name=forward_api_name)
+        python_c_function_declare_str = (
+            PYTHON_C_FUNCTION_DECLARE_TEMPLATE.format(name=function_name)
         )
-
-        # Set prefix of forward_api_name to avoid conflicts
-        prefix = self.namespace.strip("::")
-        forward_api_name_prefix = "" if prefix == "" else prefix + "_"
-
         # Generate Python-C Function Registration
-        self.python_c_function_reg_str = PYTHON_C_FUNCTION_REG_TEMPLATE.format(
+        python_c_function_reg_str = PYTHON_C_FUNCTION_REG_TEMPLATE.format(
             forward_api_name_prefix,
-            forward_api_name,
+            function_name,
             namespace,
-            forward_api_name,
-            forward_api_name,
+            function_name,
+            function_name,
         )
 
-        if forward_inplace_map:
-            inplaced_forward_api_name = GetInplacedFunctionName(
-                self.forward_api_name
-            )
-            inplaced_fwd_function_name = FUNCTION_NAME_TEMPLATE.format(
-                "::",
-                namespace,
-                GetForwardFunctionName(inplaced_forward_api_name),
-            )
+        # self.forward_api_name ending with '_' means it only has inplace api
+        if inplace and self.forward_api_name[-1] != '_':
+            # Add Inplace Function Code After Non-Inplace Function Code
+            self.python_c_function_str += python_c_function_str
+            self.python_c_function_declare_str += python_c_function_declare_str
+            self.python_c_function_reg_str += python_c_function_reg_str
+        else:
+            self.python_c_function_str = python_c_function_str
+            self.python_c_function_declare_str = python_c_function_declare_str
+            self.python_c_function_reg_str = python_c_function_reg_str
 
-            inplace_noamp_dygraph_function_str = (
-                NOAMP_DYGRAPH_FUNCTION_TEMPLATE.format(
-                    inplaced_fwd_function_name,
-                    dygraph_function_call_str,
-                    inplaced_fwd_function_name,
-                    dygraph_function_call_str,
-                )
-            )
-
-            return_str = "    std::map<ssize_t, ssize_t> inplace_var_idx_map;"
-            for inplace_input, inplace_output in forward_inplace_map.items():
-                return_str += RETURN_INPLACE_PYOBJECT_TEMPLATE.format(
-                    inplace_returns_pos_map[inplace_output],
-                    inplace_args_pos_map[inplace_input],
-                )
-            return_str += (
-                "    return ToPyObject(out, args, inplace_var_idx_map);"
-            )
-
-            # Generate Python-C Function Definition
-            python_c_inplace_func_str = PYTHON_C_FUNCTION_TEMPLATE.format(
-                inplaced_forward_api_name,
-                pythonc_record_event_str,
-                inplaced_forward_api_name,
-                get_eager_tensor_str,
-                parse_attributes_str,
-                set_device_str,
-                inplace_noamp_dygraph_function_str,
-                return_str,
-            )
-
-            python_c_function_declare_str = (
-                PYTHON_C_FUNCTION_DECLARE_TEMPLATE.format(
-                    name=inplaced_forward_api_name
-                )
-            )
-
-            python_c_inplace_func_reg_str = (
-                PYTHON_C_FUNCTION_REG_TEMPLATE.format(
-                    forward_api_name_prefix,
-                    inplaced_forward_api_name,
-                    namespace,
-                    inplaced_forward_api_name,
-                    inplaced_forward_api_name,
-                )
-            )
-
-            # self.forward_api_name ending with '_' means it only has inplace api
-            if self.forward_api_name[-1] == '_':
-                self.python_c_function_str = python_c_inplace_func_str
-                self.python_c_function_declare_str = (
-                    python_c_function_declare_str
-                )
-                # Generate Python-C Function Registration
-                self.python_c_function_reg_str = python_c_inplace_func_reg_str
-            else:
-                self.python_c_function_str += python_c_inplace_func_str
-                self.python_c_function_declare_str += (
-                    python_c_function_declare_str
-                )
-                # Generate Python-C Function Registration
-                self.python_c_function_reg_str += python_c_inplace_func_reg_str
-
-    def run(self):
-        # Initialized is_forward_only
-        self.CollectIsForwardOnly()
-
+    def run(
+        self, no_predefined_out_tensor=False, no_parse_python_api_info=False
+    ):
         # Initialized optional_inputs
         self.ParseDispensable()
 
@@ -629,7 +921,6 @@ class PythonCSingleFunctionGenerator(FunctionGeneratorBase):
 
         # Initialized orig_forward_inputs_list, orig_forward_returns_list, orig_forward_attrs_list
         self.CollectOriginalForwardInfo()
-
         if SkipAPIGeneration(self.forward_api_name):
             return False
 
@@ -639,7 +930,13 @@ class PythonCSingleFunctionGenerator(FunctionGeneratorBase):
         )
 
         # Code Generation
-        self.GeneratePythonCFunction()
+        self.GeneratePythonCFunction(
+            no_predefined_out_tensor, no_parse_python_api_info
+        )
+        if self.forward_inplace_map:
+            self.GeneratePythonCFunction(
+                no_predefined_out_tensor, no_parse_python_api_info, True
+            )
 
         return True
 
@@ -657,15 +954,23 @@ class PythonCGenerator(GeneratorBase):
         self.python_c_functions_reg_str = ""
         self.python_c_function_declare_str = ""
 
-    def GeneratePythonCFunctions(self):
+    def GeneratePythonCFunctions(
+        self, no_predefined_out_tensor=False, no_parse_python_api_info=False
+    ):
         namespace = self.namespace
 
         forward_api_list = self.forward_api_list
         for forward_api_content in forward_api_list:
+            if "backward_op" in forward_api_content and forward_api_content[
+                "backward_op"
+            ].endswith(('double_grad', 'triple_grad', 'grad_grad')):
+                continue
             f_generator = PythonCSingleFunctionGenerator(
                 forward_api_content, namespace
             )
-            status = f_generator.run()
+            status = f_generator.run(
+                no_predefined_out_tensor, no_parse_python_api_info
+            )
 
             if status:
                 self.python_c_functions_str += (
@@ -683,8 +988,7 @@ class PythonCGenerator(GeneratorBase):
         python_c_functions_str = self.python_c_functions_str
 
         if namespace != "":
-            if namespace.endswith("::"):
-                namespace = namespace[:-2]
+            namespace = namespace.removesuffix("::")
             self.python_c_functions_str = NAMESPACE_WRAPPER_TEMPLATE.format(
                 namespace, python_c_functions_str
             )
@@ -694,7 +998,9 @@ class PythonCGenerator(GeneratorBase):
                 )
             )
 
-    def run(self):
+    def run(
+        self, no_predefined_out_tensor=False, no_parse_python_api_info=False
+    ):
         # Infer namespace from yaml_path
         self.InferNameSpace()
 
@@ -702,7 +1008,9 @@ class PythonCGenerator(GeneratorBase):
         self.ParseForwardYamlContents()
 
         # Code Generation
-        self.GeneratePythonCFunctions()
+        self.GeneratePythonCFunctions(
+            no_predefined_out_tensor, no_parse_python_api_info
+        )
 
         # Wrap with namespace
         self.AttachNamespace()
@@ -716,6 +1024,7 @@ def ParseArguments():
         description='Eager Code Generator Args Parser'
     )
     parser.add_argument('--api_yaml_path', type=str)
+    parser.add_argument('--python_api_info_yaml_path', type=str)
     parser.add_argument('--source_path', type=str)
     parser.add_argument('--header_path', type=str)
 
@@ -752,15 +1061,26 @@ def GeneratePythonCFile(filepath, python_c_str):
 if __name__ == "__main__":
     args = ParseArguments()
     api_yaml_paths = args.api_yaml_path.split(",")
-
     generated_python_c_functions = ""
     generated_python_c_registration = ""
     generated_python_c_functions_header = ""
+    python_api_info_yaml_path = args.python_api_info_yaml_path
+
+    python_api_info_from_yaml = ParsePythonAPIInfoFromYAML(
+        python_api_info_yaml_path
+    )
     for i in range(len(api_yaml_paths)):
         api_yaml_path = api_yaml_paths[i]
 
+        no_predefined_out_tensor = (
+            "backward" in api_yaml_path
+            or "strings" in api_yaml_path
+            or "sparse" in api_yaml_path
+        )
+        no_parse_python_api_info = "sparse" in api_yaml_path
+
         py_c_generator = PythonCGenerator(api_yaml_path)
-        py_c_generator.run()
+        py_c_generator.run(no_predefined_out_tensor, no_parse_python_api_info)
 
         generated_python_c_functions += (
             py_c_generator.python_c_functions_str + "\n"
@@ -775,7 +1095,6 @@ if __name__ == "__main__":
     python_c_str = GeneratePythonCWrappers(
         generated_python_c_functions, generated_python_c_registration
     )
-
     source_path = args.source_path
     header_path = args.header_path
     for path in [source_path, header_path]:
@@ -787,3 +1106,4 @@ if __name__ == "__main__":
         header_path,
         PYTHON_C_H_TEMPLATE.format(body=generated_python_c_functions_header),
     )
+#

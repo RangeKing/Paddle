@@ -59,7 +59,7 @@ class AssertOp : public framework::OperatorBase {
     PADDLE_ENFORCE_NOT_NULL(
         cond_var_ptr,
         common::errors::NotFound("Input(Condition) of AssertOp is not found."));
-    const phi::DenseTensor &cond = cond_var_ptr->Get<phi::DenseTensor>();
+    const DenseTensor &cond = cond_var_ptr->Get<DenseTensor>();
     PADDLE_ENFORCE_EQ(
         cond.numel(),
         1,
@@ -73,13 +73,13 @@ class AssertOp : public framework::OperatorBase {
       return;
     }
 
-    funcs::TensorFormatter formatter;
+    phi::funcs::TensorFormatter formatter;
     formatter.SetSummarize(Attr<int64_t>(kSummarize.data()));
 
     const std::vector<std::string> &x_names = Inputs(kData.data());
     for (const std::string &name : x_names) {
       const framework::Variable *x_var_ptr = scope.FindVar(name);
-      const phi::DenseTensor &x_tensor = x_var_ptr->Get<phi::DenseTensor>();
+      const DenseTensor &x_tensor = x_var_ptr->Get<DenseTensor>();
       formatter.Print(x_tensor, name);
     }
 

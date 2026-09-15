@@ -58,10 +58,11 @@ class MSRAInitializer(Initializer):
 
     Args:
         uniform (bool, optional): whether to use uniform or normal distribution. Default is True.
-        fan_in (float32|None, optional): fan_in (in_features) of trainable Tensor, If None, it will be infered automatically. If you don't want to use in_features of the Tensor, you can set the value of 'fan_in' smartly by yourself. Default is None.
+        fan_in (float32|None, optional): fan_in (in_features) of trainable Tensor, If None, it will be inferred automatically. If you don't want to use in_features of the Tensor, you can set the value of 'fan_in' smartly by yourself. Default is None.
         seed (int32, optional): random seed. Default is 0.
         negative_slope (float, optional): negative_slope (only used with leaky_relu). Default is 0.0.
         nonlinearity(str, optional): the non-linear function. Default is relu.
+        mode(str, optional): the mode of initialization, can be 'fan_in' or 'fan_out'. When set to 'fan_in', the fan_in parameter is used for initialization. When set to 'fan_out', the out_features of trainable Tensor will be used. Default is 'fan_in'.
 
     Note:
         It is recommended to set fan_in to None for most cases.
@@ -75,6 +76,7 @@ class MSRAInitializer(Initializer):
         seed: int = 0,
         negative_slope: float = 0,
         nonlinearity: _NonLinearity = 'relu',
+        mode: str = 'fan_in',
     ) -> None:
         """Constructor for MSRAInitializer"""
         assert uniform is not None
@@ -85,6 +87,17 @@ class MSRAInitializer(Initializer):
         self._seed = seed
         self._negative_slope = negative_slope
         self._nonlinearity = nonlinearity
+        self._mode = mode
+        if self._mode not in ['fan_in', 'fan_out']:
+            raise ValueError(
+                "The mode of KaimingNormal/KaimingUniform should be 'fan_in' or 'fan_out', "
+                f"but received {self._mode}."
+            )
+        if self._mode == 'fan_out' and self._fan_in is not None:
+            raise ValueError(
+                "The mode of KaimingNormal/KaimingUniform is 'fan_out', "
+                "but fan_in is set. Please set fan_in to None."
+            )
 
     def forward(
         self, var: paddle.Tensor, block: paddle.pir.Block | None = None
@@ -101,16 +114,26 @@ class MSRAInitializer(Initializer):
         """
         assert not (
             isinstance(var, framework.EagerParamBase) and var.is_dist()
-        ), "Currently, kaiming initializer not support lazy init for dist param."
+        ), (
+            "Currently, kaiming initializer not support lazy init for dist param."
+        )
         block = self._check_block(block)
         assert isinstance(
-            var, (framework.Variable, paddle.pir.core.ParameterMeta)
+            var,
+            (
+                framework.Variable,
+                paddle.pir.Value,
+                paddle.pir.core.ParameterMeta,
+            ),
         )
         assert isinstance(block, (framework.Block, paddle.pir.Block))
         f_in, f_out = self._compute_fans(var)
 
         # If fan_in is passed, use it
-        fan_in = f_in if self._fan_in is None else self._fan_in
+        if self._mode == 'fan_in':
+            fan_in = f_in if self._fan_in is None else self._fan_in
+        if self._mode == 'fan_out':
+            fan_in = f_out
 
         if self._seed == 0:
             self._seed = block.program.random_seed
@@ -143,19 +166,27 @@ class MSRAInitializer(Initializer):
         if in_dygraph_mode():
             if self._uniform:
                 gain = calculate_gain(self._nonlinearity, self._negative_slope)
-                limit = gain * math.sqrt(3.0 / float(fan_in))
+                std = gain / math.sqrt(float(fan_in))
+                limit = math.sqrt(3.0) * std
                 out_var = _C_ops.uniform(
                     var.shape,
                     out_dtype,
                     -limit,
                     limit,
                     self._seed,
-                    _current_expected_place(),
+                    var.place
+                    if var.place._type()
+                    else _current_expected_place(),
                 )
             else:
                 gain = calculate_gain(self._nonlinearity, self._negative_slope)
                 std = gain / math.sqrt(float(fan_in))
-                place = _current_expected_place()
+                # var.place._type() means undefined, happens when initializer is specified in ParamAttr
+                place = (
+                    var.place
+                    if var.place._type()
+                    else _current_expected_place()
+                )
                 out_var = _C_ops.gaussian(
                     out_var.shape, 0.0, std, self._seed, out_dtype, place
                 )
@@ -177,7 +208,8 @@ class MSRAInitializer(Initializer):
         elif in_pir_mode():
             if self._uniform:
                 gain = calculate_gain(self._nonlinearity, self._negative_slope)
-                limit = gain * math.sqrt(3.0 / float(fan_in))
+                std = gain / math.sqrt(float(fan_in))
+                limit = math.sqrt(3.0) * std
                 out_var = _C_ops.uniform(
                     var.shape,
                     out_dtype,
@@ -204,7 +236,8 @@ class MSRAInitializer(Initializer):
         else:
             if self._uniform:
                 gain = calculate_gain(self._nonlinearity, self._negative_slope)
-                limit = gain * math.sqrt(3.0 / float(fan_in))
+                std = gain / math.sqrt(float(fan_in))
+                limit = math.sqrt(3.0) * std
                 op = block.append_op(
                     type="uniform_random",
                     inputs={},
@@ -270,15 +303,16 @@ class KaimingNormal(MSRAInitializer):
         \frac{gain}{\sqrt{{fan\_in}}}
 
     Args:
-        fan_in (float32|None, optional): fan_in (in_features) of trainable Tensor, If None, it will be infered automatically. If you don't want to use in_features of the Tensor, you can set the value of 'fan_in' smartly by yourself. Default is None.
+        fan_in (float32|None, optional): fan_in (in_features) of trainable Tensor, If None, it will be inferred automatically. If you don't want to use in_features of the Tensor, you can set the value of 'fan_in' smartly by yourself. Default is None.
         negative_slope (float, optional): negative_slope (only used with leaky_relu). Default is 0.0.
         nonlinearity(str, optional): the non-linear function. Default is relu.
+        mode(str, optional): the mode of initialization, can be 'fan_in' or 'fan_out'. When set to 'fan_in', the fan_in parameter is used for initialization. When set to 'fan_out', the out_features of trainable Tensor will be used. Default is 'fan_in'.
 
     Note:
         It is recommended to set fan_in to None for most cases.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> import paddle.nn as nn
@@ -294,6 +328,7 @@ class KaimingNormal(MSRAInitializer):
         fan_in: float | None = None,
         negative_slope: float = 0.0,
         nonlinearity: str = 'relu',
+        mode: str = 'fan_in',
     ) -> None:
         super().__init__(
             uniform=False,
@@ -301,6 +336,7 @@ class KaimingNormal(MSRAInitializer):
             seed=0,
             negative_slope=negative_slope,
             nonlinearity=nonlinearity,
+            mode=mode,
         )
 
 
@@ -321,15 +357,16 @@ class KaimingUniform(MSRAInitializer):
         x = gain \times \sqrt{\frac{3}{fan\_in}}
 
     Args:
-        fan_in (float32|None, optional): fan_in (in_features) of trainable Tensor, If None, it will be infered automatically. If you don't want to use in_features of the Tensor, you can set the value of 'fan_in' smartly by yourself. Default is None.
+        fan_in (float32|None, optional): fan_in (in_features) of trainable Tensor, If None, it will be inferred automatically. If you don't want to use in_features of the Tensor, you can set the value of 'fan_in' smartly by yourself. Default is None.
         negative_slope (float, optional): negative_slope (only used with leaky_relu). Default is 0.0.
         nonlinearity(str, optional): the non-linear function. Default is relu.
+        mode(str, optional): the mode of initialization, can be 'fan_in' or 'fan_out'. When set to 'fan_in', the fan_in parameter is used for initialization. When set to 'fan_out', the out_features of trainable Tensor will be used. Default is 'fan_in'.
 
     Note:
         It is recommended to set fan_in to None for most cases.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> import paddle.nn as nn
@@ -345,6 +382,7 @@ class KaimingUniform(MSRAInitializer):
         fan_in: float | None = None,
         negative_slope: float = 0.0,
         nonlinearity: str = 'relu',
+        mode: str = 'fan_in',
     ) -> None:
         super().__init__(
             uniform=True,
@@ -352,4 +390,5 @@ class KaimingUniform(MSRAInitializer):
             seed=0,
             negative_slope=negative_slope,
             nonlinearity=nonlinearity,
+            mode=mode,
         )

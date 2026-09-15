@@ -12,8 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "paddle/fluid/pir/dialect/operator/interface/infer_symbolic_shape/same_operands_result.h"
+#include <cmath>
+
 #include <optional>
+#include "paddle/fluid/pir/dialect/operator/interface/infer_symbolic_shape/same_operands_result.h"
 
 #define OP_SAME_OPERANDS_AND_RESULT(name)                                     \
   bool name##OpInferSymbolicShape(                                            \
@@ -50,6 +52,7 @@ OP_SAME_OPERANDS_AND_RESULT(Bernoulli)
 OP_SAME_OPERANDS_AND_RESULT(BitwiseNot)
 OP_SAME_OPERANDS_AND_RESULT(BitwiseNot_)
 OP_SAME_OPERANDS_AND_RESULT(Celu)
+OP_SAME_OPERANDS_AND_RESULT(Celu_)
 OP_SAME_OPERANDS_AND_RESULT(Clip)
 OP_SAME_OPERANDS_AND_RESULT(Clip_)
 OP_SAME_OPERANDS_AND_RESULT(Conj)
@@ -89,6 +92,7 @@ OP_SAME_OPERANDS_AND_RESULT(GetTensorFromSelectedRows)
 OP_SAME_OPERANDS_AND_RESULT(Gelu)
 OP_SAME_OPERANDS_AND_RESULT(Gelu_)
 OP_SAME_OPERANDS_AND_RESULT(Hardswish)
+OP_SAME_OPERANDS_AND_RESULT(Hardswish_)
 OP_SAME_OPERANDS_AND_RESULT(Imag)
 OP_SAME_OPERANDS_AND_RESULT(Increment)
 OP_SAME_OPERANDS_AND_RESULT(Increment_)
@@ -121,8 +125,8 @@ OP_SAME_OPERANDS_AND_RESULT(Logit_)
 OP_SAME_OPERANDS_AND_RESULT(Logsigmoid)
 OP_SAME_OPERANDS_AND_RESULT(Logsigmoid_)
 OP_SAME_OPERANDS_AND_RESULT(LogSoftmax)
-OP_SAME_OPERANDS_AND_RESULT(Memcpy)
 OP_SAME_OPERANDS_AND_RESULT(Mish)
+OP_SAME_OPERANDS_AND_RESULT(Mish_)
 OP_SAME_OPERANDS_AND_RESULT(NumberCount)
 OP_SAME_OPERANDS_AND_RESULT(Pow)
 OP_SAME_OPERANDS_AND_RESULT(Poisson)
@@ -136,8 +140,11 @@ OP_SAME_OPERANDS_AND_RESULT(Reciprocal)
 OP_SAME_OPERANDS_AND_RESULT(Reciprocal_)
 OP_SAME_OPERANDS_AND_RESULT(Relu)
 OP_SAME_OPERANDS_AND_RESULT(Relu6)
+OP_SAME_OPERANDS_AND_RESULT(Relu6_)
 OP_SAME_OPERANDS_AND_RESULT(Relu_)
 OP_SAME_OPERANDS_AND_RESULT(Reverse)
+OP_SAME_OPERANDS_AND_RESULT(Rint)
+OP_SAME_OPERANDS_AND_RESULT(Rint_)
 OP_SAME_OPERANDS_AND_RESULT(Roll)
 OP_SAME_OPERANDS_AND_RESULT(Round)
 OP_SAME_OPERANDS_AND_RESULT(Round_)
@@ -152,9 +159,11 @@ OP_SAME_OPERANDS_AND_RESULT(Scatter)
 OP_SAME_OPERANDS_AND_RESULT(Scatter_)
 OP_SAME_OPERANDS_AND_RESULT(Select)
 OP_SAME_OPERANDS_AND_RESULT(Selu)
+OP_SAME_OPERANDS_AND_RESULT(Selu_)
 OP_SAME_OPERANDS_AND_RESULT(ShadowFeed)
 OP_SAME_OPERANDS_AND_RESULT(ShareData_)
 OP_SAME_OPERANDS_AND_RESULT(Sign)
+OP_SAME_OPERANDS_AND_RESULT(Sign_)
 OP_SAME_OPERANDS_AND_RESULT(Sin)
 OP_SAME_OPERANDS_AND_RESULT(Sin_)
 OP_SAME_OPERANDS_AND_RESULT(Sinh)
@@ -167,6 +176,7 @@ OP_SAME_OPERANDS_AND_RESULT(Softshrink)
 OP_SAME_OPERANDS_AND_RESULT(Softsign)
 OP_SAME_OPERANDS_AND_RESULT(Stanh)
 OP_SAME_OPERANDS_AND_RESULT(Swish)
+OP_SAME_OPERANDS_AND_RESULT(Swish_)
 OP_SAME_OPERANDS_AND_RESULT(Tan)
 OP_SAME_OPERANDS_AND_RESULT(Tan_)
 OP_SAME_OPERANDS_AND_RESULT(Tanh)
@@ -192,11 +202,8 @@ OP_SAME_OPERANDS_AND_RESULT(Polygamma_)
 OP_SAME_OPERANDS_AND_RESULT(EnableCheckModelNanInf)
 OP_SAME_OPERANDS_AND_RESULT(ViewShape)
 OP_SAME_OPERANDS_AND_RESULT(Silu)
+OP_SAME_OPERANDS_AND_RESULT(Silu_)
 OP_SAME_OPERANDS_AND_RESULT(ViewDtype)
-OP_SAME_OPERANDS_AND_RESULT(Sqrt)
-OP_SAME_OPERANDS_AND_RESULT(Sqrt_)
-OP_SAME_OPERANDS_AND_RESULT(SqrtSr)
-OP_SAME_OPERANDS_AND_RESULT(SqrtSr_)
 OP_SAME_OPERANDS_AND_RESULT(FusedSoftmaxMaskUpperTriangle)
 OP_SAME_OPERANDS_AND_RESULT(Gammaln)
 OP_SAME_OPERANDS_AND_RESULT(Gammaln_)
@@ -204,6 +211,7 @@ OP_SAME_OPERANDS_AND_RESULT(GaussianInplace)
 OP_SAME_OPERANDS_AND_RESULT(GaussianInplace_)
 OP_SAME_OPERANDS_AND_RESULT(Hardshrink)
 OP_SAME_OPERANDS_AND_RESULT(Hardsigmoid)
+OP_SAME_OPERANDS_AND_RESULT(Hardsigmoid_)
 OP_SAME_OPERANDS_AND_RESULT(MergeSelectedRows)
 OP_SAME_OPERANDS_AND_RESULT(NpuIdentity)
 OP_SAME_OPERANDS_AND_RESULT(Renorm)
@@ -211,6 +219,14 @@ OP_SAME_OPERANDS_AND_RESULT(Renorm_)
 OP_SAME_OPERANDS_AND_RESULT(TanhShrink)
 OP_SAME_OPERANDS_AND_RESULT(YoloBoxHead)
 OP_SAME_OPERANDS_AND_RESULT(StandardGamma)
+OP_SAME_OPERANDS_AND_RESULT(MaskedFill)
+OP_SAME_OPERANDS_AND_RESULT(MaskedFill_)
+OP_SAME_OPERANDS_AND_RESULT(IndexElementwisePut)
+OP_SAME_OPERANDS_AND_RESULT(IndexElementwisePut_)
+OP_SAME_OPERANDS_AND_RESULT(IndexElementwisePutWithTensor)
+OP_SAME_OPERANDS_AND_RESULT(IndexElementwisePutWithTensor_)
+OP_SAME_OPERANDS_AND_RESULT(Random)
+OP_SAME_OPERANDS_AND_RESULT(Random_)
 
 bool ScaleOpInferSymbolicShape(pir::Operation *op,
                                pir::InferSymbolicShapeContext *infer_context) {
@@ -293,6 +309,67 @@ bool CeilOpInferSymbolicShape(pir::Operation *op,
 bool Ceil_OpInferSymbolicShape(pir::Operation *op,
                                pir::InferSymbolicShapeContext *infer_context) {
   return CeilOpInferSymbolicShape(op, infer_context);
+}
+
+bool SqrtOpInferSymbolicShape(pir::Operation *op,
+                              pir::InferSymbolicShapeContext *infer_context) {
+  const symbol::ShapeOrDataDimExprs &operand_shape_or_data =
+      infer_context->GetShapeOrDataForValue(op->operand_source(0));
+
+  auto CheckSqrt = [&](const int64_t checked_dim) -> bool {
+    const int64_t root = static_cast<int64_t>(std::sqrt(checked_dim));
+    return ((root * root) == checked_dim);
+  };
+
+  if (operand_shape_or_data.data().has_value()) {
+    std::vector<symbol::DimExpr> result_data;
+    bool has_symbol_dim = false;
+    for (auto &dim : operand_shape_or_data.data().value()) {
+      if (dim.isa<int64_t>() && CheckSqrt(dim.dyn_cast<int64_t>())) {
+        result_data.push_back(
+            static_cast<int64_t>(std::sqrt(dim.dyn_cast<int64_t>())));
+      } else {
+        has_symbol_dim = true;
+        break;
+      }
+    }
+
+    if (!has_symbol_dim) {
+      symbol::ShapeOrDataDimExprs result_shape_or_data(
+          symbol::TensorShapeOrDataDimExprs(operand_shape_or_data.shape(),
+                                            result_data));
+      infer_context->SetShapeOrDataForValue(op->result(0),
+                                            result_shape_or_data);
+      return true;
+    }
+  }
+  infer_context->SetShapeOrDataForValue(
+      op->result(0),
+      symbol::TensorShapeOrDataDimExprs(operand_shape_or_data.shape()));
+  return true;
+}
+
+bool Sqrt_OpInferSymbolicShape(pir::Operation *op,
+                               pir::InferSymbolicShapeContext *infer_context) {
+  return SqrtOpInferSymbolicShape(op, infer_context);
+}
+
+bool SqrtSrOpInferSymbolicShape(pir::Operation *op,
+                                pir::InferSymbolicShapeContext *infer_context) {
+  return SqrtOpInferSymbolicShape(op, infer_context);
+}
+
+bool SqrtSr_OpInferSymbolicShape(
+    pir::Operation *op, pir::InferSymbolicShapeContext *infer_context) {
+  return SqrtOpInferSymbolicShape(op, infer_context);
+}
+
+bool MemcpyOpInferSymbolicShape(pir::Operation *op,
+                                pir::InferSymbolicShapeContext *infer_context) {
+  infer_context->SetShapeOrDataForValue(
+      op->result(0),
+      infer_context->GetShapeOrDataForValue(op->operand_source(0)));
+  return true;
 }
 
 }  // namespace paddle::dialect

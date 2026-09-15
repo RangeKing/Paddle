@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import struct
-from typing import TYPE_CHECKING, Any, Tuple, Union
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -23,7 +23,7 @@ import paddle
 from paddle import pir
 
 from ..pir import Value
-from ..pir.core import _PADDLE_PIR_DTYPE_2_NUMPY_DTYPE, ParameterMeta
+from ..pir.core import ParameterMeta, datatype_to_str
 from . import core
 from .framework import (
     EagerParamBase,
@@ -36,16 +36,16 @@ from .framework import (
 )
 
 if TYPE_CHECKING:
-    from typing_extensions import TypeAlias
+    from typing import TypeAlias
 
     from paddle._typing import DTypeLike, ShapeLike
     from paddle._typing.dtype_like import _DTypeLiteral
 
-    _ClassInfo: TypeAlias = Union[type[Any], Tuple["_ClassInfo", ...]]
+    _ClassInfo: TypeAlias = type[Any] | tuple["_ClassInfo", ...]
 
 __all__ = []
 
-_PADDLE_DTYPE_2_NUMPY_DTYPE = {
+vartype_to_str = {
     core.VarDesc.VarType.BOOL: 'bool',
     core.VarDesc.VarType.FP8_E4M3FN: 'float8_e4m3fn',
     core.VarDesc.VarType.FP8_E5M2: 'float8_e5m2',
@@ -58,26 +58,57 @@ _PADDLE_DTYPE_2_NUMPY_DTYPE = {
     core.VarDesc.VarType.INT32: 'int32',
     core.VarDesc.VarType.INT64: 'int64',
     core.VarDesc.VarType.UINT8: 'uint8',
+    core.VarDesc.VarType.UINT16: 'uint16',
+    core.VarDesc.VarType.UINT32: 'uint32',
+    core.VarDesc.VarType.UINT64: 'uint64',
     core.VarDesc.VarType.COMPLEX64: 'complex64',
     core.VarDesc.VarType.COMPLEX128: 'complex128',
     core.VarDesc.VarType.STRING: 'pstring',
     core.VarDesc.VarType.RAW: 'raw',
 }
 
-_NUMPY_DTYPE_2_PADDLE_DTYPE = {
-    'bool': core.VarDesc.VarType.BOOL,
-    'float16': core.VarDesc.VarType.FP16,
-    'uint16': core.VarDesc.VarType.BF16,
-    'float32': core.VarDesc.VarType.FP32,
-    'float64': core.VarDesc.VarType.FP64,
-    'int8': core.VarDesc.VarType.INT8,
-    'int16': core.VarDesc.VarType.INT16,
-    'int32': core.VarDesc.VarType.INT32,
-    'int64': core.VarDesc.VarType.INT64,
-    'uint8': core.VarDesc.VarType.UINT8,
-    'complex64': core.VarDesc.VarType.COMPLEX64,
-    'complex128': core.VarDesc.VarType.COMPLEX128,
-}
+_PADDLE_DTYPE = [
+    core.DataType.UINT8,
+    core.DataType.INT8,
+    core.DataType.INT16,
+    core.DataType.INT32,
+    core.DataType.INT64,
+    core.DataType.FLOAT16,
+    core.DataType.FLOAT32,
+    core.DataType.FLOAT64,
+    core.DataType.COMPLEX64,
+    core.DataType.COMPLEX128,
+    core.DataType.BOOL,
+    core.DataType.BFLOAT16,
+]
+u1, i1, i2, i4, i8, f2, f4, f8, c4, c8, b1, bf = _PADDLE_DTYPE
+
+_PROMOTE_MATRIX = [
+    # u1, i1, i2, i4, i8, f2, f4, f8, c4, c8, b1, bf
+    [u1, i2, i2, i4, i8, f2, f4, f8, c4, c8, u1, bf],  # u1
+    [i2, i1, i2, i4, i8, f2, f4, f8, c4, c8, i1, bf],  # i1
+    [i2, i2, i2, i4, i8, f2, f4, f8, c4, c8, i2, bf],  # i2
+    [i4, i4, i4, i4, i8, f2, f4, f8, c4, c8, i4, bf],  # i4
+    [i8, i8, i8, i8, i8, f2, f4, f8, c4, c8, i8, bf],  # i8
+    [f2, f2, f2, f2, f2, f2, f4, f8, c4, c8, f2, f4],  # f2
+    [f4, f4, f4, f4, f4, f4, f4, f8, c4, c8, f4, f4],  # f4
+    [f8, f8, f8, f8, f8, f8, f8, f8, c8, c8, f8, f8],  # f8
+    [c4, c4, c4, c4, c4, c4, c4, c8, c4, c8, c4, c4],  # c4
+    [c8, c8, c8, c8, c8, c8, c8, c8, c8, c8, c8, c8],  # c8
+    [u1, i1, i2, i4, i8, f2, f4, f8, c4, c8, b1, bf],  # b1
+    [bf, bf, bf, bf, bf, f4, f4, f8, c4, c8, bf, bf],  # bf
+]
+_TYPE_TO_IDX = {t: i for i, t in enumerate(_PADDLE_DTYPE)}
+
+
+def promote_types(type1, type2):
+    idx1 = _TYPE_TO_IDX.get(type1)
+    idx2 = _TYPE_TO_IDX.get(type2)
+
+    if idx1 is None or idx2 is None:
+        raise TypeError(f"Unsupported dtype: {type1} or {type2}")
+
+    return _PROMOTE_MATRIX[idx1][idx2]
 
 
 def convert_float_to_uint16(data, data_format="NCHW"):
@@ -108,17 +139,19 @@ def convert_uint16_to_float(data):
 
 def convert_dtype(dtype: DTypeLike) -> _DTypeLiteral:
     if isinstance(dtype, core.VarDesc.VarType):
-        if dtype in _PADDLE_DTYPE_2_NUMPY_DTYPE:
-            return _PADDLE_DTYPE_2_NUMPY_DTYPE[dtype]
+        if dtype in vartype_to_str:
+            return vartype_to_str[dtype]
     if isinstance(dtype, core.DataType):
-        if dtype in _PADDLE_PIR_DTYPE_2_NUMPY_DTYPE:
-            return _PADDLE_PIR_DTYPE_2_NUMPY_DTYPE[dtype]
+        if dtype in datatype_to_str:
+            return datatype_to_str[dtype]
     elif isinstance(dtype, type):
         # This branch is for NumPy scalar types
         if dtype in [
             bool,
             np.float16,
             np.uint16,
+            np.uint32,
+            np.uint64,
             np.float32,
             np.float64,
             np.int8,
@@ -136,6 +169,8 @@ def convert_dtype(dtype: DTypeLike) -> _DTypeLiteral:
             'bool',
             'float16',
             'uint16',
+            'uint32',
+            'uint64',
             'float32',
             'float64',
             'int4',
@@ -205,8 +240,8 @@ def check_type(input, input_name, expected_type, op_name, extra_message=''):
         expected_type += (core.eager.Tensor,)
     elif isinstance(input, core.eager.Tensor) and not lazy_init_helper().state:
         raise TypeError(
-            "Please use `with base.dygraph.guard()` as context or `base.enable_dygraph()` to switch to imperative mode firstly. "
-            f"Because received '{input_name}' in {op_name} is a imperative Variable."
+            "Please use `with base.dygraph.guard()` as context or `paddle.disable_static()` to switch to dygraph mode firstly. "
+            f"Because received '{input_name}' in {op_name} is an Eager Tensor."
         )
     if not isinstance(input, expected_type):
         raise TypeError(
@@ -389,7 +424,7 @@ class DataFeeder:
         :code:`ValueError` - If some Variables are not in this Program.
 
     Example:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import numpy as np
             >>> import paddle
@@ -399,8 +434,10 @@ class DataFeeder:
             >>> place = paddle.CPUPlace()
             >>> def reader():
             ...     for _ in range(4):
-            ...         yield np.random.random([4]).astype('float32'), np.random.random([3]).astype('float32'),
-            ...
+            ...         yield (
+            ...             np.random.random([4]).astype('float32'),
+            ...             np.random.random([3]).astype('float32'),
+            ...         )
             >>> main_program = paddle.static.Program()
             >>> startup_program = paddle.static.Program()
 
@@ -423,7 +460,7 @@ class DataFeeder:
             >>> outs = exe.run(
             ...     program=main_program,
             ...     feed=feed_data,
-            ...     fetch_list=[out]
+            ...     fetch_list=[out],
             ... )
             >>> print(outs)
 
@@ -476,7 +513,7 @@ class DataFeeder:
             :code:`dict`: a :code:`dict` that contains (variable name - converted tensor) pairs
 
         Example:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> # In this example, reader - generator will return a list of ndarray of 3 elements
                 >>> # feed API will convert each ndarray input into a tensor
@@ -491,12 +528,15 @@ class DataFeeder:
 
                 >>> def reader(limit=5):
                 ...     for i in range(1, limit + 1):
-                ...         yield np.ones([6]).astype('float32') * i , np.ones([1]).astype('int64') * i, np.random.random([9]).astype('float32')
-                ...
+                ...         yield (
+                ...             np.ones([6]).astype('float32') * i,
+                ...             np.ones([1]).astype('int64') * i,
+                ...             np.random.random([9]).astype('float32'),
+                ...         )
                 >>> data_1 = paddle.static.data(name='data_1', shape=[None, 2, 1, 3])
                 >>> data_2 = paddle.static.data(name='data_2', shape=[None, 1], dtype='int64')
                 >>> data_3 = paddle.static.data(name='data_3', shape=[None, 3, 3], dtype='float32')
-                >>> feeder = base.DataFeeder(['data_1','data_2', 'data_3'], paddle.CPUPlace())
+                >>> feeder = base.DataFeeder(['data_1', 'data_2', 'data_3'], paddle.CPUPlace())
 
                 >>> result = feeder.feed(reader())
                 >>> print(result['data_1'])

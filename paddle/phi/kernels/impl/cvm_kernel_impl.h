@@ -72,7 +72,7 @@ void CVMOpKernel(const Context& dev_ctx,
   if (x->NumLevels() == 0) {
     if (use_cvm) {
       for (int i = 0; i < batch_size; i++) {
-        int cursor = i * item_size;
+        int64_t cursor = i * item_size;
         y_data[cursor] = log(x_data[cursor] + 1);
         y_data[cursor + 1] = log(x_data[cursor + 1] + 1) - y_data[cursor];
         for (int j = 2; j < item_size; j++) {
@@ -104,7 +104,7 @@ void CVMGradOpKernel(const Context& dev_ctx,
   auto* dx = x_grad;
   T* dx_data = dev_ctx.template Alloc<T>(dx);
 
-  const phi::DenseTensor* cvm = &cvm_in;
+  const DenseTensor* cvm = &cvm_in;
   const T* cvm_data = cvm->data<T>();
 
   const auto* dOut = &out_grad;

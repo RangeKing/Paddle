@@ -17,6 +17,7 @@
 #include <functional>
 #include <memory>
 #include <set>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -87,7 +88,7 @@ class IR_API IrContext {
   /// \param type_id The type id of the AbstractAttribute.
   /// \param abstract_attribute AbstractAttribute provided by user.
   ///
-  void RegisterAbstractAttribute(pir::TypeId type_id,
+  void RegisterAbstractAttribute(TypeId type_id,
                                  AbstractAttribute &&abstract_attribute);
 
   ///
@@ -105,7 +106,7 @@ class IR_API IrContext {
   AbstractAttribute *GetRegisteredAbstractAttribute(TypeId id);
 
   ///
-  /// \brief Register an op infomation to IrContext
+  /// \brief Register an op information to IrContext
   ///
   void RegisterOpInfo(Dialect *dialect,
                       TypeId op_id,
@@ -118,12 +119,12 @@ class IR_API IrContext {
                       void (*verify_region)(Operation *));
 
   ///
-  /// \brief Get registered operation infomation.
+  /// \brief Get registered operation information.
   ///
   OpInfo GetRegisteredOpInfo(const std::string &name);
 
   ///
-  /// \brief Get registered operation infomation map.
+  /// \brief Get registered operation information map.
   ///
   const OpInfoMap &registered_op_info_map();
 

@@ -20,7 +20,11 @@
 #ifdef PADDLE_WITH_HIP
 #include <hip/hip_fp16.h>
 #endif
+#include <type_traits>
+
 #include "paddle/common/ddim.h"
+#include "paddle/common/enforce.h"
+#include "paddle/phi/kernels/funcs/fast_divmod.h"
 
 namespace phi {
 namespace kps {
@@ -32,59 +36,21 @@ template <typename T, int VecSize>
 struct alignas(sizeof(T) * VecSize) VectorType {
   T val[VecSize];
 };
-/**
- * Fast division : Replace division in CUDA with multiplication to improve
- * kernel performance.
- * 1. Complete the division calculation on the CPU, and record the calculation
- * results by using the divider and shift_val.
- * 2. Set the divisor on the GPU through Div() to complete the calculation.
- */
-struct FastDivMod {
-  // 1st value represents the result of input number divides by recorded divisor
-  // 2nd value represents the result of input number modulo by recorded divisor
-  using DivModT = VectorType<uint32_t, 2>;
-
-  FastDivMod() {}
-  HOSTDEVICE FastDivMod(uint32_t d) : divisor(d) {
-    static_assert(sizeof(unsigned int) == 4,
-                  "Only Support 32-bit unsigned int.");
-
-    for (shift_val = 0; shift_val < INT_BITS; ++shift_val) {
-      auto shift_limit = 1 << shift_val;
-      if (shift_limit >= divisor) break;
-    }
-    uint64_t long_one = 1;
-    uint64_t temp_div =
-        ((long_one << INT_BITS) * ((long_one << shift_val) - divisor)) /
-            divisor +
-        1;
-    multiplier = temp_div;
-  }
-
-  __device__ __forceinline__ uint32_t Div(uint32_t n) const {
-    uint32_t t = __umulhi(n, multiplier);
-    return (t + n) >> shift_val;
-  }
-
-  __device__ __forceinline__ DivModT Divmod(uint32_t n) const {
-    uint32_t q = Div(n);
-    DivModT result = {q, n - q * divisor};
-    return result;
-  }
-
-  int32_t divisor;
-  int32_t shift_val;
-  uint32_t multiplier;
-};
 
 /**
  * Configuration of broadcast. Calculate the input data index according to the
  * index of the output data. if input or output shape is [dim0, dim1] then dims
  * must be [dim1, dim0].
  */
+template <typename IndexT = int64_t>
 struct BroadcastConfig {
-  FastDivMod divmoders[phi::DDim::kMaxRank];
-  uint32_t strides[phi::DDim::kMaxRank];
+  // FastDivMod has a 32-bit primary template and a 64-bit int64_t
+  // specialization (there is no unsigned specialization), so pick the matching
+  // signed divmod type according to the index width.
+  using DivModT = std::conditional_t<(sizeof(IndexT) > 4), int64_t, int>;
+
+  funcs::FastDivMod<DivModT> divmoders[DDim::kMaxRank];
+  IndexT strides[DDim::kMaxRank];
   int rank{0};
 
   // BroadcastConfig should be defined on host used on device.
@@ -94,7 +60,7 @@ struct BroadcastConfig {
                   const std::vector<int64_t>& in_dims,
                   int dim_size) {
     for (int i = 0; i < dim_size; ++i) {
-      divmoders[i] = FastDivMod(out_dims[i]);
+      divmoders[i] = funcs::FastDivMod<DivModT>(out_dims[i]);
     }
 
     for (int i = 0; i < dim_size; ++i) {
@@ -102,8 +68,8 @@ struct BroadcastConfig {
       strides[i] = (i != 0 && strides[i] != 0)
                        ? std::accumulate(in_dims.begin(),
                                          in_dims.begin() + i,
-                                         1,
-                                         std::multiplies<int64_t>())
+                                         IndexT{1},
+                                         std::multiplies<IndexT>())
                        : strides[i];
     }
     rank = dim_size;
@@ -113,8 +79,8 @@ struct BroadcastConfig {
 template <typename T>
 __device__ __forceinline__ void WriteData(T* dst,
                                           T* __restrict__ src,
-                                          int num) {
-  for (int i = 0; i < num; i++) {
+                                          int64_t num) {
+  for (int64_t i = 0; i < num; i++) {
     dst[i] = src[i];
   }
 }
@@ -122,8 +88,8 @@ __device__ __forceinline__ void WriteData(T* dst,
 template <typename T>
 __device__ __forceinline__ void ReadData(T* dst,
                                          const T* __restrict__ src,
-                                         int num) {
-  for (int i = 0; i < num; i++) {
+                                         int64_t num) {
+  for (int64_t i = 0; i < num; i++) {
     dst[i] = src[i];
   }
 }
@@ -149,9 +115,9 @@ __device__ __forceinline__ void ReadData(T* dst,
  * dst: The register pointer of the thread, the size is NX * NY.
  * src: The data pointer of the current block.
  * size_nx: The maximum offset of the current block is size_nx elements in the
- * lowest dimension. The parameters are only calculated when isboundary = true.
+ * lowest dimension. The parameters are only calculated when IsBoundary = true.
  * size_ny: The maximum offset of the current block is size_ny elements in the
- * first dimension. The parameters are only calculated when isboundary = true.
+ * first dimension. The parameters are only calculated when IsBoundary = true.
  * stride_nx: Each read one element stride stride_nx elements in the last dim.
  * stride_ny: Each read one element stride stride_ny elements in the first dim.
  */
@@ -161,7 +127,7 @@ __device__ __forceinline__ void ReadData(Ty* dst,
                                          int size_nx,
                                          int size_ny,
                                          int stride_nx,
-                                         int stride_ny) {
+                                         int64_t stride_ny) {
   int thread_offset = threadIdx.x;
   int left_size_nx = size_nx - thread_offset;
 
@@ -290,9 +256,9 @@ __device__ __forceinline__ void Init(ArgsT* dst, T init_data) {
 template <typename T, int NX, int NY, bool IsBoundary = false>
 __device__ __forceinline__ void ReadData(T* dst,
                                          const T* __restrict__ src,
-                                         int num) {
+                                         int64_t num) {
   if (IsBoundary) {  // blockDim.x * NX > num
-    int thread_offset = threadIdx.x * NX;
+    int64_t thread_offset = static_cast<int64_t>(threadIdx.x) * NX;
 #pragma unroll
     for (int idx = 0; idx < NX; ++idx) {
       if (idx + thread_offset < num) {
@@ -302,7 +268,8 @@ __device__ __forceinline__ void ReadData(T* dst,
   } else {  // blockDim,x * NX < num
     constexpr int kVectorSize = (NX % 4 == 0) ? 4 : (NX % 2 == 0) ? 2 : 1;
     constexpr int kVectorsPerThread = NX / kVectorSize;
-    int thread_offset = threadIdx.x * kVectorsPerThread;
+    int64_t thread_offset =
+        static_cast<int64_t>(threadIdx.x) * kVectorsPerThread;
 
     using VecType = details::VectorType<T, kVectorSize>;
     const VecType* vec_input = reinterpret_cast<const VecType*>(src);
@@ -450,23 +417,25 @@ __device__ __forceinline__ void ReadData(ArgsT* dst,
  * stride_nx: Each read one element stride stride_nx elements in the last dim.
  * stride_ny: Each read one element stride stride_ny elements in the first dim.
  */
-template <typename T, int NX, int NY, bool IsBoundary = false>
+template <typename T, typename IndexT, int NX, int NY, bool IsBoundary = false>
 __device__ __forceinline__ void ReadDataBc(
     T* dst,
     const T* __restrict__ src,
-    uint32_t block_offset,
-    const details::BroadcastConfig& config,
-    int total_num_output,
+    IndexT block_offset,
+    const details::BroadcastConfig<IndexT>& config,
+    IndexT total_num_output,
     int stride_nx,
     int stride_ny) {
-  uint32_t thread_offset = block_offset + threadIdx.x;
-  uint32_t index_src = 0;
+  IndexT thread_offset = block_offset + static_cast<IndexT>(threadIdx.x);
+  IndexT index_src = 0;
 
 #pragma unroll
   for (int ny = 0; ny < NY; ++ny) {
 #pragma unroll
     for (uint32_t nx = 0; nx < NX; ++nx) {
-      uint32_t index_output = thread_offset + ny * stride_ny + nx * stride_nx;
+      IndexT index_output = thread_offset +
+                            static_cast<IndexT>(ny) * stride_ny +
+                            static_cast<IndexT>(nx) * stride_nx;
       index_src = 0;
       if (IsBoundary) {
         if (index_output >= total_num_output) {
@@ -474,7 +443,7 @@ __device__ __forceinline__ void ReadDataBc(
         }
       }
 #pragma unroll
-      for (int i = 0; i < phi::DDim::kMaxRank; ++i) {
+      for (int i = 0; i < DDim::kMaxRank; ++i) {
         if (i >= config.rank) break;
         auto fast_divmoder = config.divmoders[i].Divmod(index_output);
         index_output = fast_divmoder.val[0];
@@ -506,9 +475,9 @@ __device__ __forceinline__ void ReadDataBc(
  * index_cal: Calculation configuration of Reduce. It is used to calculate the
  * coordinate mapping relationship between output data and input data.
  * size_nx: The current block needs to load size_nx columns of data, this
- * parameter will participate in the calculation when isboundary = true.
+ * parameter will participate in the calculation when IsBoundary = true.
  * size_ny: The current block needs to load size_ny rows of data, this parameter
- * will participate in the calculation when isboundary = true.
+ * will participate in the calculation when IsBoundary = true.
  * will be used when IsBoundary = true.
  * stride_nx: Each read one element stride stride_nx columns.
  * stride_ny: Each read one element stride stride_ny raws.
@@ -522,19 +491,20 @@ template <typename Tx,
           int Rank,
           typename IndexCal,
           typename Functor,
-          bool IsBoundary = false>
+          bool IsBoundary = false,
+          typename IndexType = int>
 __device__ __forceinline__ void ReadDataReduce(Ty* dst,
                                                const Tx* __restrict__ src,
-                                               int block_offset,
+                                               IndexType block_offset,
                                                const IndexCal& index_cal,
-                                               int size_nx,
-                                               int size_ny,
-                                               int stride_nx,
-                                               int stride_ny,
+                                               IndexType size_nx,
+                                               IndexType size_ny,
+                                               IndexType stride_nx,
+                                               IndexType stride_ny,
                                                Functor func,
                                                bool reduce_last_dim) {
-  int thread_offset = 0;
-  int left_idx = 0;
+  IndexType thread_offset = 0;
+  IndexType left_idx = 0;
   if (reduce_last_dim) {
     thread_offset = threadIdx.x;
     left_idx = threadIdx.y;
@@ -545,28 +515,28 @@ __device__ __forceinline__ void ReadDataReduce(Ty* dst,
 
   if (NX == 1) {
 #pragma unroll
-    for (int ny = 0; ny < NY; ++ny) {
+    for (IndexType ny = 0; ny < NY; ++ny) {
       if (IsBoundary) {
         if (thread_offset >= size_ny) {
           break;
         }
       }
-      uint32_t index_src = index_cal(thread_offset + block_offset);
+      IndexType index_src = index_cal(thread_offset + block_offset);
       dst[ny] = static_cast<Ty>(func(src[index_src]));
       thread_offset += stride_ny;
     }
   } else {
 #pragma unroll
-    for (int nx = 0; nx < NX; ++nx) {
+    for (IndexType nx = 0; nx < NX; ++nx) {
 #pragma unroll
-      for (int ny = 0; ny < NY; ++ny) {
+      for (IndexType ny = 0; ny < NY; ++ny) {
         if (IsBoundary) {
           if ((thread_offset >= size_ny) ||
               (left_idx + nx * stride_nx >= size_nx)) {
             break;
           }
         }
-        uint32_t index_src = index_cal(thread_offset + block_offset);
+        IndexType index_src = index_cal(thread_offset + block_offset);
         dst[nx + ny * NX] = static_cast<Ty>(func(src[index_src]));
         thread_offset += stride_ny;
       }
@@ -581,7 +551,7 @@ __device__ __forceinline__ void ReadDataReduce(Ty* dst,
  *
  * @template paraments
  * T: The type of data.
- * NX: The number of data continuously writed by each thread.
+ * NX: The number of data continuously written by each thread.
  * NY: The number of data rows loaded by each thread, only NY = 1 was supported.
  * threadIdx.x is used as the thread index. Currently only GPU was supported.
  * IsBoundary: Indicates whether to perform block access storage out-of-bounds
@@ -597,9 +567,9 @@ __device__ __forceinline__ void ReadDataReduce(Ty* dst,
 template <typename T, int NX, int NY, bool IsBoundary = false>
 __device__ __forceinline__ void WriteData(T* dst,
                                           T* __restrict__ src,
-                                          int num) {
+                                          int64_t num) {
   if (IsBoundary) {
-    int thread_offset = threadIdx.x * NX;
+    int64_t thread_offset = static_cast<int64_t>(threadIdx.x) * NX;
 #pragma unroll
     for (int idx = 0; idx < NX; ++idx) {
       if ((thread_offset + idx) < num) {
@@ -611,7 +581,8 @@ __device__ __forceinline__ void WriteData(T* dst,
     constexpr int kVectorSize = (NX % 4 == 0) ? 4 : (NX % 2 == 0) ? 2 : 1;
     constexpr int kVectorsPerThread = NX / kVectorSize;
 
-    int thread_offset = threadIdx.x * kVectorsPerThread;
+    int64_t thread_offset =
+        static_cast<int64_t>(threadIdx.x) * kVectorsPerThread;
     using VecType = details::VectorType<T, kVectorSize>;
     VecType* vec_dst = reinterpret_cast<VecType*>(dst);
     VecType vec_temp[kVectorsPerThread];
@@ -672,21 +643,21 @@ __device__ __forceinline__ void WriteData(T* dst,
  * dst: The data pointer of the current block.
  * src: The register pointer of the thread, the size is NX * NY.
  * size_nx: The maximum offset of the current block is size_nx elements in the
- * lowest dimension. The parameters are only calculated when isboundary = true.
+ * lowest dimension. The parameters are only calculated when IsBoundary = true.
  * size_ny: The maximum offset of the current block is size_ny elements in the
- * first dimension. The parameters are only calculated when isboundary = true.
+ * first dimension. The parameters are only calculated when IsBoundary = true.
  * stride_nx: Each read one element stride stride_nx elements in the last dim.
  * stride_ny: Each read one element stride stride_ny elements in the first dim.
  */
 template <typename Tx, typename Ty, int NX, int NY, bool IsBoundary = false>
 __device__ __forceinline__ void WriteData(Ty* dst,
                                           const Tx* __restrict__ src,
-                                          int size_nx,
+                                          int64_t size_nx,
                                           int size_ny,
                                           int stride_nx,
                                           int stride_ny) {
   int thread_offset = threadIdx.x;
-  int left_size_nx = size_nx - thread_offset;
+  int64_t left_size_nx = size_nx - thread_offset;
 
   // Each branch is added for better performance
   if (NX == 1 && NY == 1) {  // for NX == 1 and NY == 1
@@ -784,20 +755,20 @@ __device__ __forceinline__ void Init(T* dst, T* init_data, int num) {
  * coordinate mapping relationship between output data and input data.
  * total_num_output: Total number of original output.
  */
-template <typename T, int NX, int NY, bool IsBoundary = false>
+template <typename T, typename IndexT, int NX, int NY, bool IsBoundary = false>
 __device__ __forceinline__ void ReadDataBc(
     T* dst,
     const T* __restrict__ src,
-    uint32_t block_offset,
-    const details::BroadcastConfig& config,
-    int total_num_output,
+    IndexT block_offset,
+    const details::BroadcastConfig<IndexT>& config,
+    IndexT total_num_output,
     int read_lens = NX) {
-  uint32_t thread_offset = block_offset + threadIdx.x * NX;
-  uint32_t index_src = 0;
+  IndexT thread_offset = block_offset + static_cast<IndexT>(threadIdx.x) * NX;
+  IndexT index_src = 0;
 
 #pragma unroll
   for (uint32_t nx = 0; nx < NX; ++nx) {
-    uint32_t index_output = thread_offset + nx;
+    IndexT index_output = thread_offset + nx;
     index_src = 0;
     if (IsBoundary) {
       if (index_output >= total_num_output) {
@@ -805,7 +776,7 @@ __device__ __forceinline__ void ReadDataBc(
       }
     }
 #pragma unroll
-    for (int i = 0; i < phi::DDim::kMaxRank; ++i) {
+    for (int i = 0; i < DDim::kMaxRank; ++i) {
       if (i >= config.rank) break;
       auto fast_divmoder = config.divmoders[i].Divmod(index_output);
       index_output = fast_divmoder.val[0];
@@ -841,6 +812,7 @@ __device__ __forceinline__ void ReadDataBc(
  */
 
 template <typename T,
+          typename IndexT,
           int NX,
           int NY,
           typename ArgsT,
@@ -849,16 +821,16 @@ template <typename T,
 __device__ __forceinline__ void ReadDataBc(
     ArgsT* dst,
     const T* __restrict__ src,
-    uint32_t block_offset,
-    const details::BroadcastConfig& config,
-    int total_num_output,
+    IndexT block_offset,
+    const details::BroadcastConfig<IndexT>& config,
+    IndexT total_num_output,
     int read_lens = NX) {
-  uint32_t thread_offset = block_offset + threadIdx.x * NX;
-  uint32_t index_src = 0;
+  IndexT thread_offset = block_offset + static_cast<IndexT>(threadIdx.x) * NX;
+  IndexT index_src = 0;
 
 #pragma unroll
   for (uint32_t nx = 0; nx < NX; ++nx) {
-    uint32_t index_output = thread_offset + nx;
+    IndexT index_output = thread_offset + nx;
     index_src = 0;
     if (IsBoundary) {
       if (index_output >= total_num_output) {
@@ -866,7 +838,7 @@ __device__ __forceinline__ void ReadDataBc(
       }
     }
 #pragma unroll
-    for (int i = 0; i < phi::DDim::kMaxRank; ++i) {
+    for (int i = 0; i < DDim::kMaxRank; ++i) {
       if (i >= config.rank) break;
       auto fast_divmoder = config.divmoders[i].Divmod(index_output);
       index_output = fast_divmoder.val[0];
@@ -890,8 +862,9 @@ __device__ __forceinline__ void ReadDataBc(
  * init_data: The register pointer of init data, the size is NX.
  */
 template <typename T, int NX, int NY>
-__device__ __forceinline__ void InitWithDataIndex(T* dst, int block_offset) {
-  int thread_offset = block_offset + threadIdx.x * NX;
+__device__ __forceinline__ void InitWithDataIndex(T* dst,
+                                                  int64_t block_offset) {
+  int64_t thread_offset = block_offset + static_cast<int64_t>(threadIdx.x) * NX;
 #pragma unroll
   for (int nx = 0; nx < NX; ++nx) {
     dst[nx] = static_cast<T>(thread_offset + nx);

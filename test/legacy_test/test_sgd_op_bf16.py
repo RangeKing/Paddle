@@ -22,6 +22,7 @@ from op_test import (
     OpTestTool,
     convert_float_to_uint16,
     convert_uint16_to_float,
+    get_device_place,
 )
 from utils import compare_legacy_with_pt
 
@@ -32,24 +33,24 @@ from paddle.static import amp
 
 
 @unittest.skipIf(
-    not core.supports_bfloat16(), 'place does not support BF16 evaluation'
+    not core.is_bfloat16_supported(get_device_place()),
+    'place does not support BF16 evaluation',
 )
 class TestSGDOpBF16(OpTest):
     def setUp(self):
         self.op_type = 'sgd'
         self.dtype = np.uint16
-        self.use_mkldnn = True
+        self.use_onednn = True
         self.conf()
         w = np.random.random((self.h, self.w)).astype('float32')
         w_bf16 = convert_float_to_uint16(w)
         g = np.random.random((self.h, self.w)).astype('float32')
         g_bf16 = convert_float_to_uint16(g)
         lr = np.array([0.1]).astype('float32')
-        lr_bf16 = convert_float_to_uint16(lr)
 
-        self.inputs = {'Param': w_bf16, 'Grad': g_bf16, 'LearningRate': lr_bf16}
+        self.inputs = {'Param': w_bf16, 'Grad': g_bf16, 'LearningRate': lr}
         self.outputs = {'ParamOut': w - lr * g}
-        self.attrs = {'use_mkldnn': self.use_mkldnn}
+        self.attrs = {'use_onednn': self.use_onednn}
 
     def conf(self):
         self.h = 102
@@ -62,7 +63,8 @@ class TestSGDOpBF16(OpTest):
 
 
 @unittest.skipIf(
-    not core.supports_bfloat16(), 'place does not support BF16 evaluation'
+    not core.is_bfloat16_supported(get_device_place()),
+    'place does not support BF16 evaluation',
 )
 class TestSGDOpBF16Case2(TestSGDOpBF16):
     def conf(self):
@@ -122,14 +124,14 @@ class TestSparseSGDOpBF16(unittest.TestCase):
         lr_tensor = scope.var('LearningRate').get_tensor()
         lr_value = np.random.uniform()
         lr_array = np.full((1), lr_value, np.float32)
-        lr_array_bf16 = convert_float_to_uint16(lr_array)
-        lr_tensor.set(lr_array_bf16, place)
+        lr_tensor.set(lr_array, place)
 
         return lr_tensor, lr_value
 
 
 @unittest.skipIf(
-    not core.supports_bfloat16(), 'place does not support BF16 evaluation'
+    not core.is_bfloat16_supported(get_device_place()),
+    'place does not support BF16 evaluation',
 )
 class TestSparseGradSGDOpBF16(TestSparseSGDOpBF16):
     def setUp(self):
@@ -157,7 +159,7 @@ class TestSparseGradSGDOpBF16(TestSparseSGDOpBF16):
             Grad='Grad',
             ParamOut='Param',
             LearningRate='LearningRate',
-            use_mkldnn=True,
+            use_onednn=True,
         )
         sgd_op.run(scope, place)
 
@@ -169,7 +171,8 @@ class TestSparseGradSGDOpBF16(TestSparseSGDOpBF16):
 
 
 @unittest.skipIf(
-    not core.supports_bfloat16(), 'place does not support BF16 evaluation'
+    not core.is_bfloat16_supported(get_device_place()),
+    'place does not support BF16 evaluation',
 )
 class TestSparseGradSGDOpBF16Case2(TestSparseGradSGDOpBF16):
     def setup_params(self):
@@ -186,7 +189,8 @@ class TestSparseGradSGDOpBF16Case3(TestSparseGradSGDOpBF16):
 
 
 @unittest.skipIf(
-    not core.supports_bfloat16(), 'place does not support BF16 evaluation'
+    not core.is_bfloat16_supported(get_device_place()),
+    'place does not support BF16 evaluation',
 )
 class TestSparseGradParamSGDOpBF16(TestSparseSGDOpBF16):
     def setUp(self):
@@ -215,7 +219,7 @@ class TestSparseGradParamSGDOpBF16(TestSparseSGDOpBF16):
             Grad='Grad',
             ParamOut='Param',
             LearningRate='LearningRate',
-            use_mkldnn=True,
+            use_onednn=True,
         )
         sgd_op.run(scope, place)
 
@@ -239,7 +243,7 @@ class TestSGDOpBF16API(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         np.random.seed(12345)
-        base.set_flags({'FLAGS_use_mkldnn': True})
+        base.set_flags({'FLAGS_use_onednn': True})
 
     def setUp(self):
         self.sample_count = 20
@@ -355,9 +359,7 @@ class TestSGDOpBF16API(unittest.TestCase):
                 weight_attr=base.ParamAttr(
                     name="emb_weight", initializer=self.initializer
                 ),
-            )(
-                x
-            )  # bfloat16
+            )(x)  # bfloat16
             paddle.set_default_dtype(pre_dtype)
             cost = paddle.add(emb, label)
             avg_cost = paddle.mean(cost)

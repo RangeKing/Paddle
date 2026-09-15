@@ -23,8 +23,6 @@ limitations under the License. */
 namespace phi {
 namespace distributed {
 
-using phi::distributed::auto_parallel::str_join;
-
 ////////////////// Utils Functions //////////////////
 std::vector<int64_t> GetReplicatedDimsMapping(const int ndim) {
   std::vector<int64_t> dims_mapping(ndim, -1);
@@ -72,7 +70,7 @@ SpmdInfo ReplicatedInferSpmd(const std::vector<const DistMetaTensor*>& ins,
       continue;
     }
     VLOG(4) << "Input" << std::to_string(i) << " shape: ["
-            << str_join(common::vectorize(ins[i]->dims())) << "] "
+            << str_join(vectorize(ins[i]->dims())) << "] "
             << "src_dims_mapping: ["
             << str_join(ins[i]->dist_attr().dims_mapping()) << "] "
             << "dst_dims_mapping: ["
@@ -81,7 +79,7 @@ SpmdInfo ReplicatedInferSpmd(const std::vector<const DistMetaTensor*>& ins,
 
   for (int64_t i = 0; i < noutputs; i++) {
     VLOG(4) << "Output" << std::to_string(i) << " shape: ["
-            << str_join(common::vectorize(outs[i]->dims())) << "] "
+            << str_join(vectorize(outs[i]->dims())) << "] "
             << "dst_dims_mapping: ["
             << str_join(output_dist_attrs[i].dims_mapping()) << "]";
   }
@@ -122,7 +120,7 @@ SpmdInfo ReplicatedInferSpmdReverse(
   VLOG(4) << "ReplicatedSpmd InferBackward:";
   for (int64_t i = 0; i < noutputs; i++) {
     VLOG(4) << "Output" << std::to_string(i) << " shape: ["
-            << str_join(common::vectorize(outs[i]->dims())) << "] "
+            << str_join(vectorize(outs[i]->dims())) << "] "
             << "src_dims_mapping: ["
             << str_join(outs[i]->dist_attr().dims_mapping()) << "] "
             << "dst_dims_mapping: ["
@@ -131,7 +129,7 @@ SpmdInfo ReplicatedInferSpmdReverse(
 
   for (int64_t i = 0; i < ninputs; i++) {
     VLOG(4) << "Input" << std::to_string(i) << " shape: ["
-            << str_join(common::vectorize(ins[i]->dims())) << "] "
+            << str_join(vectorize(ins[i]->dims())) << "] "
             << "dst_dims_mapping: ["
             << str_join(dst_input_dist_attrs[i].dims_mapping()) << "]";
   }
@@ -164,15 +162,17 @@ SpmdInfo ReplicatedInferDynamic(
 
   for (int64_t i = 0; i < ninputs; i++) {
     if (paddle::holds_alternative<const DistMetaTensor*>(inputs[i])) {
-      auto dist_meta_tensor_ptr = paddle::get<0>(inputs[i]);
-      auto& dist_meta_tensor = *dist_meta_tensor_ptr;
+      const auto* dist_meta_tensor_ptr =
+          PADDLE_GET_CONST(const DistMetaTensor*, inputs[i]);
+      const auto& dist_meta_tensor = *dist_meta_tensor_ptr;
       auto dist_attr_dst = build_tensor_dist_attr(dist_meta_tensor);
       VLOG(4) << "input " << i << ": dist attr: " << dist_attr_dst.to_string();
       spmd_info.first.emplace_back(dist_attr_dst);
     } else {
       std::vector<phi::distributed::TensorDistAttr> list_dist_attr;
-      auto dist_meta_tensors_ptr = paddle::get<1>(inputs[i]);
-      auto& dist_meta_tensors = *dist_meta_tensors_ptr;
+      const auto* dist_meta_tensors_ptr =
+          PADDLE_GET_CONST(const std::vector<DistMetaTensor>*, inputs[i]);
+      const auto& dist_meta_tensors = *dist_meta_tensors_ptr;
       for (const auto& dist_meta_tensor : dist_meta_tensors) {
         auto dist_attr_dst = build_tensor_dist_attr(dist_meta_tensor);
         VLOG(4) << "input " << i

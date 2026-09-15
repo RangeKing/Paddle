@@ -37,7 +37,7 @@ bool isnan_(T x) {
 #endif
 
 template <typename T>
-T compute_stride(T axis, phi::DDim dims) {
+T compute_stride(T axis, DDim dims) {
   T size = 1;
   for (T i = axis + 1; i < dims.size(); i++) {
     size *= dims[i];
@@ -59,7 +59,7 @@ void ComputeImp(const DenseTensor& x,
   int64_t x_stride = compute_stride<int64_t>(axis, x.dims());
   int64_t values_stride = compute_stride<int64_t>(axis, out->dims());
   int64_t indices_stride = compute_stride<int64_t>(axis, indices->dims());
-  auto x_dim_vec = common::vectorize<int>(x.dims());
+  auto x_dim_vec = vectorize<int>(x.dims());
   int x_dim_size = x_dim_vec[axis];
   BinaryFunction op;
 
@@ -114,14 +114,19 @@ void ScanWithIndicesKernel(const Context& dev_ctx,
                            int axis,
                            DenseTensor* out,
                            DenseTensor* indices) {
+  if (out && out->numel() == 0) {
+    dev_ctx.template Alloc<T1>(out);
+    dev_ctx.template Alloc<T2>(indices);
+    return;
+  }
   dev_ctx.template Alloc<T1>(out);
   dev_ctx.template Alloc<T2>(indices);
 
   // For 0D Tensor
   if (x.numel() == 1) {
     auto raw_dims = out->dims();
-    phi::Copy<Context>(dev_ctx, x, dev_ctx.GetPlace(), false, out);
-    phi::funcs::SetConstant<Context, T2> set_zero;
+    Copy<Context>(dev_ctx, x, dev_ctx.GetPlace(), false, out);
+    funcs::SetConstant<Context, T2> set_zero;
     set_zero(dev_ctx, indices, static_cast<T2>(0.0));
     out->Resize(raw_dims);
     indices->Resize(raw_dims);

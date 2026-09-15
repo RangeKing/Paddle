@@ -1545,7 +1545,7 @@ def read_memory_log(path, file) -> tuple[float, bool]:
         return (0.0, True)
     memory_used = []
     utilization_gpu = []
-    indexs = []
+    indices = []
 
     with open(log_path, 'r') as f:
         reader = csv.reader(f)
@@ -1561,7 +1561,7 @@ def read_memory_log(path, file) -> tuple[float, bool]:
             # skip header
             if len(row) == 6:
                 index, util_gpu, _, mem_used, _, _ = row
-                indexs.append(int(index))
+                indices.append(int(index))
                 memory_used.append(int(mem_used))
                 utilization_gpu.append(int(util_gpu))
     return max(memory_used), False
@@ -1820,7 +1820,9 @@ def load_configs_from_csv(configs_csv):
             recompute_granularity == ""
             or recompute_granularity.lower()
             in __SUPPORTED_RECOMPUTE_GRANULARITY__
-        ), f"{recompute_granularity} must be one of {__SUPPORTED_RECOMPUTE_GRANULARITY__}, but got {recompute_granularity}."
+        ), (
+            f"{recompute_granularity} must be one of {__SUPPORTED_RECOMPUTE_GRANULARITY__}, but got {recompute_granularity}."
+        )
         config["recompute_granularity"] = (
             recompute_granularity if recompute_granularity != "" else None
         )

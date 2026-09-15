@@ -29,7 +29,7 @@ limitations under the License. */
 namespace phi {
 
 #define MAGIC_RANDOM_SEED 34342423252
-class Generator {
+class PADDLE_API Generator {
  public:
   struct GeneratorState {
     int64_t device;
@@ -39,19 +39,22 @@ class Generator {
 
     GeneratorState(int64_t device_ = -1,
                    uint64_t seed_ = MAGIC_RANDOM_SEED,
-                   uint64_t offset_ = 0)
+                   uint64_t offset_ = 0,
+                   std::shared_ptr<std::mt19937_64> engine = nullptr)
         : device(device_), seed(seed_), offset(offset_) {
-      std::seed_seq seq({seed});
-      cpu_engine = std::make_shared<std::mt19937_64>(seq);
+      if (engine != nullptr) {
+        // Clone the engine state
+        cpu_engine = std::make_shared<std::mt19937_64>(*(engine));
+      } else {
+        std::seed_seq seq({seed_});
+        cpu_engine = std::make_shared<std::mt19937_64>(seq);
+      }
     }
 
     GeneratorState(const GeneratorState& state)
         : device(state.device), seed(state.seed), offset(state.offset) {
       if (state.cpu_engine) {
-        std::seed_seq seq({state.seed});
-        cpu_engine = std::make_shared<std::mt19937_64>(seq);
-        // Clone the engine state
-        *(cpu_engine) = *(state.cpu_engine);
+        cpu_engine = std::make_shared<std::mt19937_64>(*(state.cpu_engine));
       }
     }
 
@@ -62,9 +65,7 @@ class Generator {
         offset = state.offset;
 
         if (state.cpu_engine) {
-          std::seed_seq seq({state.seed});
-          cpu_engine = std::make_shared<std::mt19937_64>(seq);
-          *cpu_engine = *(state.cpu_engine);
+          cpu_engine = std::make_shared<std::mt19937_64>(*(state.cpu_engine));
         } else {
           cpu_engine = nullptr;
         }
@@ -139,21 +140,23 @@ class Generator {
 };
 
 // The DefaultCPUGenerator is used in manual_seed()
-const std::shared_ptr<Generator>& DefaultCPUGenerator();
+PADDLE_API const std::shared_ptr<Generator>& DefaultCPUGenerator();
 
-const std::shared_ptr<Generator>& DefaultCUDAGenerator(int64_t device_id = -1);
+PADDLE_API const std::shared_ptr<Generator>& DefaultCUDAGenerator(
+    int64_t device_id = -1);
 
-const std::shared_ptr<Generator>& DefaultXPUGenerator(int64_t device_id = -1);
+PADDLE_API const std::shared_ptr<Generator>& DefaultXPUGenerator(
+    int64_t device_id = -1);
 
-const std::shared_ptr<Generator>& DefaultCustomDeviceGenerator(
-    const phi::CustomPlace& place);
+PADDLE_API const std::shared_ptr<Generator>& DefaultCustomDeviceGenerator(
+    const CustomPlace& place);
 
 std::shared_ptr<std::mt19937_64> GetCPURandomEngine(uint64_t);
 
-const std::shared_ptr<Generator>& SetRandomSeedGenerator(
+PADDLE_API const std::shared_ptr<Generator>& SetRandomSeedGenerator(
     const std::string& name, uint64_t seed);
 
-const std::shared_ptr<Generator>& GetRandomSeedGenerator(
+PADDLE_API const std::shared_ptr<Generator>& GetRandomSeedGenerator(
     const std::string& name);
 
 }  // namespace phi

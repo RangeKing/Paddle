@@ -17,18 +17,23 @@ from __future__ import annotations
 import typing
 from collections import OrderedDict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
+from itertools import chain
 from typing import Any
 
 from typing_extensions import Self
+
+import paddle
+from paddle import Tensor
 
 from ...base.dygraph.base import param_guard
 from ...base.framework import Parameter
 from .layers import Layer
 
-if typing.TYPE_CHECKING:
-    from paddle import Tensor
-
 __all__ = []
+
+from paddle.utils.decorator_utils import (
+    param_one_alias,
+)
 
 
 class LayerDict(Layer):
@@ -40,17 +45,19 @@ class LayerDict(Layer):
         sublayers (LayerDict|OrderedDict|list[(key,Layer)...], optional): iterable of key/value pairs, the type of value is 'paddle.nn.Layer' .
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> import numpy as np
             >>> from collections import OrderedDict
 
-            >>> sublayers = OrderedDict([
-            ...     ('conv1d', paddle.nn.Conv1D(3, 2, 3)),
-            ...     ('conv2d', paddle.nn.Conv2D(3, 2, 3)),
-            ...     ('conv3d', paddle.nn.Conv3D(4, 6, (3, 3, 3))),
-            >>> ])
+            >>> sublayers = OrderedDict(
+            ...     [
+            ...         ('conv1d', paddle.nn.Conv1D(3, 2, 3)),
+            ...         ('conv2d', paddle.nn.Conv2D(3, 2, 3)),
+            ...         ('conv3d', paddle.nn.Conv3D(4, 6, (3, 3, 3))),
+            ...     ]
+            ... )
 
             >>> layers_dict = paddle.nn.LayerDict(sublayers=sublayers)
 
@@ -58,7 +65,6 @@ class LayerDict(Layer):
 
             >>> for k in layers_dict:
             ...     l = layers_dict[k]
-            ...
             >>> print(len(layers_dict))
             3
 
@@ -76,6 +82,7 @@ class LayerDict(Layer):
 
     """
 
+    @param_one_alias(["sublayers", "modules"])
     def __init__(
         self,
         sublayers: (
@@ -115,7 +122,7 @@ class LayerDict(Layer):
             None.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> from collections import OrderedDict
@@ -145,7 +152,7 @@ class LayerDict(Layer):
             key (str): the key to be removed.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> from collections import OrderedDict
@@ -177,7 +184,7 @@ class LayerDict(Layer):
             None.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> from collections import OrderedDict
@@ -206,7 +213,7 @@ class LayerDict(Layer):
             None.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> from collections import OrderedDict
@@ -235,7 +242,7 @@ class LayerDict(Layer):
             None.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> from collections import OrderedDict
@@ -256,6 +263,7 @@ class LayerDict(Layer):
         """
         return self._sub_layers.values()
 
+    @param_one_alias(["sublayers", "modules"])
     def update(
         self,
         sublayers: (
@@ -269,7 +277,7 @@ class LayerDict(Layer):
             sublayers (LayerDict|OrderedDict|list[(key,Layer)...]): iterable of key/value pairs, the type of value is 'paddle.nn.Layer' .
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> from collections import OrderedDict
@@ -327,9 +335,10 @@ class ParameterDict(Layer):
 
     Parameters:
         parameters (iterable, optional): a mapping (dictionary) of (string : Any) or an iterable of key-value pairs of type (string, Any)
+            alias: values
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -338,13 +347,13 @@ class ParameterDict(Layer):
             ...         super().__init__()
             ...         # create ParameterDict with iterable Parameters
             ...         self.params = paddle.nn.ParameterDict(
-            ...             {f"t{i}": paddle.create_parameter(shape=[2, 2], dtype='float32') for i in range(num_stacked_param)})
+            ...             {f"t{i}": paddle.create_parameter(shape=[2, 2], dtype='float32') for i in range(num_stacked_param)}
+            ...         )
             ...
             ...     def forward(self, x):
             ...         for i, key in enumerate(self.params):
             ...             x = paddle.matmul(x, self.params[key])
             ...         return x
-            ...
             >>> x = paddle.uniform(shape=[5, 2], dtype='float32')
             >>> num_stacked_param = 4
             >>> model = MyLayer(num_stacked_param)
@@ -352,21 +361,22 @@ class ParameterDict(Layer):
             4
             >>> res = model(x)
             >>> print(res.shape)
-            [5, 2]
+            paddle.Size([5, 2])
 
             >>> replaced_param = paddle.create_parameter(shape=[2, 3], dtype='float32')
             >>> model.params['t3'] = replaced_param  # replace t3 param
             >>> res = model(x)
             >>> print(res.shape)
-            [5, 3]
+            paddle.Size([5, 3])
             >>> model.params['t4'] = paddle.create_parameter(shape=[3, 4], dtype='float32')  # append param
             >>> print(len(model.params))
             5
             >>> res = model(x)
             >>> print(res.shape)
-            [5, 4]
+            paddle.Size([5, 4])
     """
 
+    @param_one_alias(["parameters", "values"])
     def __init__(
         self,
         parameters: (
@@ -410,7 +420,10 @@ class ParameterDict(Layer):
             + type(parameters).__name__
         )
 
-        if isinstance(parameters, (OrderedDict, ParameterDict, Mapping)):
+        if isinstance(parameters, ParameterDict):
+            for key, parameter in parameters._parameters.items():
+                self.add_parameter(key, parameter)
+        elif isinstance(parameters, (OrderedDict, Mapping)):
             for key, parameter in parameters.items():
                 self.add_parameter(key, parameter)
         else:
@@ -421,6 +434,33 @@ class ParameterDict(Layer):
                     )
                 self.add_parameter(kv[0], kv[1])
 
+    def pop(self, key: str) -> Tensor:
+        """Remove key from the ParameterDict and return its parameter.
+
+        Parameters:
+            key (str): the key to be removed.
+        """
+        v = self[key]
+        del self._parameters[key]
+        return v
+
+    def keys(self) -> Iterable[str]:
+        """Return an iterable of the keys in the ParameterDict.
+
+        Parameters:
+            None.
+        """
+        return self._parameters.keys()
+
+    def values(self) -> Iterable[Tensor]:
+        """Return an iterable of the parameters in the ParameterDict.
+
+        Parameters:
+            None.
+        """
+        with param_guard(self._parameters):
+            return list(self._parameters.values())
+
 
 class ParameterList(Layer):
     """ParameterList Container.
@@ -429,9 +469,10 @@ class ParameterList(Layer):
 
     Parameters:
         parameters (iterable, optional): Iterable Parameters to be added.
+            Alias: ``values``.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -440,22 +481,13 @@ class ParameterList(Layer):
             ...         super().__init__()
             ...         # create ParameterList with iterable Parameters
             ...         self.params = paddle.nn.ParameterList(
-            ...             [paddle.create_parameter(
-            ...                 shape=[2, 2], dtype='float32')] * num_stacked_param)
+            ...             [paddle.create_parameter(shape=[2, 2], dtype='float32') for _ in range(num_stacked_param)]
+            ...         )
             ...
             ...     def forward(self, x):
             ...         for i, p in enumerate(self.params):
-            ...             tmp = self._helper.create_variable_for_type_inference('float32')
-            ...             self._helper.append_op(
-            ...                 type="mul",
-            ...                 inputs={"X": x,
-            ...                         "Y": p},
-            ...                 outputs={"Out": tmp},
-            ...                 attrs={"x_num_col_dims": 1,
-            ...                         "y_num_col_dims": 1})
-            ...             x = tmp
+            ...             x = paddle.matmul(x, p)
             ...         return x
-            ...
             >>> x = paddle.uniform(shape=[5, 2], dtype='float32')
             >>> num_stacked_param = 4
             >>> model = MyLayer(num_stacked_param)
@@ -463,21 +495,21 @@ class ParameterList(Layer):
             4
             >>> res = model(x)
             >>> print(res.shape)
-            [5, 2]
-
+            paddle.Size([5, 2])
             >>> replaced_param = paddle.create_parameter(shape=[2, 3], dtype='float32')
-            >>> model.params[num_stacked_param - 1] = replaced_param  # replace last param
+            >>> model.params[num_stacked_param - 1] = replaced_param
             >>> res = model(x)
             >>> print(res.shape)
-            [5, 3]
+            paddle.Size([5, 3])
             >>> model.params.append(paddle.create_parameter(shape=[3, 4], dtype='float32'))  # append param
             >>> print(len(model.params))
             5
             >>> res = model(x)
             >>> print(res.shape)
-            [5, 4]
+            paddle.Size([5, 4])
     """
 
+    @param_one_alias(["parameters", "values"])
     def __init__(self, parameters: Iterable[Tensor] | None = None) -> None:
         super().__init__()
         if parameters is not None:
@@ -490,8 +522,11 @@ class ParameterList(Layer):
             return self._parameters[str(idx)]
 
     def __setitem__(self, idx: int, param: Tensor) -> None:
-        assert isinstance(param, Parameter)
-        setattr(self, str(idx), param)
+        if not isinstance(param, (Parameter, Tensor)):
+            raise TypeError(
+                f"param should be 'Parameter' or 'Tensor', but received {type(param)}"
+            )
+        paddle.assign(param, getattr(self, str(idx)))
 
     def __len__(self) -> int:
         return len(self._parameters)
@@ -500,27 +535,44 @@ class ParameterList(Layer):
         with param_guard(self._parameters):
             return iter(self._parameters.values())
 
+    @param_one_alias(["parameter", "value"])
     def append(self, parameter: Tensor) -> Self:
         """Appends a given parameter at the end of the list.
 
         Parameters:
-            parameter (Parameter): parameter to append
+            parameter (Parameter): parameter to append.
+                Alias: ``value``.
         """
         idx = len(self._parameters)
         self.add_parameter(str(idx), parameter)
         return self
 
+    @param_one_alias(["parameters", "values"])
+    def extend(self, parameters: Iterable[Tensor]) -> Self:
+        """Append values from a Python iterable to the end of the list.
+
+        Parameters:
+            parameters (iterable): iterable of values to append.
+                Alias: ``values``.
+        """
+        for v in parameters:
+            self.append(v)
+        return self
+
+    def __iadd__(self, parameters: Iterable[Tensor]) -> Self:
+        return self.extend(parameters)
+
 
 class LayerList(Layer):
     """
     LayerList holds sublayers, and sublayers it contains are properly registered.
-    Holded sublayers can be indexed like a regular python list.
+    held sublayers can be indexed like a regular python list.
 
     Parameters:
         sublayers (iterable of Layer, optional): sublayers to hold
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -528,7 +580,8 @@ class LayerList(Layer):
             ...     def __init__(self):
             ...         super().__init__()
             ...         self.linears = paddle.nn.LayerList(
-            ...             [paddle.nn.Linear(10, 10) for i in range(10)])
+            ...             [paddle.nn.Linear(10, 10) for i in range(10)],
+            ...         )
             ...
             ...     def forward(self, x):
             ...         # LayerList can act as an iterable, or be indexed using ints
@@ -537,6 +590,7 @@ class LayerList(Layer):
             ...         return x
     """
 
+    @param_one_alias(["sublayers", "modules"])
     def __init__(self, sublayers: Iterable[Layer] | None = None) -> None:
         super().__init__()
         if sublayers is not None:
@@ -552,6 +606,9 @@ class LayerList(Layer):
             if idx < 0:
                 idx += len(self)
         return idx
+
+    def _get_abs_string_index(self, idx):
+        return str(self._get_abs_idx(idx))
 
     def __getitem__(self, idx: int) -> Layer:
         if isinstance(idx, slice):
@@ -582,6 +639,21 @@ class LayerList(Layer):
     def __iter__(self) -> Iterator[Layer]:
         return iter(self._sub_layers.values())
 
+    def __iadd__(self, modules: Iterable[Layer]) -> Self:
+        return self.extend(modules)
+
+    def __add__(self, other: Iterable[Layer]) -> LayerList:
+        combined = LayerList()
+        for i, module in enumerate(chain(self, other)):
+            combined.add_module(str(i), module)
+        return combined
+
+    def __dir__(self) -> list[str]:
+        keys = super().__dir__()
+        keys = [key for key in keys if not key.isdigit()]
+        return keys
+
+    @param_one_alias(["sublayer", "module"])
     def append(self, sublayer: Layer) -> Self:
         """
         Appends a sublayer to the end of the list.
@@ -590,7 +662,7 @@ class LayerList(Layer):
             sublayer (Layer): sublayer to append
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
 
@@ -603,6 +675,7 @@ class LayerList(Layer):
         self.add_sublayer(str(len(self)), sublayer)
         return self
 
+    @param_one_alias(["sublayer", "module"])
     def insert(self, index: int, sublayer: Layer) -> None:
         """
         Insert a sublayer before a given index in the list.
@@ -612,7 +685,7 @@ class LayerList(Layer):
             sublayer (Layer): sublayer to insert
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
 
@@ -626,15 +699,19 @@ class LayerList(Layer):
                 >>> print(linears[-2] is another)
                 True
         """
-        assert isinstance(index, int) and -len(self._sub_layers) <= index < len(
+        assert isinstance(index, int) and -len(
             self._sub_layers
-        ), f"index should be an integer in range [{-len(self)}, {len(self)})"
+        ) <= index <= len(self._sub_layers), (
+            f"index should be an integer in range [{-len(self)}, {len(self)}]"
+        )
 
-        index = self._get_abs_idx(index)
+        if index < 0:
+            index += len(self)
         for i in range(len(self._sub_layers), index, -1):
             self._sub_layers[str(i)] = self._sub_layers[str(i - 1)]
         self._sub_layers[str(index)] = sublayer
 
+    @param_one_alias(["sublayers", "modules"])
     def extend(self, sublayers: Iterable[Layer]) -> Self:
         """
         Appends sublayers to the end of the list.
@@ -646,7 +723,7 @@ class LayerList(Layer):
             None
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
 
@@ -664,6 +741,11 @@ class LayerList(Layer):
             self.add_sublayer(idx, sublayer)
         return self
 
+    def pop(self, key: int | slice) -> Layer:
+        v = self[key]
+        del self[key]
+        return v
+
 
 class Sequential(Layer):
     """Sequential container.
@@ -677,7 +759,7 @@ class Sequential(Layer):
         None.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -714,9 +796,18 @@ class Sequential(Layer):
             >>> res2 = model2(data)  # [30, 30]
     """
 
-    def __init__(self, *layers: Layer | tuple[str, Layer] | list[Any]) -> None:
+    def __init__(
+        self,
+        *layers: Layer
+        | tuple[str, Layer]
+        | list[Any]
+        | OrderedDict[str, Layer],
+    ) -> None:
         super().__init__()
-        if len(layers) > 0 and isinstance(layers[0], (list, tuple)):
+        if len(layers) == 1 and isinstance(layers[0], OrderedDict):
+            for name, layer in layers[0].items():
+                self.add_sublayer(name, layer)
+        elif len(layers) > 0 and isinstance(layers[0], (list, tuple)):
             for name, layer in layers:
                 self.add_sublayer(name, layer)
         else:

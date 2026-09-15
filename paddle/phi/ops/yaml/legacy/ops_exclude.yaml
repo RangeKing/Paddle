@@ -10,15 +10,11 @@
 - any
 - assign_out_
 - assign_value_
-- c_allgather
-- c_allreduce_max
-- c_allreduce_min
-- c_allreduce_prod
 - c_allreduce_sum
-- c_broadcast
 - c_concat
 - c_identity
-- c_reduce_sum
+- c_softmax_with_cross_entropy
+- c_split
 - cast
 - conv2d_transpose
 - conv2d_transpose_bias
@@ -32,6 +28,7 @@
 - empty
 - empty_like
 - enable_check_model_nan_inf
+- expand_as
 - exponential_
 - eye
 # FIXME(dev): Remove flatten after deprecate flatten_contiguous_range in old IR system.
@@ -47,11 +44,22 @@
 - fused_bn_add_activation
 - fused_softmax_mask
 - fused_softmax_mask_upper_triangle
+- fused_softplus
 - gaussian
+- group_norm
 - hsigmoid_loss
+- softplus
 - increment
+- kthvalue
 - linspace
 - logspace
+- bicubic_interp
+- nearest_interp
+- linear_interp
+- bilinear_interp
+- trilinear_interp
+- lp_pool2d
+- leaky_relu
 - matrix_rank
 - matrix_rank_tol
 - max
@@ -68,6 +76,7 @@
 - pool2d
 - pool3d
 - prod
+- p_norm
 - randint
 - randperm
 - read_file
@@ -97,3 +106,9 @@
 - unsqueeze
 - zeros
 - zeros_like
+- logit
+- pad3d
+- top_p_sampling
+- layer_norm
+- baddbmm
+- addmm

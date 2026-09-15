@@ -15,6 +15,7 @@
 #include "paddle/phi/kernels/instance_norm_grad_kernel.h"
 #include "paddle/phi/backends/xpu/enforce_xpu.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/norm_utils.h"
 
 namespace phi {
@@ -22,7 +23,8 @@ namespace phi {
 template <typename T, typename Context>
 void InstanceNormGradKernel(const Context& dev_ctx,
                             const DenseTensor& x,
-                            const paddle::optional<DenseTensor>& scale,
+                            const optional<DenseTensor>& scale,
+                            const optional<DenseTensor>& bias UNUSED,
                             const DenseTensor& saved_mean,
                             const DenseTensor& saved_variance,
                             const DenseTensor& d_y,
@@ -32,18 +34,27 @@ void InstanceNormGradKernel(const Context& dev_ctx,
                             DenseTensor* d_bias) {
   using XPUType = typename XPUTypeTrait<T>::Type;
   const auto& x_dims = x.dims();
-  int N, C, H, W, D;
-  funcs::ExtractNCWHD(x_dims, DataLayout::kNCHW, &N, &C, &H, &W, &D);
+  int64_t N, C, H, W, D;
+  funcs::ExtractNCWHD(x_dims, DataLayout::NCHW, &N, &C, &H, &W, &D);
   PADDLE_ENFORCE_EQ(
       x_dims.size() <= 5 && D == 1,
       true,
       common::errors::InvalidArgument(
-          "The size of input's dimensions should be less equal than 5",
-          "and the dimension of D should be equal to 1",
-          "But received: the size of input's dimensions is [%d]",
+          "The size of input's dimensions should be less equal than 5 and "
+          "the dimension of D should be equal to 1. But received: the size "
+          "of input's dimensions is [%d]",
           x_dims.size()));
 
   dev_ctx.template Alloc<T>(d_x);
+  if (x.numel() == 0) {
+    if (d_scale) {
+      Full<float, Context>(dev_ctx, d_scale->dims(), 0.f, d_scale);
+    }
+    if (d_bias) {
+      Full<float, Context>(dev_ctx, d_bias->dims(), 0.f, d_bias);
+    }
+    return;
+  }
   T* d_scale_data = nullptr;
   T* d_bias_data = nullptr;
   if (d_scale && d_bias) {
@@ -61,7 +72,7 @@ void InstanceNormGradKernel(const Context& dev_ctx,
         common::errors::InvalidArgument(
             "The `shape` in InstanceNormOp is invalid: "
             "the size of scale's dimensions must be equal to 1. But "
-            "received: the size of scale's dimensions"
+            "received: the size of scale's dimensions "
             "is [%d]",
             scale_ptr->dims().size()));
     PADDLE_ENFORCE_EQ(scale_ptr->dims()[0],

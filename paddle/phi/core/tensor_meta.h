@@ -47,7 +47,7 @@ using LoD = LegacyLoD;
 /// \brief The meta data of dense tensor. Take the structure type
 /// and use all default operations.
 ///
-struct TEST_API DenseTensorMeta {
+struct PADDLE_API DenseTensorMeta {
   DenseTensorMeta();
   DenseTensorMeta(DataType dtype, const DDim& dims);
   DenseTensorMeta(DataType dtype, const DDim& dims, const DDim& stride);
@@ -93,7 +93,7 @@ inline bool operator==(const DenseTensorMeta& lhs, const DenseTensorMeta& rhs) {
          (lhs.offset == rhs.offset) && (lhs.strides == rhs.strides);
 }
 
-struct StringTensorMeta {
+struct PADDLE_API StringTensorMeta {
   StringTensorMeta() = default;
   explicit StringTensorMeta(const DDim& dims);
   /// \brief Test whether the metadata is valid. Does not throw exceptions.
@@ -123,7 +123,7 @@ struct SparseTensorMeta {
 
   DDim dims;
   DataType dtype{DataType::UNDEFINED};
-  DataLayout layout{DataLayout::NCHW};
+  DataLayout layout{DataLayout::UNDEFINED};
 };
 
 inline bool operator==(const SparseTensorMeta& lhs,
@@ -132,3 +132,7 @@ inline bool operator==(const SparseTensorMeta& lhs,
 }
 
 }  // namespace phi
+
+namespace paddle {
+using DenseTensorMeta = phi::DenseTensorMeta;
+}

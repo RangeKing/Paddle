@@ -38,6 +38,9 @@ void DiagonalGradStridedKernel(const Context& dev_ctx,
   }
   dev_ctx.Alloc(in_grad, in_grad->dtype());
   in_grad->set_strides(DenseTensorMeta::calc_strides(in_grad->dims()));
+  if (in_grad->numel() == 0) {
+    return;
+  }
   PD_VISIT_ALL_TYPES(in_grad->dtype(), "DiagonalGradStridedKernel", ([&] {
                        phi::StridedTensorFill<data_t>(*in_grad, 0, in_grad);
                      }));
@@ -51,8 +54,8 @@ void DiagonalGradStridedKernel(const Context& dev_ctx,
   PD_VISIT_ALL_TYPES(out_grad.dtype(), "DiagonalGradStridedKernel", ([&] {
                        phi::StridedTensorCopy<data_t>(
                            out_grad,
-                           common::vectorize<int64_t>(tmp.dims()),
-                           common::vectorize<int64_t>(tmp.strides()),
+                           vectorize<int64_t>(tmp.dims()),
+                           vectorize<int64_t>(tmp.strides()),
                            tmp.offset(),
                            &tmp);
                      }));

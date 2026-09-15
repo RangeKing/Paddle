@@ -14,9 +14,13 @@
 
 #include "paddle/phi/kernels/nll_loss_kernel.h"
 
+#include "paddle/common/flags.h"
 #include "paddle/phi/backends/gpu/gpu_context.h"
+#include "paddle/phi/common/amp_type_traits.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/gpu/nll_loss.h"
+
+COMMON_DECLARE_bool(use_accuracy_compatible_kernel);
 
 namespace phi {
 
@@ -24,7 +28,7 @@ template <typename T, typename Context>
 void NllLossRawKernel(const Context& dev_ctx,
                       const DenseTensor& input,
                       const DenseTensor& label,
-                      const paddle::optional<DenseTensor>& weight,
+                      const optional<DenseTensor>& weight,
                       int64_t ignore_index,
                       const std::string& reduction,
                       DenseTensor* out,
@@ -43,10 +47,10 @@ void NllLossRawKernel(const Context& dev_ctx,
   auto x_dims = x->dims();
   auto batch_size = x_dims[0];
   auto n_classes = x_dims[1];
-  int64_t size_average = (int64_t)(reduction == "mean");
-
+  int size_average = static_cast<int>(reduction == "mean");
+  using AccT = typename MPTypeTrait<T>::Type;
   if (x_dims.size() == 2) {
-    int blocks = NumBlocks(batch_size);
+    int64_t blocks = NumBlocks(batch_size);
     int threads = kNumCUDAThreads;
     if (reduction == "none") {
       GPUNLLLossForward1D_no_reduce<T>
@@ -58,23 +62,38 @@ void NllLossRawKernel(const Context& dev_ctx,
                                                      n_classes,
                                                      ignore_index);
     } else {
-      GPUNLLLossForward1D_with_reduce<T>
-          <<<1, NTHREADS, 0, dev_ctx.stream()>>>(out_data,
-                                                 total_weight_data,
-                                                 x_data,
-                                                 label_data,
-                                                 weight_data,
-                                                 batch_size,
-                                                 n_classes,
-                                                 size_average,
-                                                 ignore_index);
+      if (FLAGS_use_accuracy_compatible_kernel) {
+        int nthreads = nll_loss_threads(batch_size);
+        GPUNLLLossForward1D_with_reduce_compatible<T, AccT>
+            <<<1, nthreads, nthreads * sizeof(AccT) * 2, dev_ctx.stream()>>>(
+                out_data,
+                total_weight_data,
+                x_data,
+                label_data,
+                weight_data,
+                batch_size,
+                n_classes,
+                size_average,
+                ignore_index);
+      } else {
+        GPUNLLLossForward1D_with_reduce<T, AccT>
+            <<<1, NTHREADS, 0, dev_ctx.stream()>>>(out_data,
+                                                   total_weight_data,
+                                                   x_data,
+                                                   label_data,
+                                                   weight_data,
+                                                   batch_size,
+                                                   n_classes,
+                                                   size_average,
+                                                   ignore_index);
+      }
     }
   } else if (x_dims.size() == 4) {
     const auto in_dim2 = x_dims[2];
     const auto in_dim3 = x_dims[3];
     const auto map_size = in_dim2 * in_dim3;
     const auto out_numel = batch_size * in_dim2 * in_dim3;
-    int blocks = NumBlocks(out_numel);
+    int64_t blocks = NumBlocks(out_numel);
     int threads = kNumCUDAThreads;
     if (reduction == "none") {
       GPUNLLLossForward2D_no_reduce<T>
@@ -90,8 +109,8 @@ void NllLossRawKernel(const Context& dev_ctx,
     } else {
       int blocks_per_sample = NumBlocks(map_size) / 128;
       blocks_per_sample = (blocks_per_sample == 0) ? 1 : blocks_per_sample;
-      int total_blocks = blocks_per_sample * batch_size;
-      GPUNLLLossForward2D_with_reduce<T>
+      int64_t total_blocks = blocks_per_sample * batch_size;
+      GPUNLLLossForward2D_with_reduce<T, AccT>
           <<<total_blocks, threads, 0, dev_ctx.stream()>>>(out_data,
                                                            total_weight_data,
                                                            x_data,

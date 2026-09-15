@@ -14,6 +14,8 @@
 
 #pragma once
 #if !defined(_WIN32)
+#include <stdint.h>
+#include <array>
 #include <cstddef>
 #include <cstring>
 
@@ -24,6 +26,8 @@ extern "C" {
 #define PADDLE_CUSTOM_RUNTIME_MAJOR_VERSION 0
 #define PADDLE_CUSTOM_RUNTIME_MINOR_VERSION 1
 #define PADDLE_CUSTOM_RUNTIME_PATCH_VERSION 1
+
+#define MAX_HOOKS 1024
 
 typedef enum {
   UNDEFINED = 0,
@@ -68,14 +72,54 @@ typedef struct C_Device_st {
   int id;
 } * C_Device;
 
+typedef enum {
+  C_StreamCaptureModeGlobal = 0,
+  C_StreamCaptureModeThreadLocal,
+  C_StreamCaptureModeRelaxed
+} C_StreamCaptureMode;
+
+typedef enum {
+  C_StreamCaptureStatusNone = 0,
+  C_StreamCaptureStatusActive,
+  C_StreamCaptureStatusInvalidated
+} C_StreamCaptureStatus;
+
 typedef struct C_Stream_st* C_Stream;
 
 typedef struct C_Event_st* C_Event;
+
+typedef struct C_Allocator_st* C_Allocator;
+
+typedef struct C_Place_st* C_Place;
+
+typedef struct C_EigenDevice_st* C_EigenDevice;
+
+typedef struct C_BLASHandle_st* C_BLASHandle;
+
+typedef struct C_BLASLtHandle_st* C_BLASLtHandle;
+
+typedef struct C_DNNHandle_st* C_DNNHandle;
+
+typedef struct C_GraphExec_st* C_GraphExec;
+
+typedef struct C_CudaGraph_t_st* C_CudaGraph;
+
+typedef struct C_CudaGraphNode_st* C_CudaGraphNode;
+
+typedef void (*C_GraphExecuterSetter)(C_GraphExec exec_graph, void* user_data);
+
+typedef struct {
+  size_t size;
+  C_GraphExecuterSetter* hooks;
+  void** user_data;
+} C_GraphHookManager;
 
 typedef void (*C_Callback)(C_Device device,
                            C_Stream stream,
                            void* user_data,
                            C_Status* status);
+
+typedef void (*C_GraphExecHook)(C_GraphExec exec);
 
 typedef struct {
   size_t sz;
@@ -91,6 +135,41 @@ typedef struct C_Profiler_st* C_Profiler;
 void profiler_add_runtime_trace_event(C_Profiler prof, void* event);
 
 void profiler_add_device_trace_event(C_Profiler prof, void* event);
+
+struct C_CinnInterface {
+  size_t size;
+  void* dev_ptr;
+
+  // --- Compiler Toolchain ---
+  C_Status (*compile)(void* dev_ptr,
+                      const char* code,
+                      char* out_path,
+                      size_t len);
+  const char* (*get_runtime_source)(void* dev_ptr);
+
+  // --- Runtime Strategy ---
+  C_Status (*module_load)(void* dev_ptr, const char* path, void** mod_out);
+  C_Status (*module_unload)(void* dev_ptr, void* module_handle);
+  C_Status (*get_kernel_address)(void* dev_ptr,
+                                 void* module_handle,
+                                 const char* func_name,
+                                 void** func_out);
+  C_Status (*launch_kernel)(void* dev_ptr,
+                            void* func_ptr,
+                            void** args,
+                            int num_args,
+                            int gx,
+                            int gy,
+                            int gz,
+                            int bx,
+                            int by,
+                            int bz,
+                            int shm,
+                            void* stream);
+
+  // --- Compile Strategy ---
+  C_Status (*apply_custom_pass)(void* dev_ptr, void* ir_module);
+};
 
 struct C_DeviceInterface {
   // Core fill it and plugin must to check it
@@ -387,7 +466,7 @@ struct C_DeviceInterface {
                               size_t size);
 
   /**
-   * @brief Asynchonrize memory copy from host to device
+   * @brief Asynchronize memory copy from host to device
    *
    * @param[C_Device]   device     Core fill it with a physical id
    * @param[C_Stream]   stream
@@ -402,7 +481,7 @@ struct C_DeviceInterface {
                                     size_t size);
 
   /**
-   * @brief Asynchonrize memory copy from device to host
+   * @brief Asynchronize memory copy from device to host
    *
    * @param[C_Device]   device     Core fill it with a physical id
    * @param[C_Stream]   stream
@@ -417,7 +496,7 @@ struct C_DeviceInterface {
                                     size_t size);
 
   /**
-   * @brief Asynchonrize memory copy from device to device
+   * @brief Asynchronize memory copy from device to device
    *
    * @param[C_Device]   device     Core fill it with a physical id
    * @param[C_Stream]   stream
@@ -432,7 +511,7 @@ struct C_DeviceInterface {
                                     size_t size);
 
   /**
-   * @brief Peer asynchonrize memory copy from host to device
+   * @brief Peer asynchronize memory copy from host to device
    *
    * @param[C_Device]   device     Core fill it with a physical id
    * @param[C_Stream]   stream
@@ -526,21 +605,144 @@ struct C_DeviceInterface {
    *
    * @param[size_t*]    compute_capability
    */
-  C_Status (*get_compute_capability)(size_t* compute_capability);
+  C_Status (*get_compute_capability)(const C_Device device,
+                                     size_t* compute_capability);
+
+  /**
+   * @brief Get device properties
+   *
+   * @param[void*]    device_properties
+   */
+  C_Status (*get_device_properties)(const C_Device device,
+                                    void* device_properties);
 
   /**
    * @brief Get runtime version
    *
    * @param[size_t*]    version
    */
-  C_Status (*get_runtime_version)(size_t* version);
+  C_Status (*get_runtime_version)(const C_Device device, size_t* version);
 
   /**
    * @brief Get driver version
    *
    * @param[size_t*]    version
    */
-  C_Status (*get_driver_version)(size_t* version);
+  C_Status (*get_driver_version)(const C_Device device, size_t* version);
+
+  /**
+   * @brief Get MultiProcessors
+   *
+   * @param[size_t*]    multi_process
+   */
+  C_Status (*get_multi_process)(const C_Device device, size_t* multi_process);
+
+  /**
+   * @brief Get Max Threads Per MultiProcessor
+   *
+   * @param[size_t*]    threads_per_mp
+   */
+  C_Status (*get_max_threads_per_mp)(const C_Device device,
+                                     size_t* threads_per_mp);
+
+  /**
+   * @brief Get Max Threads Per Block
+   *
+   * @param[size_t*]    threads_per_block
+   */
+  C_Status (*get_max_threads_per_block)(const C_Device device,
+                                        size_t* threads_per_block);
+
+  /**
+   * @brief Get Max Shared Mem Per Block
+   *
+   * @param[size_t*]    shared_mem_per_block
+   */
+  C_Status (*get_max_shared_mem_per_block)(const C_Device device,
+                                           size_t* shared_mem_per_block);
+  /**
+   * @brief Get Max Block Per MultiProcessor
+   *
+   * @param[size_t*]    blocks_per_mp
+   */
+  C_Status (*get_max_blocks_per_mp)(const C_Device device,
+                                    size_t* blocks_per_mp);
+
+  /**
+   * @brief Get Warp Size
+   *
+   * @param[size_t*]    warp_size
+   */
+  C_Status (*get_warp_size)(const C_Device device, size_t* warp_size);
+
+  /**
+   * @brief Get Max Registers Per MultiProcessor
+   *
+   * @param[size_t*]    registers_per_mp
+   */
+  C_Status (*get_max_registers_per_mp)(const C_Device device,
+                                       size_t* registers_per_mp);
+
+  /**
+   * @brief Get Preferred Vector Width
+   *
+   * @param[size_t*]    vector_width
+   */
+  C_Status (*get_vector_width)(const C_Device device, size_t* vector_width);
+
+  /**
+   * @brief Get Max Grid Dim Size
+   *
+   * @param[std::array<unsigned int, 3>*]    grid_dim_size
+   */
+  C_Status (*get_max_grid_dim_size)(const C_Device device,
+                                    std::array<unsigned int, 3>* grid_dim_size);
+
+  /**
+   * @brief Get Max Block Dim Size
+   *
+   * @param[std::array<unsigned int, 3>*]    block_dim_size
+   */
+  C_Status (*get_max_block_dim_size)(
+      const C_Device device, std::array<unsigned int, 3>* block_dim_size);
+  /**
+   * @brief Is float16 supported
+   *
+   * @param[C_Device, bool*]     device, supported
+   */
+  C_Status (*is_float16_supported)(const C_Device device, bool* supported);
+
+  /**
+   * @brief Is bfloat16 supported
+   *
+   * @param[C_Device, bool*]     device, supported
+   */
+  C_Status (*is_bfloat16_supported)(const C_Device device, bool* supported);
+
+  /**
+   * @brief Is dnn supported
+   *
+   * @param[C_Device, bool*]     device, supported
+   */
+  C_Status (*is_dnn_supported)(const C_Device device, bool* supported);
+
+  /**
+   * @brief init eigen device
+   *
+   * @param[C_Place, C_EigenDevice*, C_Stream, C_Allocator]    eigen_device
+   */
+  C_Status (*init_eigen_device)(C_Place place,
+                                C_EigenDevice* eigen_device,
+                                C_Stream stream,
+                                C_Allocator allocator);
+
+  /**
+   * @brief destroy eigen device
+   *
+   * @param[C_Device, C_EigenDevice*]    eigen_device
+   */
+  C_Status (*destroy_eigen_device)(const C_Device device,
+                                   C_EigenDevice* eigen_device);
 
   void* reserved_info_api[8];
 
@@ -679,6 +881,77 @@ struct C_DeviceInterface {
 
   void* reserved_profiler_api[8];
 
+  //////////////////
+  // blas handle api //
+  /////////////////
+
+  C_Status (*init_blas_handle)(const C_Device device,
+                               C_BLASHandle* blas_handle,
+                               C_Stream stream);
+
+  C_Status (*blas_set_math_mode)(const C_Device device,
+                                 C_BLASHandle blas_handle,
+                                 int math_mode);
+
+  C_Status (*init_blaslt_handle)(const C_Device device,
+                                 C_BLASLtHandle* blaslt_handle);
+
+  C_Status (*destroy_blas_handle)(const C_Device device,
+                                  C_BLASHandle blas_handle);
+
+  C_Status (*destroy_blaslt_handle)(const C_Device device,
+                                    C_BLASLtHandle blaslt_handle);
+
+  C_Status (*init_dnn_handle)(const C_Device device,
+                              C_DNNHandle* dnn_handle,
+                              C_Stream stream);
+
+  C_Status (*destroy_dnn_handle)(const C_Device device, C_DNNHandle dnn_handle);
+
+  C_Status (*cuda_stream_begin_capture)(const C_Device device,
+                                        C_Stream stream,
+                                        C_StreamCaptureMode mode);
+
+  C_Status (*cuda_stream_end_captrue)(const C_Device device,
+                                      C_Stream stream,
+                                      C_CudaGraph* pGraph);
+
+  C_Status (*cuda_graph_launch)(const C_Device device,
+                                C_GraphExec exec,
+                                C_Stream stream);
+
+  C_Status (*cuda_graph_destroy)(C_CudaGraph graph);
+
+  C_Status (*cuda_graph_exec_destroy)(C_GraphExec exec);
+
+  C_Status (*cuda_graph_instantiate)(C_GraphExec* pExec,
+                                     C_CudaGraph* pGraph,
+                                     void** pErrorNode,
+                                     char* pLogBuffer,
+                                     size_t bufferSize);
+
+  C_Status (*cuda_graph_get_nodes)(C_CudaGraph graph,
+                                   C_CudaGraphNode* pNode,
+                                   size_t* numNodes);
+
+  C_Status (*cuda_stream_capture_info)(const C_Device device,
+                                       C_Stream stream,
+                                       C_StreamCaptureStatus* captureStatus_out,
+                                       unsigned long long* id_out,  // NOLINT
+                                       C_CudaGraph* graph_out,
+                                       C_CudaGraphNode* dependencies_out,
+                                       void** edgeData_out,
+                                       size_t* numDependencies_out);
+
+  C_Status (*get_parameter_setter_for_exec_graph)(C_CudaGraph graph,
+                                                  C_GraphHookManager* c_hook);
+
+  C_Status (*cuda_graph_debug_dot_print)(C_CudaGraph graph,
+                                         const char* path,
+                                         unsigned int flags);
+  C_Status (*cuda_thread_exchange_stream_capthure_mode)(
+      C_StreamCaptureMode* mode);
+
   ///////////////
   // other api //
   ///////////////
@@ -695,7 +968,10 @@ struct C_DeviceInterface {
                          void* x,
                          float beta,
                          void* y);
-  void* reserved_other_api[7];
+
+  struct C_CinnInterface* cinn_interface;
+
+  void* reserved_other_api[6];
 };
 
 struct CustomRuntimeVersion {
@@ -714,6 +990,7 @@ struct CustomRuntimeParams {
   // Plugin fill it
   char* sub_device_type;
 
+  void* pir_default_passes;
   char reserved[32];
 };
 

@@ -14,6 +14,7 @@
 
 #include "paddle/phi/core/memory/allocation/allocator_facade.h"
 #include <cstdint>
+#include <cstdlib>
 
 #include "paddle/common/macros.h"
 #include "paddle/phi/common/place.h"
@@ -42,35 +43,36 @@
 #include "paddle/phi/core/platform/device/gpu/gpu_info.h"
 
 #if defined(PADDLE_WITH_CUDA)
-#include "paddle/phi/backends/gpu/cuda/cuda_graph.h"
-#elif defined(PADDLE_WITH_HIP)
-#include "paddle/phi/backends/gpu/rocm/hip_graph.h"
-#endif
-
-#if CUDA_VERSION >= 10020
 #include "paddle/phi/backends/dynload/cuda_driver.h"
+#include "paddle/phi/backends/gpu/cuda/cuda_graph.h"
 #include "paddle/phi/core/memory/allocation/cuda_malloc_async_allocator.h"
 #include "paddle/phi/core/memory/allocation/cuda_virtual_mem_allocator.h"
+#include "paddle/phi/core/memory/allocation/cuda_virtual_mem_allocator_v2.h"
 #include "paddle/phi/core/memory/allocation/virtual_memory_auto_growth_best_fit_allocator.h"
-#endif
-
-#ifdef PADDLE_WITH_HIP
+#include "paddle/phi/core/memory/allocation/vmm_auto_growth_best_fit_allocator_v2.h"
+#include "paddle/phi/core/memory/allocation/vmm_auto_growth_best_fit_multi_pool_allocator_v2.h"
+#elif defined(PADDLE_WITH_HIP)
+#include "paddle/phi/backends/gpu/rocm/hip_graph.h"
 #include "paddle/phi/core/memory/allocation/cuda_malloc_async_allocator.h"  // NOLINT
 #endif
 #endif
 
 #ifdef PADDLE_WITH_XPU
+#include "paddle/phi/backends/cpu/cpu_info.h"
+#include "paddle/phi/backends/xpu/cuda_graph.h"
 #include "paddle/phi/backends/xpu/xpu_context.h"
 #include "paddle/phi/core/memory/allocation/stream_safe_xpu_allocator.h"
 #include "paddle/phi/core/memory/allocation/xpu_allocator.h"
+#include "paddle/phi/core/memory/allocation/xpu_pinned_allocator.h"
 #include "paddle/phi/core/platform/device/xpu/xpu_info.h"
 #endif
 
 #ifdef PADDLE_WITH_IPU
-#include "paddle/fluid/platform/device/ipu/ipu_info.h"
+#include "paddle/phi/core/platform/device/ipu/ipu_info.h"
 #endif
 
 #ifdef PADDLE_WITH_CUSTOM_DEVICE
+#include "paddle/phi/backends/custom/cuda_graph.h"
 #include "paddle/phi/core/memory/allocation/stream_safe_custom_device_allocator.h"
 #endif
 
@@ -91,6 +93,20 @@ PHI_DEFINE_EXPORTED_bool(
 PHI_DEFINE_EXPORTED_bool(use_virtual_memory_auto_growth,
                          false,
                          "Use VirtualMemoryAutoGrowthBestFitAllocator.");
+PHI_DEFINE_EXPORTED_bool(use_vmm_auto_growth_best_fit_allocator_v2,
+                         true,
+                         "Use VMMAutoGrowthBestFitAllocatorV2 by default for "
+                         "CUDA auto_growth. Explicit allocator selections take "
+                         "precedence.");
+PHI_DEFINE_EXPORTED_bool(
+    vmm_v2_remap_on_oom,
+    true,
+    "Whether VMM V2 remap recovery is enabled on OOM. When true, "
+    "StreamSafeCUDAAllocator may run request-bounded remap before its final "
+    "allocation retry.");
+PHI_DEFINE_EXPORTED_uint64(vmm_v2_large_pool_handle_size_in_mb,
+                           16,
+                           "VMM V2 large-pool physical handle size in MiB.");
 
 // NOTE(Ruibiao): This FLAGS is just to be compatible with
 // the old single-stream CUDA allocator. It will be removed
@@ -113,13 +129,57 @@ PHI_DEFINE_EXPORTED_bool(
 
 COMMON_DECLARE_string(allocator_strategy);
 COMMON_DECLARE_uint64(auto_growth_chunk_size_in_mb);
+COMMON_DECLARE_uint64(alignment_size);
+COMMON_DECLARE_uint64(vmm_small_pool_size_in_mb);
+COMMON_DECLARE_uint64(vmm_v2_large_pool_handle_size_in_mb);
+COMMON_DECLARE_uint64(small_pool_size_in_mb);
 COMMON_DECLARE_bool(use_auto_growth_pinned_allocator);
 COMMON_DECLARE_bool(use_cuda_malloc_async_allocator);
 COMMON_DECLARE_bool(auto_free_cudagraph_allocations_on_launch);
 
-namespace paddle::memory::allocation {
+namespace {
 
-#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
+bool UseVMMV1AutoGrowthAllocator() {
+#if defined(PADDLE_WITH_CUDA)
+  return FLAGS_use_virtual_memory_auto_growth &&
+         !FLAGS_use_cuda_managed_memory &&
+         !FLAGS_use_cuda_malloc_async_allocator && !FLAGS_use_auto_growth_v2;
+#else
+  return false;
+#endif
+}
+
+bool UseVMMV2AutoGrowthAllocator() {
+#if defined(PADDLE_WITH_CUDA)
+  return FLAGS_use_vmm_auto_growth_best_fit_allocator_v2 &&
+         !FLAGS_use_cuda_managed_memory &&
+         !FLAGS_use_cuda_malloc_async_allocator && !FLAGS_use_auto_growth_v2 &&
+         !UseVMMV1AutoGrowthAllocator();
+#else
+  return false;
+#endif
+}
+
+}  // namespace
+
+namespace paddle::memory::allocation {
+namespace {
+
+constexpr size_t kVMMV2SmallPoolHandleSize = 2UL << 20;
+
+}  // namespace
+
+static bool IsCUDAGraphCapturing() {
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP) || \
+    defined(PADDLE_WITH_CUSTOM_DEVICE)
+  return UNLIKELY(phi::backends::gpu::CUDAGraph::IsThisThreadCapturing());
+#else
+  return false;
+#endif
+}
+
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP) || \
+    defined(PADDLE_WITH_CUSTOM_DEVICE)
 class CUDAGraphAllocator
     : public Allocator,
       public std::enable_shared_from_this<CUDAGraphAllocator> {
@@ -154,9 +214,18 @@ class CUDAGraphAllocator
  protected:
   phi::Allocation* AllocateImpl(size_t size) override {
     VLOG(10) << "Allocate " << size << " for CUDA Graph";
-    return new PrivateAllocation(this,
-                                 static_unique_ptr_cast<Allocation>(
-                                     underlying_allocator_->Allocate(size)));
+    if (IsCUDAGraphCapturing()) {
+#if defined(PADDLE_WITH_CUSTOM_DEVICE)
+      phi::backends::gpu::CUDAGraphCaptureModeGuard capture_mode_guard;
+#endif
+      return new PrivateAllocation(this,
+                                   static_unique_ptr_cast<Allocation>(
+                                       underlying_allocator_->Allocate(size)));
+    } else {
+      return new PrivateAllocation(this,
+                                   static_unique_ptr_cast<Allocation>(
+                                       underlying_allocator_->Allocate(size)));
+    }
   }
 
   void FreeImpl(phi::Allocation* allocation) override {
@@ -169,30 +238,21 @@ class CUDAGraphAllocator
 };
 #endif
 
-static bool IsCUDAGraphCapturing() {
-#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
-  return UNLIKELY(phi::backends::gpu::CUDAGraph::IsThisThreadCapturing());
-#else
-  return false;
-#endif
-}
-
 class AllocatorFacadePrivate {
  public:
-  using AllocatorMap = std::map<phi::Place, std::shared_ptr<Allocator>>;
+  using AllocatorMap = std::map<Place, std::shared_ptr<Allocator>>;
 
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
   using CUDAAllocatorMap =
-      std::map<phi::GPUPlace,
-               std::map<gpuStream_t, std::shared_ptr<Allocator>>>;
+      std::map<GPUPlace, std::map<gpuStream_t, std::shared_ptr<Allocator>>>;
 #endif
 #ifdef PADDLE_WITH_XPU
   using XPUAllocatorMap =
-      std::map<phi::XPUPlace, std::map<XPUStream, std::shared_ptr<Allocator>>>;
+      std::map<XPUPlace, std::map<XPUStream, std::shared_ptr<Allocator>>>;
 #endif
 #ifdef PADDLE_WITH_CUSTOM_DEVICE
   using CustomDeviceAllocatorMap =
-      std::map<phi::CustomPlace,
+      std::map<CustomPlace,
                std::map<phi::stream::stream_t, std::shared_ptr<Allocator>>>;
 #endif
 
@@ -209,25 +269,26 @@ class AllocatorFacadePrivate {
     strategy_ = GetAllocatorStrategy();
     is_stream_safe_cuda_allocator_used_ = false;
     is_cuda_malloc_async_allocator_used_ = false;
-    VLOG(2) << "selected allocator strategy:" << int(strategy_) << std::endl;
+    VLOG(6) << "selected allocator strategy:" << int(strategy_) << std::endl;
     switch (strategy_) {
       case AllocatorStrategy::kNaiveBestFit: {
         InitNaiveBestFitCPUAllocator();
 #ifdef PADDLE_WITH_IPU
         for (int dev_id = 0; dev_id < platform::GetIPUDeviceCount(); ++dev_id) {
-          InitNaiveBestFitIPUAllocator(phi::IPUPlace(dev_id));
+          InitNaiveBestFitIPUAllocator(IPUPlace(dev_id));
         }
 #endif
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
         for (int dev_id = 0; dev_id < platform::GetGPUDeviceCount(); ++dev_id) {
-          InitNaiveBestFitCUDAAllocator(phi::GPUPlace(dev_id));
+          InitNaiveBestFitCUDAAllocator(GPUPlace(dev_id));
         }
         InitNaiveBestFitCUDAPinnedAllocator();
 #endif
 #ifdef PADDLE_WITH_XPU
         for (int dev_id = 0; dev_id < platform::GetXPUDeviceCount(); ++dev_id) {
-          InitNaiveBestFitXPUAllocator(phi::XPUPlace(dev_id));
+          InitNaiveBestFitXPUAllocator(XPUPlace(dev_id));
         }
+        InitNaiveBestFitXPUPinnedAllocator();
 #endif
 #ifdef PADDLE_WITH_CUSTOM_DEVICE
         auto device_types = phi::DeviceManager::GetAllCustomDeviceTypes();
@@ -235,7 +296,7 @@ class AllocatorFacadePrivate {
           for (auto& dev_id :
                phi::DeviceManager::GetSelectedDeviceList(dev_type)) {
             InitNaiveBestFitCustomDeviceAllocator(
-                phi::CustomPlace(dev_type, dev_id));
+                CustomPlace(dev_type, dev_id));
           }
         }
 #endif
@@ -247,8 +308,8 @@ class AllocatorFacadePrivate {
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
         allow_free_idle_chunk_ = allow_free_idle_chunk;
         for (int dev_id = 0; dev_id < platform::GetGPUDeviceCount(); ++dev_id) {
-          InitAutoGrowthCUDAAllocator(phi::GPUPlace(dev_id),
-                                      allow_free_idle_chunk_);
+          InitAutoGrowthCUDAAllocator(GPUPlace(dev_id), allow_free_idle_chunk_);
+          PreAllocCUDAAllocator(GPUPlace(dev_id));
         }
         auto_growth_allocators_ = allocators_;
 
@@ -287,18 +348,17 @@ class AllocatorFacadePrivate {
 #ifdef PADDLE_WITH_XPU
         allow_free_idle_chunk_ = allow_free_idle_chunk;
         for (int dev_id = 0; dev_id < platform::GetXPUDeviceCount(); ++dev_id) {
-          InitAutoGrowthXPUAllocator(phi::XPUPlace(dev_id),
-                                     allow_free_idle_chunk_);
+          InitAutoGrowthXPUAllocator(XPUPlace(dev_id), allow_free_idle_chunk_);
         }
         if (FLAGS_use_stream_safe_cuda_allocator) {
           WrapStreamSafeXPUAllocatorForDefault();
           is_stream_safe_cuda_allocator_used_ = true;
         }
-
+        InitNaiveBestFitXPUPinnedAllocator();
 #endif
 #ifdef PADDLE_WITH_IPU
         for (int dev_id = 0; dev_id < platform::GetIPUDeviceCount(); ++dev_id) {
-          InitNaiveBestFitIPUAllocator(phi::IPUPlace(dev_id));
+          InitNaiveBestFitIPUAllocator(IPUPlace(dev_id));
         }
 #endif
 #ifdef PADDLE_WITH_CUSTOM_DEVICE
@@ -306,8 +366,9 @@ class AllocatorFacadePrivate {
         for (const auto& dev_type : device_types) {
           for (auto& dev_id :
                phi::DeviceManager::GetSelectedDeviceList(dev_type)) {
-            InitAutoGrowthCustomDeviceAllocator(
-                phi::CustomPlace(dev_type, dev_id), allow_free_idle_chunk);
+            InitAutoGrowthCustomDeviceAllocator(CustomPlace(dev_type, dev_id),
+                                                allow_free_idle_chunk);
+            PreAllocCustomDeviceAllocator(CustomPlace(dev_type, dev_id));
           }
         }
         if (FLAGS_use_stream_safe_cuda_allocator) {
@@ -322,17 +383,18 @@ class AllocatorFacadePrivate {
         InitNaiveBestFitCPUAllocator();
 #ifdef PADDLE_WITH_XPU
         for (int dev_id = 0; dev_id < platform::GetXPUDeviceCount(); ++dev_id) {
-          InitNaiveBestFitXPUAllocator(phi::XPUPlace(dev_id));
+          InitNaiveBestFitXPUAllocator(XPUPlace(dev_id));
         }
+        InitNaiveBestFitXPUPinnedAllocator();
 #endif
 #ifdef PADDLE_WITH_IPU
         for (int dev_id = 0; dev_id < platform::GetIPUDeviceCount(); ++dev_id) {
-          InitNaiveBestFitIPUAllocator(phi::IPUPlace(dev_id));
+          InitNaiveBestFitIPUAllocator(IPUPlace(dev_id));
         }
 #endif
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
         for (int dev_id = 0; dev_id < platform::GetGPUDeviceCount(); ++dev_id) {
-          InitThreadLocalCUDAAllocator(phi::GPUPlace(dev_id));
+          InitThreadLocalCUDAAllocator(GPUPlace(dev_id));
         }
         InitNaiveBestFitCUDAPinnedAllocator();
 #endif
@@ -355,7 +417,8 @@ class AllocatorFacadePrivate {
 
     CheckAllocThreadSafe();
 
-#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP) || \
+    defined(PADDLE_WITH_CUSTOM_DEVICE)
     // No need to wrap CUDAGraphAllocator for StreamSafeCUDAAllocator
     if (!is_stream_safe_cuda_allocator_used_ &&
         UNLIKELY(IsCUDAGraphCapturing())) {
@@ -368,7 +431,7 @@ class AllocatorFacadePrivate {
     return auto_growth_allocators_;
   }
 
-  inline const std::shared_ptr<Allocator>& GetAllocator(const phi::Place& place,
+  inline const std::shared_ptr<Allocator>& GetAllocator(const Place& place,
                                                         size_t size) {
     const auto& allocators =
         (size > 0 ? (UNLIKELY(FLAGS_use_system_allocator) ? system_allocators_
@@ -379,7 +442,7 @@ class AllocatorFacadePrivate {
                       allocators.end(),
                       common::errors::NotFound(
                           "No allocator found for the place, %s", place));
-    VLOG(6) << "[GetAllocator]"
+    VLOG(7) << "[GetAllocator]"
             << " place = " << place << " size = " << size
             << " Allocator = " << iter->second;
     return iter->second;
@@ -400,7 +463,7 @@ class AllocatorFacadePrivate {
   }
 
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
-  bool HasCUDAAllocator(const phi::GPUPlace& place, gpuStream_t stream) {
+  bool HasCUDAAllocator(const GPUPlace& place, gpuStream_t stream) {
     auto it = cuda_allocators_.find(place);
     if (it == cuda_allocators_.end()) {
       return false;
@@ -411,7 +474,7 @@ class AllocatorFacadePrivate {
   }
 
   const std::shared_ptr<Allocator>& GetAllocator(
-      const phi::GPUPlace& place,
+      const GPUPlace& place,
       gpuStream_t stream,
       bool create_if_not_found = false) {
     if (LIKELY(!IsCUDAGraphCapturing())) {
@@ -446,7 +509,7 @@ class AllocatorFacadePrivate {
   }
 
   const std::shared_ptr<Allocator> GetDefaultStreamSafeCUDAAllocator(
-      const phi::GPUPlace& place) const {
+      const GPUPlace& place) const {
     if (auto iter = default_stream_safe_cuda_allocators_.find(place);
         iter != default_stream_safe_cuda_allocators_.end())
       return iter->second;
@@ -459,7 +522,7 @@ class AllocatorFacadePrivate {
         "No StreamSafeCUDAAllocator found for the place, %s", place));
   }
 
-  gpuStream_t GetDefaultStream(const phi::GPUPlace& place) const {
+  gpuStream_t GetDefaultStream(const GPUPlace& place) const {
     if (auto allocator = std::dynamic_pointer_cast<StreamSafeCUDAAllocator>(
             GetDefaultStreamSafeCUDAAllocator(place))) {
       return allocator->GetDefaultStream();
@@ -477,7 +540,7 @@ class AllocatorFacadePrivate {
     }
   }
 
-  void SetDefaultStream(const phi::GPUPlace& place, gpuStream_t stream) {
+  void SetDefaultStream(const GPUPlace& place, gpuStream_t stream) {
     if (auto allocator = std::dynamic_pointer_cast<StreamSafeCUDAAllocator>(
             GetDefaultStreamSafeCUDAAllocator(place))) {
       PADDLE_ENFORCE_EQ(allocator->GetDefaultStream(),
@@ -579,7 +642,7 @@ class AllocatorFacadePrivate {
 #endif
 
 #ifdef PADDLE_WITH_XPU
-  bool HasXPUAllocator(const phi::XPUPlace& place, XPUStream stream) {
+  bool HasXPUAllocator(const XPUPlace& place, XPUStream stream) {
     auto it = xpu_allocators_.find(place);
     if (it == xpu_allocators_.end()) {
       return false;
@@ -590,7 +653,7 @@ class AllocatorFacadePrivate {
   }
 
   const std::shared_ptr<Allocator>& GetAllocator(
-      const phi::XPUPlace& place,
+      const XPUPlace& place,
       XPUStream stream,
       bool create_if_not_found = false) {
     if (stream == GetDefaultStream(place)) {
@@ -623,7 +686,7 @@ class AllocatorFacadePrivate {
   }
 
   const std::shared_ptr<StreamSafeXPUAllocator>
-  GetDefaultStreamSafeXPUAllocator(const phi::XPUPlace& place) const {
+  GetDefaultStreamSafeXPUAllocator(const XPUPlace& place) const {
     const auto iter = default_stream_safe_xpu_allocators_.find(place);
     PADDLE_ENFORCE_NE(
         iter,
@@ -633,13 +696,13 @@ class AllocatorFacadePrivate {
     return iter->second;
   }
 
-  XPUStream GetDefaultStream(const phi::XPUPlace& place) const {
+  XPUStream GetDefaultStream(const XPUPlace& place) const {
     const std::shared_ptr<StreamSafeXPUAllocator>& allocator =
         GetDefaultStreamSafeXPUAllocator(place);
     return allocator->GetDefaultStream();
   }
 
-  void SetDefaultStream(const phi::XPUPlace& place, XPUStream stream) {
+  void SetDefaultStream(const XPUPlace& place, XPUStream stream) {
     const std::shared_ptr<StreamSafeXPUAllocator>& allocator =
         GetDefaultStreamSafeXPUAllocator(place);
 
@@ -672,6 +735,16 @@ class AllocatorFacadePrivate {
     }
   }
 
+  void EraseStream(std::shared_ptr<phi::Allocation> allocation,
+                   phi::stream::stream_t stream) {
+    if (auto stream_safe_cuda_allocation =
+            std::dynamic_pointer_cast<StreamSafeXPUAllocation>(allocation)) {
+      stream_safe_cuda_allocation->EraseStream(stream);
+    } else {
+      VLOG(6) << "EraseStream for a non-StreamSafeCUDAAllocation";
+    }
+  }
+
   XPUStream GetStream(
       const std::shared_ptr<phi::Allocation>& allocation) const {
     const std::shared_ptr<StreamSafeXPUAllocation> stream_safe_xpu_allocation =
@@ -688,7 +761,7 @@ class AllocatorFacadePrivate {
 #endif
 
 #ifdef PADDLE_WITH_CUSTOM_DEVICE
-  bool HasCustomDeviceAllocator(const phi::CustomPlace& place,
+  bool HasCustomDeviceAllocator(const CustomPlace& place,
                                 phi::stream::stream_t stream) {
     auto it = custom_device_allocators_.find(place);
     if (it == custom_device_allocators_.end()) {
@@ -700,7 +773,7 @@ class AllocatorFacadePrivate {
   }
 
   const std::shared_ptr<Allocator>& GetAllocator(
-      const phi::CustomPlace& place,
+      const CustomPlace& place,
       phi::stream::stream_t stream,
       bool create_if_not_found = false) {
     if (stream == GetDefaultStream(place)) {
@@ -733,8 +806,7 @@ class AllocatorFacadePrivate {
   }
 
   const std::shared_ptr<StreamSafeCustomDeviceAllocator>
-  GetDefaultStreamSafeCustomDeviceAllocator(
-      const phi::CustomPlace& place) const {
+  GetDefaultStreamSafeCustomDeviceAllocator(const CustomPlace& place) const {
     const auto iter = default_stream_safe_custom_device_allocators_.find(place);
     PADDLE_ENFORCE_NE(
         iter,
@@ -745,13 +817,13 @@ class AllocatorFacadePrivate {
     return iter->second;
   }
 
-  phi::stream::stream_t GetDefaultStream(const phi::CustomPlace& place) const {
+  phi::stream::stream_t GetDefaultStream(const CustomPlace& place) const {
     const std::shared_ptr<StreamSafeCustomDeviceAllocator>& allocator =
         GetDefaultStreamSafeCustomDeviceAllocator(place);
     return allocator->GetDefaultStream();
   }
 
-  void SetDefaultStream(const phi::CustomPlace& place,
+  void SetDefaultStream(const CustomPlace& place,
                         phi::stream::stream_t stream) {
     const std::shared_ptr<StreamSafeCustomDeviceAllocator>& allocator =
         GetDefaultStreamSafeCustomDeviceAllocator(place);
@@ -787,6 +859,17 @@ class AllocatorFacadePrivate {
     }
   }
 
+  void EraseStream(std::shared_ptr<phi::Allocation> allocation,
+                   phi::stream::stream_t stream) {
+    if (auto stream_safe_cuda_allocation =
+            std::dynamic_pointer_cast<StreamSafeCustomDeviceAllocation>(
+                allocation)) {
+      stream_safe_cuda_allocation->EraseStream(stream);
+    } else {
+      VLOG(6) << "EraseStream for a non-StreamSafeCUDAAllocation";
+    }
+  }
+
   phi::stream::stream_t GetStream(
       const std::shared_ptr<phi::Allocation>& allocation) const {
     const std::shared_ptr<StreamSafeCustomDeviceAllocation>
@@ -807,7 +890,7 @@ class AllocatorFacadePrivate {
  private:
   class ZeroSizeAllocator : public Allocator {
    public:
-    explicit ZeroSizeAllocator(phi::Place place) : place_(place) {}
+    explicit ZeroSizeAllocator(Place place) : place_(place) {}
     bool IsAllocThreadSafe() const override { return true; }
 
    protected:
@@ -817,7 +900,7 @@ class AllocatorFacadePrivate {
     void FreeImpl(phi::Allocation* allocation) override { delete allocation; }
 
    private:
-    phi::Place place_;
+    Place place_;
   };
 
   const AllocatorMap& GetAllocatorMap() { return allocators_; }
@@ -825,12 +908,12 @@ class AllocatorFacadePrivate {
   void InitNaiveBestFitCPUAllocator() {
 #if defined(__APPLE__) && defined(__arm64__)
     // NOTE(wuweilong): It is more efficient to use CPUAllocator directly,
-    // but it wll cause some problem in Mac OS m1 chip, so we use
+    // but it will cause some problem in Mac OS m1 chip, so we use
     // NaiveBestFitAllocator instead.
-    allocators_[phi::CPUPlace()] =
-        std::make_shared<NaiveBestFitAllocator>(phi::CPUPlace());
+    allocators_[CPUPlace()] =
+        std::make_shared<NaiveBestFitAllocator>(CPUPlace());
 #else
-    allocators_[phi::CPUPlace()] = std::make_shared<CPUAllocator>();
+    allocators_[CPUPlace()] = std::make_shared<CPUAllocator>();
 #endif
   }
 
@@ -841,24 +924,24 @@ class AllocatorFacadePrivate {
       VLOG(4) << "FLAGS_auto_growth_chunk_size_in_mb is "
               << FLAGS_auto_growth_chunk_size_in_mb;
       auto pinned_allocator = std::make_shared<CPUPinnedAllocator>();
-      allocators_[phi::GPUPinnedPlace()] =
+      allocators_[GPUPinnedPlace()] =
           std::make_shared<AutoGrowthBestFitAllocator>(
               pinned_allocator,
               phi::backends::cpu::CUDAPinnedMinChunkSize(),
               chunk_size,
               allow_free_idle_chunk_);
     } else {
-      allocators_[phi::GPUPinnedPlace()] =
-          std::make_shared<NaiveBestFitAllocator>(phi::GPUPinnedPlace());
+      allocators_[GPUPinnedPlace()] =
+          std::make_shared<NaiveBestFitAllocator>(GPUPinnedPlace());
     }
   }
 
-  void InitNaiveBestFitCUDAAllocator(phi::GPUPlace p) {
+  void InitNaiveBestFitCUDAAllocator(GPUPlace p) {
     allocators_[p] = std::make_shared<NaiveBestFitAllocator>(p);
   }
 
   // Create a new CUDAAllocator or CUDAManagedAllocator for the given device
-  std::shared_ptr<Allocator> CreateCUDAAllocator(phi::GPUPlace p) {
+  std::shared_ptr<Allocator> CreateCUDAAllocator(GPUPlace p) {
     if (FLAGS_use_cuda_managed_memory) {
       PADDLE_ENFORCE_EQ(
           strategy_,
@@ -886,7 +969,7 @@ class AllocatorFacadePrivate {
     return std::make_shared<CUDAAllocator>(p);
   }
 
-  void InitCUDAAllocator(phi::GPUPlace p, gpuStream_t stream) {
+  void InitCUDAAllocator(GPUPlace p, gpuStream_t stream) {
     PADDLE_ENFORCE_EQ(
         strategy_,
         AllocatorStrategy::kAutoGrowth,
@@ -917,7 +1000,34 @@ class AllocatorFacadePrivate {
     }
   }
 
-  void InitCUDAMallocAsyncAllocator(phi::GPUPlace p, gpuStream_t stream) {
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
+  void PreAllocCUDAAllocator(GPUPlace p) {
+    // fallback to single pool.
+    if (FLAGS_small_pool_size_in_mb <= 0) {
+      return;
+    }
+    if (FLAGS_use_auto_growth_v2 || FLAGS_use_cuda_malloc_async_allocator ||
+        UseVMMV2AutoGrowthAllocator()) {
+      VLOG(6) << "PreAlloc is not implemented for "
+                 "AutoGrowthBestFitAllocatorV2, "
+                 "VMMAutoGrowthBestFitAllocatorV2 or "
+                 "CUDAMallocAsyncAllocator.";
+      return;
+    }
+    const auto current_device_id = phi::backends::gpu::GetCurrentDeviceId();
+    auto it = allocators_.find(p);
+    PADDLE_ENFORCE_NE(it,
+                      allocators_.end(),
+                      common::errors::NotFound("No allocator for %s", p));
+    if (current_device_id == p.GetDeviceId()) {
+      auto allocator = it->second;
+      VLOG(8) << "PreAlloc for dev_id=" << p.GetDeviceId();
+      allocator->PreAlloc();
+    }
+  }
+#endif
+
+  void InitCUDAMallocAsyncAllocator(GPUPlace p, gpuStream_t stream) {
 #ifdef PADDLE_WITH_CUDA
     std::shared_ptr<Allocator>& allocator = cuda_allocators_[p][stream];
     cuda_allocators_[p][stream] =
@@ -928,10 +1038,48 @@ class AllocatorFacadePrivate {
 #endif
   }
 
-  void InitAutoGrowthCUDAAllocator(phi::GPUPlace p, gpuStream_t stream) {
+#if defined(PADDLE_WITH_CUDA)
+  std::shared_ptr<VMMAutoGrowthBestFitAllocatorV2>
+  CreateVMMAutoGrowthBestFitPoolAllocatorV2(GPUPlace p,
+                                            size_t handle_size,
+                                            PoolType pool_type) {
+    auto cuda_allocator =
+        std::make_shared<CUDAVirtualMemAllocatorV2>(p, handle_size, pool_type);
+    return std::make_shared<VMMAutoGrowthBestFitAllocatorV2>(
+        cuda_allocator, platform::GpuMinChunkSize(), p, pool_type);
+  }
+
+  std::shared_ptr<Allocator> CreateVMMAutoGrowthBestFitAllocatorV2(GPUPlace p) {
+    PADDLE_ENFORCE_GT(
+        FLAGS_vmm_v2_large_pool_handle_size_in_mb,
+        0,
+        common::errors::InvalidArgument(
+            "FLAGS_vmm_v2_large_pool_handle_size_in_mb must be greater than "
+            "0."));
+    const size_t small_handle_size = kVMMV2SmallPoolHandleSize;
+    const size_t large_handle_size = FLAGS_vmm_v2_large_pool_handle_size_in_mb
+                                     << 20;
+    const size_t small_threshold = FLAGS_vmm_small_pool_size_in_mb
+                                       ? (FLAGS_vmm_small_pool_size_in_mb << 20)
+                                       : kVMMV2SmallPoolHandleSize;
+    auto transient_small_allocator = CreateVMMAutoGrowthBestFitPoolAllocatorV2(
+        p, small_handle_size, PoolType::kSmall);
+    auto transient_large_allocator = CreateVMMAutoGrowthBestFitPoolAllocatorV2(
+        p, large_handle_size, PoolType::kLarge);
+    return std::make_shared<VMMAutoGrowthBestFitMultiPoolAllocatorV2>(
+        transient_small_allocator,
+        transient_large_allocator,
+        small_threshold,
+        p);
+  }
+#endif
+
+  void InitAutoGrowthCUDAAllocator(GPUPlace p, gpuStream_t stream) {
     auto chunk_size = FLAGS_auto_growth_chunk_size_in_mb << 20;
+    auto alignment_size = FLAGS_alignment_size;
     VLOG(4) << "FLAGS_auto_growth_chunk_size_in_mb is "
-            << FLAGS_auto_growth_chunk_size_in_mb;
+            << FLAGS_auto_growth_chunk_size_in_mb << ", alignment_size is "
+            << alignment_size;
 #if defined(PADDLE_WITH_HIP)
     auto cuda_allocator = CreateCUDAAllocator(p);
     if (FLAGS_use_auto_growth_v2) {
@@ -944,16 +1092,14 @@ class AllocatorFacadePrivate {
               allow_free_idle_chunk_);
     } else {
       cuda_allocators_[p][stream] =
-          std::make_shared<AutoGrowthBestFitAllocator>(
-              cuda_allocator,
-              platform::GpuMinChunkSize(),
-              chunk_size,
-              allow_free_idle_chunk_);
+          std::make_shared<AutoGrowthBestFitAllocator>(cuda_allocator,
+                                                       alignment_size,
+                                                       chunk_size,
+                                                       allow_free_idle_chunk_);
     }
 #endif
 
 #if defined(PADDLE_WITH_CUDA)
-#if CUDA_VERSION >= 10020
     CUdevice device;
     int val;
     try {
@@ -968,11 +1114,30 @@ class AllocatorFacadePrivate {
       val = 0;
     }
 
-    if (val > 0 && FLAGS_use_virtual_memory_auto_growth) {
-      auto cuda_allocator = std::make_shared<CUDAVirtualMemAllocator>(p);
-      cuda_allocators_[p][stream] =
+    if (val > 0 && UseVMMV2AutoGrowthAllocator()) {
+      cuda_allocators_[p][stream] = CreateVMMAutoGrowthBestFitAllocatorV2(p);
+    } else if (val > 0 && UseVMMV1AutoGrowthAllocator()) {
+      auto cuda_allocator_small =
+          FLAGS_vmm_small_pool_size_in_mb
+              ? std::make_shared<CUDAVirtualMemAllocator>(p)
+              : nullptr;
+      auto vmm_allocator_small =
+          FLAGS_vmm_small_pool_size_in_mb
+              ? std::make_shared<VirtualMemoryAutoGrowthBestFitAllocator>(
+                    cuda_allocator_small, platform::GpuMinChunkSize(), p)
+              : nullptr;
+      auto cuda_allocator_large = std::make_shared<CUDAVirtualMemAllocator>(p);
+      auto vmm_allocator_large =
           std::make_shared<VirtualMemoryAutoGrowthBestFitAllocator>(
-              cuda_allocator, platform::GpuMinChunkSize(), p);
+              cuda_allocator_large, platform::GpuMinChunkSize(), p);
+
+      cuda_allocators_[p][stream] = std::make_shared<
+          VirtualMemoryAutoGrowthBestFitMultiScalePoolAllocator>(
+          vmm_allocator_small,
+          vmm_allocator_large,
+          platform::GpuMinChunkSize(),
+          p);
+
     } else {
       auto cuda_allocator = CreateCUDAAllocator(p);
       if (FLAGS_use_auto_growth_v2) {
@@ -992,63 +1157,13 @@ class AllocatorFacadePrivate {
                 allow_free_idle_chunk_);
       }
     }
-#else
-    auto cuda_allocator = CreateCUDAAllocator(p);
-    auto alignment = platform::GpuMinChunkSize();
-    bool need_addr_align = true;
-    // NOTE: sometimes, since cuda runtime can not be forked, calling any cuda
-    // API in that case may got cuda error(3), i.e.,
-    // cudaErrorInitializationError. And, the CUDAAllocator is only initialized
-    // but not really used.
-    // Here, the try-catch block is added to handle the case that
-    // GetDeviceProperties() may failed in the multiple process(for example, in
-    // dataloader with num_worker > 0)
-    try {
-      const auto& prop = platform::GetDeviceProperties(p.GetDeviceId());
-      need_addr_align = prop.textureAlignment < alignment;
-      VLOG(4) << "GetDeviceProperties ok, textureAlignment: "
-              << prop.textureAlignment
-              << ", set need_addr_align=" << need_addr_align;
-    } catch (...) {
-      need_addr_align = true;
-      VLOG(4) << "GetDeviceProperties failed, set need_addr_align=true";
-    }
-    // The address returned is aligned already,
-    // ref:
-    // https://stackoverflow.com/questions/14082964/cuda-alignment-256bytes-seriously/14083295#14083295
-    std::shared_ptr<Allocator> underlying_allocator{nullptr};
-    if (need_addr_align) {
-      VLOG(10) << "use AlignedAllocator with alignment: " << alignment;
-      underlying_allocator =
-          std::make_shared<AlignedAllocator>(underlying_allocator, alignment);
-    } else {
-      VLOG(10) << "not use AlignedAllocator with alignment: " << alignment;
-      underlying_allocator = cuda_allocator;
-    }
-    if (FLAGS_use_auto_growth_v2) {
-      cuda_allocators_[p][stream] =
-          std::make_shared<AutoGrowthBestFitAllocatorV2>(
-              underlying_allocator,
-              alignment,
-              p,
-              chunk_size,
-              allow_free_idle_chunk_);
-    } else {
-      cuda_allocators_[p][stream] =
-          std::make_shared<AutoGrowthBestFitAllocator>(underlying_allocator,
-                                                       alignment,
-                                                       chunk_size,
-                                                       allow_free_idle_chunk_);
-    }
-#endif
 #endif
   }
 
   // NOTE(Ruibiao): Old single-stream version, will be removed later
-  void InitAutoGrowthCUDAAllocator(phi::GPUPlace p,
-                                   bool allow_free_idle_chunk) {
+  void InitAutoGrowthCUDAAllocator(GPUPlace p, bool allow_free_idle_chunk) {
     auto chunk_size = FLAGS_auto_growth_chunk_size_in_mb << 20;
-    VLOG(4) << "FLAGS_auto_growth_chunk_size_in_mb is "
+    VLOG(7) << "FLAGS_auto_growth_chunk_size_in_mb is "
             << FLAGS_auto_growth_chunk_size_in_mb;
 #if defined(PADDLE_WITH_HIP)
     auto cuda_allocator = CreateCUDAAllocator(p);
@@ -1069,7 +1184,6 @@ class AllocatorFacadePrivate {
 #endif
 
 #if defined(PADDLE_WITH_CUDA)
-#if CUDA_VERSION >= 10020
     CUdevice device;
     int val;
     try {
@@ -1084,11 +1198,29 @@ class AllocatorFacadePrivate {
       val = 0;
     }
 
-    if (val > 0 && FLAGS_use_virtual_memory_auto_growth) {
-      auto cuda_allocator = std::make_shared<CUDAVirtualMemAllocator>(p);
-      allocators_[p] =
+    if (val > 0 && UseVMMV2AutoGrowthAllocator()) {
+      allocators_[p] = CreateVMMAutoGrowthBestFitAllocatorV2(p);
+    } else if (val > 0 && UseVMMV1AutoGrowthAllocator()) {
+      auto cuda_allocator_small =
+          FLAGS_vmm_small_pool_size_in_mb
+              ? std::make_shared<CUDAVirtualMemAllocator>(p)
+              : nullptr;
+      auto vmm_allocator_small =
+          FLAGS_vmm_small_pool_size_in_mb
+              ? std::make_shared<VirtualMemoryAutoGrowthBestFitAllocator>(
+                    cuda_allocator_small, platform::GpuMinChunkSize(), p)
+              : nullptr;
+      auto cuda_allocator_large = std::make_shared<CUDAVirtualMemAllocator>(p);
+      auto vmm_allocator_large =
           std::make_shared<VirtualMemoryAutoGrowthBestFitAllocator>(
-              cuda_allocator, platform::GpuMinChunkSize(), p);
+              cuda_allocator_large, platform::GpuMinChunkSize(), p);
+
+      allocators_[p] = std::make_shared<
+          VirtualMemoryAutoGrowthBestFitMultiScalePoolAllocator>(
+          vmm_allocator_small,
+          vmm_allocator_large,
+          platform::GpuMinChunkSize(),
+          p);
     } else {
       auto cuda_allocator = CreateCUDAAllocator(p);
       if (FLAGS_use_auto_growth_v2) {
@@ -1106,60 +1238,14 @@ class AllocatorFacadePrivate {
             allow_free_idle_chunk);
       }
     }
-
-#else
-    auto cuda_allocator = CreateCUDAAllocator(p);
-    auto alignment = platform::GpuMinChunkSize();
-    bool need_addr_align = true;
-    // NOTE: sometimes, since cuda runtime can not be forked, calling any cuda
-    // API in that case may got cuda error(3), i.e.,
-    // cudaErrorInitializationError. And, the CUDAAllocator is only initialized
-    // but not really used.
-    // Here, the try-catch block is added to handle the case that
-    // GetDeviceProperties() may failed in the multiple process(for example, in
-    // dataloader with num_worker > 0)
-    try {
-      const auto& prop = platform::GetDeviceProperties(p.GetDeviceId());
-      need_addr_align = prop.textureAlignment < alignment;
-      VLOG(4) << "GetDeviceProperties ok, textureAlignment: "
-              << prop.textureAlignment
-              << ", set need_addr_align=" << need_addr_align;
-    } catch (...) {
-      need_addr_align = true;
-      VLOG(4) << "GetDeviceProperties failed, set need_addr_align=true";
-    }
-    // The address returned is aligned already,
-    // ref:
-    // https://stackoverflow.com/questions/14082964/cuda-alignment-256bytes-seriously/14083295#14083295
-    std::shared_ptr<Allocator> underlying_allocator{nullptr};
-    if (need_addr_align) {
-      VLOG(10) << "use AlignedAllocator with alignment: " << alignment;
-      underlying_allocator =
-          std::make_shared<AlignedAllocator>(underlying_allocator, alignment);
-    } else {
-      VLOG(10) << "not use AlignedAllocator with alignment: " << alignment;
-      underlying_allocator = cuda_allocator;
-    }
-    if (FLAGS_use_auto_growth_v2) {
-      allocators_[p] =
-          std::make_shared<AutoGrowthBestFitAllocatorV2>(underlying_allocator,
-                                                         alignment,
-                                                         p,
-                                                         chunk_size,
-                                                         allow_free_idle_chunk);
-    } else {
-      allocators_[p] = std::make_shared<AutoGrowthBestFitAllocator>(
-          underlying_allocator, alignment, chunk_size, allow_free_idle_chunk);
-    }
-#endif
 #endif
   }
 
-  void InitThreadLocalCUDAAllocator(phi::GPUPlace p) {
+  void InitThreadLocalCUDAAllocator(GPUPlace p) {
     allocators_[p] = std::make_shared<ThreadLocalCUDAAllocator>(p);
   }
 
-  void WrapStreamSafeCUDAAllocator(phi::GPUPlace p, gpuStream_t stream) {
+  void WrapStreamSafeCUDAAllocator(GPUPlace p, gpuStream_t stream) {
     VLOG(8) << "[StreamSafeCUDAAllocator] Init CUDA allocator for stream "
             << stream << " in place " << p;
     std::shared_ptr<Allocator>& allocator = cuda_allocators_[p][stream];
@@ -1219,7 +1305,7 @@ class AllocatorFacadePrivate {
 #endif
   }
 
-  void WrapCUDARetryAllocator(phi::GPUPlace p,
+  void WrapCUDARetryAllocator(GPUPlace p,
                               gpuStream_t stream,
                               size_t retry_time) {
     PADDLE_ENFORCE_GT(
@@ -1228,22 +1314,13 @@ class AllocatorFacadePrivate {
         common::errors::InvalidArgument(
             "Retry time should be larger than 0, but got %d", retry_time));
     std::shared_ptr<Allocator>& allocator = cuda_allocators_[p][stream];
-    allocator = std::make_shared<RetryAllocator>(allocator, retry_time);
+    allocator = std::make_shared<RetryAllocator>(allocator, p, retry_time);
   }
 
-  void WrapStatAllocator(phi::GPUPlace p, gpuStream_t stream) {
+  void WrapStatAllocator(GPUPlace p, gpuStream_t stream) {
     std::shared_ptr<Allocator>& allocator = cuda_allocators_[p][stream];
     allocator = std::make_shared<StatAllocator>(allocator);
   }
-
-#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
-  void WrapCUDAGraphAllocator() {
-    for (auto& item : allocators_) {
-      auto& allocator = item.second;
-      allocator = CUDAGraphAllocator::Create(allocator);
-    }
-  }
-#endif
 
   static void CheckCUDAAllocThreadSafe(const CUDAAllocatorMap& allocators) {
     for (auto& place_pair : allocators) {
@@ -1257,17 +1334,73 @@ class AllocatorFacadePrivate {
   }
 #endif
 
+#ifdef PADDLE_WITH_CUSTOM_DEVICE
+  void PreAllocCustomDeviceAllocator(CustomPlace p) {
+    // fallback to single pool.
+    if (FLAGS_small_pool_size_in_mb <= 0) {
+      return;
+    }
+    if (FLAGS_use_auto_growth_v2 || FLAGS_use_cuda_malloc_async_allocator ||
+        FLAGS_use_virtual_memory_auto_growth) {
+      VLOG(6) << "PreAlloc is not implemented for "
+                 "AutoGrowthBestFitAllocatorV2, CUDAMallocAsyncAllocator or "
+                 "VirtualMemoryAutoGrowthBestFitAllocator.";
+      return;
+    }
+    const auto current_device_id =
+        phi::DeviceManager::GetDevice(p.GetDeviceType());
+    auto it = allocators_.find(p);
+    PADDLE_ENFORCE_NE(it,
+                      allocators_.end(),
+                      common::errors::NotFound("No allocator for %s", p));
+    if (current_device_id == p.GetDeviceId()) {
+      auto allocator =
+          std::dynamic_pointer_cast<AutoGrowthBestFitAllocator>(it->second);
+      VLOG(8) << "PreAlloc for dev_id=" << p.GetDeviceId();
+      allocator->PreAlloc();
+    }
+  }
+#endif
+
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP) || \
+    defined(PADDLE_WITH_CUSTOM_DEVICE)
+  void WrapCUDAGraphAllocator() {
+    for (auto& item : allocators_) {
+      auto& allocator = item.second;
+      allocator = CUDAGraphAllocator::Create(allocator);
+    }
+  }
+#endif
+
 #ifdef PADDLE_WITH_XPU
-  void InitNaiveBestFitXPUAllocator(phi::XPUPlace p) {
+  void InitNaiveBestFitXPUAllocator(XPUPlace p) {
     allocators_[p] = std::make_shared<NaiveBestFitAllocator>(p);
   }
 
+  void InitNaiveBestFitXPUPinnedAllocator() {
+    if (FLAGS_use_auto_growth_pinned_allocator) {
+      auto chunk_size = FLAGS_auto_growth_chunk_size_in_mb << 20;
+      VLOG(4) << "FLAGS_auto_growth_chunk_size_in_mb is "
+              << FLAGS_auto_growth_chunk_size_in_mb;
+      auto pinned_allocator = std::make_shared<XPUPinnedAllocator>();
+      allocators_[XPUPinnedPlace()] =
+          std::make_shared<AutoGrowthBestFitAllocator>(
+              pinned_allocator,
+              phi::backends::cpu::CUDAPinnedMinChunkSize(),
+              chunk_size,
+              allow_free_idle_chunk_);
+    } else {
+      allocators_[XPUPinnedPlace()] =
+          std::make_shared<NaiveBestFitAllocator>(XPUPinnedPlace());
+    }
+  }
+
   // Create a new XPUAllocator or XPUManagedAllocator for the given device
-  std::shared_ptr<Allocator> CreateXPUAllocator(phi::XPUPlace p) {
+  std::shared_ptr<Allocator> CreateXPUAllocator(XPUPlace p) {
     return std::make_shared<XPUAllocator>(p);
   }
 
-  void InitStreamSafeXPUAllocator(phi::XPUPlace p, XPUStream stream) {
+  void InitStreamSafeXPUAllocator(XPUPlace p, XPUStream stream) {
     PADDLE_ENFORCE_EQ(
         strategy_,
         AllocatorStrategy::kAutoGrowth,
@@ -1287,7 +1420,7 @@ class AllocatorFacadePrivate {
     }
   }
 
-  void InitAutoGrowthXPUAllocator(phi::XPUPlace p, XPUStream stream) {
+  void InitAutoGrowthXPUAllocator(XPUPlace p, XPUStream stream) {
     auto chunk_size = FLAGS_auto_growth_chunk_size_in_mb << 6;
     VLOG(4) << "FLAGS_auto_growth_chunk_size_in_mb is "
             << FLAGS_auto_growth_chunk_size_in_mb;
@@ -1303,7 +1436,7 @@ class AllocatorFacadePrivate {
         underlying_allocator, alignment, chunk_size, allow_free_idle_chunk_);
   }
 
-  void InitAutoGrowthXPUAllocator(phi::XPUPlace p, bool allow_free_idle_chunk) {
+  void InitAutoGrowthXPUAllocator(XPUPlace p, bool allow_free_idle_chunk) {
     auto chunk_size = FLAGS_auto_growth_chunk_size_in_mb << 6;
     VLOG(4) << "FLAGS_auto_growth_chunk_size_in_mb is "
             << FLAGS_auto_growth_chunk_size_in_mb;
@@ -1319,7 +1452,7 @@ class AllocatorFacadePrivate {
         underlying_allocator, alignment, chunk_size, allow_free_idle_chunk);
   }
 
-  void WrapStreamSafeXPUAllocator(phi::XPUPlace p, XPUStream stream) {
+  void WrapStreamSafeXPUAllocator(XPUPlace p, XPUStream stream) {
     std::shared_ptr<Allocator>& allocator = xpu_allocators_[p][stream];
     allocator = std::make_shared<StreamSafeXPUAllocator>(allocator, p, stream);
   }
@@ -1341,19 +1474,17 @@ class AllocatorFacadePrivate {
     }
   }
 
-  void WrapXPURetryAllocator(phi::XPUPlace p,
-                             XPUStream stream,
-                             size_t retry_time) {
+  void WrapXPURetryAllocator(XPUPlace p, XPUStream stream, size_t retry_time) {
     PADDLE_ENFORCE_GT(
         retry_time,
         0,
         common::errors::InvalidArgument(
             "Retry time should be larger than 0, but got %d", retry_time));
     std::shared_ptr<Allocator>& allocator = xpu_allocators_[p][stream];
-    allocator = std::make_shared<RetryAllocator>(allocator, retry_time);
+    allocator = std::make_shared<RetryAllocator>(allocator, p, retry_time);
   }
 
-  void WrapStatAllocator(phi::XPUPlace p, XPUStream stream) {
+  void WrapStatAllocator(XPUPlace p, XPUStream stream) {
     std::shared_ptr<Allocator>& allocator = xpu_allocators_[p][stream];
     allocator = std::make_shared<StatAllocator>(allocator);
   }
@@ -1361,21 +1492,21 @@ class AllocatorFacadePrivate {
 #endif
 
 #ifdef PADDLE_WITH_IPU
-  void InitNaiveBestFitIPUAllocator(phi::IPUPlace p) {
+  void InitNaiveBestFitIPUAllocator(IPUPlace p) {
     allocators_[p] = std::make_shared<NaiveBestFitAllocator>(p);
   }
 #endif
 
 #ifdef PADDLE_WITH_CUSTOM_DEVICE
-  void InitNaiveBestFitCustomDeviceAllocator(phi::CustomPlace p) {
+  void InitNaiveBestFitCustomDeviceAllocator(CustomPlace p) {
     allocators_[p] = std::make_shared<NaiveBestFitAllocator>(p);
   }
 
-  std::shared_ptr<Allocator> CreateCustomDeviceAllocator(phi::CustomPlace p) {
+  std::shared_ptr<Allocator> CreateCustomDeviceAllocator(CustomPlace p) {
     return std::make_shared<CustomAllocator>(p);
   }
 
-  void InitStreamSafeCustomDeviceAllocator(phi::CustomPlace p,
+  void InitStreamSafeCustomDeviceAllocator(CustomPlace p,
                                            phi::stream::stream_t stream) {
     PADDLE_ENFORCE_EQ(
         strategy_,
@@ -1393,7 +1524,7 @@ class AllocatorFacadePrivate {
     }
   }
 
-  void InitAutoGrowthCustomDeviceAllocator(phi::CustomPlace p,
+  void InitAutoGrowthCustomDeviceAllocator(CustomPlace p,
                                            phi::stream::stream_t stream) {
     auto chunk_size = FLAGS_auto_growth_chunk_size_in_mb << 20;
     VLOG(4) << "FLAGS_auto_growth_chunk_size_in_mb is "
@@ -1411,7 +1542,7 @@ class AllocatorFacadePrivate {
             phi::DeviceManager::GetExtraPaddingSize(p));
   }
 
-  void InitAutoGrowthCustomDeviceAllocator(phi::CustomPlace p,
+  void InitAutoGrowthCustomDeviceAllocator(CustomPlace p,
                                            bool allow_free_idle_chunk) {
     auto chunk_size = FLAGS_auto_growth_chunk_size_in_mb << 20;
     VLOG(4) << "FLAGS_auto_growth_chunk_size_in_mb is "
@@ -1444,7 +1575,7 @@ class AllocatorFacadePrivate {
     }
   }
 
-  void WrapStreamSafeCustomDeviceAllocator(phi::CustomPlace p,
+  void WrapStreamSafeCustomDeviceAllocator(CustomPlace p,
                                            phi::stream::stream_t stream) {
     std::shared_ptr<Allocator>& allocator =
         custom_device_allocators_[p][stream];
@@ -1455,27 +1586,29 @@ class AllocatorFacadePrivate {
 
   void InitSystemAllocators() {
     if (!system_allocators_.empty()) return;
-    system_allocators_[phi::CPUPlace()] = std::make_shared<CPUAllocator>();
+    system_allocators_[CPUPlace()] = std::make_shared<CPUAllocator>();
 #ifdef PADDLE_WITH_XPU
+    system_allocators_[XPUPinnedPlace()] =
+        std::make_shared<XPUPinnedAllocator>();
     int device_count = platform::GetXPUDeviceCount();
     for (int i = 0; i < device_count; ++i) {
-      phi::XPUPlace p(i);
+      XPUPlace p(i);
       system_allocators_[p] = CreateXPUAllocator(p);
     }
 #endif
 #ifdef PADDLE_WITH_IPU
     int device_count = platform::GetIPUDeviceCount();
     for (int i = 0; i < device_count; ++i) {
-      phi::IPUPlace p(i);
+      IPUPlace p(i);
       system_allocators_[p] = std::make_shared<NaiveBestFitAllocator>(p);
     }
 #endif
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
-    system_allocators_[phi::GPUPinnedPlace()] =
+    system_allocators_[GPUPinnedPlace()] =
         std::make_shared<CPUPinnedAllocator>();
     int device_count = platform::GetGPUDeviceCount();
     for (int i = 0; i < device_count; ++i) {
-      phi::GPUPlace p(i);
+      GPUPlace p(i);
       system_allocators_[p] = CreateCUDAAllocator(p);
     }
 #endif
@@ -1483,7 +1616,7 @@ class AllocatorFacadePrivate {
     auto device_types = phi::DeviceManager::GetAllCustomDeviceTypes();
     for (const auto& dev_type : device_types) {
       for (auto& dev_id : phi::DeviceManager::GetSelectedDeviceList(dev_type)) {
-        phi::CustomPlace p(dev_type, dev_id);
+        CustomPlace p(dev_type, dev_id);
         system_allocators_[p] = std::make_shared<NaiveBestFitAllocator>(p);
       }
     }
@@ -1492,32 +1625,33 @@ class AllocatorFacadePrivate {
 
   void InitZeroSizeAllocators() {
     if (!zero_size_allocators_.empty()) return;
-    std::vector<phi::Place> places;
-    places.emplace_back(phi::CPUPlace());
+    std::vector<Place> places;
+    places.emplace_back(CPUPlace());
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
     int device_count = platform::GetGPUDeviceCount();
     for (int dev_id = 0; dev_id < device_count; ++dev_id) {
-      places.emplace_back(phi::GPUPlace(dev_id));
+      places.emplace_back(GPUPlace(dev_id));
     }
-    places.emplace_back(phi::GPUPinnedPlace());
+    places.emplace_back(GPUPinnedPlace());
 #endif
 #ifdef PADDLE_WITH_XPU
     int device_count = platform::GetXPUDeviceCount();
     for (int dev_id = 0; dev_id < device_count; ++dev_id) {
-      places.emplace_back(phi::XPUPlace(dev_id));
+      places.emplace_back(XPUPlace(dev_id));
     }
+    places.emplace_back(XPUPinnedPlace());
 #endif
 #ifdef PADDLE_WITH_IPU
     int device_count = platform::GetIPUDeviceCount();
     for (int dev_id = 0; dev_id < device_count; ++dev_id) {
-      places.emplace_back(phi::IPUPlace(dev_id));
+      places.emplace_back(IPUPlace(dev_id));
     }
 #endif
 #ifdef PADDLE_WITH_CUSTOM_DEVICE
     auto device_types = phi::DeviceManager::GetAllCustomDeviceTypes();
     for (const auto& dev_type : device_types) {
       for (auto& dev_id : phi::DeviceManager::GetSelectedDeviceList(dev_type)) {
-        places.emplace_back(phi::CustomPlace(dev_type, dev_id));
+        places.emplace_back(CustomPlace(dev_type, dev_id));
       }
     }
 #endif
@@ -1555,7 +1689,8 @@ class AllocatorFacadePrivate {
             "Retry time should be larger than 0, but got %d", retry_time));
     for (auto& pair : allocators_) {
       if (phi::is_gpu_place(pair.first) || phi::is_xpu_place(pair.first)) {
-        pair.second = std::make_shared<RetryAllocator>(pair.second, retry_time);
+        pair.second = std::make_shared<RetryAllocator>(
+            pair.second, pair.first, retry_time);
       }
     }
   }
@@ -1563,10 +1698,10 @@ class AllocatorFacadePrivate {
   void WrapStatAllocator() {
     for (auto& pair : allocators_) {
       // Now memory stats is only supported for CPU, GPU, XPU and CustomDevice
-      const phi::Place& place = pair.first;
+      const Place& place = pair.first;
       if (phi::is_cpu_place(place) || phi::is_cuda_pinned_place(place) ||
           phi::is_gpu_place(place) || phi::is_custom_place(place) ||
-          phi::is_xpu_place(place)) {
+          phi::is_xpu_place(place) || phi::is_xpu_pinned_place(place)) {
         pair.second = std::make_shared<StatAllocator>(pair.second);
       }
     }
@@ -1574,20 +1709,20 @@ class AllocatorFacadePrivate {
 
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
   // a standalone CUDA allocator to support multi-stream GC in new executor
-  std::map<phi::Place, std::shared_ptr<StreamSafeCUDAAllocator>>
+  std::map<Place, std::shared_ptr<StreamSafeCUDAAllocator>>
       default_stream_safe_cuda_allocators_;
   CUDAAllocatorMap cuda_allocators_;
   std::shared_timed_mutex cuda_allocator_mutex_;
 #endif
 
 #if defined(PADDLE_WITH_CUDA)
-  std::map<phi::Place, std::shared_ptr<CUDAMallocAsyncAllocator>>
+  std::map<Place, std::shared_ptr<CUDAMallocAsyncAllocator>>
       default_cuda_malloc_async_allocators_;
 #endif
 
 #ifdef PADDLE_WITH_XPU
   // a standalone XPU allocator to support multi-stream GC in new executor
-  std::map<phi::Place, std::shared_ptr<StreamSafeXPUAllocator>>
+  std::map<Place, std::shared_ptr<StreamSafeXPUAllocator>>
       default_stream_safe_xpu_allocators_;
   XPUAllocatorMap xpu_allocators_;
   std::shared_timed_mutex xpu_allocator_mutex_;
@@ -1596,7 +1731,7 @@ class AllocatorFacadePrivate {
 #ifdef PADDLE_WITH_CUSTOM_DEVICE
   // a standalone custom device allocator to support multi-stream GC in new
   // executor
-  std::map<phi::Place, std::shared_ptr<StreamSafeCustomDeviceAllocator>>
+  std::map<Place, std::shared_ptr<StreamSafeCustomDeviceAllocator>>
       default_stream_safe_custom_device_allocators_;
   CustomDeviceAllocatorMap custom_device_allocators_;
   std::shared_timed_mutex custom_device_allocator_mutex_;
@@ -1627,7 +1762,8 @@ AllocatorFacade& AllocatorFacade::Instance() {
 }
 
 AllocatorFacadePrivate* AllocatorFacade::GetPrivate() const {
-#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP) || \
+    defined(PADDLE_WITH_CUSTOM_DEVICE)
   // if we use cuda_malloc_async_allocator, we don't need to open a private pool
   // for each graph
   if (UNLIKELY(IsCUDAGraphCapturing()) &&
@@ -1643,17 +1779,31 @@ AllocatorFacadePrivate* AllocatorFacade::GetPrivate() const {
     return iter->second.get();
   }
 #endif
+#if defined(PADDLE_WITH_XPU)
+  if (UNLIKELY(IsCUDAGraphCapturing()) &&
+      !FLAGS_use_cuda_malloc_async_allocator) {
+    auto id = phi::backends::xpu::CUDAGraph::CapturingPoolID();
+    auto iter = cuda_graph_map_.find(id);
+    PADDLE_ENFORCE_NE(
+        iter,
+        cuda_graph_map_.end(),
+        common::errors::PermissionDenied(
+            "No memory pool is prepared for CUDA Graph capturing."));
+    VLOG(10) << "Choose CUDA Graph memory pool";
+    return iter->second.get();
+  }
+#endif
   return m_;
 }
 
 const std::shared_ptr<Allocator>& AllocatorFacade::GetAllocator(
-    const phi::Place& place) {
+    const Place& place) {
   return GetPrivate()->GetAllocator(
       place, /* A non-zero num to choose allocator_ */ 1);
 }
 
 const std::shared_ptr<Allocator>& AllocatorFacade::GetAutoGrowthAllocator(
-    const phi::Place& place) {
+    const Place& place) {
   return GetPrivate()->GetAutoGrowthAllocatorMap().at(place);
 }
 
@@ -1675,31 +1825,43 @@ void* AllocatorFacade::GetBasePtr(
 }
 
 const std::shared_ptr<Allocator>& AllocatorFacade::GetZeroAllocator(
-    const phi::Place& place) {
+    const Place& place) {
   return GetPrivate()->GetAllocator(place, /* zero size */ 0);
 }
 
 std::shared_ptr<phi::Allocation> AllocatorFacade::AllocShared(
-    const phi::Place& place, size_t size) {
+    const Place& place, size_t size) {
   return std::shared_ptr<phi::Allocation>(Alloc(place, size));
 }
 
-AllocationPtr AllocatorFacade::Alloc(const phi::Place& place, size_t size) {
+AllocationPtr AllocatorFacade::Alloc(const Place& place, size_t size) {
   return GetPrivate()->GetAllocator(place, size)->Allocate(size);
 }
 
-uint64_t AllocatorFacade::Release(const phi::Place& place) {
+uint64_t AllocatorFacade::Release(const Place& place) {
   return GetPrivate()
       ->GetAllocator(place, /* A non-zero num to choose allocator_ */ 1)
       ->Release(place);
 }
 
+void AllocatorFacade::Accept(const Place& place, AllocatorVisitor* visitor) {
+  GetPrivate()
+      ->GetAllocator(place, /* A non-zero num to choose allocator_ */ 1)
+      ->Accept(visitor);
+}
+
+size_t AllocatorFacade::Compact(const Place& place) {
+  return GetPrivate()
+      ->GetAllocator(place, /* A non-zero num to choose allocator_ */ 1)
+      ->Compact(place);
+}
+
 std::shared_ptr<phi::Allocation> AllocatorFacade::AllocShared(
-    const phi::Place& place, size_t size, const phi::Stream& stream) {
+    const Place& place, size_t size, const phi::Stream& stream) {
   return std::shared_ptr<phi::Allocation>(Alloc(place, size, stream));
 }
 
-AllocationPtr AllocatorFacade::Alloc(const phi::Place& place,
+AllocationPtr AllocatorFacade::Alloc(const Place& place,
                                      size_t size,
                                      const phi::Stream& stream) {
 #ifdef PADDLE_WITH_CUSTOM_DEVICE
@@ -1708,7 +1870,7 @@ AllocationPtr AllocatorFacade::Alloc(const phi::Place& place,
       VLOG(6) << "Warning: StreamSafeCustomDeviceAllocator is not used!";
       return Alloc(place, size);
     }
-    phi::CustomPlace p(place);
+    CustomPlace p(place);
     if (LIKELY(size > 0 && FLAGS_use_system_allocator == false)) {
       phi::stream::stream_t s =
           reinterpret_cast<phi::stream::stream_t>(stream.id());
@@ -1725,7 +1887,7 @@ AllocationPtr AllocatorFacade::Alloc(const phi::Place& place,
     if (!GetPrivate()->IsStreamSafeCUDAAllocatorUsed()) {
       return Alloc(place, size);
     }
-    phi::XPUPlace p(place);
+    XPUPlace p(place);
     if (LIKELY(size > 0 && FLAGS_use_system_allocator == false)) {
       XPUStream s = reinterpret_cast<XPUStream>(stream.id());
       return GetPrivate()
@@ -1745,7 +1907,7 @@ AllocationPtr AllocatorFacade::Alloc(const phi::Place& place,
     return Alloc(place, size);
   }
 
-  phi::GPUPlace p(place.GetDeviceId());
+  GPUPlace p(place.GetDeviceId());
   if (LIKELY(size > 0 && FLAGS_use_system_allocator == false)) {
     gpuStream_t s = reinterpret_cast<gpuStream_t>(stream.id());  // NOLINT
     return m->GetAllocator(p, s, /* create_if_not_found = */ true)
@@ -1779,8 +1941,7 @@ bool AllocatorFacade::IsCUDAMallocAsyncAllocatorUsed() {
 }
 
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
-uint64_t AllocatorFacade::Release(const phi::GPUPlace& place,
-                                  gpuStream_t stream) {
+uint64_t AllocatorFacade::Release(const GPUPlace& place, gpuStream_t stream) {
   AllocatorFacadePrivate* m = GetPrivate();
   if (!m->IsStreamSafeCUDAAllocatorUsed() &&
       !m->IsCUDAMallocAsyncAllocatorUsed()) {
@@ -1803,7 +1964,7 @@ void AllocatorFacade::EraseStream(std::shared_ptr<phi::Allocation> allocation,
 }
 
 const std::shared_ptr<Allocator>& AllocatorFacade::GetAllocator(
-    const phi::Place& place, gpuStream_t stream) {
+    const Place& place, gpuStream_t stream) {
   AllocatorFacadePrivate* m = GetPrivate();
 
   if (!m->IsStreamSafeCUDAAllocatorUsed() &&
@@ -1826,7 +1987,7 @@ gpuStream_t AllocatorFacade::GetStream(
   return GetPrivate()->GetStream(allocation);
 }
 
-void AllocatorFacade::SetDefaultStream(const phi::GPUPlace& place,
+void AllocatorFacade::SetDefaultStream(const GPUPlace& place,
                                        gpuStream_t stream) {
   VLOG(8) << "Set default stream to " << stream << " for AllocatorFacade in "
           << place;
@@ -1835,8 +1996,74 @@ void AllocatorFacade::SetDefaultStream(const phi::GPUPlace& place,
     m_->SetDefaultStream(place, stream);
   }
 }
+#elif defined(PADDLE_WITH_XPU)
+void AllocatorFacade::PrepareMemoryPoolForXPUGraph(int64_t id) {
+  PADDLE_ENFORCE_EQ(GetAllocatorStrategy(),
+                    AllocatorStrategy::kAutoGrowth,
+                    common::errors::InvalidArgument(
+                        "CUDA Graph is only supported when the "
+                        "FLAGS_allocator_strategy=\"auto_growth\", but got "
+                        "FLAGS_allocator_strategy=\"%s\"",
+                        FLAGS_allocator_strategy));
+  auto& allocator = cuda_graph_map_[id];
+  auto& ref_cnt = cuda_graph_ref_cnt_[id];
+  ++ref_cnt;
 
-#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
+  if (FLAGS_use_cuda_malloc_async_allocator) return;
+  if (allocator.get() == nullptr) {
+    allocator = std::make_unique<AllocatorFacadePrivate>(
+        /*allow_free_idle_chunk=*/false);
+    VLOG(10) << "Create memory pool for CUDA Graph with memory ID " << id;
+  } else {
+    VLOG(10) << "Use created memory pool for CUDA Graph with memory ID " << id;
+  }
+}
+
+void AllocatorFacade::RemoveMemoryPoolOfXPUGraph(int64_t id) {
+  auto ref_cnt_iter = cuda_graph_ref_cnt_.find(id);
+  PADDLE_ENFORCE_NE(ref_cnt_iter,
+                    cuda_graph_ref_cnt_.end(),
+                    common::errors::InvalidArgument(
+                        "Cannot find CUDA Graph with memory ID = %d", id));
+  auto& ref_cnt = ref_cnt_iter->second;
+  --ref_cnt;
+  if (ref_cnt == 0) {
+    cuda_graph_map_.erase(id);
+    cuda_graph_ref_cnt_.erase(ref_cnt_iter);
+  } else {
+    VLOG(10) << "Decrease memory pool ID " << id << " reference count to be "
+             << ref_cnt;
+  }
+}
+const std::shared_ptr<Allocator>& AllocatorFacade::GetAllocator(
+    const Place& place, XPUStream stream) {
+  AllocatorFacadePrivate* m = GetPrivate();
+
+  // The XPU currently does not have the concept of MallocAsyncAllocatorUsed
+  // and shares the logic of IsStreamSafeCUDAAllocatorUsed.
+  if (!m->IsStreamSafeCUDAAllocatorUsed()) {
+    VLOG(6) << "Warning: StreamSafeCUDAAllocator "
+               "are not used!";
+    return GetAllocator(place);
+  }
+
+  if (phi::is_xpu_place(place) && FLAGS_use_system_allocator == false) {
+    return m->GetAllocator(place,
+                           stream,
+                           /*create_if_not_found=*/true);
+  }
+  return m->GetAllocator(place, /* A non-zero num to choose allocator_ */ 1);
+}
+void AllocatorFacade::SetDefaultStream(const XPUPlace& place,
+                                       XPUStream stream) {
+  if (m_->IsStreamSafeCUDAAllocatorUsed()) {
+    m_->SetDefaultStream(place, stream);
+  }
+}
+#endif
+
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP) || \
+    defined(PADDLE_WITH_CUSTOM_DEVICE)
 void AllocatorFacade::PrepareMemoryPoolForCUDAGraph(int64_t id) {
   PADDLE_ENFORCE_EQ(GetAllocatorStrategy(),
                     AllocatorStrategy::kAutoGrowth,
@@ -1876,36 +2103,17 @@ void AllocatorFacade::RemoveMemoryPoolOfCUDAGraph(int64_t id) {
   }
 }
 #endif
-#elif defined(PADDLE_WITH_XPU)
-const std::shared_ptr<Allocator>& AllocatorFacade::GetAllocator(
-    const phi::Place& place, XPUStream stream) {
-  AllocatorFacadePrivate* m = GetPrivate();
 
-  // The XPU currently does not have the concept of MallocAsyncAllocatorUsed
-  // and shares the logic of IsStreamSafeCUDAAllocatorUsed.
-  if (!m->IsStreamSafeCUDAAllocatorUsed()) {
-    VLOG(6) << "Warning: StreamSafeCUDAAllocator "
-               "are not used!";
-    return GetAllocator(place);
-  }
+#ifdef PADDLE_WITH_XPU
 
-  if (phi::is_xpu_place(place) && FLAGS_use_system_allocator == false) {
-    return m->GetAllocator(place,
-                           stream,
-                           /*create_if_not_found=*/true);
-  }
-  return m->GetAllocator(place, /* A non-zero num to choose allocator_ */ 1);
-}
-void AllocatorFacade::SetDefaultStream(const phi::XPUPlace& place,
-                                       XPUStream stream) {
-  if (m_->IsStreamSafeCUDAAllocatorUsed()) {
-    m_->SetDefaultStream(place, stream);
-  }
+bool AllocatorFacade::RecordStream(std::shared_ptr<phi::Allocation> allocation,
+                                   XPUStream stream) {
+  return GetPrivate()->RecordStream(allocation, stream);
 }
 #endif
 
 #ifdef PADDLE_WITH_CUSTOM_DEVICE
-uint64_t AllocatorFacade::Release(const phi::CustomPlace& place,
+uint64_t AllocatorFacade::Release(const CustomPlace& place,
                                   phi::stream::stream_t stream) {
   AllocatorFacadePrivate* m = GetPrivate();
   if (!m->IsStreamSafeCUDAAllocatorUsed()) {
@@ -1921,8 +2129,13 @@ bool AllocatorFacade::RecordStream(std::shared_ptr<phi::Allocation> allocation,
   return GetPrivate()->RecordStream(allocation, stream);
 }
 
+void AllocatorFacade::EraseStream(std::shared_ptr<phi::Allocation> allocation,
+                                  phi::stream::stream_t stream) {
+  GetPrivate()->EraseStream(allocation, stream);
+}
+
 const std::shared_ptr<Allocator>& AllocatorFacade::GetAllocator(
-    const phi::Place& place, phi::stream::stream_t stream) {
+    const Place& place, phi::stream::stream_t stream) {
   AllocatorFacadePrivate* m = GetPrivate();
 
   if (!m->IsStreamSafeCUDAAllocatorUsed()) {
@@ -1943,7 +2156,7 @@ phi::stream::stream_t AllocatorFacade::GetStream(
   return GetPrivate()->GetStream(allocation);
 }
 
-void AllocatorFacade::SetDefaultStream(const phi::CustomPlace& place,
+void AllocatorFacade::SetDefaultStream(const CustomPlace& place,
                                        phi::stream::stream_t stream) {
   if (m_->IsStreamSafeCUDAAllocatorUsed()) {
     m_->SetDefaultStream(place, stream);
@@ -1953,6 +2166,6 @@ void AllocatorFacade::SetDefaultStream(const phi::CustomPlace& place,
 #endif
 
 UNUSED static std::shared_ptr<NaiveBestFitAllocator> unused_obj =
-    std::make_shared<NaiveBestFitAllocator>(phi::CPUPlace());
+    std::make_shared<NaiveBestFitAllocator>(CPUPlace());
 
 }  // namespace paddle::memory::allocation

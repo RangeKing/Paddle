@@ -19,6 +19,10 @@
 #include "paddle/fluid/inference/api/paddle_inference_api.h"
 #include "paddle/fluid/inference/api/paddle_tensor.h"
 #include "paddle/fluid/platform/enforce.h"
+#ifdef PADDLE_WITH_DNNL
+#include "paddle/phi/backends/onednn/onednn_context.h"
+#include "paddle/phi/kernels/funcs/data_layout_transform.h"
+#endif
 #include "paddle/phi/common/bfloat16.h"
 #include "paddle/phi/common/float16.h"
 #include "paddle/phi/core/allocator.h"
@@ -372,7 +376,7 @@ void Tensor::CopyStringsFromCpu(const paddle_infer::Strings *data) {
                     0,
                     common::errors::PreconditionNotMet(
                         "You should call Tensor::Reshape(const "
-                        "std::size_t &shape)function before copying"
+                        "std::size_t &shape) function before copying "
                         "the string data from cpu."));
   *tensor = *data;
 }
@@ -732,8 +736,8 @@ std::vector<int> Tensor::shape() const {
     // combination.
     if (tensor->dims().size() < 3)
       return common::vectorize<int>(tensor->dims());
-    if (out_layout == phi::DataLayout::kNHWC ||
-        out_layout == phi::DataLayout::kNDHWC) {
+    if (out_layout == phi::DataLayout::NHWC ||
+        out_layout == phi::DataLayout::NDHWC) {
       auto dims = common::vectorize<int>(tensor->dims());
       std::rotate(dims.begin() + 1, dims.begin() + 2, dims.end());
       return dims;

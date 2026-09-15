@@ -62,8 +62,17 @@ void Full(const Context& dev_ctx,
           const IntArray& shape,
           const Scalar& val,
           DenseTensor* out) {
+  if (!out) return;
   FullKernel<T, Context>(
-      dev_ctx, shape, val, phi::CppTypeToDataType<T>::Type(), out);
+      dev_ctx, shape, val, CppTypeToDataType<T>::Type(), out);
+}
+
+template <typename T, typename Context>
+void Full(const Context& dev_ctx,
+          const DDim& dims,
+          const Scalar& val,
+          DenseTensor* out) {
+  Full<T, Context>(dev_ctx, IntArray(vectorize(dims)), val, out);
 }
 
 template <typename T, typename Context>
@@ -72,7 +81,7 @@ DenseTensor Full(const Context& dev_ctx,
                  const Scalar& val) {
   DenseTensor dense_out;
   MetaTensor meta_out(&dense_out);
-  DataType dtype = phi::CppTypeToDataType<T>::Type();
+  DataType dtype = CppTypeToDataType<T>::Type();
   CreateInferMeta(shape, dtype, &meta_out);
   FullKernel<T, Context>(dev_ctx, shape, val, dtype, &dense_out);
   return dense_out;
@@ -84,7 +93,7 @@ DenseTensor FullLike(const Context& dev_ctx,
                      const Scalar& val) {
   DenseTensor dense_out;
   MetaTensor meta_out(&dense_out);
-  DataType dtype = phi::CppTypeToDataType<T>::Type();
+  DataType dtype = CppTypeToDataType<T>::Type();
   CreateLikeInferMeta(x, dtype, &meta_out);
   FullLikeKernel<T, Context>(dev_ctx, x, val, dtype, &dense_out);
   return dense_out;
@@ -95,5 +104,9 @@ void FullIntArrayKernel(const Context& dev_ctx,
                         const std::vector<int64_t>& shape,
                         DataType dtype,
                         DenseTensor* out);
-
+#ifdef _WIN32
+#define INSTANTIATE_FULL_KERNEL(type, context)        \
+  template PADDLE_API void FullKernel<type, context>( \
+      const context&, const IntArray&, const Scalar&, DataType, DenseTensor*);
+#endif
 }  // namespace phi

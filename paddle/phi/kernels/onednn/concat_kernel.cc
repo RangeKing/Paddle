@@ -53,10 +53,10 @@ class ConcatOneDNNHandler : public OneDNNHandlerNoCachingT<T, dnnl::concat> {
 
     // Create memory descriptors for each of inputs
     for (auto input : inputs) {
-      srcs_md.push_back(input->mem_desc());
+      srcs_md.push_back(phi::funcs::GetOneDNNMemDesc(*input));
     }
 
-    auto dst_dims = common::vectorize<int64_t>(output->dims());
+    auto dst_dims = vectorize<int64_t>(output->dims());
 
     memory::desc dst_md = memory::desc(dst_dims, dt, OneDNNMemoryFormat::any);
 
@@ -72,11 +72,11 @@ class ConcatOneDNNHandler : public OneDNNHandlerNoCachingT<T, dnnl::concat> {
 };
 }  // namespace funcs
 
-bool ConcatCheckIfOneDNNSupport(const KernelContext* ctx) {
-  auto input0 = ctx->InputAt<DenseTensor>(0);
+bool ConcatCheckIfOneDNNSupport(const KernelContext* dev_ctx) {
+  auto input0 = dev_ctx->InputAt<DenseTensor>(0);
   int batch_size =
       !input0.lod().empty() ? input0.lod()[0].size() - 1 : input0.dims()[0];
-  if (ctx->InputsSize() > 64 && batch_size < 1000) {
+  if (dev_ctx->InputsSize() > 64 && batch_size < 1000) {
     return false;
   }
   return true;
@@ -115,13 +115,13 @@ void ConcatKernel(const Context& dev_ctx,
   EnforceLayouts(multi_input);
 
   int64_t axis = axis_.to<int64_t>();
-  axis = phi::funcs::ComputeAxis(axis, x[0]->dims().size());
+  axis = funcs::ComputeAxis(axis, x[0]->dims().size());
 
-  auto out_dims_vec = common::vectorize(out->dims());
+  auto out_dims_vec = vectorize(out->dims());
   if (std::any_of(out_dims_vec.begin(), out_dims_vec.end(), [](int64_t i) {
         return i < 0;
       })) {
-    std::vector<phi::DDim> x_dims;
+    std::vector<DDim> x_dims;
     x_dims.reserve(x.size());
     for (auto item : x) {
       x_dims.push_back(item->dims());
@@ -152,7 +152,7 @@ void ConcatKernel(const Context& dev_ctx,
   concat_p->execute(astream, args);
   astream.wait();
 
-  out->set_mem_desc(dst_mem->get_desc());
+  phi::funcs::SetOneDNNMemDesc(out, dst_mem->get_desc());
 }
 
 }  // namespace phi
@@ -162,7 +162,7 @@ PD_REGISTER_KERNEL(concat,
                    ONEDNN,
                    phi::ConcatKernel,
                    float,
-                   phi::dtype::bfloat16,
+                   phi::bfloat16,
                    int8_t,
                    uint8_t) {
   kernel->check_if_onednn_kernel_support_ = phi::ConcatCheckIfOneDNNSupport;

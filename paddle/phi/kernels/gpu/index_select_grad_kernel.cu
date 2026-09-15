@@ -15,19 +15,19 @@
 #include "paddle/phi/kernels/index_select_grad_kernel.h"
 
 #include "glog/logging.h"
+#include "paddle/common/enforce.h"
 #include "paddle/common/flags.h"
 #include "paddle/phi/backends/gpu/gpu_info.h"
 #include "paddle/phi/backends/gpu/gpu_launch_config.h"
 #include "paddle/phi/backends/gpu/gpu_primitives.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/core/utils/data_type.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/math_function.h"
 
 COMMON_DECLARE_bool(cudnn_deterministic);
 
 namespace phi {
-
-using phi::PADDLE_CUDA_NUM_THREADS;
 
 template <typename T, typename IndexT>
 __global__ void index_select_grad_cuda_kernel(const T* output_grad,
@@ -47,19 +47,51 @@ __global__ void index_select_grad_cuda_kernel(const T* output_grad,
     }
     int64_t input_idx =
         idx + (delta * pre_idx + src_dim_idx - dim_idx) * stride;
-    phi::CudaAtomicAdd(&input_grad[input_idx], output_grad[idx]);
+    CudaAtomicAdd(&input_grad[input_idx], output_grad[idx]);
+  }
+}
+
+template <typename T, typename IndexT>
+__global__ void index_select_grad_deterministic_cuda_kernel(
+    const T* output_grad,
+    T* input_grad,
+    const IndexT* index,
+    int64_t index_size,
+    int64_t stride,
+    int64_t pre_size,
+    int64_t input_dim_size) {
+  int64_t num_columns = pre_size * stride;
+  CUDA_KERNEL_LOOP_TYPE(col_idx, num_columns, int64_t) {
+    int64_t pre_idx = col_idx / stride;
+    int64_t post_idx = col_idx % stride;
+
+    for (int64_t k = 0; k < index_size; ++k) {
+      IndexT src_dim_idx = index[k];
+      if (src_dim_idx < 0) {
+        src_dim_idx += input_dim_size;
+      }
+      int64_t out_grad_idx = (pre_idx * index_size + k) * stride + post_idx;
+      int64_t in_grad_idx =
+          (pre_idx * input_dim_size + src_dim_idx) * stride + post_idx;
+      input_grad[in_grad_idx] += output_grad[out_grad_idx];
+    }
   }
 }
 
 template <typename T, typename Context>
-void IndexSelectGradKernel(const Context& ctx,
+void IndexSelectGradKernel(const Context& dev_ctx,
                            const DenseTensor& x,
                            const DenseTensor& index,
                            const DenseTensor& out_grad,
                            int dim,
                            DenseTensor* x_grad) {
+  if (out_grad.numel() == 0) {
+    Full<T, Context>(dev_ctx, x.dims(), 0, x_grad);
+    return;
+  }
+
   auto* output_grad_data = out_grad.data<T>();
-  auto* in_grad_data = ctx.template Alloc<T>(x_grad);
+  auto* in_grad_data = dev_ctx.template Alloc<T>(x_grad);
 
   auto input_dim = x_grad->dims();
   auto output_dim = out_grad.dims();
@@ -71,60 +103,89 @@ void IndexSelectGradKernel(const Context& ctx,
   const auto& index_type = index.dtype();
 
   bool index_type_match =
-      index_type == phi::DataType::INT64 || index_type == phi::DataType::INT32;
+      index_type == DataType::INT64 || index_type == DataType::INT32;
   PADDLE_ENFORCE_EQ(index_type_match,
                     true,
                     common::errors::InvalidArgument(
                         "Input(Index) holds the wrong type, it holds %s, but "
                         "desires to be %s or %s",
                         index_type,
-                        phi::DataType::INT32,
-                        phi::DataType::INT64));
+                        DataType::INT32,
+                        DataType::INT64));
 
   int64_t numel = x_grad->numel();
   if (numel == 0) {
     return;
   }
-  int64_t index_nums = index.numel();
   int64_t out_nums = out_grad.numel();
 
-  auto stream = ctx.stream();
+  auto stream = dev_ctx.stream();
 
-  unsigned int block_dim = PADDLE_CUDA_NUM_THREADS;
-  dim3 grid_dim = dim3((out_nums + block_dim - 1) / block_dim);
-  phi::backends::gpu::LimitGridDim(ctx, &grid_dim);
-
-  phi::funcs::SetConstant<phi::GPUContext, T> index_select_grad_init;
-  index_select_grad_init(ctx, x_grad, static_cast<T>(0));
+  funcs::SetConstant<GPUContext, T> index_select_grad_init;
+  index_select_grad_init(dev_ctx, x_grad, static_cast<T>(0));
 
   if (FLAGS_cudnn_deterministic) {
-    VLOG(2) << "Run grad kernel of index_select with single thread.";
-    block_dim = 1;
-    grid_dim.x = 1;
-  }
+    int64_t pre_size = out_nums / (size * stride);
+    int64_t num_columns = pre_size * stride;
 
-  if (index_type == phi::DataType::INT64) {
-    const int64_t* index_data = index.data<int64_t>();
-    index_select_grad_cuda_kernel<T, int64_t>
-        <<<grid_dim, block_dim, 0, stream>>>(output_grad_data,
-                                             in_grad_data,
-                                             index_data,
-                                             out_nums,
-                                             stride,
-                                             size,
-                                             delta,
-                                             input_dim[dim]);
+    unsigned int block_dim = PADDLE_CUDA_NUM_THREADS;
+    const uint64_t grid_x = (num_columns + block_dim - 1) / block_dim;
+    PADDLE_ENFORCE_LE_UINT32_MAX(grid_x, "grid.x");
+    dim3 grid_dim = dim3(static_cast<uint32_t>(grid_x));
+    backends::gpu::LimitGridDim(dev_ctx, &grid_dim);
+
+    if (index_type == DataType::INT64) {
+      const int64_t* index_data = index.data<int64_t>();
+      index_select_grad_deterministic_cuda_kernel<T, int64_t>
+          <<<grid_dim, block_dim, 0, stream>>>(output_grad_data,
+                                               in_grad_data,
+                                               index_data,
+                                               size,
+                                               stride,
+                                               pre_size,
+                                               input_dim[dim]);
+    } else {
+      const int* index_data = index.data<int>();
+      index_select_grad_deterministic_cuda_kernel<T, int>
+          <<<grid_dim, block_dim, 0, stream>>>(output_grad_data,
+                                               in_grad_data,
+                                               index_data,
+                                               size,
+                                               stride,
+                                               pre_size,
+                                               input_dim[dim]);
+    }
+
   } else {
-    const int* index_data = index.data<int>();
-    index_select_grad_cuda_kernel<T, int>
-        <<<grid_dim, block_dim, 0, stream>>>(output_grad_data,
-                                             in_grad_data,
-                                             index_data,
-                                             out_nums,
-                                             stride,
-                                             size,
-                                             delta,
-                                             input_dim[dim]);
+    unsigned int block_dim = PADDLE_CUDA_NUM_THREADS;
+    const uint64_t grid_x = (out_nums + block_dim - 1) / block_dim;
+    PADDLE_ENFORCE_LE_UINT32_MAX(grid_x, "grid.x");
+    dim3 grid_dim = dim3(static_cast<uint32_t>(grid_x));
+    backends::gpu::LimitGridDim(dev_ctx, &grid_dim);
+
+    if (index_type == DataType::INT64) {
+      const int64_t* index_data = index.data<int64_t>();
+      index_select_grad_cuda_kernel<T, int64_t>
+          <<<grid_dim, block_dim, 0, stream>>>(output_grad_data,
+                                               in_grad_data,
+                                               index_data,
+                                               out_nums,
+                                               stride,
+                                               size,
+                                               delta,
+                                               input_dim[dim]);
+    } else {
+      const int* index_data = index.data<int>();
+      index_select_grad_cuda_kernel<T, int>
+          <<<grid_dim, block_dim, 0, stream>>>(output_grad_data,
+                                               in_grad_data,
+                                               index_data,
+                                               out_nums,
+                                               stride,
+                                               size,
+                                               delta,
+                                               input_dim[dim]);
+    }
   }
 }
 
@@ -136,9 +197,10 @@ PD_REGISTER_KERNEL(index_select_grad,
                    phi::IndexSelectGradKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>,
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::complex64,
+                   phi::complex128,
                    int,
-                   int64_t) {}
+                   int64_t,
+                   bool) {}

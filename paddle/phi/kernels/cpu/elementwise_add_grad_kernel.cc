@@ -56,18 +56,18 @@ void AddGradKernel(const Context& dev_ctx,
                    int axis,
                    DenseTensor* dx,
                    DenseTensor* dy) {
-  phi::AddGradImpl<T>(dev_ctx, x, y, dout, axis, dx, dy, AddGradFunc<T>);
+  AddGradImpl<T>(dev_ctx, x, y, dout, axis, dx, dy, AddGradFunc<T>);
 }
 
 template <typename T, typename Context>
 void AddDoubleGradKernel(const Context& dev_ctx,
                          const DenseTensor& y,
                          const DenseTensor& dout,
-                         const paddle::optional<DenseTensor>& ddx,
-                         const paddle::optional<DenseTensor>& ddy,
+                         const optional<DenseTensor>& ddx,
+                         const optional<DenseTensor>& ddy,
                          int axis,
                          DenseTensor* ddout) {
-  phi::AddDoubleGradImpl<T>(dev_ctx, y, ddx, ddy, dout, axis, ddout);
+  AddDoubleGradImpl<T>(dev_ctx, y, ddx, ddy, dout, axis, ddout);
 }
 
 template <typename T, typename Context>
@@ -78,7 +78,7 @@ void AddTripleGradKernel(const Context& dev_ctx,
                          int axis,
                          DenseTensor* d_ddx,
                          DenseTensor* d_ddy) {
-  phi::AddGradImpl<T>(
+  AddGradImpl<T>(
       dev_ctx, ddx, ddy, d_ddout, axis, d_ddx, d_ddy, AddGradFunc<T>);
 }
 
@@ -96,8 +96,8 @@ PD_REGISTER_KERNEL(add_grad,
                    uint8_t,
                    int8_t,
                    int64_t,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::complex64,
+                   phi::complex128) {}
 
 PD_REGISTER_KERNEL(add_double_grad,
                    CPU,
@@ -108,8 +108,8 @@ PD_REGISTER_KERNEL(add_double_grad,
                    int16_t,
                    int,
                    int64_t,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::complex64,
+                   phi::complex128) {}
 
 PD_REGISTER_KERNEL(add_triple_grad,
                    CPU,
@@ -120,5 +120,5 @@ PD_REGISTER_KERNEL(add_triple_grad,
                    int16_t,
                    int,
                    int64_t,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::complex64,
+                   phi::complex128) {}

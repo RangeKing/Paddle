@@ -63,7 +63,7 @@ struct DiagonalFunctor {
 };
 
 template <typename T, typename DeviceContext>
-DenseTensor Diagonal(const DeviceContext& context,
+DenseTensor Diagonal(const DeviceContext& dev_ctx,
                      const DenseTensor* input,
                      int64_t offset,
                      int64_t dim1,
@@ -73,10 +73,10 @@ DenseTensor Diagonal(const DeviceContext& context,
   auto input_stride = common::stride(input_dims);
   auto dim1_ = dim1 < 0 ? input_dims.size() + dim1 : dim1;
   auto dim2_ = dim2 < 0 ? input_dims.size() + dim2 : dim2;
-  auto len1 = input_dims[std::min(dim1_, dim2_)];
-  auto len2 = input_dims[std::max(dim1_, dim2_)];
-  auto stride1 = input_stride[std::min(dim1_, dim2_)];
-  auto stride2 = input_stride[std::max(dim1_, dim2_)];
+  auto len1 = input_dims[dim1_];
+  auto len2 = input_dims[dim2_];
+  auto stride1 = input_stride[dim1_];
+  auto stride2 = input_stride[dim2_];
 
   int offset_stride = 0;
   if (offset >= 0) {
@@ -89,8 +89,8 @@ DenseTensor Diagonal(const DeviceContext& context,
   int diag_size = len2 < len1 ? len2 : len1;
 
   if (diag_size > 0) {
-    auto ret_strides = common::vectorize(input_stride);
-    auto ret_dims = common::vectorize(input_dims);
+    auto ret_strides = vectorize(input_stride);
+    auto ret_dims = vectorize(input_dims);
     ret_strides.erase(ret_strides.begin() + std::max(dim1_, dim2_));
     ret_strides.erase(ret_strides.begin() + std::min(dim1_, dim2_));
     ret_dims.erase(ret_dims.begin() + std::max(dim1_, dim2_));
@@ -102,15 +102,15 @@ DenseTensor Diagonal(const DeviceContext& context,
     ret_strides.push_back(stride1 + stride2);
     ret_dims.push_back(diag_size);
     DenseTensor diag;
-    DDim diag_dims = common::make_ddim(ret_dims);
+    DDim diag_dims = make_ddim(ret_dims);
     auto dig_stride = common::stride(diag_dims);
     diag.Resize(diag_dims);
-    auto diag_data = context.template Alloc<T>(&diag);
+    auto diag_data = dev_ctx.template Alloc<T>(&diag);
 
     int64_t pos = std::abs(offset) * offset_stride;
     int64_t dim_size = ret_strides.size();
 #if defined(__NVCC__) || defined(__HIPCC__)
-    thrust::device_vector<int64_t> diag_vec(common::vectorize(dig_stride));
+    thrust::device_vector<int64_t> diag_vec(vectorize(dig_stride));
     const int64_t* diag_arr = thrust::raw_pointer_cast(diag_vec.data());
     thrust::device_vector<int64_t> ret_vec(ret_strides);
     const int64_t* ret_arr = thrust::raw_pointer_cast(ret_vec.data());
@@ -119,8 +119,8 @@ DenseTensor Diagonal(const DeviceContext& context,
     const auto* ret_arr = ret_strides.data();
 #endif
 
-    // auto& dev_ctx = context.template device_context<DeviceContext>();
-    phi::funcs::ForRange<DeviceContext> for_range(context, diag.numel());
+    // auto& dev_ctx2 = dev_ctx.template device_context<DeviceContext>();
+    funcs::ForRange<DeviceContext> for_range(dev_ctx, diag.numel());
     DiagonalFunctor<T> functor(
         input_data, diag_arr, ret_arr, pos, dim_size, diag_data);
     for_range(functor);
@@ -158,7 +158,7 @@ __global__ void DiagonalCuda(const T* data1,
                              int64_t numel,
                              int64_t out_numel,
                              bool is_grad) {
-  CUDA_KERNEL_LOOP(idx, out_numel) {
+  CUDA_KERNEL_LOOP_TYPE(idx, out_numel, int64_t) {
     int64_t idx_dim[OUT_DIM_SIZE] = {0};
     int64_t temp = 0;
     for (size_t i = 0; i < OUT_DIM_SIZE - 1; i++) {

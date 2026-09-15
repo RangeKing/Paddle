@@ -12,19 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 from __future__ import annotations
 
 import numbers
@@ -35,6 +22,7 @@ import numpy as np
 
 from paddle import _C_ops, in_dynamic_mode, pir_utils
 from paddle.device import get_all_custom_device_type
+from paddle.utils.decorator_utils import param_one_alias
 
 from ...base import dygraph_utils
 from ...base.data_feeder import check_variable_and_dtype
@@ -64,6 +52,7 @@ if TYPE_CHECKING:
         DataLayoutND,
         DTypeLike,
         ParamAttrLike,
+        PlaceLike,
         ShapeLike,
     )
 
@@ -94,9 +83,9 @@ class _InstanceNormBase(Layer):
         super().__init__()
 
         if weight_attr is False or bias_attr is False:
-            assert (
-                weight_attr == bias_attr
-            ), "weight_attr and bias_attr must be set to False at the same time in InstanceNorm"
+            assert weight_attr == bias_attr, (
+                "weight_attr and bias_attr must be set to False at the same time in InstanceNorm"
+            )
         self._momentum = momentum
         self._epsilon = epsilon
         self._weight_attr = weight_attr
@@ -189,7 +178,7 @@ class InstanceNorm1D(_InstanceNormBase):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> paddle.seed(100)
@@ -281,7 +270,7 @@ class InstanceNorm2D(_InstanceNormBase):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> paddle.seed(100)
@@ -377,7 +366,7 @@ class InstanceNorm3D(_InstanceNormBase):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> paddle.seed(100)
@@ -433,8 +422,7 @@ class InstanceNorm3D(_InstanceNormBase):
 
 
 class GroupNorm(Layer):
-    """
-
+    r"""
     This interface is used to construct a callable object of the ``GroupNorm`` class.
     For more details, refer to code examples.
     It implements the function of the Group Normalization Layer.
@@ -445,14 +433,35 @@ class GroupNorm(Layer):
         num_channels(int): The number of channels of input.
         epsilon(float, optional): The small value added to the variance to prevent
             division by zero. Default: 1e-05.
-        weight_attr(ParamAttr|bool|None, optional): The parameter attribute for the learnable
-            scale :math:`g`. If it is set to False, no scale will be added to the output units.
-            If it is set to None, the scale is initialized one. Default: None.
-        bias_attr(ParamAttr|bool|None, optional): The parameter attribute for the learnable
-            bias :math:`b`. If it is set to False, no bias will be added to the output units.
-            If it is set to None, the bias is initialized zero. Default: None.
+            alias: ``eps``.
+        affine(bool, optional): Whether this module has learnable affine parameters (weight and bias).
+            If set to ``False``, no learnable parameters will be created, regardless of the settings of
+            `weight_attr` and `bias_attr`. Defaults to True.
+            **Note: This argument must be passed as a keyword argument.**
+        device(PlaceLike, optional): Device where the computation takes place. Default: None.
+            **Note: This argument must be passed as a keyword argument.**
+        dtype(DTypeLike, optional): Data type of the weights and bias. Default: None.
+            **Note: This argument must be passed as a keyword argument.**
+        weight_attr(ParamAttr|bool|None, optional): The parameter attribute for the learnable scale :math:`g`.
+            This setting only takes effect when `affine` is ``True``.
+            - If set to ``False``, no scale parameter will be created.
+            - If set to ``True`` or a `ParamAttr` object, a learnable scale parameter will be created.
+              When set to ``True``, it is equivalent to ``ParamAttr()`` with default initialization.
+            - If set to ``None``, a learnable scale parameter will be created and initialized to one.
+            Default: None.
+            **Note: This argument must be passed as a keyword argument.**
+        bias_attr (ParamAttr|bool|None, optional): The parameter attribute for the learnable bias :math:`b`.
+            This setting only takes effect when `affine` is ``True``.
+            - If set to ``False``, no bias parameter will be created.
+            - If set to ``True`` or a `ParamAttr` object, a learnable bias parameter will be created.
+              When set to ``True``, it is equivalent to ``ParamAttr()`` with default initialization.
+            - If set to ``None``, a learnable bias parameter will be created and initialized to zero.
+            Default: None.
+            **Note: This argument must be passed as a keyword argument.**
         data_format(str, optional): Specify the input data format. Support "NCL", "NCHW", "NCDHW", "NLC", "NHWC" or "NDHWC". Default: "NCHW".
-        name(str|None, optional): Name for the GroupNorm, default is None. For more information, please refer to :ref:`api_guide_Name`..
+            **Note: This argument must be passed as a keyword argument.**
+        name(str|None, optional): Name for the GroupNorm, default is None. For more information, please refer to :ref:`api_guide_Name`.
+            **Note: This argument must be passed as a keyword argument.**
 
     Shape:
         - x: Tensor with shape: attr:`(batch, num_features, *)`.
@@ -462,7 +471,7 @@ class GroupNorm(Layer):
         None
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> paddle.seed(100)
@@ -501,22 +510,30 @@ class GroupNorm(Layer):
     weight: Tensor
     bias: Tensor
 
+    @param_one_alias(["epsilon", "eps"])
     def __init__(
         self,
         num_groups: int,
         num_channels: int,
         epsilon: float = 1e-5,
+        *,
+        affine: bool = True,
+        device: PlaceLike | None = None,
+        dtype: DTypeLike | None = None,
         weight_attr: bool | ParamAttr | None = None,
         bias_attr: bool | ParamAttr | None = None,
         data_format: DataLayout1D | DataLayout2D | DataLayout3D = 'NCHW',
         name: str | None = None,
     ) -> None:
         super().__init__()
-        self._weight_attr = weight_attr
-        self._bias_attr = bias_attr
         self._epsilon = epsilon
         self._num_channels = num_channels
         self._num_groups = num_groups
+        self._device = device
+        self._dtype = (
+            self._helper.get_default_dtype() if dtype is None else dtype
+        )
+
         if data_format not in ['NCL', 'NCHW', 'NCDHW', 'NLC', 'NHWC', 'NDHWC']:
             raise ValueError("unsupported data layout:" + data_format)
 
@@ -525,16 +542,22 @@ class GroupNorm(Layer):
 
         param_shape = [self._num_channels]
 
+        if not affine:
+            weight_attr = False
+            bias_attr = False
+
+        self._weight_attr = weight_attr
+        self._bias_attr = bias_attr
+
         if weight_attr is False:
-            self.weight = self.create_parameter(
-                attr=None, shape=param_shape, default_initializer=Constant(1.0)
-            )
-            self.weight.stop_gradient = True
+            self.weight = None
         else:
             self.weight = self.create_parameter(
                 attr=self._weight_attr,
                 shape=param_shape,
+                dtype=self._dtype,
                 default_initializer=Constant(1.0),
+                device=self._device,
             )
             self.weight.stop_gradient = self._weight_attr is not None and (
                 hasattr(self._weight_attr, "learning_rate")
@@ -542,16 +565,15 @@ class GroupNorm(Layer):
             )
 
         if bias_attr is False:
-            self.bias = self.create_parameter(
-                attr=None,
-                shape=param_shape,
-                default_initializer=Constant(0.0),
-                is_bias=True,
-            )
-            self.bias.stop_gradient = True
+            self.bias = None
         else:
             self.bias = self.create_parameter(
-                attr=self._bias_attr, shape=param_shape, is_bias=True
+                attr=self._bias_attr,
+                shape=param_shape,
+                dtype=self._dtype,
+                default_initializer=Constant(0.0),
+                is_bias=True,
+                device=self._device,
             )
             self.bias.stop_gradient = self._bias_attr is not None and (
                 hasattr(self._bias_attr, "learning_rate")
@@ -602,13 +624,34 @@ class LayerNorm(Layer):
             which is expected to be of that specific size.
         epsilon(float, optional): The small value added to the variance to prevent
             division by zero. Default: 1e-05.
+            alias: ``eps``.
+        elementwise_affine(bool, optional): Whether to apply element-wise affine transformation
+            (i.e., learnable scale and bias). If set to ``False``, both the scale (:math:`g`) and
+            bias (:math:`b`) parameters will be disabled, regardless of the settings of `weight_attr`
+            and `bias_attr`. This parameter acts as a master switch. Defaults to True.
+            **Note: This argument must be passed as a keyword argument.**
+        bias(bool, optional): Whether to include a learnable bias term in the layer. This setting
+            only takes effect when `elementwise_affine` is ``True``. If set to ``False``, no bias
+            parameter will be created, even if `bias_attr` is specified. Defaults to True.
+            **Note: This argument must be passed as a keyword argument.**
         weight_attr(ParamAttr|bool|None, optional): The parameter attribute for the learnable
-            gain :math:`g`. If False, weight is None. If is None, a default :code:`ParamAttr` would be added as scale. The
-            :attr:`param_attr` is initialized as 1 if it is added. Default: None. For more information, please refer to :ref:`api_paddle_ParamAttr` .
+            gain :math:`g` (scale). This setting only takes effect when `elementwise_affine` is ``True``.
+            - If set to ``False``, no gain parameter will be created.
+            - If set to ``None`` or ``True``, a default :code:`ParamAttr` will be used, and the
+              parameter will be initialized to 1.
+            - If set to a custom :code:`ParamAttr` object, it will be used to configure the parameter.
+            Default: None.
+            **Note: This argument must be passed as a keyword argument.**
         bias_attr(ParamAttr|bool|None, optional): The parameter attribute for the learnable
-            bias :math:`b`. If is False, bias is None. If is None, a default :code:`ParamAttr` would be added as bias. The
-            :attr:`bias_attr` is initialized as 0 if it is added. Default: None. For more information, please refer to :ref:`api_paddle_ParamAttr` .
+            bias :math:`b`. This setting only takes effect when both `elementwise_affine` and `bias` are ``True``.
+            - If set to ``False``, no bias parameter will be created.
+            - If set to ``None`` or ``True``, a default :code:`ParamAttr` will be used, and the
+              parameter will be initialized to 0.
+            - If set to a custom :code:`ParamAttr` object, it will be used to configure the parameter.
+            Default: None.
+            **Note: This argument must be passed as a keyword argument.**
         name(str|None, optional): Name for the LayerNorm, default is None. For more information, please refer to :ref:`api_guide_Name` .
+            **Note: This argument must be passed as a keyword argument.**
 
     Shape:
         - x: 2-D, 3-D, 4-D or 5-D tensor.
@@ -619,7 +662,7 @@ class LayerNorm(Layer):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> paddle.seed(100)
@@ -642,10 +685,16 @@ class LayerNorm(Layer):
     weight: Tensor | None
     bias: Tensor | None
 
+    @param_one_alias(["epsilon", "eps"])
     def __init__(
         self,
         normalized_shape: int | Sequence[int],
         epsilon: float = 1e-5,
+        elementwise_affine: bool = True,
+        bias: bool = True,
+        device: PlaceLike | None = None,
+        dtype: DTypeLike | None = None,
+        *,
         weight_attr: bool | ParamAttr | None = None,
         bias_attr: bool | ParamAttr | None = None,
         name: str | None = None,
@@ -656,6 +705,17 @@ class LayerNorm(Layer):
 
         self._normalized_shape = list(normalized_shape)
         self._epsilon = epsilon
+        self._device = device
+        self._dtype = (
+            self._helper.get_default_dtype() if dtype is None else dtype
+        )
+
+        if not elementwise_affine:
+            weight_attr = False
+            bias_attr = False
+        elif not bias:
+            bias_attr = False
+
         self._weight_attr = weight_attr
         self._bias_attr = bias_attr
         param_shape = [np.prod(self._normalized_shape)]
@@ -665,15 +725,22 @@ class LayerNorm(Layer):
         else:
             self.weight = self.create_parameter(
                 attr=self._weight_attr,
+                dtype=self._dtype,
                 shape=param_shape,
                 default_initializer=Constant(1.0),
+                device=self._device,
             )
 
         if bias_attr is False:
             self.bias = None
         else:
             self.bias = self.create_parameter(
-                attr=self._bias_attr, shape=param_shape, is_bias=True
+                attr=self._bias_attr,
+                dtype=self._dtype,
+                shape=param_shape,
+                default_initializer=Constant(0.0),
+                device=self._device,
+                is_bias=True,
             )
 
     def forward(self, input: Tensor) -> Tensor:
@@ -697,27 +764,38 @@ class _BatchNormBase(Layer):
     weight: Tensor | None
     bias: Tensor | None
 
+    @param_one_alias(["epsilon", "eps"])
     def __init__(
         self,
         num_features: int,
-        momentum: float = 0.9,
+        momentum: float | None = 0.9,
         epsilon: float = 1e-05,
         weight_attr: ParamAttrLike | None = None,
         bias_attr: ParamAttrLike | None = None,
         data_format: DataLayoutND = 'NCHW',
         use_global_stats: bool | None = None,
         name: str | None = None,
+        *,
+        affine: bool = True,
+        device: PlaceLike | None = None,
+        dtype: DTypeLike | None = None,
     ) -> None:
         super().__init__()
         self._num_features = num_features
+        if not affine:
+            weight_attr = False
+            bias_attr = False
         self._weight_attr = weight_attr
         self._bias_attr = bias_attr
         self._use_global_stats = use_global_stats
 
-        if get_default_dtype() == 'float16':
+        if dtype is not None:
+            self._dtype = dtype
+        elif get_default_dtype() == 'float16':
             self._dtype = 'float32'
         else:
             self._dtype = get_default_dtype()
+        self._device = device
 
         param_shape = [num_features]
 
@@ -728,6 +806,7 @@ class _BatchNormBase(Layer):
                 shape=param_shape,
                 dtype=self._dtype,
                 default_initializer=Constant(1.0),
+                device=self._device,
             )
 
         else:
@@ -738,6 +817,7 @@ class _BatchNormBase(Layer):
                 shape=param_shape,
                 dtype=self._dtype,
                 is_bias=True,
+                device=self._device,
             )
         else:
             self.bias = None
@@ -758,6 +838,7 @@ class _BatchNormBase(Layer):
                 do_model_average=True,
             ),
             shape=param_shape,
+            device=self._device,
         )
         self._mean.stop_gradient = True
 
@@ -770,6 +851,7 @@ class _BatchNormBase(Layer):
                 do_model_average=True,
             ),
             shape=param_shape,
+            device=self._device,
         )
         self._variance.stop_gradient = True
 
@@ -799,6 +881,7 @@ class _BatchNormBase(Layer):
         self._data_format = data_format
         self._in_place = False
         self._momentum = momentum
+        self._num_batches_tracked = 0
         self._epsilon = epsilon
         self._fuse_with_relu = False
         self._name = name
@@ -814,10 +897,16 @@ class _BatchNormBase(Layer):
 
         self._check_input_dim(input)
 
+        batch_norm_momentum = self._momentum
         if self.training:
             warnings.warn(
                 "When training, we now always track global mean and variance."
             )
+            if self._momentum is None and in_dynamic_mode():
+                self._num_batches_tracked += 1
+                batch_norm_momentum = 1.0 - 1.0 / self._num_batches_tracked
+        if batch_norm_momentum is None:
+            batch_norm_momentum = 0.0
 
         return batch_norm(
             input,
@@ -826,7 +915,7 @@ class _BatchNormBase(Layer):
             weight=self.weight,
             bias=self.bias,
             training=self.training,
-            momentum=self._momentum,
+            momentum=batch_norm_momentum,
             epsilon=self._epsilon,
             data_format=self._data_format,
             use_global_stats=self._use_global_stats,
@@ -925,7 +1014,7 @@ class BatchNorm(Layer):
         None
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle.nn as nn
             >>> import paddle
@@ -1210,7 +1299,7 @@ class BatchNorm1D(_BatchNormBase):
 
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> paddle.seed(100)
@@ -1224,6 +1313,7 @@ class BatchNorm1D(_BatchNormBase):
              [[ 1.06272745,  0.24229205, -0.31219530]]])
     """
 
+    @param_one_alias(["epsilon", "eps"])
     def __init__(
         self,
         num_features: int,
@@ -1234,16 +1324,23 @@ class BatchNorm1D(_BatchNormBase):
         data_format: DataLayout1D = 'NCL',
         use_global_stats: bool | None = None,
         name: str | None = None,
+        *,
+        affine: bool = True,
+        device: PlaceLike | None = None,
+        dtype: DTypeLike | None = None,
     ) -> None:
         super().__init__(
-            num_features,
-            momentum,
-            epsilon,
-            weight_attr,
-            bias_attr,
-            data_format,
-            use_global_stats,
-            name,
+            num_features=num_features,
+            momentum=momentum,
+            epsilon=epsilon,
+            weight_attr=weight_attr,
+            bias_attr=bias_attr,
+            data_format=data_format,
+            use_global_stats=use_global_stats,
+            name=name,
+            affine=affine,
+            device=device,
+            dtype=dtype,
         )
 
     def _check_data_format(
@@ -1325,7 +1422,7 @@ class BatchNorm2D(_BatchNormBase):
         None
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> paddle.seed(100)
@@ -1413,7 +1510,7 @@ class BatchNorm3D(_BatchNormBase):
         None
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> paddle.seed(100)
@@ -1433,6 +1530,7 @@ class BatchNorm3D(_BatchNormBase):
                 [-0.46636176,  1.09858704, -1.55342245]]]]])
     """
 
+    @param_one_alias(["epsilon", "eps"])
     def __init__(
         self,
         num_features: int,
@@ -1443,16 +1541,23 @@ class BatchNorm3D(_BatchNormBase):
         data_format: DataLayout3D = 'NCDHW',
         use_global_stats: bool | None = None,
         name: str | None = None,
+        *,
+        affine: bool = True,
+        device: PlaceLike | None = None,
+        dtype: DTypeLike | None = None,
     ) -> None:
         super().__init__(
-            num_features,
-            momentum,
-            epsilon,
-            weight_attr,
-            bias_attr,
-            data_format,
-            use_global_stats,
-            name,
+            num_features=num_features,
+            momentum=momentum,
+            epsilon=epsilon,
+            weight_attr=weight_attr,
+            bias_attr=bias_attr,
+            data_format=data_format,
+            use_global_stats=use_global_stats,
+            name=name,
+            affine=affine,
+            device=device,
+            dtype=dtype,
         )
 
     def _check_data_format(self, input: DataLayout2D | DataLayout3D) -> None:
@@ -1546,7 +1651,7 @@ class SyncBatchNorm(_BatchNormBase):
         - output: Tensor with the same shape as input.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env:GPU)
 
@@ -1702,7 +1807,7 @@ class SyncBatchNorm(_BatchNormBase):
             The original model with converted SyncBatchNorm layers. If BatchNorm*d layer in the model, use SyncBatchNorm layer instead.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> import paddle.nn as nn
@@ -1788,7 +1893,7 @@ class LocalResponseNorm(Layer):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -1796,7 +1901,7 @@ class LocalResponseNorm(Layer):
             >>> m = paddle.nn.LocalResponseNorm(size=5)
             >>> y = m(x)
             >>> print(y.shape)
-            [3, 3, 112, 112]
+            paddle.Size([3, 3, 112, 112])
     """
 
     size: int
@@ -1890,14 +1995,14 @@ class SpectralNorm(Layer):
         None
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
-            >>> x = paddle.rand((2,8,32,32))
+            >>> x = paddle.rand((2, 8, 32, 32))
             >>> spectral_norm = paddle.nn.SpectralNorm(x.shape, dim=1, power_iters=2)
             >>> spectral_norm_out = spectral_norm(x)
             >>> print(spectral_norm_out.shape)
-            [2, 8, 32, 32]
+            paddle.Size([2, 8, 32, 32])
 
     """
 
@@ -1919,9 +2024,9 @@ class SpectralNorm(Layer):
         self._dtype = dtype
 
         self._weight_shape = list(weight_shape)
-        assert (
-            np.prod(self._weight_shape) > 0
-        ), "Any dimension of `weight_shape` cannot be equal to 0."
+        assert np.prod(self._weight_shape) > 0, (
+            "Any dimension of `weight_shape` cannot be equal to 0."
+        )
         assert dim < len(self._weight_shape), (
             "The input `dim` should be less than the "
             "length of `weight_shape`, but received dim="

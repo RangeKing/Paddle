@@ -24,9 +24,9 @@
 
 namespace phi::fusion {
 
+using funcs::OneDNNGetDataType;
+using funcs::to_void_cast;
 using phi::OneDNNContext;
-using phi::funcs::OneDNNGetDataType;
-using phi::funcs::to_void_cast;
 
 struct InnerProductCache {
   dnnl::inner_product_forward inner_product_p;
@@ -62,14 +62,13 @@ GetDNNLScales(const float scale_in,
 
 template <typename T_in, typename T_w, typename T_out>
 class FCOneDNNHandler
-    : public phi::funcs::OneDNNHandlerNoCachingT<T_in,
-                                                 dnnl::inner_product_forward> {
+    : public funcs::OneDNNHandlerNoCachingT<T_in, dnnl::inner_product_forward> {
  public:
   FCOneDNNHandler(const OneDNNContext& dev_ctx,
-                  const phi::DenseTensor* x,
-                  const phi::DenseTensor* weights,
-                  const phi::DenseTensor* bias,
-                  phi::DenseTensor* out UNUSED,
+                  const DenseTensor* x,
+                  const DenseTensor* weights,
+                  const DenseTensor* bias,
+                  DenseTensor* out UNUSED,
                   const float scale_in,
                   const float scale_out,
                   const std::vector<float>& scale_weights,
@@ -78,13 +77,13 @@ class FCOneDNNHandler
                   const std::string& activation_type,
                   dnnl::engine onednn_engine,
                   phi::Place cpu_place)
-      : phi::funcs::OneDNNHandlerNoCachingT<T_in, dnnl::inner_product_forward>(
+      : funcs::OneDNNHandlerNoCachingT<T_in, dnnl::inner_product_forward>(
             onednn_engine, cpu_place),
         dev_ctx_(dev_ctx) {
     this->memory_key_ = dev_ctx.GetInputsName("W")[0];
 
-    auto x_vec_dims = common::vectorize(x->dims());
-    auto weights_vec_dims = common::vectorize(weights->dims());
+    auto x_vec_dims = vectorize(x->dims());
+    auto weights_vec_dims = vectorize(weights->dims());
 
     int MB = 1;
     for (int i = 0; i < in_num_col_dims; ++i) {
@@ -138,7 +137,7 @@ class FCOneDNNHandler
     dnnl::post_ops post_operations;
 
     float activation_scale = 1.0f;
-    if (phi::funcs::is_int8<T_w>()) {
+    if (funcs::is_int8<T_w>()) {
       std::vector<float> src_scales, wei_scales, psum_scales, dst_scales;
       std::tie(src_scales, wei_scales, psum_scales, dst_scales) =
           GetDNNLScales(scale_in, scale_out, scale_weights);
@@ -213,7 +212,7 @@ class FCOneDNNHandler
         dev_ctx.HasDnnAttr("fuse_beta")
             ? PADDLE_GET_CONST(float, dev_ctx.GetDnnAttr("fuse_beta"))
             : 0.0f;
-    const auto activation_map = phi::funcs::OneDNNActivationMap();
+    const auto activation_map = funcs::OneDNNActivationMap();
     const auto& activation_type = activation_map.find(fuse_activation);
 
     PADDLE_ENFORCE_NE(
@@ -255,7 +254,7 @@ class FCOneDNNHandler
     auto scale_mem =
         dnnl::memory(scales_md,
                      this->engine_,
-                     phi::funcs::to_void_cast<float>(scale_data.data()));
+                     funcs::to_void_cast<float>(scale_data.data()));
 
     auto& astream = OneDNNContext::tls().get_stream();
     {
@@ -277,10 +276,10 @@ class FCOneDNNHandler
 
  public:
   std::shared_ptr<dnnl::memory> AcquireSrcMemoryWithReorder(
-      const phi::DenseTensor* x) {
+      const DenseTensor* x) {
     const T_in* x_data = x->data<T_in>();
 
-    auto user_md = x->mem_desc();
+    auto user_md = phi::funcs::GetOneDNNMemDesc(*x);
     if (x->dims().size() != 2) {
       // reshape restrictions are always satisfied because in case of 3 or 4 dim
       // input, plain layout is enforced
@@ -292,20 +291,20 @@ class FCOneDNNHandler
   }
 
   std::shared_ptr<dnnl::memory> AcquireBiasMemoryWithReorder(
-      const phi::DenseTensor* bias) {
+      const DenseTensor* bias) {
     const float* bias_data = bias->data<float>();
     return this->AcquireMemoryFromPrimitive(this->fwd_pd_->bias_desc(),
                                             to_void_cast<float>(bias_data));
   }
 
   std::shared_ptr<dnnl::memory> AcquireWeightsMemoryWithReorder(
-      const phi::DenseTensor* weights, const std::vector<float>& scale_data) {
+      const DenseTensor* weights, const std::vector<float>& scale_data) {
     const std::string weights_base_key = this->memory_key_ + "@weights";
     std::string weights_key;
     weights_key.reserve(128);
-    weights_key = phi::funcs::ExtendKeyWithThreadInfoIfNeeded(
+    weights_key = funcs::ExtendKeyWithThreadInfoIfNeeded(
         dev_ctx_,
-        phi::funcs::CreateKey(
+        funcs::CreateKey(
             dev_ctx_, weights_base_key, this->fwd_pd_->weights_desc()));
     auto memory_p = std::static_pointer_cast<dnnl::memory>(
         this->dev_ctx_.GetBlob(weights_key));
@@ -318,7 +317,7 @@ class FCOneDNNHandler
                                         OneDNNGetDataType<float>(),
                                         dnnl::memory::format_tag::io);
 
-      if (phi::funcs::is_int8<T_w>()) {
+      if (funcs::is_int8<T_w>()) {
         dnnl::primitive_attr attrs;
         int mask = CreateMask(0, scale_data.size() > 1);
         attrs.set_scales_mask(DNNL_ARG_SRC, mask);
@@ -341,7 +340,7 @@ class FCOneDNNHandler
     return memory_p;
   }
 
-  std::shared_ptr<dnnl::memory> AcquireCustomDstMemory(phi::DenseTensor* out) {
+  std::shared_ptr<dnnl::memory> AcquireCustomDstMemory(DenseTensor* out) {
     return this->template AcquireDstMemory<T_out>(out);
   }  // namespace operators
 
@@ -368,20 +367,20 @@ class FCOneDNNHandler
 
 void RecomputeOutputDims(const int in_num_col_dims,
                          const bool padding_weights,
-                         const phi::DenseTensor* x,
-                         const phi::DenseTensor* weights,
-                         phi::DenseTensor* out) {
+                         const DenseTensor* x,
+                         const DenseTensor* weights,
+                         DenseTensor* out) {
   PADDLE_ENFORCE_EQ(padding_weights,
                     false,
                     common::errors::PermissionDenied(
                         "Weight padding in fc can not be used in oneDNN."));
   std::vector<int64_t> output_dims;
-  phi::funcs::FCOutputSize(x->dims(),
-                           weights->dims(),
-                           output_dims,
-                           in_num_col_dims,
-                           padding_weights);
-  out->Resize(common::make_ddim(output_dims));
+  funcs::FCOutputSize(x->dims(),
+                      weights->dims(),
+                      output_dims,
+                      in_num_col_dims,
+                      padding_weights);
+  out->Resize(output_dims);
   out->set_lod(x->lod());
 }
 
@@ -389,9 +388,10 @@ template <typename T>
 void PrepareSrcMem(const std::shared_ptr<dnnl::inner_product_forward>& fc_p
                        UNUSED,
                    const std::shared_ptr<dnnl::memory>& src_mem,
-                   const phi::DenseTensor* x,
+                   const DenseTensor* x,
                    const dnnl::engine& engine) {
-  auto x_md = x->mem_desc().reshape(src_mem->get_desc().get_dims());
+  auto x_md =
+      phi::funcs::GetOneDNNMemDesc(*x).reshape(src_mem->get_desc().get_dims());
   if (x_md != src_mem->get_desc()) {
     dnnl::memory x_mem(x_md, engine, to_void_cast<T>(x->data<T>()));
     auto reorder_p = dnnl::reorder(x_mem, *src_mem);
@@ -408,10 +408,10 @@ template <typename T, typename T_out, typename T_w>
 void RunKernel(const phi::OneDNNContext& dev_ctx,
                const DenseTensor& input,
                const DenseTensor& w,
-               const paddle::optional<DenseTensor>& bias,
+               const optional<DenseTensor>& bias,
                const int in_num_col_dims,
                const std::string& activation_type,
-               const bool use_mkldnn,
+               const bool use_onednn,
                const bool padding_weights,
                const bool use_quantizer,
                const std::string& mkldnn_data_type,
@@ -430,13 +430,13 @@ void RunKernel(const phi::OneDNNContext& dev_ctx,
 
   std::string cache_key;
   cache_key.reserve(64);
-  cache_key = phi::funcs::ExtendKeyWithThreadInfoIfNeeded(
+  cache_key = funcs::ExtendKeyWithThreadInfoIfNeeded(
       dev_ctx,
-      phi::funcs::CreateKey(dev_ctx,
-                            dev_ctx.GetInputsName("Input")[0],
-                            dev_ctx.GetInputsName("W")[0],
-                            common::vectorize(input.dims()),
-                            common::vectorize(w.dims())));
+      funcs::CreateKey(dev_ctx,
+                       dev_ctx.GetInputsName("Input")[0],
+                       dev_ctx.GetInputsName("W")[0],
+                       vectorize(input.dims()),
+                       vectorize(w.dims())));
 
   auto inner_product_cache =
       std::static_pointer_cast<InnerProductCache>(dev_ctx.GetBlob(cache_key));
@@ -510,7 +510,7 @@ void RunKernel(const phi::OneDNNContext& dev_ctx,
       fc_args.insert({DNNL_ARG_BIAS, *bias_memory_p});
     }
 
-    if (phi::funcs::is_int8<T>()) {
+    if (funcs::is_int8<T>()) {
       handler.SetScalesIfNeeded(&fc_args);
     }
 
@@ -545,8 +545,7 @@ void RunKernel(const phi::OneDNNContext& dev_ctx,
     dev_ctx.SetBlob(cache_key, ip_cache);
   }
 
-  const auto out_md =
-      dst_memory_p->get_desc().reshape(common::vectorize(out->dims()));
+  const auto out_md = dst_memory_p->get_desc().reshape(vectorize(out->dims()));
 
   std::vector<int> reshape2_shape = {};
   if (dev_ctx.HasDnnAttr("fused_reshape2_shape")) {
@@ -554,10 +553,9 @@ void RunKernel(const phi::OneDNNContext& dev_ctx,
         std::vector<int>, dev_ctx.GetDnnAttr("fused_reshape2_shape"));
   }
   if (!reshape2_shape.empty()) {
-    phi::funcs::SetOutMemDescWithReshape2FuseSupport(
-        reshape2_shape, out, out_md);
+    funcs::SetOutMemDescWithReshape2FuseSupport(reshape2_shape, out, out_md);
   } else {
-    out->set_mem_desc(out_md);
+    phi::funcs::SetOneDNNMemDesc(out, out_md);
   }
 }
 
@@ -565,7 +563,7 @@ template <typename T, typename Context>
 void FCKernel(const Context& dev_ctx,
               const DenseTensor& input,
               const DenseTensor& w,
-              const paddle::optional<DenseTensor>& bias,
+              const optional<DenseTensor>& bias,
               const int in_num_col_dims,
               const std::string& activation_type,
               const bool padding_weights,
@@ -574,6 +572,10 @@ void FCKernel(const Context& dev_ctx,
       dev_ctx.HasDnnAttr("use_mkldnn")
           ? PADDLE_GET_CONST(bool, dev_ctx.GetDnnAttr("use_mkldnn"))
           : false;
+  const bool use_onednn =
+      (!use_mkldnn && dev_ctx.HasDnnAttr("use_onednn"))
+          ? PADDLE_GET_CONST(bool, dev_ctx.GetDnnAttr("use_onednn"))
+          : use_mkldnn;
   const bool use_quantizer =
       dev_ctx.HasDnnAttr("use_quantizer")
           ? PADDLE_GET_CONST(bool, dev_ctx.GetDnnAttr("use_quantizer"))
@@ -583,6 +585,11 @@ void FCKernel(const Context& dev_ctx,
           ? PADDLE_GET_CONST(std::string,
                              dev_ctx.GetDnnAttr("mkldnn_data_type"))
           : "float32";
+  const std::string onednn_data_type =
+      (use_onednn && dev_ctx.HasDnnAttr("onednn_data_type"))
+          ? PADDLE_GET_CONST(std::string,
+                             dev_ctx.GetDnnAttr("onednn_data_type"))
+          : mkldnn_data_type;
   const float scale_in =
       dev_ctx.HasDnnAttr("Scale_in")
           ? PADDLE_GET_CONST(float, dev_ctx.GetDnnAttr("Scale_in"))
@@ -601,24 +608,24 @@ void FCKernel(const Context& dev_ctx,
       dev_ctx.HasDnnAttr("force_fp32_output")
           ? PADDLE_GET_CONST(bool, dev_ctx.GetDnnAttr("force_fp32_output"))
           : false;
-  std::vector<std::string> mkldnn_data_type_list = {
+  std::vector<std::string> onednn_data_type_list = {
       "float32", "int8", "bfloat16"};
-  PADDLE_ENFORCE_EQ(std::find(mkldnn_data_type_list.begin(),
-                              mkldnn_data_type_list.end(),
-                              mkldnn_data_type) != mkldnn_data_type_list.end(),
+  PADDLE_ENFORCE_EQ(std::find(onednn_data_type_list.begin(),
+                              onednn_data_type_list.end(),
+                              onednn_data_type) != onednn_data_type_list.end(),
                     true,
                     common::errors::InvalidArgument(
-                        "The mkldnn_data_type should be [float32, "
+                        "The onednn_data_type should be [float32, "
                         "int8, bfloat16], but found %s.",
-                        mkldnn_data_type.c_str()));
+                        onednn_data_type.c_str()));
   auto in_dims = input.dims();
-  if (use_mkldnn) {
+  if (use_onednn) {
     PADDLE_ENFORCE_EQ(
         in_dims.size() >= 2 && in_dims.size() <= 4,
         true,
         common::errors::Unimplemented(
             "The Input of fc is expected to be a 2-D, 3-D or 4-D tensor when "
-            "use_mkldnn is set. But received the number of Input's "
+            "use_onednn is set. But received the number of Input's "
             "dimensions is %d, Input's shape is %s.",
             in_dims.size(),
             in_dims));
@@ -632,16 +639,16 @@ void FCKernel(const Context& dev_ctx,
                                                         bias,
                                                         in_num_col_dims,
                                                         activation_type,
-                                                        use_mkldnn,
+                                                        use_onednn,
                                                         padding_weights,
                                                         use_quantizer,
-                                                        mkldnn_data_type,
+                                                        onednn_data_type,
                                                         scale_in,
                                                         scale_weights,
                                                         scale_out,
                                                         force_fp32_output,
                                                         out);
-                             } else if (phi::funcs::is_int8<T>()) {
+                             } else if (funcs::is_int8<T>()) {
                                if (fuse_relu) {
                                  RunKernel<T, uint8_t, T_w>(dev_ctx,
                                                             input,
@@ -649,10 +656,10 @@ void FCKernel(const Context& dev_ctx,
                                                             bias,
                                                             in_num_col_dims,
                                                             activation_type,
-                                                            use_mkldnn,
+                                                            use_onednn,
                                                             padding_weights,
                                                             use_quantizer,
-                                                            mkldnn_data_type,
+                                                            onednn_data_type,
                                                             scale_in,
                                                             scale_weights,
                                                             scale_out,
@@ -665,10 +672,10 @@ void FCKernel(const Context& dev_ctx,
                                                            bias,
                                                            in_num_col_dims,
                                                            activation_type,
-                                                           use_mkldnn,
+                                                           use_onednn,
                                                            padding_weights,
                                                            use_quantizer,
-                                                           mkldnn_data_type,
+                                                           onednn_data_type,
                                                            scale_in,
                                                            scale_weights,
                                                            scale_out,
@@ -682,10 +689,10 @@ void FCKernel(const Context& dev_ctx,
                                                     bias,
                                                     in_num_col_dims,
                                                     activation_type,
-                                                    use_mkldnn,
+                                                    use_onednn,
                                                     padding_weights,
                                                     use_quantizer,
-                                                    mkldnn_data_type,
+                                                    onednn_data_type,
                                                     scale_in,
                                                     scale_weights,
                                                     scale_out,
@@ -702,6 +709,6 @@ PD_REGISTER_KERNEL(fc,
                    ONEDNN,
                    phi::fusion::FCKernel,
                    float,
-                   phi::dtype::bfloat16,
+                   phi::bfloat16,
                    uint8_t,
                    int8_t) {}

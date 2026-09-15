@@ -15,7 +15,7 @@
 #include "paddle/phi/kernels/instance_norm_grad_kernel.h"
 
 #include "glog/logging.h"
-
+#include "paddle/common/enforce.h"
 #include "paddle/common/layout.h"
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
@@ -32,10 +32,11 @@ static __global__ void GradComputeDX(const T *dy,
                                      const T *x,
                                      const BatchNormParamType<T> *variance,
                                      const int C,
-                                     const int sample_size,
+                                     const int64_t sample_size,
                                      T *dx) {
-  int beg_idx = blockIdx.x * sample_size + threadIdx.x;
-  int end_idx = (blockIdx.x + 1) * sample_size;
+  int64_t beg_idx = static_cast<int64_t>(blockIdx.x) * sample_size +
+                    static_cast<int64_t>(threadIdx.x);
+  int64_t end_idx = (static_cast<int64_t>(blockIdx.x) + 1) * sample_size;
   int ncid = blockIdx.x;
   int c = ncid % C;
   BatchNormParamType<T> mean_val = mean[ncid];
@@ -49,7 +50,7 @@ static __global__ void GradComputeDX(const T *dy,
   BatchNormParamType<T> dy_x_sub_mean_sum =
       static_cast<BatchNormParamType<T>>(0);
 
-  for (int i = beg_idx; i < end_idx; i += BlockDim) {
+  for (int64_t i = beg_idx; i < end_idx; i += BlockDim) {
     BatchNormParamType<T> dy_i = static_cast<BatchNormParamType<T>>(dy[i]);
     dy_sum += dy_i;
     dy_x_sub_mean_sum +=
@@ -63,7 +64,7 @@ static __global__ void GradComputeDX(const T *dy,
     dy_x_sub_mean_sum_val = dy_x_sub_mean_sum;
   }
   __syncthreads();
-  for (int i = beg_idx; i < end_idx; i += BlockDim) {
+  for (int64_t i = beg_idx; i < end_idx; i += BlockDim) {
     dx[i] = static_cast<T>(
         (static_cast<BatchNormParamType<T>>(dy[i]) -
          dy_sum_val / static_cast<BatchNormParamType<T>>(sample_size) -
@@ -89,11 +90,12 @@ __global__ void DoubleGradComputeDX(const T *x,
                                     const AccT *scale,
                                     const AccT *ddscale,
                                     int C,
-                                    int sample_size,
+                                    int64_t sample_size,
                                     const double epsilon,
                                     T *dx) {
-  int beg_idx = blockIdx.x * sample_size + threadIdx.x;
-  int end_idx = (blockIdx.x + 1) * sample_size;
+  int64_t beg_idx = static_cast<int64_t>(blockIdx.x) * sample_size +
+                    static_cast<int64_t>(threadIdx.x);
+  int64_t end_idx = (static_cast<int64_t>(blockIdx.x) + 1) * sample_size;
   int ncid = blockIdx.x;
   int c = ncid % C;
 
@@ -117,7 +119,7 @@ __global__ void DoubleGradComputeDX(const T *x,
   AccT dy_mul_ddx_sum = 0;
   AccT dy_mul_x_sub_mean_sum = 0;
   AccT ddx_mul_x_sub_mean_sum = 0;
-  for (int i = beg_idx; i < end_idx; i += BlockDim) {
+  for (int64_t i = beg_idx; i < end_idx; i += BlockDim) {
     AccT ddx_i = static_cast<AccT>(ddx[i]);
     AccT dy_i = static_cast<AccT>(dy[i]);
     AccT tmp = static_cast<AccT>(x[i]) - mean_val;
@@ -149,7 +151,7 @@ __global__ void DoubleGradComputeDX(const T *x,
   __syncthreads();
 
   if (ddx != nullptr) {
-    for (int i = beg_idx; i < end_idx; i += BlockDim) {
+    for (int64_t i = beg_idx; i < end_idx; i += BlockDim) {
       AccT tmp = static_cast<AccT>(dx[i]);
       tmp +=
           ((static_cast<AccT>(x[i]) - mean_val) * var_val * var_val * var_val /
@@ -168,7 +170,7 @@ __global__ void DoubleGradComputeDX(const T *x,
   }
   __syncthreads();
   if (ddscale != nullptr) {
-    for (int i = beg_idx; i < end_idx; i += BlockDim) {
+    for (int64_t i = beg_idx; i < end_idx; i += BlockDim) {
       AccT tmp = static_cast<AccT>(dx[i]);
       tmp += (static_cast<AccT>(dy[i]) * var_val -
               dy_sum_val / sample_size * var_val -
@@ -189,11 +191,12 @@ __global__ void DoubleGradComputeDDY(const T *x,
                                      const T *ddx,
                                      const AccT *scale,
                                      int C,
-                                     int sample_size,
+                                     int64_t sample_size,
                                      const double epsilon,
                                      T *ddy) {
-  int beg_idx = blockIdx.x * sample_size + threadIdx.x;
-  int end_idx = (blockIdx.x + 1) * sample_size;
+  int64_t beg_idx = static_cast<int64_t>(blockIdx.x) * sample_size +
+                    static_cast<int64_t>(threadIdx.x);
+  int64_t end_idx = (static_cast<int64_t>(blockIdx.x) + 1) * sample_size;
   int ncid = blockIdx.x;
   int c = ncid % C;
   AccT mean_val = mean[ncid];
@@ -206,7 +209,7 @@ __global__ void DoubleGradComputeDDY(const T *x,
 
   AccT ddx_sum = 0;
   AccT ddx_mul_x_sub_mean_sum = 0;
-  for (int i = beg_idx; i < end_idx; i += BlockDim) {
+  for (int64_t i = beg_idx; i < end_idx; i += BlockDim) {
     AccT ddx_i = static_cast<AccT>(ddx[i]);
     ddx_sum += ddx_i;
     ddx_mul_x_sub_mean_sum += (ddx_i * (static_cast<AccT>(x[i]) - mean_val));
@@ -220,7 +223,7 @@ __global__ void DoubleGradComputeDDY(const T *x,
   }
   __syncthreads();
   if (ddx != nullptr) {
-    for (int i = beg_idx; i < end_idx; i += BlockDim) {
+    for (int64_t i = beg_idx; i < end_idx; i += BlockDim) {
       AccT tmp = static_cast<AccT>(ddy[i]);
       tmp += scale[c] * var_val *
              (static_cast<AccT>(ddx[i]) - ddx_sum_val / sample_size -
@@ -231,7 +234,7 @@ __global__ void DoubleGradComputeDDY(const T *x,
   }
   __syncthreads();
   if (ddscale != nullptr) {
-    for (int i = beg_idx; i < end_idx; i += BlockDim) {
+    for (int64_t i = beg_idx; i < end_idx; i += BlockDim) {
       AccT tmp = static_cast<AccT>(ddy[i]);
       tmp += (static_cast<AccT>(x[i]) - mean_val) * var_val * ddscale[c];
       ddy[i] = static_cast<T>(tmp);
@@ -239,7 +242,7 @@ __global__ void DoubleGradComputeDDY(const T *x,
   }
   __syncthreads();
   if (ddbias != nullptr) {
-    for (int i = beg_idx; i < end_idx; i += BlockDim) {
+    for (int64_t i = beg_idx; i < end_idx; i += BlockDim) {
       ddy[i] = static_cast<T>(static_cast<AccT>(ddy[i]) + ddbias[c]);
     }
   }
@@ -252,11 +255,12 @@ __global__ void DoubleGradComputeDScale(const T *x,
                                         const T *ddx,
                                         const T *dy,
                                         int C,
-                                        int sample_size,
+                                        int64_t sample_size,
                                         const double epsilon,
                                         AccT *dscale) {
-  int beg_idx = blockIdx.x * sample_size + threadIdx.x;
-  int end_idx = (blockIdx.x + 1) * sample_size;
+  int64_t beg_idx = static_cast<int64_t>(blockIdx.x) * sample_size +
+                    static_cast<int64_t>(threadIdx.x);
+  int64_t end_idx = (static_cast<int64_t>(blockIdx.x) + 1) * sample_size;
   int ncid = blockIdx.x;
   int c = ncid % C;
   AccT mean_val = mean[ncid];
@@ -270,7 +274,7 @@ __global__ void DoubleGradComputeDScale(const T *x,
 
   AccT dy_sum = 0;
   AccT dy_mul_x_sub_mean_sum = 0;
-  for (int i = beg_idx; i < end_idx; i += BlockDim) {
+  for (int64_t i = beg_idx; i < end_idx; i += BlockDim) {
     AccT dy_i = static_cast<AccT>(dy[i]);
     dy_sum += dy_i;
     dy_mul_x_sub_mean_sum += (dy_i * (static_cast<AccT>(x[i]) - mean_val));
@@ -286,7 +290,7 @@ __global__ void DoubleGradComputeDScale(const T *x,
   __syncthreads();
   if (ddx != nullptr) {
     AccT dscale_tmp = 0;
-    for (int i = beg_idx; i < end_idx; i += BlockDim) {
+    for (int64_t i = beg_idx; i < end_idx; i += BlockDim) {
       dscale_tmp +=
           static_cast<AccT>(ddx[i]) * var_val *
           (static_cast<AccT>(dy[i]) - dy_sum_val / sample_size -
@@ -304,7 +308,8 @@ __global__ void DoubleGradComputeDScale(const T *x,
 template <typename T, typename Context>
 void InstanceNormGradKernel(const Context &dev_ctx,
                             const DenseTensor &x,
-                            const paddle::optional<DenseTensor> &scale,
+                            const optional<DenseTensor> &scale,
+                            const optional<DenseTensor> &bias UNUSED,
                             const DenseTensor &saved_mean,
                             const DenseTensor &saved_variance,
                             const DenseTensor &d_y,
@@ -312,25 +317,41 @@ void InstanceNormGradKernel(const Context &dev_ctx,
                             DenseTensor *d_x,
                             DenseTensor *d_scale,
                             DenseTensor *d_bias) {
-  using AccT = typename phi::dtype::MPTypeTrait<T>::Type;
+  using AccT = typename MPTypeTrait<T>::Type;
   double epsilon = static_cast<double>(epsilon_f);
   const auto *scale_ptr = scale.get_ptr();
 
   const auto &x_dims = x.dims();
 
   int N, C, H, W, D;
-  funcs::ExtractNCWHD(x_dims, DataLayout::kNCHW, &N, &C, &H, &W, &D);
-  int NxC = N * C;
+  funcs::ExtractNCWHD(x_dims, DataLayout::NCHW, &N, &C, &H, &W, &D);
+  const int64_t NxC_64 = static_cast<int64_t>(N) * C;
+  PADDLE_ENFORCE_LE_INT_MAX(NxC_64, "NxC");
+  const int NxC = static_cast<int>(NxC_64);
 
   DenseTensor x_tmp, d_y_tmp;
   x_tmp.ShareDataWith(x).Resize({1, NxC, H, W, D});
   d_y_tmp.ShareDataWith(d_y).Resize({1, NxC, H, W, D});
 
+  funcs::SetConstant<GPUContext, AccT> set_constant;
+
   dev_ctx.template Alloc<T>(d_x);
+  if (x.numel() == 0) {
+    if (d_scale) {
+      dev_ctx.template Alloc<AccT>(d_scale);
+      set_constant(dev_ctx, d_scale, static_cast<AccT>(0));
+    }
+    if (d_bias) {
+      dev_ctx.template Alloc<AccT>(d_bias);
+      set_constant(dev_ctx, d_bias, static_cast<AccT>(0));
+    }
+    return;
+  }
   if (d_scale && d_bias) {
     dev_ctx.template Alloc<AccT>(d_scale);
     dev_ctx.template Alloc<AccT>(d_bias);
   }
+
   if (scale_ptr) {
     PADDLE_ENFORCE_EQ(
         scale_ptr->dims().size(),
@@ -338,7 +359,7 @@ void InstanceNormGradKernel(const Context &dev_ctx,
         common::errors::InvalidArgument(
             "The `shape` in InstanceNormOp is invalid: "
             "the size of scale's dimensions must be equal to 1. But "
-            "received: the size of scale's dimensions"
+            "received: the size of scale's dimensions "
             "is [%d]",
             scale_ptr->dims().size()));
     PADDLE_ENFORCE_EQ(scale_ptr->dims()[0],
@@ -354,9 +375,7 @@ void InstanceNormGradKernel(const Context &dev_ctx,
                           scale_ptr->dims()));
   }
 
-  phi::funcs::SetConstant<GPUContext, AccT> set_constant;
-
-  const int n = x.numel();
+  const int64_t n = x.numel();
   const int block = 512;
   int max_threads = dev_ctx.GetMaxPhysicalThreadCount();
   const int max_blocks = std::max(max_threads / block, 1);
@@ -382,8 +401,19 @@ void InstanceNormGradKernel(const Context &dev_ctx,
   }
   std::vector<int> dims;
   std::vector<int> strides;
+  const int64_t sample_size_64 = static_cast<int64_t>(H) * W * D;
+  const int64_t stride0 = NxC_64 * sample_size_64;
+  const int64_t stride1 = sample_size_64;
+  const int64_t stride2 = static_cast<int64_t>(W) * D;
+  PADDLE_ENFORCE_LE_INT_MAX(stride0, "cudnn tensor descriptor stride0");
+  PADDLE_ENFORCE_LE_INT_MAX(stride1, "cudnn tensor descriptor stride1");
+  PADDLE_ENFORCE_LE_INT_MAX(stride2, "cudnn tensor descriptor stride2");
   dims = {1, NxC, H, W, D};
-  strides = {NxC * H * W * D, H * W * D, W * D, D, 1};
+  strides = {static_cast<int>(stride0),
+             static_cast<int>(stride1),
+             static_cast<int>(stride2),
+             D,
+             1};
 
 #ifdef PADDLE_WITH_HIP
   miopenTensorDescriptor_t data_desc_;
@@ -480,14 +510,16 @@ void InstanceNormGradKernel(const Context &dev_ctx,
 #endif
   } else {
     if (d_x) {
-      GradComputeDX<T, block><<<NxC, block, 0, dev_ctx.stream()>>>(
+      PADDLE_ENFORCE_LE_UINT32_MAX(NxC, "instance_norm_grad grid.x");
+      const uint32_t grid = static_cast<uint32_t>(NxC);
+      GradComputeDX<T, block><<<grid, block, 0, dev_ctx.stream()>>>(
           d_y.data<T>(),
           scale_tmp.data<BatchNormParamType<T>>(),
           saved_mean_data,
           x.data<T>(),
           saved_var_data,
           C,
-          H * W * D,
+          sample_size_64,
           d_x->data<T>());
     }
   }
@@ -514,18 +546,18 @@ void InstanceNormGradKernel(const Context &dev_ctx,
 template <typename T, typename Context>
 void InstanceNormDoubleGradKernel(const Context &dev_ctx,
                                   const DenseTensor &x,
-                                  const paddle::optional<DenseTensor> &scale,
+                                  const optional<DenseTensor> &scale,
                                   const DenseTensor &saved_mean,
                                   const DenseTensor &saved_variance,
                                   const DenseTensor &dy,
-                                  const paddle::optional<DenseTensor> &ddx,
-                                  const paddle::optional<DenseTensor> &ddscale,
-                                  const paddle::optional<DenseTensor> &ddbias,
+                                  const optional<DenseTensor> &ddx,
+                                  const optional<DenseTensor> &ddscale,
+                                  const optional<DenseTensor> &ddbias,
                                   float epsilon_f,
                                   DenseTensor *dx,
                                   DenseTensor *dscale,
                                   DenseTensor *ddy) {
-  using AccT = typename phi::dtype::MPTypeTrait<T>::Type;
+  using AccT = typename MPTypeTrait<T>::Type;
   const auto *Scale = scale.get_ptr();
   const auto *ddX = ddx.get_ptr();
   const auto *ddScale = ddscale.get_ptr();
@@ -540,15 +572,17 @@ void InstanceNormDoubleGradKernel(const Context &dev_ctx,
       (ddScale == nullptr ? nullptr : ddBias->data<AccT>());
   const AccT *mean_data = saved_mean.data<AccT>();
   const AccT *variance_data = saved_variance.data<AccT>();
-  phi::funcs::SetConstant<GPUContext, T> set_zero;
-  phi::funcs::SetConstant<GPUContext, AccT> set_zero_AccT;
+  funcs::SetConstant<GPUContext, T> set_zero;
+  funcs::SetConstant<GPUContext, AccT> set_zero_AccT;
 
   auto &x_dims = x.dims();
   int N, C, H, W, D;
-  funcs::ExtractNCWHD(x_dims, DataLayout::kNCHW, &N, &C, &H, &W, &D);
-  int NxC = N * C;
-  const int n = x.numel();
-  int sample_size = n / N / C;
+  funcs::ExtractNCWHD(x_dims, DataLayout::NCHW, &N, &C, &H, &W, &D);
+  const int64_t NxC_64 = static_cast<int64_t>(N) * C;
+  PADDLE_ENFORCE_LE_INT_MAX(NxC_64, "NxC");
+  const int NxC = static_cast<int>(NxC_64);
+  const int64_t n = x.numel();
+  int64_t sample_size = n / N / C;
 
   DenseTensor scale_tmp;
   if (!Scale) {
@@ -560,7 +594,7 @@ void InstanceNormDoubleGradKernel(const Context &dev_ctx,
   const int block = 512;
   int max_threads = dev_ctx.GetMaxPhysicalThreadCount();
   const int max_blocks = std::max(max_threads / block, 1);
-  const int grid = NxC;
+  const int grid = static_cast<int>(NxC);
   const int grid1 = (C + block - 1) / block;
 
   if (dx) {
@@ -627,13 +661,13 @@ PD_REGISTER_KERNEL(instance_norm_grad,
                    ALL_LAYOUT,
                    phi::InstanceNormGradKernel,
                    float,
-                   phi::dtype::float16) {}
+                   phi::float16) {}
 PD_REGISTER_KERNEL(instance_norm_double_grad,
                    GPU,
                    ALL_LAYOUT,
                    phi::InstanceNormDoubleGradKernel,
                    float,
-                   phi::dtype::float16) {}
+                   phi::float16) {}
 #elif CUDNN_VERSION_MIN(8, 1, 0)
 PD_REGISTER_KERNEL(instance_norm_grad,
                    GPU,
@@ -641,16 +675,16 @@ PD_REGISTER_KERNEL(instance_norm_grad,
                    phi::InstanceNormGradKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}
 PD_REGISTER_KERNEL(instance_norm_double_grad,
                    GPU,
                    ALL_LAYOUT,
                    phi::InstanceNormDoubleGradKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}
 #else
 PD_REGISTER_KERNEL(instance_norm_grad,
                    GPU,
@@ -658,12 +692,12 @@ PD_REGISTER_KERNEL(instance_norm_grad,
                    phi::InstanceNormGradKernel,
                    float,
                    double,
-                   phi::dtype::float16) {}
+                   phi::float16) {}
 PD_REGISTER_KERNEL(instance_norm_double_grad,
                    GPU,
                    ALL_LAYOUT,
                    phi::InstanceNormDoubleGradKernel,
                    float,
                    double,
-                   phi::dtype::float16) {}
+                   phi::float16) {}
 #endif

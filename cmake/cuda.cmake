@@ -10,33 +10,38 @@ if(WITH_NV_JETSON)
   set(paddle_known_gpu_archs "53 62 72")
   set(paddle_known_gpu_archs10 "53 62 72")
   set(paddle_known_gpu_archs11 "53 62 72 87")
-  set(paddle_known_gpu_archs12 "53 62 72 87 90")
+  set(paddle_known_gpu_archs12 "53 62 72 87 90 100")
+  set(paddle_known_gpu_archs13 "87 90 100")
 elseif(NEW_RELEASE_ALL)
-  message("Using New Release Strategy - All Arches Packge")
+  message("Using New Release Strategy - All Arches Package")
   add_definitions(-DNEW_RELEASE_ALL)
-  set(paddle_known_gpu_archs "50 52 60 61 70 75 80 86 90")
+  set(paddle_known_gpu_archs "50 52 60 61 70 75 80 86 90 100")
   set(paddle_known_gpu_archs10 "50 52 60 61 70 75")
   set(paddle_known_gpu_archs11 "50 60 61 70 75 80")
-  set(paddle_known_gpu_archs12 "50 60 61 70 75 80 90")
+  set(paddle_known_gpu_archs12 "50 60 61 70 75 80 90 100")
+  set(paddle_known_gpu_archs13 "75 80 86 90 100")
 elseif(NEW_RELEASE_PYPI)
-  message("Using New Release Strategy - Cubin Packge")
+  message("Using New Release Strategy - Cubin Package")
   add_definitions(-DNEW_RELEASE_PYPI)
-  set(paddle_known_gpu_archs "50 52 60 61 70 75 80 86 90")
+  set(paddle_known_gpu_archs "50 52 60 61 70 75 80 86 90 100")
   set(paddle_known_gpu_archs10 "")
   set(paddle_known_gpu_archs11 "61 70 75 80")
-  set(paddle_known_gpu_archs12 "61 70 75 80 90")
+  set(paddle_known_gpu_archs12 "61 70 75 80 90 100")
+  set(paddle_known_gpu_archs13 "75 80 86 90 100")
 elseif(NEW_RELEASE_JIT)
-  message("Using New Release Strategy - JIT Packge")
+  message("Using New Release Strategy - JIT Package")
   add_definitions(-DNEW_RELEASE_JIT)
-  set(paddle_known_gpu_archs "50 52 60 61 70 75 80 86 90")
+  set(paddle_known_gpu_archs "50 52 60 61 70 75 80 86 90 100")
   set(paddle_known_gpu_archs10 "50 60 70 75")
   set(paddle_known_gpu_archs11 "50 60 70 75 80")
-  set(paddle_known_gpu_archs12 "50 60 70 75 80 90")
+  set(paddle_known_gpu_archs12 "50 60 70 75 80 90 100")
+  set(paddle_known_gpu_archs13 "75 80 86 90 100")
 else()
-  set(paddle_known_gpu_archs "50 52 60 61 70 75 80 90")
+  set(paddle_known_gpu_archs "50 52 60 61 70 75 80 90 100")
   set(paddle_known_gpu_archs10 "50 52 60 61 70 75")
   set(paddle_known_gpu_archs11 "52 60 61 70 75 80")
-  set(paddle_known_gpu_archs12 "52 60 61 70 75 80 90")
+  set(paddle_known_gpu_archs12 "52 60 61 70 75 80 90 100")
+  set(paddle_known_gpu_archs13 "75 80 86 90 100")
 endif()
 
 ######################################################################################
@@ -114,7 +119,9 @@ function(select_nvcc_arch_flags out_variable out_arch_bin)
       "Turing"
       "Ampere"
       "Hopper"
+      "Blackwell"
       "All"
+      "Ada Lovelace"
       "Manual")
   set(archs_name_default "Auto")
   list(APPEND archs_names "Auto")
@@ -184,6 +191,8 @@ function(select_nvcc_arch_flags out_variable out_arch_bin)
     endif()
   elseif(${CUDA_ARCH_NAME} STREQUAL "Hopper")
     set(cuda_arch_bin "90")
+  elseif(${CUDA_ARCH_NAME} STREQUAL "Blackwell")
+    set(cuda_arch_bin "100")
   elseif(${CUDA_ARCH_NAME} STREQUAL "All")
     set(cuda_arch_bin ${paddle_known_gpu_archs})
   elseif(${CUDA_ARCH_NAME} STREQUAL "Auto")
@@ -241,6 +250,7 @@ function(select_nvcc_arch_flags out_variable out_arch_bin)
     string(APPEND nvcc_archs_readable " compute_${arch}")
   endforeach()
 
+  string(APPEND nvcc_flags " -Xfatbin -compress-all")
   string(REPLACE ";" " " nvcc_archs_readable "${nvcc_archs_readable}")
   string(REGEX MATCHALL "[0-9()]+" nvcc_archs_bin_list "${nvcc_archs_bin_list}")
   string(JOIN "," nvcc_real_archs ${nvcc_archs_bin_list})
@@ -284,10 +294,19 @@ elseif(${CMAKE_CUDA_COMPILER_VERSION} LESS 13.0) # CUDA 12.0+
   set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -D_MWAITXINTRIN_H_INCLUDED")
   set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -D__STRICT_ANSI__")
   set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Wno-deprecated-gpu-targets")
+elseif(${CMAKE_CUDA_COMPILER_VERSION} LESS 14.0) # CUDA 13.0+
+  set(paddle_known_gpu_archs ${paddle_known_gpu_archs13})
+  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -D_MWAITXINTRIN_H_INCLUDED")
+  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -D__STRICT_ANSI__")
+  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Wno-deprecated-gpu-targets")
 endif()
 
-if(NOT ${CMAKE_CUDA_COMPILER_VERSION} LESS 10.0)
-  add_definitions("-DTRT_PLUGIN_FP16_AVAILABLE")
+# Fix ARM NEON conflict with CUDA on aarch64 platforms.
+# GCC predefines __ARM_NEON which causes arm_neon.h to be included
+# during CUDA compilation, but nvcc does not support ARM NEON builtins,
+# leading to type errors (e.g. float16x4x2_t undefined).
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -U__ARM_NEON -U__ARM_NEON_FP")
 endif()
 
 add_definitions("-DCUDA_VERSION_MAJOR=\"${CUDA_VERSION_MAJOR}\"")
@@ -299,11 +318,20 @@ select_nvcc_arch_flags(NVCC_FLAGS_EXTRA NVCC_ARCH_BIN)
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} ${NVCC_FLAGS_EXTRA}")
 message(STATUS "NVCC_FLAGS_EXTRA: ${NVCC_FLAGS_EXTRA}")
 
-# Set C++17 support
+# Keep CUDA targets on the CMake-recognized standard path; CUDA C++20 is a
+# separate device-side migration.
 set(CUDA_PROPAGATE_HOST_FLAGS OFF)
 # Release/Debug flags set by cmake. Such as -O3 -g -DNDEBUG etc.
 # So, don't set these flags here.
-set(CMAKE_CUDA_STANDARD 17)
+
+# Keep Windows CUDA builds on C++17 until its CI toolchain supports C++20.
+if(WIN32)
+  set(CMAKE_CUDA_STANDARD 17)
+  # CMake 3.18 does not add -std=c++17 for NVCC with an MSVC host compiler.
+  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -std=c++17")
+else()
+  set(CMAKE_CUDA_STANDARD 20)
+endif()
 
 # (Note) For windows, if delete /W[1-4], /W1 will be added defaultly and conflict with -w
 # So replace /W[1-4] with /W0

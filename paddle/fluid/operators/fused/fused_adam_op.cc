@@ -35,7 +35,7 @@ class FusedAdamOp : public framework::OperatorWithKernel {
 
   phi::KernelKey GetKernelTypeForVar(
       const std::string &var_name,
-      const phi::DenseTensor &tensor,
+      const DenseTensor &tensor,
       const phi::KernelKey &expected_kernel_type) const override {
     if (var_name == "Beta1Pows" || var_name == "Beta2Pows" ||
         var_name == "SkipUpdate") {
@@ -115,7 +115,7 @@ class FusedAdamOpMaker : public framework::OpProtoAndCheckerMaker {
         .SetDefault(0);
     AddAttr<bool>("use_adamw",
                   "(bool, default False) "
-                  "Whether to use AdamW"
+                  "Whether to use AdamW. "
                   "True for decoupled weight decay")
         .SetDefault(false);
     AddAttr<bool>("multi_precision",

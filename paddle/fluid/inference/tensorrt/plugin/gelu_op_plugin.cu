@@ -77,7 +77,7 @@ __device__ half do_tanh<half>(half a) {
   return __float2half(tmp);
 }
 
-// the kernel below is not aligned with fluid fp32 forwrad ones, use it for
+// the kernel below is not aligned with fluid fp32 forward ones, use it for
 // fp16.
 template <typename T, unsigned TPB>
 __global__ void no_exact_gelu_kernel(
@@ -95,15 +95,9 @@ __global__ void no_exact_gelu_kernel(
 
 int GeluPlugin::enqueue(int batch_size,
                         const void* const* inputs,
-#if IS_TRT_VERSION_LT(8000)
-                        void** outputs,
-                        void*,
-                        cudaStream_t stream) {
-#else
                         void* const* outputs,
                         void*,
                         cudaStream_t stream) TRT_NOEXCEPT {
-#endif
   const auto& input_dims = this->getInputDims(0);
   int num = batch_size;
   for (int i = 0; i < input_dims.nbDims; i++) {
@@ -133,9 +127,6 @@ int GeluPlugin::enqueue(int batch_size,
   return cudaGetLastError() != cudaSuccess;
 }
 
-// Dynamic Plugin below.
-#if IS_TRT_VERSION_GE(6000)
-
 nvinfer1::DimsExprs GeluPluginDynamic::getOutputDimensions(
     int output_index,
     const nvinfer1::DimsExprs* inputs,
@@ -152,7 +143,7 @@ bool GeluPluginDynamic::supportsFormatCombination(
   PADDLE_ENFORCE_NOT_NULL(
       in_out,
       common::errors::InvalidArgument(
-          "The input of swish plugin shoule not be nullptr."));
+          "The input of swish plugin should not be nullptr."));
 
   PADDLE_ENFORCE_LT(
       pos,
@@ -223,7 +214,6 @@ int GeluPluginDynamic::enqueue(const nvinfer1::PluginTensorDesc* input_desc,
   }
   return cudaGetLastError() != cudaSuccess;
 }
-#endif
 
 }  // namespace plugin
 }  // namespace tensorrt

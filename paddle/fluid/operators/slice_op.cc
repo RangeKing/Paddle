@@ -21,6 +21,7 @@ limitations under the License. */
 #include "paddle/fluid/prim/api/composite_backward/composite_backward_api.h"
 #include "paddle/fluid/prim/utils/static/composite_grad_desc_maker.h"
 #include "paddle/fluid/prim/utils/static/desc_tensor.h"
+#include "paddle/phi/backends/onednn/onednn_helper.h"
 #include "paddle/phi/kernels/funcs/slice_utils.h"
 
 namespace paddle {
@@ -138,8 +139,8 @@ class SliceOp : public framework::OperatorWithKernel {
   phi::KernelKey GetExpectedKernelType(
       const framework::ExecutionContext &ctx) const override {
     auto *in_var = ctx.InputVar("Input");
-    if (in_var->IsType<phi::DenseTensor>()) {
-      auto &in_tensor = in_var->Get<phi::DenseTensor>();
+    if (in_var->IsType<DenseTensor>()) {
+      auto &in_tensor = in_var->Get<DenseTensor>();
       PADDLE_ENFORCE_EQ(
           in_tensor.IsInitialized(),
           true,
@@ -157,13 +158,12 @@ class SliceOp : public framework::OperatorWithKernel {
       auto vec_dims = common::vectorize(in_tensor.dims());
       bool all_zero_dims = std::all_of(
           vec_dims.cbegin(), vec_dims.cend(), [](int64_t i) { return i == 0; });
-      if (!all_zero_dims && this->CanMKLDNNBeUsed(ctx, input_data_type)) {
+      if (!all_zero_dims && this->CanONEDNNBeUsed(ctx, input_data_type)) {
         // OneDNN uses blocking format, which cannot be always supported with
         // reorders, because if blocked dimension is not divisible by 8 or
         // 16(depending on which blocking format is used) submemory cannot be
         // created, so in that scenario a fallback is needed
-        if (ctx.Input<phi::DenseTensor>("Input")
-                ->mem_desc()
+        if (phi::funcs::GetOneDNNMemDesc(*ctx.Input<DenseTensor>("Input"))
                 .get_inner_nblks() == 0) {
           return phi::KernelKey(phi::Backend::ONEDNN,
                                 phi::DataLayout::ONEDNN,
@@ -181,7 +181,7 @@ class SliceOp : public framework::OperatorWithKernel {
 
   phi::KernelKey GetKernelTypeForVar(
       const std::string &var_name,
-      const phi::DenseTensor &tensor,
+      const DenseTensor &tensor,
       const phi::KernelKey &expected_kernel_type) const override {
     if (var_name == "StartsTensor" || var_name == "EndsTensor") {
       return phi::KernelKey(phi::Backend::ALL_BACKEND,
@@ -265,8 +265,8 @@ class SliceOpMaker : public framework::OpProtoAndCheckerMaker {
     AddComment(R"DOC(
 Slice Operator.
 
-Produces a slice of the input tensor along multiple axes. Similar to numpy:
-https://docs.scipy.org/doc/numpy/reference/arrays.indexing.html
+ Produces a slice of the input tensor along multiple axes. Similar to numpy:
+https://numpy.org/doc/stable/user/basics.indexing.html
 Slice uses `axes`, `starts` and `ends` attributes to specify the start and
 end dimension for each axis in the list of axes, it uses this information
 to slice the input data tensor. If a negative value is passed for any of
@@ -333,13 +333,13 @@ class SliceOpGrad : public framework::OperatorWithKernel {
         ctx, framework::GradVarName("Out"));
 
 #ifdef PADDLE_WITH_DNNL
-    if (this->CanMKLDNNBeUsed(ctx, input_data_type)) {
+    if (this->CanONEDNNBeUsed(ctx, input_data_type)) {
       // OneDNN uses blocking format, which cannot be always supported with
       // reorders, because if blocked dimension is not divisible by 8 or
       // 16(depending on which blocking format is used) submemory cannot be
       // created, so in that scenario a fallback is needed
-      if (ctx.Input<phi::DenseTensor>(framework::GradVarName("Out"))
-              ->mem_desc()
+      if (phi::funcs::GetOneDNNMemDesc(
+              *ctx.Input<DenseTensor>(framework::GradVarName("Out")))
               .get_inner_nblks() == 0) {
         return phi::KernelKey(phi::Backend::ONEDNN,
                               phi::DataLayout::ONEDNN,
@@ -352,7 +352,7 @@ class SliceOpGrad : public framework::OperatorWithKernel {
 
   phi::KernelKey GetKernelTypeForVar(
       const std::string &var_name,
-      const phi::DenseTensor &tensor,
+      const DenseTensor &tensor,
       const phi::KernelKey &expected_kernel_type) const override {
     if (var_name == "StartsTensor" || var_name == "EndsTensor") {
       return phi::KernelKey(phi::Backend::ALL_BACKEND,
@@ -377,7 +377,7 @@ class SliceOpGradVarTypeInference : public framework::VarTypeInference {
     auto out = framework::GradVarName("Input");
     // The types of grad_input and input should always be the same.
     // The default type of out is phi::DenseTensor, but the type of input can be
-    // phi::DenseTensor or phi::DenseTensorArray,
+    // DenseTensor or phi::DenseTensorArray,
     // so set the type of both to be the same.
     ctx->SetOutputType(out, ctx->GetInputType(x));
     ctx->SetOutputDataType(out, ctx->GetInputDataType(d_out));
@@ -427,7 +427,7 @@ class SliceCompositeGradOpMaker : public prim::CompositeGradOpMakerBase {
     auto ends = this->Attr<std::vector<int>>("ends");
     auto infer_flags = this->Attr<std::vector<int>>("infer_flags");
     auto decrease_axis = this->Attr<std::vector<int>>("decrease_axis");
-    VLOG(6) << "Runing slice_grad composite func";
+    VLOG(6) << "Running slice_grad composite func";
     std::vector<int64_t> new_axes =
         std::vector<int64_t>(axes.begin(), axes.end());
     std::vector<int64_t> new_infer_flags =

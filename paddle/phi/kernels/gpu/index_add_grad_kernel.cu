@@ -14,26 +14,53 @@
 
 #include "paddle/phi/kernels/index_add_grad_kernel.h"
 
+#include "paddle/common/enforce.h"
 #include "paddle/phi/backends/gpu/gpu_info.h"
 #include "paddle/phi/backends/gpu/gpu_launch_config.h"
 #include "paddle/phi/backends/gpu/gpu_primitives.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/core/utils/data_type.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/math_function.h"
 #include "paddle/phi/kernels/gpu/index_select_impl.h"
 
 namespace phi {
 
-using phi::PADDLE_CUDA_NUM_THREADS;
-
 template <typename T, typename Context>
-void IndexAddGradKernel(const Context& ctx,
+void IndexAddGradKernel(const Context& dev_ctx,
                         const DenseTensor& index,
                         const DenseTensor& add_value,
                         const DenseTensor& out_grad,
                         int dim,
                         DenseTensor* x_grad,
                         DenseTensor* add_value_grad) {
+  if (out_grad.numel() == 0) {
+    if (x_grad) {
+      dev_ctx.template Alloc<T>(x_grad);
+    }
+    if (add_value_grad) {
+      Full<T, Context>(dev_ctx, add_value_grad->dims(), 0, add_value_grad);
+    }
+    return;
+  }
+  if (index.numel() == 0) {
+    if (x_grad) {
+      Copy(dev_ctx, out_grad, dev_ctx.GetPlace(), false, x_grad);
+    }
+    if (add_value_grad) {
+      Full<T, Context>(dev_ctx, add_value_grad->dims(), 0, add_value_grad);
+    }
+    return;
+  }
+  if (add_value.numel() == 0) {
+    if (x_grad) {
+      Copy(dev_ctx, out_grad, dev_ctx.GetPlace(), false, x_grad);
+    }
+    if (add_value_grad) {
+      dev_ctx.template Alloc<T>(add_value_grad);
+    }
+    return;
+  }
   // x.shape == out.shape in index_grad op
   auto input_dim = out_grad.dims();
   auto add_value_dim = add_value.dims();
@@ -45,36 +72,38 @@ void IndexAddGradKernel(const Context& ctx,
   const auto& index_type = index.dtype();
 
   bool index_type_match =
-      index_type == phi::DataType::INT64 || index_type == phi::DataType::INT32;
+      index_type == DataType::INT64 || index_type == DataType::INT32;
   PADDLE_ENFORCE_EQ(index_type_match,
                     true,
                     common::errors::InvalidArgument(
                         "Input(Index) holds the wrong type, it holds %s, but "
                         "desires to be %s or %s",
                         index_type,
-                        phi::DataType::INT32,
-                        phi::DataType::INT64));
+                        DataType::INT32,
+                        DataType::INT64));
 
   int64_t numel = add_value.numel();
   if (numel == 0) {
     return;
   }
-  auto stream = ctx.stream();
+  auto stream = dev_ctx.stream();
 
   // get x_grad: copy out_grad to x_grad.
   if (x_grad) {
-    phi::Copy(ctx, out_grad, ctx.GetPlace(), false, x_grad);
+    Copy(dev_ctx, out_grad, dev_ctx.GetPlace(), false, x_grad);
   }
 
   // get add_value_grad: index_select(out_grad, index, axis)
   if (add_value_grad) {
     auto* output_grad_data = out_grad.data<T>();
-    auto* add_value_grad_data = ctx.template Alloc<T>(add_value_grad);
+    auto* add_value_grad_data = dev_ctx.template Alloc<T>(add_value_grad);
     unsigned int block_dim = PADDLE_CUDA_NUM_THREADS;
-    dim3 grid_dim = dim3((numel + block_dim - 1) / block_dim);
-    phi::backends::gpu::LimitGridDim(ctx, &grid_dim);
+    const uint64_t grid_x = (numel + block_dim - 1) / block_dim;
+    PADDLE_ENFORCE_LE_UINT32_MAX(grid_x, "grid.x");
+    dim3 grid_dim = dim3(static_cast<uint32_t>(grid_x));
+    backends::gpu::LimitGridDim(dev_ctx, &grid_dim);
 
-    if (index_type == phi::DataType::INT64) {
+    if (index_type == DataType::INT64) {
       const int64_t* index_data = index.data<int64_t>();
       index_select_cuda_kernel<T, int64_t>
           <<<grid_dim, block_dim, 0, stream>>>(output_grad_data,
@@ -108,7 +137,7 @@ PD_REGISTER_KERNEL(index_add_grad,
                    phi::IndexAddGradKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
+                   phi::float16,
+                   phi::bfloat16,
                    int,
                    int64_t) {}

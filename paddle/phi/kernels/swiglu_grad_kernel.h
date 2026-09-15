@@ -16,11 +16,12 @@
 
 #include "paddle/phi/core/dense_tensor.h"
 #include "paddle/phi/core/device_context.h"
+#include "paddle/phi/kernels/full_kernel.h"
 
 namespace phi {
 
 template <typename T, typename Context>
-void SwiGLUGradKernelImpl(const Context &ctx,
+void SwiGLUGradKernelImpl(const Context &dev_ctx,
                           const T *x,
                           const T *y,
                           const T *dz,
@@ -30,21 +31,38 @@ void SwiGLUGradKernelImpl(const Context &ctx,
                           int64_t n);
 
 template <typename T, typename Context>
-void SwiGLUGradKernel(const Context &ctx,
+void SwiGLUGradKernel(const Context &dev_ctx,
                       const DenseTensor &x,
-                      const paddle::optional<DenseTensor> &y,
+                      const optional<DenseTensor> &y,
                       const DenseTensor &dz,
                       DenseTensor *dx,
                       DenseTensor *dy) {
+  if (dx && dx->numel() == 0) {
+    dev_ctx.template Alloc<T>(dx);
+    if (dy) {
+      Full<T, Context>(dev_ctx, dy->dims(), 0, dy);
+    }
+    return;
+  }
+
+  if (dy && dy->numel() == 0) {
+    dev_ctx.template Alloc<T>(dy);
+    if (dx) {
+      Full<T, Context>(dev_ctx, dx->dims(), 0, dx);
+    }
+    return;
+  }
+
   const auto *x_ptr = x.data<T>();
   const auto *dz_ptr = dz.data<T>();
-  auto *dx_ptr = dx ? ctx.template Alloc<T>(dx) : nullptr;
-  auto *dy_ptr = y && dy ? ctx.template Alloc<T>(dy) : nullptr;
+  auto *dx_ptr = dx ? dev_ctx.template Alloc<T>(dx) : nullptr;
+  auto *dy_ptr = y && dy ? dev_ctx.template Alloc<T>(dy) : nullptr;
   const auto &dims = x.dims();
 
   if (y) {
     const auto &y_tensor = y.get();
     const auto &y_dims = y_tensor.dims();
+    const auto &dz_dims = dz.dims();
     PADDLE_ENFORCE_EQ(y_dims,
                       dims,
                       common::errors::InvalidArgument(
@@ -52,8 +70,21 @@ void SwiGLUGradKernel(const Context &ctx,
                           "to the shape of Input(X):[%s].",
                           y_dims,
                           dims));
-    SwiGLUGradKernelImpl<T, Context>(
-        ctx, x_ptr, y_tensor.data<T>(), dz_ptr, dx_ptr, dy_ptr, x.numel(), 1);
+    PADDLE_ENFORCE_EQ(dz_dims,
+                      dims,
+                      common::errors::InvalidArgument(
+                          "The shape of Input(dz):[%s] must be equal "
+                          "to the shape of Input(X):[%s].",
+                          dz_dims,
+                          dims));
+    SwiGLUGradKernelImpl<T, Context>(dev_ctx,
+                                     x_ptr,
+                                     y_tensor.data<T>(),
+                                     dz_ptr,
+                                     dx_ptr,
+                                     dy_ptr,
+                                     x.numel(),
+                                     1);
   } else {
     auto dims_2d = flatten_to_2d(dims, dims.size() - 1);
     int64_t m = dims_2d[0], n = dims_2d[1];
@@ -63,8 +94,35 @@ void SwiGLUGradKernel(const Context &ctx,
                           "The last dim of Input(X) should be exactly divided "
                           "by 2 when Input(Y) is None, but got %d",
                           n));
+    const auto &dz_dims = dz.dims();
+    PADDLE_ENFORCE_EQ(
+        dz_dims.size(),
+        dims.size(),
+        common::errors::InvalidArgument(
+            "The rank of Input(dz):[%d] must be equal to the rank of "
+            "Input(X):[%d] when Input(Y) is None.",
+            dz_dims.size(),
+            dims.size()));
+    for (int i = 0; i < dims.size() - 1; ++i) {
+      PADDLE_ENFORCE_EQ(dz_dims[i],
+                        dims[i],
+                        common::errors::InvalidArgument(
+                            "The shape of Input(dz):[%s] must be equal to "
+                            "the shape of Input(X):[%s] except the last dim "
+                            "when Input(Y) is None.",
+                            dz_dims,
+                            dims));
+    }
+    PADDLE_ENFORCE_EQ(
+        dz_dims[dz_dims.size() - 1],
+        n / 2,
+        common::errors::InvalidArgument(
+            "The last dim of Input(dz):[%d] must be equal to half of the "
+            "last dim of Input(X):[%d] when Input(Y) is None.",
+            dz_dims[dz_dims.size() - 1],
+            n));
     SwiGLUGradKernelImpl<T, Context>(
-        ctx, x_ptr, nullptr, dz_ptr, dx_ptr, nullptr, m, n / 2);
+        dev_ctx, x_ptr, nullptr, dz_ptr, dx_ptr, nullptr, m, n / 2);
   }
 }
 

@@ -38,11 +38,11 @@ namespace funcs {
 // NOTE: When use GPU, the memcpy is async. To sync memcpy, please invoke
 // `dev_ctx.Wait()`.
 template <typename T>
-inline void StridedMemcpy(const phi::DeviceContext& dev_ctx,
+inline void StridedMemcpy(const DeviceContext& dev_ctx,
                           const T* src,
-                          const phi::DDim& src_stride,
-                          const phi::DDim& dst_dim,
-                          const phi::DDim& dst_stride,
+                          const DDim& src_stride,
+                          const DDim& dst_dim,
+                          const DDim& dst_stride,
                           T* dst) {
   detail::StridedCopyDimVisitor<T> func(
       dev_ctx, src, src_stride, dst_stride, dst);
@@ -50,7 +50,7 @@ inline void StridedMemcpy(const phi::DeviceContext& dev_ctx,
 }
 
 template <typename Context>
-inline void CopyWithContext(const Context& ctx,
+inline void CopyWithContext(const Context& dev_ctx,
                             const Place& dst_place,
                             void* dst,
                             const Place& src_place,
@@ -58,7 +58,7 @@ inline void CopyWithContext(const Context& ctx,
                             size_t num) {
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP) || \
     defined(PADDLE_WITH_CUSTOM_DEVICE)
-  memory_utils::Copy(dst_place, dst, src_place, src, num, ctx.stream());
+  memory_utils::Copy(dst_place, dst, src_place, src, num, dev_ctx.stream());
 #else
   PADDLE_THROW(
       common::errors::PreconditionNotMet("Paddle is not compiled with GPU."));
@@ -66,12 +66,12 @@ inline void CopyWithContext(const Context& ctx,
 }
 
 template <>
-inline void CopyWithContext<phi::CPUContext>(const phi::CPUContext& ctx UNUSED,
-                                             const Place& dst_place,
-                                             void* dst,
-                                             const Place& src_place,
-                                             const void* src,
-                                             size_t num) {
+inline void CopyWithContext<CPUContext>(const CPUContext& dev_ctx UNUSED,
+                                        const Place& dst_place,
+                                        void* dst,
+                                        const Place& src_place,
+                                        const void* src,
+                                        size_t num) {
   memory_utils::Copy(dst_place, dst, src_place, src, num);
 }
 
@@ -83,17 +83,17 @@ inline void CopyWithContext<phi::CPUContext>(const phi::CPUContext& ctx UNUSED,
 // NOTE: The src and dst tensor should have the same elements
 // except the specified axis.
 template <typename T, typename Context>
-inline void StridedNumelCopyWithAxis(const Context& ctx,
+inline void StridedNumelCopyWithAxis(const Context& dev_ctx,
                                      int64_t axis,
                                      T* dst,
-                                     const phi::DDim& dst_stride_numel,
+                                     const DDim& dst_stride_numel,
                                      const T* src,
-                                     const phi::DDim& src_stride_numel,
+                                     const DDim& src_stride_numel,
                                      int64_t size) {
   int64_t before = dst_stride_numel[0] / dst_stride_numel[axis];
   int64_t src_after = src_stride_numel[axis];
   int64_t dst_after = dst_stride_numel[axis];
-  auto place = ctx.GetPlace();
+  auto place = dev_ctx.GetPlace();
 
   PADDLE_ENFORCE_EQ(src_stride_numel.size(),
                     dst_stride_numel.size(),
@@ -131,7 +131,7 @@ inline void StridedNumelCopyWithAxis(const Context& ctx,
   }
 
   for (int64_t i = 0; i < before; ++i) {
-    CopyWithContext<Context>(ctx,
+    CopyWithContext<Context>(dev_ctx,
                              place,
                              dst + i * dst_after,
                              place,
@@ -143,10 +143,10 @@ inline void StridedNumelCopyWithAxis(const Context& ctx,
 template <typename T, typename Context>
 inline void StridedMemcpyWithAxis0(
     const Context& dev_ctx,
-    const phi::DenseTensor& input,
-    const std::vector<const phi::DenseTensor*>& shape_refer,
-    std::vector<phi::DenseTensor*>* outputs) {
-  const phi::DDim in_stride = common::stride_numel(input.dims());
+    const DenseTensor& input,
+    const std::vector<const DenseTensor*>& shape_refer,
+    std::vector<DenseTensor*>* outputs) {
+  const DDim in_stride = common::stride_numel(input.dims());
   const int axis = 0;
   size_t input_offset = 0;
 

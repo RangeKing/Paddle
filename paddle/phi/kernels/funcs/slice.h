@@ -28,8 +28,8 @@ namespace funcs {
 template <typename Context, typename T, size_t D>
 void EigenSliceWrapper(const Context& dev_ctx,
                        const DenseTensor* in,
-                       const std::vector<int>& start,
-                       const std::vector<int>& end,
+                       const std::vector<int64_t>& start,
+                       const std::vector<int64_t>& end,
                        DenseTensor* out) {
   // Slice by call Eigen Tensor Function `.slice()`
   size_t rank = in->dims().size();
@@ -45,19 +45,15 @@ void EigenSliceWrapper(const Context& dev_ctx,
                         "argument must have the same length as input rank."));
   auto eigen_place_ptr = dev_ctx.eigen_device();
   auto eigen_place = *eigen_place_ptr;
-  auto out_t = phi::EigenTensor<T, D>::From(*out, out->dims());
-  auto in_t = phi::EigenTensor<T, D>::From(*in, in->dims());
-  Eigen::DSizes<int, D> offsets_32bit, extents_32bit;
+  auto out_t = EigenTensor<T, D>::From(*out, out->dims());
+  auto in_t = EigenTensor<T, D>::From(*in, in->dims());
+  Eigen::DSizes<int64_t, D> offsets_64bit, extents_64bit;
   for (size_t i = 0; i < D; i++) {
-    offsets_32bit[i] = start[i];
-    extents_32bit[i] = end[i];
+    offsets_64bit[i] = start[i];
+    extents_64bit[i] = end[i];
   }
   EigenSlice<std::decay_t<decltype(eigen_place)>, T, D>::Eval(
-      eigen_place,
-      phi::To32BitIndex(out_t),
-      phi::To32BitIndex(in_t),
-      offsets_32bit,
-      extents_32bit);
+      eigen_place, out_t, in_t, offsets_64bit, extents_64bit);
 }
 
 #define SLICE_RANK_CASE(N)                                                \
@@ -70,11 +66,11 @@ template <typename T, typename Context>
 DenseTensor Slice(const Context& dev_ctx,
                   const DenseTensor& x,
                   std::vector<int> axes,
-                  std::vector<int> starts,
-                  std::vector<int> ends) {
+                  std::vector<int64_t> starts,
+                  std::vector<int64_t> ends) {
   DenseTensor ret;
   std::vector<int> new_axes = axes;
-  std::vector<int> out_shape = common::vectorize<int>(x.dims());
+  std::vector<int64_t> out_shape = vectorize(x.dims());
   size_t rank = out_shape.size();
   PADDLE_ENFORCE_EQ(
       axes.size(),
@@ -88,15 +84,15 @@ DenseTensor Slice(const Context& dev_ctx,
     int axis = axes[i];
     if (axis < 0) axis = rank + axis;
     new_axes[i] = axis;  // change negative to positive
-    int st = starts[i];
-    int ed = ends[i];
+    int64_t st = starts[i];
+    int64_t ed = ends[i];
     PADDLE_ENFORCE_GT(
         ed,
         st,
         errors::InvalidArgument("C++ Slice Operation Not Support End < Start"));
     out_shape[axis] = ed - st;
   }
-  std::vector<int> offset(rank), extends(rank);
+  std::vector<int64_t> offset(rank), extends(rank);
   for (size_t i = 0; i < rank; ++i) {
     offset[i] = 0;
     extends[i] = x.dims()[i];
@@ -105,7 +101,7 @@ DenseTensor Slice(const Context& dev_ctx,
     offset[new_axes[i]] = starts[i];
     extends[new_axes[i]] = ends[i] - starts[i];
   }
-  ret.Resize(common::make_ddim(out_shape));
+  ret.Resize(out_shape);
   dev_ctx.template Alloc<T>(&ret);
   switch (rank) {
     SLICE_RANK_CASE(1);
@@ -125,36 +121,34 @@ DenseTensor Slice(const Context& dev_ctx,
 
 // Use in conv_transpose kernel
 template <typename Context, typename T, size_t D>
-static void Slice(const Context& ctx,
+static void Slice(const Context& dev_ctx,
                   const DenseTensor* input,
                   DenseTensor* out,
                   const std::vector<int64_t>& begin_vec,
                   const std::vector<int64_t>& end_vec,
                   const std::vector<int64_t>& axes_vec) {
-  auto& place = *ctx.eigen_device();
+  auto& place = *dev_ctx.eigen_device();
   auto in_dims = input->dims();
-  auto offsets = Eigen::DSizes<Eigen::DenseIndex, D>();
-  auto extents = Eigen::DSizes<Eigen::DenseIndex, D>();
+  auto offsets = Eigen::DSizes<int64_t, D>();
+  auto extents = Eigen::DSizes<int64_t, D>();
   for (size_t i = 0; i < D; ++i) {
     offsets[i] = 0;
     extents[i] = in_dims[i];
   }
 
-  std::vector<int64_t> out_shape_vec = common::vectorize(in_dims);
+  std::vector<int64_t> out_shape_vec = vectorize(in_dims);
   for (size_t i = 0; i < axes_vec.size(); ++i) {
     offsets[axes_vec[i]] = begin_vec[i];
     extents[axes_vec[i]] = end_vec[i] - begin_vec[i];
     out_shape_vec[axes_vec[i]] = end_vec[i] - begin_vec[i];
   }
 
-  DDim out_dims(common::make_ddim(out_shape_vec));
+  DDim out_dims(make_ddim(out_shape_vec));
   out->Resize(out_dims);
-  ctx.template Alloc<T>(out);
+  dev_ctx.template Alloc<T>(out);
 
-  auto in_t =
-      EigenTensor<T, D, Eigen::RowMajor, Eigen::DenseIndex>::From(*input);
-  auto out_t = EigenTensor<T, D, Eigen::RowMajor, Eigen::DenseIndex>::From(
-      *out, out_dims);
+  auto in_t = EigenTensor<T, D, Eigen::RowMajor>::From(*input);
+  auto out_t = EigenTensor<T, D, Eigen::RowMajor>::From(*out, out_dims);
 
   funcs::EigenSlice<std::decay_t<decltype(place)>, T, D>::Eval(
       place, out_t, in_t, offsets, extents);
@@ -162,7 +156,7 @@ static void Slice(const Context& ctx,
 }
 
 template <typename Context, typename T, size_t D>
-static void Slice(const Context& ctx,
+static void Slice(const Context& dev_ctx,
                   const DenseTensor* input,
                   DenseTensor* out,
                   int64_t begin_idx,
@@ -171,7 +165,7 @@ static void Slice(const Context& ctx,
   std::vector<int64_t> begin_vec = {begin_idx};
   std::vector<int64_t> end_vec = {end_idx};
   std::vector<int64_t> axes_vec = {axes};
-  Slice<Context, T, D>(ctx, input, out, begin_vec, end_vec, axes_vec);
+  Slice<Context, T, D>(dev_ctx, input, out, begin_vec, end_vec, axes_vec);
 }
 
 }  // namespace funcs

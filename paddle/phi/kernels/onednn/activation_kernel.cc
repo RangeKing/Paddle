@@ -17,7 +17,6 @@
 
 #include "paddle/phi/backends/onednn/onednn_context.h"
 #include "paddle/phi/backends/onednn/onednn_reuse.h"
-#include "paddle/phi/common/bfloat16.h"
 #include "paddle/phi/common/place.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/funcs/activation_functor.h"
@@ -41,6 +40,17 @@ namespace phi {
     functor(dev_ctx, x, attr, 0, out);                                     \
   }
 
+#define DEFINE_ONEDNN_ACT_KERNEL_WITH_ONE_DOUBLE_ATTRS(    \
+    name, functor_class, attr)                             \
+  template <typename T, typename Context>                  \
+  void name##Kernel(const Context& dev_ctx,                \
+                    const DenseTensor& x,                  \
+                    double attr,                           \
+                    DenseTensor* out) {                    \
+    functor_class<T> functor;                              \
+    functor(dev_ctx, x, static_cast<float>(attr), 0, out); \
+  }
+
 template <typename T>
 void EltwiseForward(const OneDNNContext& dev_ctx,
                     const DenseTensor& x,
@@ -48,11 +58,6 @@ void EltwiseForward(const OneDNNContext& dev_ctx,
                     float beta,
                     DenseTensor* out,
                     dnnl::algorithm algorithm) {
-  PADDLE_ENFORCE_EQ(dev_ctx.GetPlace().GetType() == phi::AllocationType::CPU,
-                    true,
-                    common::errors::PreconditionNotMet(
-                        "Operator DNNL eletwise_forward must use ONEDNNPlace"));
-
   bool is_inplaced = x.IsSharedBufferWith(*out);
 
   funcs::ActivationOneDNNHandler<T> handler(
@@ -73,7 +78,7 @@ void EltwiseForward(const OneDNNContext& dev_ctx,
       astream, {{DNNL_ARG_FROM, *src_memory_p}, {DNNL_ARG_TO, *dst_memory_p}});
   astream.wait();
 
-  out->set_mem_desc(dst_memory_p->get_desc());
+  phi::funcs::SetOneDNNMemDesc(out, dst_memory_p->get_desc());
 }
 
 template <typename T, dnnl::algorithm algorithm>
@@ -83,6 +88,10 @@ struct OneDNNActivationFunc : public funcs::BaseActivationFunctor<T> {
                   float alpha,
                   float beta,
                   DenseTensor* out) const {
+    if (out && out->numel() == 0) {
+      dev_ctx.template Alloc<T>(out);
+      return;
+    }
     EltwiseForward<T>(dev_ctx, x, alpha, beta, out, algorithm);
   }
 };
@@ -153,28 +162,30 @@ void RoundKernel(const Context& dev_ctx,
                  const DenseTensor& x,
                  const int decimals,
                  DenseTensor* out) {
-  float ten_pow_deciamls = std::pow(10, decimals);
+  float ten_pow_decimals = std::pow(10, decimals);
 
   DenseTensor out1;
   DenseTensorMeta meta_out(x.dtype(), x.dims());
   out1.set_meta(meta_out);
   out1.set_lod(x.lod());
-  out1.set_mem_desc(x.mem_desc());
+  phi::funcs::SetOneDNNMemDesc(&(out1), phi::funcs::GetOneDNNMemDesc(x));
   dev_ctx.template Alloc<T>(&out1);
 
   for (int i = 0; i < x.numel(); i++) {
-    out1.data<T>()[i] = x.data<T>()[i] * ten_pow_deciamls;
+    out1.data<T>()[i] = x.data<T>()[i] * ten_pow_decimals;
   }
   RoundOneDNNFunctor<T> functor;
   functor(dev_ctx, out1, 0, 0, out);
 
   for (int i = 0; i < x.numel(); i++) {
-    out->data<T>()[i] = out->data<T>()[i] * (1 / ten_pow_deciamls);
+    out->data<T>()[i] = out->data<T>()[i] * (1 / ten_pow_decimals);
   }
 }
 
 DEFINE_ONEDNN_ACT_KERNEL_WITH_ONE_ATTRS(Elu, EluOneDNNFunctor, alpha)
-DEFINE_ONEDNN_ACT_KERNEL_WITH_ONE_ATTRS(LeakyRelu, ReluOneDNNFunctor, alpha)
+DEFINE_ONEDNN_ACT_KERNEL_WITH_ONE_DOUBLE_ATTRS(LeakyRelu,
+                                               ReluOneDNNFunctor,
+                                               alpha)
 DEFINE_ONEDNN_ACT_KERNEL_WITH_ONE_ATTRS(Mish, MishOneDNNFunctor, threshold)
 
 template <typename T, typename Context>
@@ -220,8 +231,7 @@ void SwishKernel(const Context& dev_ctx,
 PD_REGISTER_KERNEL(round, OneDNN, ONEDNN, phi::RoundKernel, float) {}
 
 #define PD_REGISTER_ACTIVATION_KERNEL(name, func) \
-  PD_REGISTER_KERNEL(                             \
-      name, OneDNN, ONEDNN, phi::func, float, phi::dtype::bfloat16) {}
+  PD_REGISTER_KERNEL(name, OneDNN, ONEDNN, phi::func, float, phi::bfloat16) {}
 
 PD_REGISTER_ACTIVATION_KERNEL(abs, AbsKernel)
 PD_REGISTER_ACTIVATION_KERNEL(elu, EluKernel)

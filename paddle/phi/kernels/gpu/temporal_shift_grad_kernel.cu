@@ -14,29 +14,32 @@
 
 #include "paddle/phi/kernels/temporal_shift_grad_kernel.h"
 
+#include <cstdint>
+
+#include "paddle/common/enforce.h"
 #include "paddle/common/layout.h"
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
 
 namespace phi {
 
-template <typename T>
+template <typename T, typename IndexT>
 __global__ void KeTemporalShiftBwNCHW(const T* output_grad,
                                       T* input_grad,
-                                      const int ntchw,
-                                      const int tchw,
-                                      const int chw,
-                                      const int hw,
+                                      const IndexT ntchw,
+                                      const IndexT tchw,
+                                      const IndexT chw,
+                                      const IndexT hw,
                                       const int t,
-                                      const int c1,
-                                      const int c2) {
-  int tid = blockIdx.x * blockDim.x + threadIdx.x;
-  int stride = blockDim.x * gridDim.x;
-  int src_it = 0;
+                                      const IndexT c1,
+                                      const IndexT c2) {
+  IndexT tid = static_cast<IndexT>(blockIdx.x) * blockDim.x + threadIdx.x;
+  IndexT stride = static_cast<IndexT>(blockDim.x) * gridDim.x;
+  IndexT src_it = 0;
 
   for (; tid < ntchw; tid += stride) {
-    int it = (tid % tchw) / chw;
-    int ic = (tid % chw) / hw;
+    IndexT it = (tid % tchw) / chw;
+    IndexT ic = (tid % chw) / hw;
 
     if (ic < c1) {
       src_it = it + 1;
@@ -54,23 +57,23 @@ __global__ void KeTemporalShiftBwNCHW(const T* output_grad,
   }
 }
 
-template <typename T>
+template <typename T, typename IndexT>
 __global__ void KeTemporalShiftBwNHWC(const T* output_grad,
                                       T* input_grad,
-                                      const int nthwc,
-                                      const int thwc,
-                                      const int hwc,
+                                      const IndexT nthwc,
+                                      const IndexT thwc,
+                                      const IndexT hwc,
                                       const int t,
-                                      const int c,
-                                      const int c1,
-                                      const int c2) {
-  int tid = blockIdx.x * blockDim.x + threadIdx.x;
-  int stride = blockDim.x * gridDim.x;
-  int src_it = 0;
+                                      const IndexT c,
+                                      const IndexT c1,
+                                      const IndexT c2) {
+  IndexT tid = static_cast<IndexT>(blockIdx.x) * blockDim.x + threadIdx.x;
+  IndexT stride = static_cast<IndexT>(blockDim.x) * gridDim.x;
+  IndexT src_it = 0;
 
   for (; tid < nthwc; tid += stride) {
-    int it = (tid % thwc) / hwc;
-    int ic = tid % c;
+    IndexT it = (tid % thwc) / hwc;
+    IndexT ic = tid % c;
 
     if (ic < c1) {
       src_it = it + 1;
@@ -95,46 +98,116 @@ void TemporalShiftGradKernel(const Context& dev_ctx,
                              float shift_ratio,
                              const std::string& data_format_str,
                              DenseTensor* x_grad) {
+  if (x_grad && x_grad->numel() == 0) {
+    dev_ctx.template Alloc<T>(x_grad);
+    return;
+  }
   auto* input_grad = x_grad;
   auto* output_grad = &out_grad;
   int t = seg_num;
-  const DataLayout data_layout = common::StringToDataLayout(data_format_str);
+  const DataLayout data_layout = StringToDataLayout(data_format_str);
 
-  const int nt = output_grad->dims()[0];
-  const int c = (data_layout == DataLayout::kNCHW ? output_grad->dims()[1]
-                                                  : output_grad->dims()[3]);
-  const int h = (data_layout == DataLayout::kNCHW ? output_grad->dims()[2]
-                                                  : output_grad->dims()[1]);
-  const int w = (data_layout == DataLayout::kNCHW ? output_grad->dims()[3]
-                                                  : output_grad->dims()[2]);
+  const int64_t nt = output_grad->dims()[0];
+  const int64_t c = (data_layout == DataLayout::NCHW ? output_grad->dims()[1]
+                                                     : output_grad->dims()[3]);
+  const int64_t h = (data_layout == DataLayout::NCHW ? output_grad->dims()[2]
+                                                     : output_grad->dims()[1]);
+  const int64_t w = (data_layout == DataLayout::NCHW ? output_grad->dims()[3]
+                                                     : output_grad->dims()[2]);
 
-  const int hw = h * w;
-  const int chw = c * hw;
-  const int tchw = t * chw;
-  const int ntchw = nt * chw;
+  const int64_t hw = h * w;
+  const int64_t chw = c * hw;
+  const int64_t tchw = t * chw;
+  const int64_t ntchw = nt * chw;
 
-  const int c1 = static_cast<int>(c * shift_ratio);
-  const int c2 = static_cast<int>(c * 2 * shift_ratio);
+  const int64_t c1 = static_cast<int64_t>(c * shift_ratio);
+  const int64_t c2 = static_cast<int64_t>(c * 2 * shift_ratio);
 
   DDim in_grad_dims =
-      (data_layout == DataLayout::kNCHW ? common::make_ddim({nt, c, h, w})
-                                        : common::make_ddim({nt, h, w, c}));
+      (data_layout == DataLayout::NCHW ? make_ddim({nt, c, h, w})
+                                       : make_ddim({nt, h, w, c}));
   const T* output_grad_data = output_grad->data<T>();
   input_grad->Resize(in_grad_dims);
   T* input_grad_data = dev_ctx.template Alloc<T>(input_grad);
 
-  int pixelNum = nt * chw;
-  int threads = 1024;
-  int grid = (pixelNum + threads - 1) / threads;
-  int blocks_per_sm = dev_ctx.GetMaxPhysicalThreadCount() / threads;
+  int64_t pixelNum = nt * chw;
+  int64_t threads = 1024;
+  int64_t grid = (pixelNum + threads - 1) / threads;
+  int64_t blocks_per_sm = dev_ctx.GetMaxPhysicalThreadCount() / threads;
   grid = std::min(dev_ctx.GetSMCount() * blocks_per_sm, grid);
+  PADDLE_ENFORCE_LE_UINT32_MAX(grid, "grid");
+  PADDLE_ENFORCE_LE_UINT32_MAX(threads, "threads");
+  const uint32_t grid_32 = static_cast<uint32_t>(grid);
+  const uint32_t threads_32 = static_cast<uint32_t>(threads);
 
-  if (data_layout == DataLayout::kNCHW) {
-    KeTemporalShiftBwNCHW<T><<<grid, threads, 0, dev_ctx.stream()>>>(
-        output_grad_data, input_grad_data, ntchw, tchw, chw, hw, t, c1, c2);
+  // the calculation of `stride` must in sync with kernel
+  const int64_t total_stride = grid * threads;
+  if (data_layout == DataLayout::NCHW) {
+    // `tid` peaks at `numel - 1 + total_stride`
+    if (output_grad->numel() + total_stride <
+        std::numeric_limits<int32_t>::max()) {
+      PADDLE_ENFORCE_LE_INT_MAX(ntchw, "ntchw");
+      PADDLE_ENFORCE_LE_INT_MAX(tchw, "tchw");
+      PADDLE_ENFORCE_LE_INT_MAX(chw, "chw");
+      PADDLE_ENFORCE_LE_INT_MAX(hw, "hw");
+      PADDLE_ENFORCE_LE_INT_MAX(c1, "c1");
+      PADDLE_ENFORCE_LE_INT_MAX(c2, "c2");
+      KeTemporalShiftBwNCHW<T, int32_t>
+          <<<grid_32, threads_32, 0, dev_ctx.stream()>>>(
+              output_grad_data,
+              input_grad_data,
+              static_cast<int32_t>(ntchw),
+              static_cast<int32_t>(tchw),
+              static_cast<int32_t>(chw),
+              static_cast<int32_t>(hw),
+              t,
+              static_cast<int32_t>(c1),
+              static_cast<int32_t>(c2));
+    } else {
+      KeTemporalShiftBwNCHW<T, int64_t>
+          <<<grid_32, threads_32, 0, dev_ctx.stream()>>>(output_grad_data,
+                                                         input_grad_data,
+                                                         ntchw,
+                                                         tchw,
+                                                         chw,
+                                                         hw,
+                                                         t,
+                                                         c1,
+                                                         c2);
+    }
   } else {
-    KeTemporalShiftBwNHWC<T><<<grid, threads, 0, dev_ctx.stream()>>>(
-        output_grad_data, input_grad_data, ntchw, tchw, chw, t, c, c1, c2);
+    // Same reason as the NCHW branch: the guard covers the loop increment.
+    if (output_grad->numel() + total_stride <
+        std::numeric_limits<int32_t>::max()) {
+      PADDLE_ENFORCE_LE_INT_MAX(ntchw, "ntchw");
+      PADDLE_ENFORCE_LE_INT_MAX(tchw, "tchw");
+      PADDLE_ENFORCE_LE_INT_MAX(chw, "chw");
+      PADDLE_ENFORCE_LE_INT_MAX(c, "c");
+      PADDLE_ENFORCE_LE_INT_MAX(c1, "c1");
+      PADDLE_ENFORCE_LE_INT_MAX(c2, "c2");
+      KeTemporalShiftBwNHWC<T, int32_t>
+          <<<grid_32, threads_32, 0, dev_ctx.stream()>>>(
+              output_grad_data,
+              input_grad_data,
+              static_cast<int32_t>(ntchw),
+              static_cast<int32_t>(tchw),
+              static_cast<int32_t>(chw),
+              t,
+              static_cast<int32_t>(c),
+              static_cast<int32_t>(c1),
+              static_cast<int32_t>(c2));
+    } else {
+      KeTemporalShiftBwNHWC<T, int64_t>
+          <<<grid_32, threads_32, 0, dev_ctx.stream()>>>(output_grad_data,
+                                                         input_grad_data,
+                                                         ntchw,
+                                                         tchw,
+                                                         chw,
+                                                         t,
+                                                         c,
+                                                         c1,
+                                                         c2);
+    }
   }
 }
 
@@ -146,5 +219,5 @@ PD_REGISTER_KERNEL(temporal_shift_grad,
                    phi::TemporalShiftGradKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}

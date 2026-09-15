@@ -16,7 +16,6 @@
 #include <string>
 
 #include "paddle/common/errors.h"
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/core/enforce.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/core/tensor_utils.h"
@@ -36,8 +35,8 @@ void FusionSeqConvEltAddReluKernel(const Context& dev_ctx,
                                    DenseTensor* out,
                                    DenseTensor* col_mat) {
   auto x_lod = x.lod();
-  auto x_dims = common::vectorize<int64_t>(x.dims());
-  auto w_dims = common::vectorize<int64_t>(filter.dims());
+  auto x_dims = vectorize<int64_t>(x.dims());
+  auto w_dims = vectorize<int64_t>(filter.dims());
   PADDLE_ENFORCE_EQ(
       bias.numel(),
       w_dims[1],
@@ -78,7 +77,6 @@ void FusionSeqConvEltAddReluKernel(const Context& dev_ctx,
       dst_data = dst_data + up_pad * src_mat_w;
       int copy_size = col_mat_w_sz - up_pad * src_mat_w_sz;
       for (int j = 0; j < up_pad; ++j) {
-        // blas.VCOPY?
         std::memcpy(dst_data, src_data, copy_size);
         dst_data += (col_mat_w - src_mat_w);
         copy_size += src_mat_w_sz;
@@ -135,7 +133,7 @@ void FusionSeqConvEltAddReluKernel(const Context& dev_ctx,
       }
     }
   }
-  phi::funcs::FCFunctor<Context, T> fc;
+  funcs::FCFunctor<Context, T> fc;
   fc(dev_ctx,
      x_dims[0],
      w_dims[1],

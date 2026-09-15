@@ -26,65 +26,73 @@ namespace phi {
 template <typename T, typename Context>
 void PutAlongAxisKernel(const Context& dev_ctx,
                         const DenseTensor& x,
-                        const DenseTensor& index,
-                        const DenseTensor& value,
+                        const DenseTensor& indices,
+                        const DenseTensor& values,
                         int axis,
                         const std::string& reduce,
                         bool include_self,
                         DenseTensor* out) {
-  PADDLE_ENFORCE_EQ(
-      dev_ctx.GetPlace().GetType() == phi::AllocationType::CPU,
-      true,
-      errors::PreconditionNotMet("PutAlongAxisOpKernel only runs on CPU."));
+  Copy(dev_ctx, x, dev_ctx.GetPlace(), false, out);
 
-  phi::Copy(dev_ctx, x, dev_ctx.GetPlace(), false, out);
+  // Brings the operands into the representation the scatter functor can
+  // address: a 0-D operand becomes rank 1 and ``axis`` is normalized.
+  // ``index`` and ``value`` are shallow views sharing the caller's buffer.
+  // ``out`` is promoted in place because the scatter writes through it, so its
+  // shape is saved here and restored once the scatter is done -- reading it
+  // back from ``x`` would not do, since ``x`` and ``out`` are the same tensor
+  // when the op runs inplace.
+  const DDim out_dims = out->dims();
+  DenseTensor index = indices;
+  DenseTensor value = values;
   const auto& index_type = index.dtype();
+  funcs::PreparePutAlongAxisOperands(out, &index, &value, &axis);
+
   if (reduce == "add") {
     if (index_type == DataType::INT32) {
-      phi::funcs::cpu_scatter_add_kernel<T, int32_t>(
+      funcs::cpu_scatter_add_kernel<T, int32_t>(
           *out, axis, index, value, include_self, dev_ctx);
     } else if (index_type == DataType::INT64) {
-      phi::funcs::cpu_scatter_add_kernel<T, int64_t>(
+      funcs::cpu_scatter_add_kernel<T, int64_t>(
           *out, axis, index, value, include_self, dev_ctx);
     }
   } else if (reduce == "multiply" || reduce == "mul") {
     if (index_type == DataType::INT32) {
-      phi::funcs::cpu_scatter_mul_kernel<T, int32_t>(
+      funcs::cpu_scatter_mul_kernel<T, int32_t>(
           *out, axis, index, value, include_self, dev_ctx);
     } else if (index_type == DataType::INT64) {
-      phi::funcs::cpu_scatter_mul_kernel<T, int64_t>(
+      funcs::cpu_scatter_mul_kernel<T, int64_t>(
           *out, axis, index, value, include_self, dev_ctx);
     }
   } else if (reduce == "assign") {
     if (index_type == DataType::INT32) {
-      phi::funcs::cpu_scatter_assign_kernel<T, int32_t>(
+      funcs::cpu_scatter_assign_kernel<T, int32_t>(
           *out, axis, index, value, include_self, dev_ctx);
     } else if (index_type == DataType::INT64) {
-      phi::funcs::cpu_scatter_assign_kernel<T, int64_t>(
+      funcs::cpu_scatter_assign_kernel<T, int64_t>(
           *out, axis, index, value, include_self, dev_ctx);
     }
   } else if (reduce == "mean") {
     if (index_type == DataType::INT32) {
-      phi::funcs::cpu_scatter_mean_kernel<T, int32_t>(
+      funcs::cpu_scatter_mean_kernel<T, int32_t>(
           *out, axis, index, value, include_self, dev_ctx);
     } else if (index_type == DataType::INT64) {
-      phi::funcs::cpu_scatter_mean_kernel<T, int64_t>(
+      funcs::cpu_scatter_mean_kernel<T, int64_t>(
           *out, axis, index, value, include_self, dev_ctx);
     }
   } else if (reduce == "amax") {
     if (index_type == DataType::INT32) {
-      phi::funcs::cpu_scatter_max_kernel<T, int32_t>(
+      funcs::cpu_scatter_max_kernel<T, int32_t>(
           *out, axis, index, value, include_self, dev_ctx);
     } else if (index_type == DataType::INT64) {
-      phi::funcs::cpu_scatter_max_kernel<T, int64_t>(
+      funcs::cpu_scatter_max_kernel<T, int64_t>(
           *out, axis, index, value, include_self, dev_ctx);
     }
   } else if (reduce == "amin") {
     if (index_type == DataType::INT32) {
-      phi::funcs::cpu_scatter_min_kernel<T, int32_t>(
+      funcs::cpu_scatter_min_kernel<T, int32_t>(
           *out, axis, index, value, include_self, dev_ctx);
     } else if (index_type == DataType::INT64) {
-      phi::funcs::cpu_scatter_min_kernel<T, int64_t>(
+      funcs::cpu_scatter_min_kernel<T, int64_t>(
           *out, axis, index, value, include_self, dev_ctx);
     }
   } else {
@@ -97,6 +105,7 @@ void PutAlongAxisKernel(const Context& dev_ctx,
         reduce));
     return;
   }
+  out->Resize(out_dims);
 }
 
 }  // namespace phi
@@ -108,5 +117,6 @@ PD_REGISTER_KERNEL(put_along_axis,
                    float,
                    double,
                    int,
+                   int16_t,
                    uint8_t,
                    int64_t) {}

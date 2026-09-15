@@ -13,9 +13,6 @@
 // limitations under the License.
 
 #include "paddle/phi/backends/cpu/cpu_context.h"
-#include "paddle/phi/common/bfloat16.h"
-#include "paddle/phi/common/complex.h"
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/core/enforce.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/funcs/uniform_random_functor.h"
@@ -39,11 +36,11 @@ void CPUUniformRandomKernel(const Context& dev_ctx,
                             SelectedRows* out) {
   out->set_rows(input.rows());
   out->set_height(input.height());
-  phi::DenseTensor* tensor = out->mutable_value();
+  DenseTensor* tensor = out->mutable_value();
   T* data = dev_ctx.template Alloc<T>(tensor);
   int64_t size = tensor->numel();
 
-  phi::funcs::UniformRealDistribution<T>(
+  funcs::UniformRealDistribution<T>(
       data, size, min, max, static_cast<unsigned int>(seed));
 
   unsigned int diag_num_tmp = static_cast<unsigned int>(diag_num);
@@ -77,4 +74,4 @@ PD_REGISTER_KERNEL(uniform_random_batch_size_like_sr,
                    phi::sr::CPUUniformRandomKernel,
                    float,
                    double,
-                   phi::dtype::bfloat16) {}
+                   phi::bfloat16) {}

@@ -36,15 +36,14 @@
 #include "paddle/fluid/framework/new_executor/instruction/instruction_util.h"
 #include "paddle/fluid/pir/dialect/operator/ir/control_flow_op.h"
 #include "paddle/fluid/pir/dialect/operator/ir/manual_op.h"
-
-#ifdef PADDLE_WITH_DNNL
 #include "paddle/fluid/platform/onednn_helper.h"
-#endif
+
+COMMON_DECLARE_bool(check_cuda_error);
 
 namespace paddle::framework {
 
 IfInstruction::IfInstruction(size_t id,
-                             const phi::Place& place,
+                             const Place& place,
                              pir::Operation* op,
                              ValueExecutionInfo* value_exec_info,
                              interpreter::ExecutionConfig execution_config)
@@ -61,7 +60,6 @@ IfInstruction::IfInstruction(size_t id,
                  common::errors::PreconditionNotMet(
                      "Cond instruction only support if op"));
   auto if_op = op->dyn_cast<paddle::dialect::IfOp>();
-  op_ = op;
 
   SetKernelType(AnalyseOpFuncType(op, place));
   VLOG(6) << "finish process analyse kernel type";
@@ -117,7 +115,7 @@ IfInstruction::IfInstruction(size_t id,
       outputs.emplace(value, GetValueIds(value, *value_exec_info));
     }
     if (value.use_count() > 0) {
-      VLOG(6) << "value " << i << " use conutn != 0";
+      VLOG(6) << "value " << i << " use count != 0";
       is_last_op = false;
     }
   }
@@ -216,9 +214,13 @@ void IfInstruction::SetInputHooks(const std::vector<PirHookFunc>& hookfuncs) {
 }
 
 void IfInstruction::Run() {
+  if (FLAGS_check_cuda_error) [[unlikely]] {
+    CUDAErrorCheck("IfInstruction begin");
+  }
+
   bool cond = true;
-  if (cond_var_->IsType<phi::DenseTensor>()) {
-    auto& cond_tensor = cond_var_->Get<phi::DenseTensor>();
+  if (cond_var_->IsType<DenseTensor>()) {
+    auto& cond_tensor = cond_var_->Get<DenseTensor>();
     if (phi::is_cpu_place(cond_tensor.place())) {
       cond = cond_tensor.data<bool>()[0];
     } else {
@@ -226,10 +228,8 @@ void IfInstruction::Run() {
       // phi::is_xpu_place(cond.place()) is true
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP) || \
     defined(PADDLE_WITH_XPU) || defined(PADDLE_WITH_CUSTOM_DEVICE)
-      DeviceContext().Wait();
-      phi::DenseTensor cpu_cond;
-      paddle::framework::TensorCopySync(
-          cond_tensor, phi::CPUPlace(), &cpu_cond);
+      DenseTensor cpu_cond;
+      paddle::framework::TensorCopySync(cond_tensor, CPUPlace(), &cpu_cond);
       cond = cpu_cond.data<bool>()[0];
 #else
       PADDLE_THROW(common::errors::PreconditionNotMet(
@@ -242,7 +242,7 @@ void IfInstruction::Run() {
     auto& cond_array = cond_var_->Get<VariableRefArray>();
     cond = std::all_of(
         cond_array.begin(), cond_array.end(), [](const Variable* t) {
-          return t->Get<phi::DenseTensor>().numel() != 0;
+          return t->Get<DenseTensor>().numel() != 0;
         });
   }
   if (cond) {
@@ -250,7 +250,7 @@ void IfInstruction::Run() {
     // Executor on being destroyed clears oneDNN cache and resets
     // registered model data layout. This is unwanted for nested
     // Executors (executors declared inside control ops)
-    paddle::platform::DontClearMKLDNNCache(true_branch_inter_->GetPlace());
+    paddle::platform::DontClearONEDNNCache(true_branch_inter_->GetPlace());
 #endif
     true_branch_inter_->Run({}, false);
   } else {
@@ -259,11 +259,15 @@ void IfInstruction::Run() {
     // Executor on being destroyed clears oneDNN cache and resets
     // registered model data layout. This is unwanted for nested
     // Executors (executors declared inside control ops)
-    paddle::platform::DontClearMKLDNNCache(false_branch_inter_->GetPlace());
+    paddle::platform::DontClearONEDNNCache(false_branch_inter_->GetPlace());
 #endif
     false_branch_inter_->Run({}, false);
   }
   // copy output
+
+  if (FLAGS_check_cuda_error) [[unlikely]] {
+    CUDAErrorCheck("IfInstruction finish");
+  }
 }
 
 }  // namespace paddle::framework

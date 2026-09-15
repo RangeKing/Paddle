@@ -59,16 +59,12 @@ struct GeluFunctor {
       int n = std::min(x.size(), out.size());
 
       std::memset(out_data, 0, n * sizeof(T));
-      phi::funcs::CBlas<T>::AXPY(
+      funcs::CBlas<T>::AXPY(
           n, static_cast<T>(M_SQRT1_2), x_data, 1, out_data, 1);
-      phi::funcs::CBlas<T>::VMERF(n, out_data, out_data, VML_LA);
-      for (int i = 0; i < n; i++) {
-        out_data[i] += static_cast<T>(1);
-      }
-      phi::funcs::CBlas<T>::VMUL(n, x_data, out_data, out_data);
-      for (int i = 0; i < n; i++) {
-        out_data[i] *= static_cast<T>(0.5);
-      }
+      Eigen::Map<Eigen::Array<T, Eigen::Dynamic, 1>> out_map(out_data, n);
+      Eigen::Map<const Eigen::Array<T, Eigen::Dynamic, 1>> x_map(x_data, n);
+      out_map = (x_map * static_cast<T>(M_SQRT1_2)).erf();
+      out_map = x_map * (static_cast<T>(1) + out_map) * static_cast<T>(0.5);
 #else
       // gelu(x) = 0.5 * x *  (1 + erf(x / sqrt(2)))
       if (std::is_same<T, dtype::float16>::value) {
@@ -93,6 +89,9 @@ void GeluKernel(const Context& dev_ctx,
                 bool approximate,
                 DenseTensor* out) {
   dev_ctx.template Alloc<T>(out);
+  if (out && out->numel() == 0) {
+    return;
+  }
   auto eigen_out = EigenVector<T>::Flatten(*out);
   auto eigen_x = EigenVector<T>::Flatten(x);
   auto& dev = *dev_ctx.eigen_device();

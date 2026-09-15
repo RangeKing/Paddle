@@ -14,7 +14,6 @@
 
 #include "paddle/phi/kernels/gather_kernel.h"
 
-#include "paddle/phi/common/bfloat16.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/funcs/gather.h"
 
@@ -26,6 +25,10 @@ void GatherKernel(const Context& dev_ctx,
                   const DenseTensor& index,
                   const Scalar& axis,
                   DenseTensor* out) {
+  if (out && out->numel() == 0) {
+    dev_ctx.template Alloc<T>(out);
+    return;
+  }
   const auto& index_type = index.dtype();
   auto axis_v = axis.to<int>();
   if (axis_v < 0) {
@@ -34,12 +37,10 @@ void GatherKernel(const Context& dev_ctx,
 
   // gather at non-zero axis
   if (axis_v != 0) {
-    if (index_type == phi::DataType::INT32) {
-      phi::funcs::GatherV2Function<T, int32_t>(
-          dev_ctx, &x, &index, axis_v, out);
-    } else if (index_type == phi::DataType::INT64) {
-      phi::funcs::GatherV2Function<T, int64_t>(
-          dev_ctx, &x, &index, axis_v, out);
+    if (index_type == DataType::INT32) {
+      funcs::GatherV2Function<T, int32_t>(dev_ctx, &x, &index, axis_v, out);
+    } else if (index_type == DataType::INT64) {
+      funcs::GatherV2Function<T, int64_t>(dev_ctx, &x, &index, axis_v, out);
     }
     return;
   }
@@ -51,10 +52,10 @@ void GatherKernel(const Context& dev_ctx,
   }
 
   // gather at axis 0
-  if (index_type == phi::DataType::INT32) {
-    phi::funcs::CPUGather<T, int>(dev_ctx, x, index, out);
-  } else if (index_type == phi::DataType::INT64) {
-    phi::funcs::CPUGather<T, int64_t>(dev_ctx, x, index, out);
+  if (index_type == DataType::INT32) {
+    funcs::CPUGather<T, int>(dev_ctx, x, index, out);
+  } else if (index_type == DataType::INT64) {
+    funcs::CPUGather<T, int64_t>(dev_ctx, x, index, out);
   } else {
     PADDLE_THROW(common::errors::InvalidArgument(
         "The data type of Input(Index) of gather "
@@ -70,9 +71,12 @@ PD_REGISTER_KERNEL(gather,
                    phi::GatherKernel,
                    float,
                    double,
-                   int,
                    uint8_t,
+                   int8_t,
+                   int16_t,
+                   int32_t,
                    int64_t,
-                   phi::dtype::bfloat16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   bool,
+                   phi::bfloat16,
+                   phi::complex64,
+                   phi::complex128) {}

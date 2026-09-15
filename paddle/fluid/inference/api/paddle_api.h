@@ -23,6 +23,7 @@
  */
 
 #include <cassert>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
@@ -34,6 +35,9 @@
 #include "paddle_tensor.h"         // NOLINT
                                    /*! \namespace paddle
                                     */
+#define ONEDNN_UPDATE_WARNING(api)                                       \
+  "Warning: The api is deprecated since version 3.x, please use onednn " \
+  "api " #api "."
 namespace paddle {
 
 using PaddleDType = paddle_infer::DataType;

@@ -14,7 +14,6 @@
 
 #include "paddle/phi/kernels/set_value_kernel.h"
 
-#include <algorithm>
 #include <vector>
 
 #include "paddle/phi/backends/xpu/enforce_xpu.h"
@@ -92,12 +91,11 @@ void SetValueImpl(const Context& dev_ctx,
   std::vector<int64_t> starts_local = starts.GetData();
   std::vector<int64_t> ends_local = ends.GetData();
   std::vector<int64_t> steps_local = steps.GetData();
-  phi::funcs::CheckAndUpdateSliceAttrs(
+  funcs::CheckAndUpdateSliceAttrs(
       in_dims, axes, &starts_local, &ends_local, &steps_local);
-  auto slice_dims = phi::funcs::GetSliceDims(
+  auto slice_dims = funcs::GetSliceDims(
       in_dims, axes, starts_local, ends_local, &steps_local);
-  auto decrease_slice_dims =
-      phi::funcs::GetDecreasedDims(slice_dims, decrease_axes);
+  auto decrease_slice_dims = funcs::GetDecreasedDims(slice_dims, decrease_axes);
 
   auto slice_dims_for_assign = decrease_slice_dims;
   if (!none_axes.empty()) {
@@ -122,8 +120,9 @@ void SetValueImpl(const Context& dev_ctx,
       none_axes_cur++;
     }
 
-    slice_dims_for_assign = common::make_ddim(slice_dims_with_none);
+    slice_dims_for_assign = make_ddim(slice_dims_with_none);
   }
+  funcs::CheckIsDimsMatch(slice_dims_for_assign, new_value_dims);
 
   // Here copy data from input to avoid data loss at PE and Graph level.
   // TODO(liym27): Speed up in the future version.
@@ -136,9 +135,14 @@ void SetValueImpl(const Context& dev_ctx,
   // be two ops points to the output in graph: op1 -> output <- set_value.
   // In this case, we have to find a way to handle the running order of
   // set_value is what we want.
-  int r = XPU_SUCCESS;
+  int r = 0;
   out->Resize(in.dims());
   dev_ctx.template Alloc<T>(out);
+
+  if (in.numel() == 0) {
+    return;
+  }
+
   r = xpu::copy(dev_ctx.x_context(),
                 reinterpret_cast<const XPUType*>(in.data<T>()),
                 reinterpret_cast<XPUType*>(out->data<T>()),
@@ -150,10 +154,10 @@ void SetValueImpl(const Context& dev_ctx,
   XPUType* slice_data = RAII_GUARD.alloc_l3_or_gm<XPUType>(slice_numels);
 
   int in_size = in_dims.size();
-  std::vector<int> starts_indices(in_size, 0);
-  std::vector<int> ends_indices(in_size, 0);
-  std::vector<int> strides_indices(in_size, 0);
-  std::vector<int> flip_axis;
+  std::vector<int64_t> starts_indices(in_size, 0);
+  std::vector<int64_t> ends_indices(in_size, 0);
+  std::vector<int64_t> strides_indices(in_size, 0);
+  std::vector<int64_t> flip_axis;
 
   for (size_t i = 0; i < RANK; ++i) {
     starts_indices[i] = 0;
@@ -161,7 +165,7 @@ void SetValueImpl(const Context& dev_ctx,
     strides_indices[i] = 1;
   }
   for (size_t i = 0; i < axes.size(); i++) {
-    int axis_index = axes[i];
+    int64_t axis_index = axes[i];
     starts_indices[axis_index] = starts_local[i];
     ends_indices[axis_index] = ends_local[i];
     strides_indices[axis_index] = steps_local[i];
@@ -186,16 +190,14 @@ void SetValueImpl(const Context& dev_ctx,
   // If do broadcasting on Tensor with shape [3] and [3], the result's shape
   // is [3], which is right.
 
-  CheckIsDimsMatch(slice_dims_for_assign, new_value_dims);
-
   // do broadcasting
-  auto f = [](xpu::Context* ctx,
+  auto f = [](xpu::Context* xpu_ctx,
               const XPUType* x,
               const XPUType* y, /*unused*/
               XPUType* z,
-              const std::vector<int>& xshape,
-              const std::vector<int>& zshape) {
-    return xpu::broadcast<XPUType>(ctx, x, z, xshape, zshape);
+              const std::vector<int64_t>& xshape,
+              const std::vector<int64_t>& zshape) {
+    return xpu::broadcast<XPUType>(xpu_ctx, x, z, xshape, zshape);
   };
 
   XPUElementwise<T, XPUType>(dev_ctx,
@@ -227,8 +229,8 @@ void SetValueImpl(const Context& dev_ctx,
     }
   }
 
-  auto out_shape = common::vectorize<int>(out->dims());
-  auto slice_shape = common::vectorize<int>(slice_dims);
+  auto out_shape = vectorize<int64_t>(out->dims());
+  auto slice_shape = vectorize<int64_t>(slice_dims);
 
   if (need_flip) {
     r = xpu::flip(dev_ctx.x_context(),
@@ -362,9 +364,13 @@ void SetTensorValueKernel(const Context& dev_ctx,
                           const std::vector<int64_t>& decrease_axes,
                           const std::vector<int64_t>& none_axes,
                           DenseTensor* out) {
+  // Empty values are valid for an empty target slice and may not have a
+  // storage holder. Shape validation in SetValueImpl must run before any
+  // value data is consumed, so do not dereference value.data() here.
+  const T* value_data = value.numel() == 0 ? nullptr : value.data<T>();
   SetValueKernelImpl<T, Context>(dev_ctx,
                                  x,
-                                 value.data<T>(),
+                                 value_data,
                                  value.dims(),
                                  starts,
                                  ends,
@@ -387,13 +393,13 @@ void SetValueKernel(const Context& dev_ctx,
                     const std::vector<int64_t>& shape,
                     const std::vector<Scalar>& values,
                     DenseTensor* out) {
-  // avoid using vector<T> if T is bool or phi::dtype::float16
-  int value_size = sizeof(T);
-  int values_size = values.size();
-  int values_length = values_size * value_size;
+  // avoid using vector<T> if T is bool or phi::float16
+  size_t value_size = sizeof(T);
+  size_t values_size = values.size();
+  size_t values_length = values_size * value_size;
   std::vector<uint8_t> assign_values(values_length);
   uint8_t* value_data_uint8_cpu = assign_values.data();
-  for (int i = 0; i < values_size; i++) {
+  for (size_t i = 0; i < values_size; i++) {
     T value = values[i].to<T>();
     memcpy(value_data_uint8_cpu + i * value_size, &value, value_size);
   }
@@ -404,10 +410,10 @@ void SetValueKernel(const Context& dev_ctx,
       reinterpret_cast<T*>(RAII_GUARD.alloc_l3_or_gm<XPUType>(values_size));
   memory_utils::Copy(dev_ctx.GetPlace(),
                      value_data,
-                     phi::CPUPlace(),
+                     CPUPlace(),
                      value_data_uint8_cpu,
                      values_length);
-  auto value_dims = common::make_ddim(shape);
+  auto value_dims = make_ddim(shape);
 
   SetValueKernelImpl<T, Context>(dev_ctx,
                                  x,
@@ -429,8 +435,8 @@ PD_REGISTER_KERNEL(set_value,
                    ALL_LAYOUT,
                    phi::SetValueKernel,
                    float,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
+                   phi::float16,
+                   phi::bfloat16,
                    int,
                    int64_t,
                    bool) {}
@@ -440,8 +446,8 @@ PD_REGISTER_KERNEL(set_value_with_tensor,
                    ALL_LAYOUT,
                    phi::SetTensorValueKernel,
                    float,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
+                   phi::float16,
+                   phi::bfloat16,
                    int,
                    int64_t,
                    bool) {}

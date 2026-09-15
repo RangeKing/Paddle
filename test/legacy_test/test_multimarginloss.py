@@ -12,12 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 import unittest
 
 import numpy as np
+from op_test import get_places
 
 import paddle
+from paddle import base
 
 
 def call_MultiMarginLoss_layer(
@@ -224,7 +225,7 @@ def calc_multi_margin_loss(
             [weight[label[i]] for i in range(label.size)]
         ).reshape(-1, 1)
         expected = np.mean(
-            np.maximum(weight * (margin + input - index_sample), 0.0) ** p,
+            weight * (np.maximum((margin + input - index_sample), 0.0) ** p),
             axis=1,
         ) - weight * (margin**p / input.shape[1])
 
@@ -239,7 +240,6 @@ def calc_multi_margin_loss(
 
 
 class TestMultiMarginLoss(unittest.TestCase):
-
     def test_MultiMarginLoss(self):
         batch_size = 5
         num_classes = 2
@@ -249,15 +249,7 @@ class TestMultiMarginLoss(unittest.TestCase):
             np.int64
         )
 
-        places = []
-        if (
-            os.environ.get('FLAGS_CI_both_cpu_and_gpu', 'False').lower()
-            in ['1', 'true', 'on']
-            or not paddle.device.is_compiled_with_cuda()
-        ):
-            places.append(paddle.CPUPlace())
-        if paddle.device.is_compiled_with_cuda():
-            places.append(paddle.CUDAPlace(0))
+        places = get_places()
         reductions = ['sum', 'mean', 'none']
         for place in places:
             for reduction in reductions:
@@ -304,7 +296,7 @@ class TestMultiMarginLoss(unittest.TestCase):
         self.assertRaises(
             ValueError,
             paddle.nn.MultiMarginLoss,
-            reduction="unsupport reduction",
+            reduction="unsupported reduction",
         )
         input = paddle.to_tensor([[0.1, 0.3]], dtype='float32')
         label = paddle.to_tensor([0], dtype='int32')
@@ -313,7 +305,7 @@ class TestMultiMarginLoss(unittest.TestCase):
             paddle.nn.functional.multi_margin_loss,
             input=input,
             label=label,
-            reduction="unsupport reduction",
+            reduction="unsupported reduction",
         )
         paddle.enable_static()
 
@@ -337,6 +329,37 @@ class TestMultiMarginLoss(unittest.TestCase):
             label=label,
         )
         paddle.enable_static()
+
+    def test_MultiMarginLoss_target_alias(self):
+        with base.dygraph.guard():
+            input = paddle.to_tensor(
+                [[0.2, 1.5, 0.7], [1.1, 0.4, 0.9]], dtype='float32'
+            )
+            label = paddle.to_tensor([1, 0], dtype='int64')
+
+            for reduction in ['none', 'mean', 'sum']:
+                with self.subTest(reduction=reduction):
+                    out_with_label = paddle.nn.functional.multi_margin_loss(
+                        input=input, label=label, reduction=reduction
+                    )
+                    out_with_target = paddle.nn.functional.multi_margin_loss(
+                        input=input, target=label, reduction=reduction
+                    )
+                    np.testing.assert_allclose(
+                        out_with_label.numpy(), out_with_target.numpy()
+                    )
+
+    def test_MultiMarginLoss_target_alias_conflict(self):
+        with base.dygraph.guard():
+            input = paddle.to_tensor([[0.2, 1.5, 0.7]], dtype='float32')
+            label = paddle.to_tensor([1], dtype='int64')
+
+            with self.assertRaises(ValueError):
+                paddle.nn.functional.multi_margin_loss(
+                    input=input,
+                    label=label,
+                    target=label,
+                )
 
     def test_MultiMarginLoss_p(self):
         p = 2

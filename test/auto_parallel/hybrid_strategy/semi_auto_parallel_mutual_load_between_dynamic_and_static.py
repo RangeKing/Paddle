@@ -47,7 +47,8 @@ class TestSemiAutoParallelMutualLoadBetweenDynamicAndStatic(
         return loader
 
     def run_dynamic(self, layer, opt, data_loader, is_recompute=False):
-        loss_fn = nn.MSELoss()
+        # MSELoss only support pir, but test_save_load_state_dict.py set FLAGS_enable_pir_api=0
+        loss_fn = nn.SmoothL1Loss()
 
         loss_list = []
         for _ in range(5):
@@ -65,7 +66,8 @@ class TestSemiAutoParallelMutualLoadBetweenDynamicAndStatic(
 
     def run_dy2static(self, layer, opt, data_loader):
         # create loss
-        loss_fn = nn.MSELoss()
+        # MSELoss only support pir, but test_save_load_state_dict.py set FLAGS_enable_pir_api=0
+        loss_fn = nn.SmoothL1Loss()
         dist_loader = dist.shard_dataloader(
             dataloader=data_loader,
             meshes=[self.mesh],
@@ -114,8 +116,8 @@ class TestSemiAutoParallelMutualLoadBetweenDynamicAndStatic(
         dy2static_opt = paddle.optimizer.SGD(
             learning_rate=0.1, parameters=dy_layer.parameters()
         )
-
-        loss_fn = nn.MSELoss()
+        # MSELoss only support pir, but test_save_load_state_dict.py set FLAGS_enable_pir_api=0
+        loss_fn = nn.SmoothL1Loss()
         dist_model = dist.to_static(
             dy_layer, dist_loader, loss_fn, dy2static_opt
         )
@@ -130,15 +132,17 @@ class TestSemiAutoParallelMutualLoadBetweenDynamicAndStatic(
         state_dict_to_load = dist_model.state_dict(mode="param")
         assert len(state_dict_to_load) == len(expected_state_dict)
         for k, v in state_dict_to_load.items():
-            assert (
-                k in expected_state_dict
-            ), f"key {k} not in expected_state_dict:{expected_state_dict}"
+            assert k in expected_state_dict, (
+                f"key {k} not in expected_state_dict:{expected_state_dict}"
+            )
             assert np.any(
                 np.not_equal(
                     v._local_value().numpy(),
                     expected_state_dict[k].numpy(),
                 )
-            ), f"key:{k}, v:{v}, expected_state_dict[k]:{expected_state_dict[k]}"
+            ), (
+                f"key:{k}, v:{v}, expected_state_dict[k]:{expected_state_dict[k]}"
+            )
 
         dist.load_state_dict(state_dict_to_load, ckpt_path)
         dist_model.set_state_dict(state_dict_to_load)
@@ -146,9 +150,9 @@ class TestSemiAutoParallelMutualLoadBetweenDynamicAndStatic(
         program_state_dict = dist_model.state_dict(mode="param")
         assert len(expected_state_dict) == len(program_state_dict)
         for k, v in program_state_dict.items():
-            assert (
-                k in expected_state_dict
-            ), f"key {k} not in expected_state_dict:{expected_state_dict}"
+            assert k in expected_state_dict, (
+                f"key {k} not in expected_state_dict:{expected_state_dict}"
+            )
             np.testing.assert_equal(
                 v._local_value().numpy(),
                 expected_state_dict[k].numpy(),
@@ -189,15 +193,17 @@ class TestSemiAutoParallelMutualLoadBetweenDynamicAndStatic(
         state_dict_to_load = dy_layer.state_dict()
         assert len(state_dict_to_load) == len(expected_state_dict)
         for k, v in state_dict_to_load.items():
-            assert (
-                k in expected_state_dict
-            ), f"key {k} not in expected_state_dict:{expected_state_dict}"
+            assert k in expected_state_dict, (
+                f"key {k} not in expected_state_dict:{expected_state_dict}"
+            )
             assert np.any(
                 np.not_equal(
                     v._local_value().numpy(),
                     expected_state_dict[k].numpy(),
                 )
-            ), f"key:{k}, v:{v}, expected_state_dict[k]:{expected_state_dict[k]}"
+            ), (
+                f"key:{k}, v:{v}, expected_state_dict[k]:{expected_state_dict[k]}"
+            )
 
         dist.load_state_dict(state_dict_to_load, ckpt_path)
         dy_layer.set_state_dict(state_dict_to_load)
@@ -205,9 +211,9 @@ class TestSemiAutoParallelMutualLoadBetweenDynamicAndStatic(
         state_dict = dy_layer.state_dict()
         assert len(expected_state_dict) == len(state_dict)
         for k, v in state_dict.items():
-            assert (
-                k in expected_state_dict
-            ), f"key {k} not in expected_state_dict:{expected_state_dict}"
+            assert k in expected_state_dict, (
+                f"key {k} not in expected_state_dict:{expected_state_dict}"
+            )
             np.testing.assert_equal(
                 v._local_value().numpy(),
                 expected_state_dict[k].numpy(),

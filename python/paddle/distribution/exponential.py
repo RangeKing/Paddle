@@ -24,6 +24,7 @@ from paddle.base.data_feeder import check_type, convert_dtype
 from paddle.base.framework import Variable
 from paddle.distribution import exponential_family
 from paddle.framework import in_dynamic_mode
+from paddle.utils.decorator_utils import param_one_alias
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -49,7 +50,7 @@ class Exponential(exponential_family.ExponentialFamily):
         rate (float|Tensor): Rate parameter. The value of rate must be positive.
 
     Example:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -107,6 +108,7 @@ class Exponential(exponential_family.ExponentialFamily):
         """
         return self.rate.pow(-2)
 
+    @param_one_alias(["shape", "sample_shape"])
     def sample(self, shape: Sequence[int] = []) -> Tensor:
         """Generate samples of the specified shape.
 
@@ -119,6 +121,7 @@ class Exponential(exponential_family.ExponentialFamily):
         with paddle.no_grad():
             return self.rsample(shape)
 
+    @param_one_alias(["shape", "sample_shape"])
     def rsample(self, shape: Sequence[int] = []) -> Tensor:
         """Generate reparameterized samples of the specified shape.
 
@@ -184,10 +187,10 @@ class Exponential(exponential_family.ExponentialFamily):
             { cdf(x; \theta) = 1 - e^{- \theta x }, (x \ge 0) }
 
         Args:
-            value (float|Tensor): Value to be evaluated.
+            value (float|Tensor): Input value to evaluate the cumulative probability.
 
         Returns:
-            Tensor: CDF evaluated at value.
+            Tensor: The evaluated cumulative probability.
         """
         return 1.0 - paddle.exp(-self.rate * value)
 
@@ -197,13 +200,13 @@ class Exponential(exponential_family.ExponentialFamily):
         .. math::
 
 
-            { icdf(x; \theta) = -\frac{ 1 }{ \theta } ln(1 + x), (x \ge 0) }
+            { icdf(x; \theta) = -\frac{ 1 }{ \theta } ln(1 - x), (0 < x < 1) }
 
         Args:
-            value (float|Tensor): Value to be evaluated.
+            value (float|Tensor): Input probability to evaluate the quantile.
 
         Returns:
-            Tensor: CDF evaluated at value.
+            Tensor: The evaluated quantile value.
         """
         return -paddle.log1p(-value) / self.rate
 

@@ -15,12 +15,17 @@
 import unittest
 
 import numpy as np
-from op_test import OpTest, convert_float_to_uint16
+from op_test import (
+    OpTest,
+    convert_float_to_uint16,
+    get_device_place,
+    is_custom_device,
+)
 
 import paddle
 from paddle import base
 from paddle.base import core
-from paddle.base.framework import convert_np_dtype_to_proto_type
+from paddle.base.framework import convert_nptype_to_vartype
 
 
 # Situation 1: Attr(shape) is a list(without tensor)
@@ -66,7 +71,7 @@ class TestEmptyOp(OpTest):
     def init_config(self):
         shape = [500, 3]
         dtype = 'float32'
-        dtype_inner = convert_np_dtype_to_proto_type(dtype)
+        dtype_inner = convert_nptype_to_vartype(dtype)
         self.attrs = {'shape': shape, 'dtype': dtype_inner}
         self.inputs = {}
         self.outputs = {'Out': np.zeros(shape).astype(dtype)}
@@ -76,7 +81,7 @@ class TestEmptyOp2(TestEmptyOp):
     def init_config(self):
         shape = [500, 3]
         dtype = 'float64'
-        dtype_inner = convert_np_dtype_to_proto_type(dtype)
+        dtype_inner = convert_nptype_to_vartype(dtype)
         self.attrs = {'shape': shape, 'dtype': dtype_inner}
         self.inputs = {}
         self.outputs = {'Out': np.zeros(shape).astype(dtype)}
@@ -86,7 +91,7 @@ class TestEmptyOp3(TestEmptyOp):
     def init_config(self):
         shape = [500, 3]
         dtype = 'int32'
-        dtype_inner = convert_np_dtype_to_proto_type(dtype)
+        dtype_inner = convert_nptype_to_vartype(dtype)
         self.attrs = {'shape': shape, 'dtype': dtype_inner}
         self.inputs = {}
         self.outputs = {'Out': np.zeros(shape).astype(dtype)}
@@ -96,7 +101,7 @@ class TestEmptyOp4(TestEmptyOp):
     def init_config(self):
         shape = [500, 3]
         dtype = 'int64'
-        dtype_inner = convert_np_dtype_to_proto_type(dtype)
+        dtype_inner = convert_nptype_to_vartype(dtype)
         self.attrs = {'shape': shape, 'dtype': dtype_inner}
         self.inputs = {}
         self.outputs = {'Out': np.zeros(shape).astype(dtype)}
@@ -106,7 +111,7 @@ class TestEmptyOp5(TestEmptyOp):
     def init_config(self):
         shape = [500, 3]
         dtype = 'bool'
-        dtype_inner = convert_np_dtype_to_proto_type(dtype)
+        dtype_inner = convert_nptype_to_vartype(dtype)
         self.attrs = {'shape': shape, 'dtype': dtype_inner}
         self.inputs = {}
         self.outputs = {'Out': np.zeros(shape).astype(dtype)}
@@ -122,7 +127,7 @@ class TestEmptyOp_ShapeTensor(OpTest):
     def init_config(self):
         self.shape = [500, 3]
         dtype = 'float32'
-        dtype_inner = convert_np_dtype_to_proto_type(dtype)
+        dtype_inner = convert_nptype_to_vartype(dtype)
         self.attrs = {'dtype': dtype_inner}
         self.inputs = {"ShapeTensor": np.array(self.shape).astype("int32")}
         self.outputs = {'Out': np.zeros(self.shape).astype(dtype)}
@@ -166,7 +171,7 @@ class TestEmptyOp_ShapeTensorList(OpTest):
         self.infer_shape = [-1, 92]
 
         dtype = 'float32'
-        dtype_inner = convert_np_dtype_to_proto_type(dtype)
+        dtype_inner = convert_nptype_to_vartype(dtype)
 
         shape_tensor_list = []
         for index, ele in enumerate(self.shape):
@@ -295,15 +300,15 @@ class TestEmptyFP16Op(TestEmptyOp):
     def init_config(self):
         shape = [500, 3]
         self.dtype = np.float16
-        dtype_inner = convert_np_dtype_to_proto_type(self.dtype)
+        dtype_inner = convert_nptype_to_vartype(self.dtype)
         self.attrs = {'shape': shape, 'dtype': dtype_inner}
         self.inputs = {}
         self.outputs = {'Out': np.zeros(shape).astype(self.dtype)}
 
 
 @unittest.skipIf(
-    not core.is_compiled_with_cuda()
-    or not core.is_bfloat16_supported(core.CUDAPlace(0)),
+    not (core.is_compiled_with_cuda() or is_custom_device())
+    or not core.is_bfloat16_supported(get_device_place()),
     "core is not compiled with CUDA and not support the bfloat16",
 )
 class TestEmptyBF16Op(OpTest):
@@ -313,7 +318,7 @@ class TestEmptyBF16Op(OpTest):
         self.__class__.op_type = self.op_type
         self.python_api = paddle.empty
         shape = np.array([200, 3]).astype('int32')
-        dtype_inner = convert_np_dtype_to_proto_type(self.dtype)
+        dtype_inner = convert_nptype_to_vartype(self.dtype)
         output = np.zeros(shape).astype(self.dtype)
         self.inputs = {}
         self.attrs = {'shape': shape, 'dtype': dtype_inner}

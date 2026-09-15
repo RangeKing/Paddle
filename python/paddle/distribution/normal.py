@@ -23,36 +23,35 @@ import numpy.typing as npt
 import paddle
 from paddle.base.data_feeder import check_type, convert_dtype
 from paddle.base.framework import Variable
-from paddle.distribution import distribution
+from paddle.distribution import constraint, distribution
 from paddle.framework import in_dynamic_mode
 from paddle.tensor import random
+from paddle.utils.decorator_utils import param_one_alias
 
 if TYPE_CHECKING:
-    from typing import Union
-
-    from typing_extensions import TypeAlias
+    from typing import TypeAlias
 
     from paddle import Tensor, dtype
     from paddle._typing import NestedSequence
 
-    _NormalLocBase: TypeAlias = Union[float, complex]
-    _NormalLocNDArray: TypeAlias = Union[
-        np.float32, np.float64, np.complex64, np.complex128
-    ]
-    _NormalLoc: TypeAlias = Union[
-        _NormalLocBase,
-        Sequence[_NormalLocBase],
-        NestedSequence[_NormalLocBase],
-        npt.NDArray[_NormalLocNDArray],
-        Tensor,
-    ]
-    _NormalScale: TypeAlias = Union[
-        float,
-        Sequence[float],
-        NestedSequence[float],
-        npt.NDArray[Union[np.float32, np.float64]],
-        Tensor,
-    ]
+    _NormalLocBase: TypeAlias = float | complex
+    _NormalLocNDArray: TypeAlias = (
+        np.float32 | np.float64 | np.complex64 | np.complex128
+    )
+    _NormalLoc: TypeAlias = (
+        _NormalLocBase
+        | Sequence[_NormalLocBase]
+        | NestedSequence[_NormalLocBase]
+        | npt.NDArray[_NormalLocNDArray]
+        | Tensor
+    )
+    _NormalScale: TypeAlias = (
+        float
+        | Sequence[float]
+        | NestedSequence[float]
+        | npt.NDArray[np.float32 | np.float64]
+        | Tensor
+    )
 
 
 class Normal(distribution.Distribution):
@@ -89,31 +88,32 @@ class Normal(distribution.Distribution):
     Args:
         loc(int|float|complex|list|tuple|numpy.ndarray|Tensor): The mean of normal distribution.The data type is float32, float64, complex64 and complex128.
         scale(int|float|list|tuple|numpy.ndarray|Tensor): The std of normal distribution.The data type is float32 and float64.
+        validate_args(bool|None, optional): Whether to validate input arguments. Default is None.
         name(str|None, optional): Name for the operation (optional, default is None). For more information, please refer to :ref:`api_guide_Name`.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.distribution import Normal
 
             >>> # Define a single scalar Normal distribution.
-            >>> dist = Normal(loc=0., scale=3.)
+            >>> dist = Normal(loc=0.0, scale=3.0)
             >>> # Define a batch of two scalar valued Normals.
             >>> # The first has mean 1 and standard deviation 11, the second 2 and 22.
-            >>> dist = Normal(loc=[1., 2.], scale=[11., 22.])
+            >>> dist = Normal(loc=[1.0, 2.0], scale=[11.0, 22.0])
             >>> # Get 3 samples, returning a 3 x 2 tensor.
             >>> dist.sample([3])
 
             >>> # Define a batch of two scalar valued Normals.
             >>> # Both have mean 1, but different standard deviations.
-            >>> dist = Normal(loc=1., scale=[11., 22.])
+            >>> dist = Normal(loc=1.0, scale=[11.0, 22.0])
 
             >>> # Complete example
             >>> value_tensor = paddle.to_tensor([0.8], dtype="float32")
 
-            >>> normal_a = Normal([0.], [1.])
-            >>> normal_b = Normal([0.5], [2.])
+            >>> normal_a = Normal([0.0], [1.0])
+            >>> normal_b = Normal([0.5], [2.0])
             >>> sample = normal_a.sample([2])
             >>> # a random tensor created by normal distribution with shape: [2, 1]
             >>> entropy = normal_a.entropy()
@@ -139,8 +139,18 @@ class Normal(distribution.Distribution):
     name: str
     dtype: dtype
 
+    arg_constraints = {
+        "loc": constraint.real,
+        "scale": constraint.positive,
+    }
+    support = constraint.real
+
     def __init__(
-        self, loc: _NormalLoc, scale: _NormalScale, name: str | None = None
+        self,
+        loc: _NormalLoc,
+        scale: _NormalScale,
+        validate_args: bool | None = None,
+        name: str | None = None,
     ) -> None:
         if not in_dynamic_mode():
             check_type(
@@ -252,7 +262,22 @@ class Normal(distribution.Distribution):
                 if self.dtype != convert_dtype(self.loc.dtype):
                     self.loc = paddle.cast(self.loc, dtype=self.dtype)
                     self.scale = paddle.cast(self.scale, dtype=self.dtype)
-        super().__init__(self.loc.shape)
+        super().__init__(self.loc.shape, validate_args=validate_args)
+        if in_dynamic_mode() and self._validate_args_enabled:
+            self._validate_parameters()
+
+    def _validate_parameters(self) -> None:
+        for param, value in (("loc", self.loc), ("scale", self.scale)):
+            constraint_ = self.arg_constraints[param]
+            valid = constraint_.check(value)
+            if not bool(valid.all()):
+                raise ValueError(
+                    f"Expected parameter {param} "
+                    f"({type(value).__name__} of shape {tuple(value.shape)}) "
+                    f"of distribution {self!r} "
+                    f"to satisfy the constraint {constraint_!r}, "
+                    f"but found invalid values:\n{value}"
+                )
 
     @property
     def mean(self) -> Tensor:
@@ -272,11 +297,13 @@ class Normal(distribution.Distribution):
         """
         return self.scale.pow(2)
 
+    @param_one_alias(["shape", "sample_shape"])
     def sample(self, shape: Sequence[int] = [], seed: int = 0) -> Tensor:
         """Generate samples of the specified shape.
 
         Args:
             shape (Sequence[int], optional): Shape of the generated samples.
+                Alias: ``sample_shape``.
             seed (int): Python integer number.
 
         Returns:
@@ -325,11 +352,13 @@ class Normal(distribution.Distribution):
             else:
                 return output
 
+    @param_one_alias(["shape", "sample_shape"])
     def rsample(self, shape: Sequence[int] = []) -> Tensor:
         """Generate reparameterized samples of the specified shape.
 
         Args:
           shape (Sequence[int], optional): Shape of the generated samples.
+              Alias: ``sample_shape``.
 
         Returns:
           Tensor: A tensor with prepended dimensions shape.The data type is float32.
@@ -409,6 +438,8 @@ class Normal(distribution.Distribution):
         """
         name = self.name + '_log_prob'
         value = self._check_values_dtype_in_probs(self.loc, value)
+        if in_dynamic_mode() and self._validate_args_enabled:
+            self._validate_sample(value)
 
         var = self.scale * self.scale
         log_scale = paddle.log(self.scale)

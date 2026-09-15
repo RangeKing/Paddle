@@ -13,19 +13,78 @@ See the License for the specific language governing permissions and
 limitations under the License. */
 
 #pragma once
-
+#ifdef PADDLE_WITH_CUSTOM_DEVICE
 #include <memory>
-
 #include "paddle/phi/backends/c_comm_lib.h"
+#include "paddle/phi/backends/device_base.h"
+#include "paddle/phi/backends/device_ext.h"
+#include "paddle/phi/backends/device_manager.h"
 #include "paddle/phi/backends/stream.h"
 #include "paddle/phi/common/place.h"
+#include "paddle/phi/core/attribute.h"
 #include "paddle/phi/core/device_context.h"
 
+// Forward declaration of BLAS types.
+using cublasHandle_t = struct cublasContext*;
+using cublasLtHandle_t = struct cublasLtContext*;
+
 namespace Eigen {
-struct DefaultDevice;
+struct GpuDevice;
 }  // namespace Eigen
 
 namespace phi {
+
+class DnnWorkspaceHandle {
+ public:
+  inline DnnWorkspaceHandle(Allocator* allocator,
+                            phi::stream::stream_t stream,
+                            const Place& place)
+      : allocator_(allocator), stream_(stream), place_(place) {
+    mtx_ = std::make_unique<std::mutex>();
+    device_ = DeviceManager::GetDeviceWithPlace(place_);
+  }
+
+  inline void RunFunc(const std::function<void(void*)>& cudnn_func,
+                      size_t required_workspace_bytes) {
+    if (required_workspace_bytes > WorkspaceSize()) {
+      ReallocWorkspace(required_workspace_bytes);
+    }
+    {
+      std::lock_guard<std::mutex> guard(*mtx_);
+      cudnn_func(allocation_ ? allocation_->ptr() : nullptr);
+    }
+  }
+
+  /*! \brief Thread which call RunFuncSync() would release gpu memory after
+   *  running the function. Currently this function is only used when cudnn
+   *  exhaustive searching and callers have to guarantee that the input function
+   *  is host blocking */
+  PADDLE_API void RunFuncSync(const std::function<void(void*)>& cudnn_func,
+                              size_t required_workspace_bytes,
+                              bool use_cached_allocation = true);
+
+  inline size_t WorkspaceSize() {
+    if (allocation_ == nullptr) {
+      return 0;
+    }
+    return allocation_->size();
+  }
+
+  PADDLE_API void ResetWorkspace();
+
+  TEST_API void ReallocWorkspace(size_t required_workspace_bytes);
+
+  DnnWorkspaceHandle(DnnWorkspaceHandle&&) = default;
+  DnnWorkspaceHandle& operator=(DnnWorkspaceHandle&&) = delete;
+
+ private:
+  Allocator::AllocationPtr allocation_{nullptr};
+  Allocator* allocator_{nullptr};          // Not owned
+  phi::stream::stream_t stream_{nullptr};  // Not owned
+  Place place_;
+  Device* device_;
+  std::unique_ptr<std::mutex> mtx_;
+};
 
 class CustomContext : public DeviceContext,
                       public TypeInfoTraits<DeviceContext, CustomContext> {
@@ -37,12 +96,12 @@ class CustomContext : public DeviceContext,
   const Place& GetPlace() const override;
 
   /*! \brief  Return raw stream in the device context. */
-  void* stream() const;
+  stream::stream_t stream() const;
 
   /*! \brief  Return stream in the device context. */
-  std::shared_ptr<phi::stream::Stream> GetStream() const;
+  std::shared_ptr<stream::Stream> GetStream() const;
 
-  void SetStream(std::shared_ptr<phi::stream::Stream> stream);
+  void SetStream(std::shared_ptr<stream::Stream> stream);
 
   // Wait for all operations completion in the stream.
   void Wait() const override;
@@ -54,7 +113,14 @@ class CustomContext : public DeviceContext,
 
   void WaitStreamCallback() const { return GetStream()->WaitCallback(); }
 
-  Eigen::DefaultDevice* eigen_device() const { return nullptr; }
+  Eigen::GpuDevice* eigen_device() const;
+
+  void WaitEvent(event::event_t ev) const;
+
+  void RecordEvent(event::event_t ev,
+                   const std::function<void()>& callback) const;
+
+  void RecordEvent(event::event_t ev) const;
 
   static const char* name() { return "CustomContext"; }
 
@@ -64,11 +130,88 @@ class CustomContext : public DeviceContext,
   // all resources and delete them when destructing.
   void Init();
 
+  // Note that this is a trick implementation, which can be used to partially
+  // initialize when the SetAllocator interface is not called.
+  void PartialInitWithoutAllocator();
+  // Note that this is a trick implementation that can be used to initialize
+  // resources that require an Allocator when the SetAllocator interface is
+  // called.
+  void PartialInitWithAllocator();
+
   /*! \brief  Return xccl communicators. */
   phi::ccl::CCLComm xccl_comm() const;
 
   /*! \brief  Set nccl communicators. */
   void set_xccl_comm(phi::ccl::CCLComm comm);
+
+  /*! \brief  Return compute capability in the device context. */
+  int GetComputeCapability() const;
+
+  /*! \brief  Return the SM count in the device context */
+  int GetSMCount() const;
+
+  /*! \brief  Return the Max thread num of block in the device context */
+  int GetMaxThreadsPerBlock() const;
+
+  /*! \brief  Return the max grid dim size in the device context */
+  std::array<unsigned int, 3> GetCUDAMaxGridDimSize() const;
+
+  /*! \brief  Return the max physical thread count in the device context */
+  int GetMaxPhysicalThreadCount() const;
+
+  void SetEigenDevice(Eigen::GpuDevice*);
+  void SetEigenDevice(std::function<Eigen::GpuDevice*()>&&);
+
+  void SetComputeCapability(int val);
+
+  void SetMaxThreadsPerMultiProcessor(int val);
+
+  void SetMultiProcessors(int val);
+
+  void SetMaxThreadsPerBlock(int val);
+
+  void SetMaxGridDimSize(const std::array<unsigned int, 3>& val);
+
+  void SetDriverVersion(int val);
+
+  void SetRuntimeVersion(int val);
+
+  dnnHandle_t cudnn_handle() const;
+
+  cublasHandle_t cublas_handle() const;
+
+  cublasLtHandle_t cublaslt_handle() const;
+
+  void SetBlasHandle(cublasHandle_t);
+  void SetBlasHandle(std::function<cublasHandle_t()>&&);
+
+  void SetBlasTensorCoreHandle(cublasHandle_t);
+  void SetBlasTensorCoreHandle(std::function<cublasHandle_t()>&&);
+
+  void SetBlasTF32Handle(cublasHandle_t);
+  void SetBlasTF32Handle(std::function<cublasHandle_t()>&&);
+
+  void SetBlasLtHandle(cublasLtHandle_t);
+  void SetBlasLtHandle(std::function<cublasLtHandle_t()>&&);
+
+  void SetDnnHandle(dnnHandle_t);
+  void SetDnnHandle(std::function<dnnHandle_t()>&&);
+
+  void SetDnnWorkspaceHandle(DnnWorkspaceHandle*);
+
+  bool tensor_core_available() const;
+
+  void CublasCall(const std::function<void(cublasHandle_t)>&) const;
+
+  void TensorCoreCublasCallIfAvailable(
+      const std::function<void(cublasHandle_t)>&) const;
+
+  DnnWorkspaceHandle cudnn_workspace_handle() const;
+
+  bool HasDnnAttr(const std::string& attr_name) const;
+  const Attribute& GetDnnAttr(const std::string& attr_name) const;
+  void SetDnnAttr(const std::string& attr_name, Attribute attr);
+  void ClearDnnAttr();
 
  private:
   CustomContext();
@@ -78,3 +221,4 @@ class CustomContext : public DeviceContext,
 };
 
 }  // namespace phi
+#endif

@@ -24,8 +24,8 @@ template <typename T, typename Context>
 void WarpctcKernel(const Context& dev_ctx,
                    const DenseTensor& logits,
                    const DenseTensor& label,
-                   const paddle::optional<DenseTensor>& logits_length,
-                   const paddle::optional<DenseTensor>& labels_length,
+                   const optional<DenseTensor>& logits_length,
+                   const optional<DenseTensor>& labels_length,
                    int blank,
                    bool norm_by_times,
                    DenseTensor* loss,
@@ -41,10 +41,10 @@ void WarpctcKernel(const Context& dev_ctx,
         "XPU only support labels_length is_initialized"));
   }
 
-  int max_sequence_length = logits.dims()[0];
-  int num_sequences = logits.dims()[1];
-  int sequence_width = logits.dims()[2];
-  int max_target_seq_length = label.dims()[1];
+  int64_t max_sequence_length = logits.dims()[0];
+  int64_t num_sequences = logits.dims()[1];
+  int64_t sequence_width = logits.dims()[2];
+  int64_t max_target_seq_length = label.dims()[1];
 
   PADDLE_ENFORCE_GT(max_sequence_length,
                     0,
@@ -111,11 +111,11 @@ void WarpctcKernel(const Context& dev_ctx,
                         DataTypeToString(labels_length_dtype)));
 
   warpctcgrad->Resize(
-      common::make_ddim({max_sequence_length, num_sequences, sequence_width}));
+      make_ddim({max_sequence_length, num_sequences, sequence_width}));
   dev_ctx.template Alloc<T>(warpctcgrad);
   T* warpctcgrad_data = warpctcgrad->data<T>();
 
-  int sm_workspace, lm_workspace;
+  int64_t sm_workspace, lm_workspace;
   int64_t max_S = 2 * max_target_seq_length + 1;
   if (warpctcgrad_data == nullptr) {
     sm_workspace = sizeof(T) * sequence_width +
@@ -137,7 +137,7 @@ void WarpctcKernel(const Context& dev_ctx,
           256 * 1024,
           sm_workspace + lm_workspace));
 
-  loss->Resize(common::make_ddim({num_sequences, 1}));
+  loss->Resize({num_sequences, 1});
   dev_ctx.template Alloc<T>(loss);
   T* loss_data = loss->data<T>();
 

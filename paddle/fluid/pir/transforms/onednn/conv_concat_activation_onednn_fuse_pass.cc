@@ -23,7 +23,7 @@
 #include "paddle/pir/include/pass/pass.h"
 #include "paddle/pir/include/pass/pass_registry.h"
 
-namespace {
+namespace pir {
 
 class NConvConcatActivationFusePattern : public paddle::drr::DrrPatternBase {
  private:
@@ -52,8 +52,7 @@ class NConvConcatActivationFusePattern : public paddle::drr::DrrPatternBase {
     return "Conv" + std::to_string(concat_count_) + "Concat" + "Level" +
            std::to_string(fused_level_) + activation_name_ + "Pattern";
   }
-
-  uint32_t benefit() const override { return benefit_; }
+  uint32_t benefit() const override { return static_cast<uint32_t>(benefit_); }
 
   void operator()(paddle::drr::DrrPatternContext *ctx) const override {
     paddle::drr::SourcePattern pat = ctx->SourcePattern();
@@ -89,6 +88,8 @@ class NConvConcatActivationFusePattern : public paddle::drr::DrrPatternBase {
                          pat.Attr("data_format" + std::to_string(i))},
                         {"mkldnn_data_type",
                          pat.Attr("mkldnn_data_type" + std::to_string(i))},
+                        {"onednn_data_type",
+                         pat.Attr("onednn_data_type" + std::to_string(i))},
                         {"fuse_activation",
                          pat.Attr("fuse_activation" + std::to_string(i))},
                         {"fuse_residual_connection",
@@ -124,7 +125,7 @@ class NConvConcatActivationFusePattern : public paddle::drr::DrrPatternBase {
 
       combine_in.push_back(&pat.Tensor("conv2d_out_" + std::to_string(i)));
     }
-    const auto &combine_op = pat.Op(pir::CombineOp::name());
+    const auto &combine_op = pat.Op(CombineOp::name());
     const auto &full_op = pat.Op(paddle::dialect::FullOp::name(),
                                  {{"shape", pat.Attr("shape")},
                                   {"value", pat.Attr("value")},
@@ -159,7 +160,7 @@ class NConvConcatActivationFusePattern : public paddle::drr::DrrPatternBase {
     }
     pat.AddConstraint([&](const paddle::drr::MatchContext &match_ctx) {
       if (activation_name_ == "leaky_relu") {
-        float negative_slope = match_ctx.Attr<float>("negative_slope");
+        double negative_slope = match_ctx.Attr<double>("negative_slope");
         // leaky relu alpha is a positive number
         if (negative_slope <= 0.0) {
           return false;
@@ -203,6 +204,7 @@ class NConvConcatActivationFusePattern : public paddle::drr::DrrPatternBase {
                         {"data_format",
                          pat.Attr("data_format" + std::to_string(i))},
                         {"mkldnn_data_type", res.StrAttr("float32")},
+                        {"onednn_data_type", res.StrAttr("")},
                         {"fuse_activation", res.StrAttr(activation_name_)},
                         {"fuse_residual_connection", res.BoolAttr(false)},
                         {"force_fp32_output", res.BoolAttr(false)},
@@ -227,6 +229,8 @@ class NConvConcatActivationFusePattern : public paddle::drr::DrrPatternBase {
                          pat.Attr("data_format" + std::to_string(i))},
                         {"mkldnn_data_type",
                          pat.Attr("mkldnn_data_type" + std::to_string(i))},
+                        {"onednn_data_type",
+                         pat.Attr("onednn_data_type" + std::to_string(i))},
                         {"fuse_activation", res.StrAttr(activation_name_)},
                         {"fuse_residual_connection",
                          pat.Attr("fuse_residual_connection" +
@@ -261,7 +265,7 @@ class NConvConcatActivationFusePattern : public paddle::drr::DrrPatternBase {
       combine_result_in.push_back(&res.Tensor("act_out_" + std::to_string(i)));
     }
 
-    const auto &combine = res.Op(pir::CombineOp::name());
+    const auto &combine = res.Op(CombineOp::name());
 
     combine(combine_result_in, {&res.Tensor("combine_result_out")});
 
@@ -305,8 +309,9 @@ class NConvConcatHardSigmoidFusePattern : public paddle::drr::DrrPatternBase {
     return "Conv" + std::to_string(concat_count_) + "Concat" + "Level" +
            std::to_string(fused_level_) + "HardSigmoidPattern";
   }
-
-  uint32_t benefit() const override { return concat_count_; }
+  uint32_t benefit() const override {
+    return static_cast<uint32_t>(concat_count_);
+  }
 
   void operator()(paddle::drr::DrrPatternContext *ctx) const override {
     paddle::drr::SourcePattern pat = ctx->SourcePattern();
@@ -342,6 +347,8 @@ class NConvConcatHardSigmoidFusePattern : public paddle::drr::DrrPatternBase {
                          pat.Attr("data_format" + std::to_string(i))},
                         {"mkldnn_data_type",
                          pat.Attr("mkldnn_data_type" + std::to_string(i))},
+                        {"onednn_data_type",
+                         pat.Attr("onednn_data_type" + std::to_string(i))},
                         {"fuse_activation",
                          pat.Attr("fuse_activation" + std::to_string(i))},
                         {"fuse_residual_connection",
@@ -377,7 +384,7 @@ class NConvConcatHardSigmoidFusePattern : public paddle::drr::DrrPatternBase {
 
       combine_in.push_back(&pat.Tensor("conv2d_out_" + std::to_string(i)));
     }
-    const auto &combine_op = pat.Op(pir::CombineOp::name());
+    const auto &combine_op = pat.Op(CombineOp::name());
     const auto &full_op = pat.Op(paddle::dialect::FullOp::name(),
                                  {{"shape", pat.Attr("shape")},
                                   {"value", pat.Attr("value")},
@@ -422,6 +429,7 @@ class NConvConcatHardSigmoidFusePattern : public paddle::drr::DrrPatternBase {
                         {"data_format",
                          pat.Attr("data_format" + std::to_string(i))},
                         {"mkldnn_data_type", res.StrAttr("float32")},
+                        {"onednn_data_type", res.StrAttr("")},
                         {"fuse_activation", res.StrAttr("hard_sigmoid")},
                         {"fuse_residual_connection", res.BoolAttr(false)},
                         {"force_fp32_output", res.BoolAttr(false)},
@@ -446,6 +454,8 @@ class NConvConcatHardSigmoidFusePattern : public paddle::drr::DrrPatternBase {
                          pat.Attr("data_format" + std::to_string(i))},
                         {"mkldnn_data_type",
                          pat.Attr("mkldnn_data_type" + std::to_string(i))},
+                        {"onednn_data_type",
+                         pat.Attr("onednn_data_type" + std::to_string(i))},
                         {"fuse_activation", res.StrAttr("hard_sigmoid")},
                         {"fuse_residual_connection",
                          pat.Attr("fuse_residual_connection" +
@@ -480,7 +490,7 @@ class NConvConcatHardSigmoidFusePattern : public paddle::drr::DrrPatternBase {
       combine_result_in.push_back(&res.Tensor("act_out_" + std::to_string(i)));
     }
 
-    const auto &combine = res.Op(pir::CombineOp::name());
+    const auto &combine = res.Op(CombineOp::name());
 
     combine(combine_result_in, {&res.Tensor("combine_result_out")});
 
@@ -524,8 +534,9 @@ class NConvConcatGeluFusePattern : public paddle::drr::DrrPatternBase {
     return "Conv" + std::to_string(concat_count_) + "Concat" + "Level" +
            std::to_string(fused_level_) + "GeluPattern";
   }
-
-  uint32_t benefit() const override { return concat_count_; }
+  uint32_t benefit() const override {
+    return static_cast<uint32_t>(concat_count_);
+  }
 
   void operator()(paddle::drr::DrrPatternContext *ctx) const override {
     paddle::drr::SourcePattern pat = ctx->SourcePattern();
@@ -561,6 +572,8 @@ class NConvConcatGeluFusePattern : public paddle::drr::DrrPatternBase {
                          pat.Attr("data_format" + std::to_string(i))},
                         {"mkldnn_data_type",
                          pat.Attr("mkldnn_data_type" + std::to_string(i))},
+                        {"onednn_data_type",
+                         pat.Attr("onednn_data_type" + std::to_string(i))},
                         {"fuse_activation",
                          pat.Attr("fuse_activation" + std::to_string(i))},
                         {"fuse_residual_connection",
@@ -596,7 +609,7 @@ class NConvConcatGeluFusePattern : public paddle::drr::DrrPatternBase {
 
       combine_in.push_back(&pat.Tensor("conv2d_out_" + std::to_string(i)));
     }
-    const auto &combine_op = pat.Op(pir::CombineOp::name());
+    const auto &combine_op = pat.Op(CombineOp::name());
     const auto &full_op = pat.Op(paddle::dialect::FullOp::name(),
                                  {{"shape", pat.Attr("shape")},
                                   {"value", pat.Attr("value")},
@@ -647,6 +660,7 @@ class NConvConcatGeluFusePattern : public paddle::drr::DrrPatternBase {
                         {"data_format",
                          pat.Attr("data_format" + std::to_string(i))},
                         {"mkldnn_data_type", res.StrAttr("float32")},
+                        {"onednn_data_type", res.StrAttr("")},
                         {"fuse_activation", gelu},
                         {"fuse_residual_connection", res.BoolAttr(false)},
                         {"force_fp32_output", res.BoolAttr(false)},
@@ -671,6 +685,8 @@ class NConvConcatGeluFusePattern : public paddle::drr::DrrPatternBase {
                          pat.Attr("data_format" + std::to_string(i))},
                         {"mkldnn_data_type",
                          pat.Attr("mkldnn_data_type" + std::to_string(i))},
+                        {"onednn_data_type",
+                         pat.Attr("onednn_data_type" + std::to_string(i))},
                         {"fuse_activation", gelu},
                         {"fuse_residual_connection",
                          pat.Attr("fuse_residual_connection" +
@@ -705,7 +721,7 @@ class NConvConcatGeluFusePattern : public paddle::drr::DrrPatternBase {
       combine_result_in.push_back(&res.Tensor("act_out_" + std::to_string(i)));
     }
 
-    const auto &combine = res.Op(pir::CombineOp::name());
+    const auto &combine = res.Op(CombineOp::name());
 
     combine(combine_result_in, {&res.Tensor("combine_result_out")});
 
@@ -749,8 +765,9 @@ class NConvConcatClipFusePattern : public paddle::drr::DrrPatternBase {
     return "Conv" + std::to_string(concat_count_) + "Concat" + "Level" +
            std::to_string(fused_level_) + "ClipPattern";
   }
-
-  uint32_t benefit() const override { return concat_count_; }
+  uint32_t benefit() const override {
+    return static_cast<uint32_t>(concat_count_);
+  }
 
   void operator()(paddle::drr::DrrPatternContext *ctx) const override {
     paddle::drr::SourcePattern pat = ctx->SourcePattern();
@@ -787,6 +804,8 @@ class NConvConcatClipFusePattern : public paddle::drr::DrrPatternBase {
                          pat.Attr("data_format" + std::to_string(i))},
                         {"mkldnn_data_type",
                          pat.Attr("mkldnn_data_type" + std::to_string(i))},
+                        {"onednn_data_type",
+                         pat.Attr("onednn_data_type" + std::to_string(i))},
                         {"fuse_activation",
                          pat.Attr("fuse_activation" + std::to_string(i))},
                         {"fuse_residual_connection",
@@ -822,7 +841,7 @@ class NConvConcatClipFusePattern : public paddle::drr::DrrPatternBase {
 
       combine_in.push_back(&pat.Tensor("conv2d_out_" + std::to_string(i)));
     }
-    const auto &combine_op = pat.Op(pir::CombineOp::name());
+    const auto &combine_op = pat.Op(CombineOp::name());
     const auto &full_op = pat.Op(paddle::dialect::FullOp::name(),
                                  {{"shape", pat.Attr("shape")},
                                   {"value", pat.Attr("value")},
@@ -883,6 +902,7 @@ class NConvConcatClipFusePattern : public paddle::drr::DrrPatternBase {
                         {"data_format",
                          pat.Attr("data_format" + std::to_string(i))},
                         {"mkldnn_data_type", res.StrAttr("float32")},
+                        {"onednn_data_type", res.StrAttr("")},
                         {"fuse_activation", res.StrAttr("clip")},
                         {"fuse_residual_connection", res.BoolAttr(false)},
                         {"force_fp32_output", res.BoolAttr(false)},
@@ -907,6 +927,8 @@ class NConvConcatClipFusePattern : public paddle::drr::DrrPatternBase {
                          pat.Attr("data_format" + std::to_string(i))},
                         {"mkldnn_data_type",
                          pat.Attr("mkldnn_data_type" + std::to_string(i))},
+                        {"onednn_data_type",
+                         pat.Attr("onednn_data_type" + std::to_string(i))},
                         {"fuse_activation", res.StrAttr("clip")},
                         {"fuse_residual_connection",
                          pat.Attr("fuse_residual_connection" +
@@ -941,7 +963,7 @@ class NConvConcatClipFusePattern : public paddle::drr::DrrPatternBase {
       combine_result_in.push_back(&res.Tensor("act_out_" + std::to_string(i)));
     }
 
-    const auto &combine = res.Op(pir::CombineOp::name());
+    const auto &combine = res.Op(CombineOp::name());
 
     combine(combine_result_in, {&res.Tensor("combine_result_out")});
 
@@ -961,13 +983,13 @@ class NConvConcatClipFusePattern : public paddle::drr::DrrPatternBase {
   }
 };
 
-class ConvConcatActFusePass : public pir::PatternRewritePass {
+class ConvConcatActFusePass : public PatternRewritePass {
  public:
   ConvConcatActFusePass()
-      : pir::PatternRewritePass("conv_concat_activation_mkldnn_fuse_pass", 2) {}
+      : PatternRewritePass("conv_concat_activation_mkldnn_fuse_pass", 2) {}
 
-  pir::RewritePatternSet InitializePatterns(pir::IrContext *context) override {
-    pir::RewritePatternSet ps(context);
+  RewritePatternSet InitializePatterns(IrContext *context) override {
+    RewritePatternSet ps(context);
     std::vector<std::string> supported_activations_name = {"abs",
                                                            "sqrt",
                                                            "mish",
@@ -1026,10 +1048,6 @@ class ConvConcatActFusePass : public pir::PatternRewritePass {
   }
 };
 
-}  // namespace
-
-namespace pir {
-
 std::unique_ptr<Pass> CreateConv2dConcatActFusePass() {
   // /**
   //  * This pass must execution before conv_activation_mkldnn_fuse_pass
@@ -1047,4 +1065,4 @@ std::unique_ptr<Pass> CreateConv2dConcatActFusePass() {
 }  // namespace pir
 
 REGISTER_IR_PASS(conv_concat_activation_onednn_fuse_pass,
-                 ConvConcatActFusePass);
+                 pir::ConvConcatActFusePass);

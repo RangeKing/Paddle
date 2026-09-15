@@ -337,15 +337,15 @@ class ProgramHelper:
 
     def _verify_optimizer(self, optimizer):
         assert optimizer is not None
-        assert hasattr(
-            optimizer, "minimize"
-        ), "Optimizer must have minimize() method."
-        assert (
-            self.proxy_layer.mode == 'train'
-        ), f"Required mode == 'train', but received '{self.proxy_layer.mode}'"
-        assert (
-            len(self.loss_vars) == 1
-        ), f"Required len(loss_vars) == 1, but received len(loss_vars) = {len(self.loss_vars)}"
+        assert hasattr(optimizer, "minimize"), (
+            "Optimizer must have minimize() method."
+        )
+        assert self.proxy_layer.mode == 'train', (
+            f"Required mode == 'train', but received '{self.proxy_layer.mode}'"
+        )
+        assert len(self.loss_vars) == 1, (
+            f"Required len(loss_vars) == 1, but received len(loss_vars) = {len(self.loss_vars)}"
+        )
 
     def to(self, mode):
         """
@@ -353,9 +353,9 @@ class ProgramHelper:
         """
         assert mode in ['train', 'eval', 'predict']
         func = getattr(self.proxy_layer, '_' + mode)
-        assert isinstance(
-            func, StaticFunction
-        ), "Please call build_program(mode) firstly."
+        assert isinstance(func, StaticFunction), (
+            "Please call build_program(mode) firstly."
+        )
         self.proxy_layer.set_mode(mode)
 
     def static_func(self):
@@ -410,7 +410,7 @@ class ProgramHelper:
             if param is None:
                 continue
             if param.name not in dy_param_name_to_pir_param_name:
-                # Release the reduntant params
+                # Release the redundant params
                 param.get_tensor()._clear()
                 continue
             if not param._is_initialized():
@@ -419,9 +419,9 @@ class ProgramHelper:
                 value_name = dy_param_name_to_pir_param_name[param.name]
                 value = value_name_to_value[value_name]
                 # get param_var's dist_attr
-                assert (
-                    value.is_dist_dense_tensor_type()
-                ), f"param [{value.name}] is not dist tensor type"
+                assert value.is_dist_dense_tensor_type(), (
+                    f"param [{value.name}] is not dist tensor type"
+                )
                 dist_attr = {
                     "dims_mapping": value.dist_attr().dims_mapping,
                     "process_shape": value.dist_attr().process_mesh.shape,
@@ -454,18 +454,20 @@ class ProgramHelper:
         ):
             paddle.disable_static()
             barrier_tensor = paddle.full([1], 1, dtype="int32")
-            paddle._legacy_C_ops.barrier(
-                barrier_tensor, barrier_tensor, 'ring_id', 0
-            )
+            # barrier is not available in xpu for now
+            if not paddle.framework.core.is_compiled_with_xpu():
+                paddle._legacy_C_ops.barrier(
+                    barrier_tensor, barrier_tensor, 'ring_id', 0
+                )
             paddle.enable_static()
 
     def init(self, main_program, place, dist_context):
         if self.lazy_init:
             return
 
-        amp_stragety = dist_context.strategy.amp
-        amp_config = copy.deepcopy(amp_stragety.to_dict())
-        need_cast_paramter = amp_stragety.enable and amp_config["level"] in [
+        amp_strategy = dist_context.strategy.amp
+        amp_config = copy.deepcopy(amp_strategy.to_dict())
+        need_cast_parameter = amp_strategy.enable and amp_config["level"] in [
             "o2",
             "o3",
         ]
@@ -493,7 +495,7 @@ class ProgramHelper:
             if param is None:
                 continue
             if param.name not in main_program.global_block().vars:
-                # Release the reduntant params
+                # Release the redundant params
                 param.get_tensor()._clear()
                 continue
             if not param._is_initialized():
@@ -516,14 +518,14 @@ class ProgramHelper:
                     param.numpy(), dist_attr
                 )
                 param_tensor.set(sliced_param, place)
-                if not need_cast_paramter:
+                if not need_cast_parameter:
                     param.get_tensor()._clear()
             elif param.is_dist():
                 dense_tensor = global_scope().var(param.name).get_tensor()
                 dense_tensor._share_data_with(param.get_tensor().get_tensor())
 
         # transform the parameter in eager mode for amp.
-        if need_cast_paramter:
+        if need_cast_parameter:
             for param in self.concrete_program.parameters:
                 amp_dtype = amp_config["dtype"]
                 scope_var = global_scope().find_var(param.name)
@@ -534,9 +536,9 @@ class ProgramHelper:
                 if param.dtype in [paddle.float16, paddle.bfloat16]:
                     continue
                 scope_tensor = global_scope().var(param.name).get_tensor()
-                assert (
-                    scope_var and scope_tensor._is_initialized()
-                ), f"Parameter: {param.name} is not put into global_scope or not initialized."
+                assert scope_var and scope_tensor._is_initialized(), (
+                    f"Parameter: {param.name} is not put into global_scope or not initialized."
+                )
                 param_used = param
                 # For the params without dist_attr.
                 # NOTE(lizhiyu): In principle, each param should have dist_attr.
@@ -562,21 +564,25 @@ class ProgramHelper:
                     param.get_tensor()._clear()
                 with paddle.base.dygraph.guard():
                     if amp_dtype == "float16":
-                        with paddle.no_grad():
-                            with paddle.base.framework._dygraph_place_guard(
+                        with (
+                            paddle.no_grad(),
+                            paddle.base.framework._dygraph_place_guard(
                                 place=place
-                            ):
-                                t_casted = param_used.cast(
-                                    dtype=core.VarDesc.VarType.FP16
-                                )
+                            ),
+                        ):
+                            t_casted = param_used.cast(
+                                dtype=core.VarDesc.VarType.FP16
+                            )
                     elif amp_dtype == "bfloat16":
-                        with paddle.no_grad():
-                            with paddle.base.framework._dygraph_place_guard(
+                        with (
+                            paddle.no_grad(),
+                            paddle.base.framework._dygraph_place_guard(
                                 place=place
-                            ):
-                                t_casted = param_used.cast(
-                                    dtype=core.VarDesc.VarType.BF16
-                                )
+                            ),
+                        ):
+                            t_casted = param_used.cast(
+                                dtype=core.VarDesc.VarType.BF16
+                            )
                     # NOTE(lizhiyu): Clear the origin param. Don't use `param_used.get_tensor().get_tensor()._clear()` to
                     #                clear the `DistTensor`, because it can't clear the `_holder`,
                     #                which `param_used.get_tensor().get_tensor()` will copy one `DenseTensor`.
@@ -596,9 +602,11 @@ class ProgramHelper:
         ):
             paddle.disable_static()
             barrier_tensor = paddle.full([1], 1, dtype="int32")
-            paddle._legacy_C_ops.barrier(
-                barrier_tensor, barrier_tensor, 'ring_id', 0
-            )
+            # barrier is not available in xpu for now
+            if not paddle.framework.core.is_compiled_with_xpu():
+                paddle._legacy_C_ops.barrier(
+                    barrier_tensor, barrier_tensor, 'ring_id', 0
+                )
             paddle.enable_static()
 
     def cache_whole_graph_dist_attr(self, all_params):

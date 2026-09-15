@@ -84,7 +84,7 @@ struct WorkQueueOptions {
   }
 
   // throw an exception if there is an invalid option
-  void Validate() const;
+  PADDLE_API void Validate() const;
 
   std::string name;
   size_t num_threads;
@@ -118,9 +118,9 @@ class WorkQueue {
 
   // Higher cost than AddTask
   template <typename F, typename... Args>
-  std::future<typename std::result_of<F(Args...)>::type> AddAwaitableTask(
+  std::future<std::invoke_result_t<F, Args...>> AddAwaitableTask(
       F&& f, Args&&... args) {
-    using ReturnType = typename std::result_of<F(Args...)>::type;
+    using ReturnType = std::invoke_result_t<F, Args...>;
     std::function<ReturnType()> task =
         std::bind(std::forward<F>(f), std::forward<Args>(args)...);
     std::promise<ReturnType> prom;
@@ -157,9 +157,9 @@ class WorkQueueGroup {
 
   // Higher cost than AddTask
   template <typename F, typename... Args>
-  std::future<typename std::result_of<F(Args...)>::type> AddAwaitableTask(
+  std::future<std::invoke_result_t<F, Args...>> AddAwaitableTask(
       size_t queue_idx, F&& f, Args&&... args) {
-    using ReturnType = typename std::result_of<F(Args...)>::type;
+    using ReturnType = std::invoke_result_t<F, Args...>;
     std::function<ReturnType()> task =
         std::bind(std::forward<F>(f), std::forward<Args>(args)...);
     std::promise<ReturnType> prom;
@@ -184,13 +184,13 @@ class WorkQueueGroup {
   std::vector<WorkQueueOptions> queues_options_;
 };
 
-std::unique_ptr<WorkQueue> CreateSingleThreadedWorkQueue(
+PADDLE_API std::unique_ptr<WorkQueue> CreateSingleThreadedWorkQueue(
     const WorkQueueOptions& options);
 
-std::unique_ptr<WorkQueue> CreateMultiThreadedWorkQueue(
+PADDLE_API std::unique_ptr<WorkQueue> CreateMultiThreadedWorkQueue(
     const WorkQueueOptions& options);
 
-std::unique_ptr<WorkQueueGroup> CreateWorkQueueGroup(
+PADDLE_API std::unique_ptr<WorkQueueGroup> CreateWorkQueueGroup(
     const std::vector<WorkQueueOptions>& queues_options);
 
 }  // namespace framework

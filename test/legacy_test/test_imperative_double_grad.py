@@ -11,11 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 import unittest
 from unittest import TestCase
 
 import numpy as np
+from op_test import get_device, is_custom_device
 
 import paddle
 import paddle.nn.functional as F
@@ -402,7 +402,7 @@ class TestDygraphDoubleGrad(TestCase):
 
         self.assertFalse(dx_actual.stop_gradient)
 
-        # Theoritical result based on math calculation
+        # Theoretical result based on math calculation
         dx_expected = (
             1.0 / float(numel) * (np.maximum(x_np, 0) + 1) * (x_np > 0) * 2
         ).astype('float32')
@@ -749,8 +749,8 @@ class TestDygraphDoubleGradMatmul(TestCase):
 
         expected_results = expected()
         places = ["cpu"]
-        if paddle.is_compiled_with_cuda():
-            places.append("gpu")
+        if paddle.is_compiled_with_cuda() or is_custom_device():
+            places.append(get_device())
         for place in places:
             paddle.device.set_device(place)
             actual_results = actual()
@@ -809,8 +809,8 @@ class TestDygraphDoubleGradMatmul(TestCase):
 
         expected_results = expected()
         places = ["cpu"]
-        if paddle.is_compiled_with_cuda():
-            places.append("gpu")
+        if paddle.is_compiled_with_cuda() or is_custom_device():
+            places.append(get_device())
         for place in places:
             paddle.device.set_device(place)
             actual_results = actual()
@@ -866,8 +866,8 @@ class TestDygraphDoubleGradMatmul(TestCase):
 
         expected_results = expected()
         places = ["cpu"]
-        if paddle.is_compiled_with_cuda():
-            places.append("gpu")
+        if paddle.is_compiled_with_cuda() or is_custom_device():
+            places.append(get_device())
         for place in places:
             paddle.device.set_device(place)
             actual_results = actual()
@@ -923,8 +923,8 @@ class TestDygraphDoubleGradMatmul(TestCase):
 
         expected_results = expected()
         places = ["cpu"]
-        if paddle.is_compiled_with_cuda():
-            places.append("gpu")
+        if paddle.is_compiled_with_cuda() or is_custom_device():
+            places.append(get_device())
         for place in places:
             paddle.device.set_device(place)
             actual_results = actual()
@@ -980,8 +980,8 @@ class TestDygraphDoubleGradMatmul(TestCase):
 
         expected_results = expected()
         places = ["cpu"]
-        if paddle.is_compiled_with_cuda():
-            places.append("gpu")
+        if paddle.is_compiled_with_cuda() or is_custom_device():
+            places.append(get_device())
         for place in places:
             paddle.device.set_device(place)
             actual_results = actual()
@@ -1034,8 +1034,8 @@ class TestDygraphDoubleGradMatmul(TestCase):
 
         expected_results = expected()
         places = ["cpu"]
-        if paddle.is_compiled_with_cuda():
-            places.append("gpu")
+        if paddle.is_compiled_with_cuda() or is_custom_device():
+            places.append(get_device())
         for place in places:
             paddle.device.set_device(place)
             actual_results = actual()
@@ -1100,8 +1100,8 @@ class TestDygraphDoubleGradMatmul(TestCase):
 
         expected_results = expected()
         places = ["cpu"]
-        if paddle.is_compiled_with_cuda():
-            places.append("gpu")
+        if (paddle.is_compiled_with_cuda() or is_custom_device()):
+            places.append(get_device())
         for place in places:
             paddle.device.set_device(place)
             actual_results = actual()
@@ -1162,8 +1162,8 @@ class TestDygraphDoubleGradMatmul(TestCase):
 
         expected_results = expected()
         places = ["cpu"]
-        if paddle.is_compiled_with_cuda():
-            places.append("gpu")
+        if (paddle.is_compiled_with_cuda() or is_custom_device()):
+            places.append(get_device())
         for place in places:
             paddle.device.set_device(place)
             actual_results = actual()
@@ -1204,8 +1204,7 @@ class TestDygraphDoubleGradMatmul(TestCase):
             z = paddle.grad(v, x, create_graph=True)[0]
             zz = paddle.grad(z, x, create_graph=True)[0]
 
-        with self.assertRaises(ValueError):
-            test()
+            np.testing.assert_equal(zz.numpy(), paddle.zeros_like(zz).numpy())
 
 
 if __name__ == '__main__':

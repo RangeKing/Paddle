@@ -30,8 +30,7 @@ void TransposeKernel(const Context& dev_ctx,
   // as we are producing non-oneDNN result
   auto x_dims = x.dims();
   if ((x_dims.size() >= 3) &&
-      (phi::OneDNNContext::tls().get_cur_paddle_data_layout() ==
-       phi::DataLayout::kNHWC)) {
+      (OneDNNContext::tls().get_cur_paddle_data_layout() == DataLayout::NHWC)) {
     int axis_size = static_cast<int>(axis.size());
     std::vector<int> formatted_axis = axis;
     std::vector<int> count(axis_size, 0);
@@ -40,14 +39,13 @@ void TransposeKernel(const Context& dev_ctx,
         formatted_axis[i] = axis[i] + axis_size;
       }
     }
-    auto dims = common::vectorize<int>(x_dims);
+    auto dims = vectorize<int>(x_dims);
 
     std::rotate(dims.begin() + 1, dims.begin() + 2, dims.end());
     x_dims = x_dims.reshape(dims);
-    VLOG(3)
-        << "Rotating Shape in Transpose from: kMKLDNN to: kNHWC output_shape";
+    VLOG(3) << "Rotating Shape in Transpose from: ONEDNN to: NHWC output_shape";
 
-    phi::DDim out_dims(x_dims);
+    DDim out_dims(x_dims);
     for (size_t i = 0; i < axis.size(); i++) {
       out_dims[i] = x_dims[formatted_axis[i]];  // NOLINT
     }
@@ -61,20 +59,22 @@ void TransposeKernel(const Context& dev_ctx,
 
   if (axis.size() == 1 || axis.empty()) {
     Copy<Context>(dev_ctx, x, x.place(), false, out);
-    out->set_mem_desc(x.mem_desc());
+    phi::funcs::SetOneDNNMemDesc(out, phi::funcs::GetOneDNNMemDesc(x));
     return;
   }
 
-  auto x_vec_dims = common::vectorize(x.dims());
+  auto x_vec_dims = vectorize(x.dims());
   auto x_type = funcs::ToOneDNNDataType(x.dtype());
   funcs::ReorderOneDNNHandler reorder_handler(
       x_vec_dims, x.dtype(), x_type, dev_ctx.GetEngine());
   auto reorder_src_memory_p = reorder_handler.AcquireSrcMemory(
-      x.mem_desc(), funcs::to_void_cast(x.data<T>()));
+      phi::funcs::GetOneDNNMemDesc(x), funcs::to_void_cast(x.data<T>()));
 
   auto fake_strides = funcs::FakeTransposeStrides(x_vec_dims, axis);
-  auto dst_md = dnnl::memory::desc(
-      x_vec_dims, x.mem_desc().get_data_type(), fake_strides);
+  auto dst_md =
+      dnnl::memory::desc(x_vec_dims,
+                         phi::funcs::GetOneDNNMemDesc(x).get_data_type(),
+                         fake_strides);
   auto reorder_dst_memory_p =
       reorder_handler.AcquireDstMemory(out, dst_md, dev_ctx.GetPlace());
   auto reorder_p = reorder_handler.AcquireReorder(reorder_dst_memory_p,
@@ -83,8 +83,9 @@ void TransposeKernel(const Context& dev_ctx,
   auto& astream = OneDNNContext::tls().get_stream();
   reorder_p->execute(astream, *reorder_src_memory_p, *reorder_dst_memory_p);
   astream.wait();
-  out->set_mem_desc(reorder_dst_memory_p->get_desc().permute_axes(
-      funcs::TransposeToPermuteAxes(axis)));
+  phi::funcs::SetOneDNNMemDesc(out,
+                               reorder_dst_memory_p->get_desc().permute_axes(
+                                   funcs::TransposeToPermuteAxes(axis)));
 }
 }  // namespace phi
 
@@ -95,4 +96,4 @@ PD_REGISTER_KERNEL(transpose,
                    float,
                    uint8_t,
                    int8_t,
-                   phi::dtype::bfloat16) {}
+                   phi::bfloat16) {}

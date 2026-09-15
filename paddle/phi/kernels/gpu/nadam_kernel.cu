@@ -36,7 +36,7 @@ __global__ void NAdamGPUKernel(const T* param,
                                MT beta2,
                                MT epsilon,
                                MT momentum_decay,
-                               int num,
+                               int64_t num,
                                T* param_out,
                                MT* momentum_decay_pow_out,
                                MT* beta2_pow_out,
@@ -46,9 +46,11 @@ __global__ void NAdamGPUKernel(const T* param,
                                MT* master_param_out) {
   MT lr_scalar = static_cast<MT>(learning_rate[0]);
 
-  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t idx =
+      static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x) +
+      static_cast<int64_t>(threadIdx.x);
 
-  for (int index = idx; index < num; index += gridDim.x * blockDim.x) {
+  for (int64_t index = idx; index < num; index += gridDim.x * blockDim.x) {
     // load and cast input to MT
     MT d_param =
         master_param ? master_param[index] : static_cast<MT>(param[index]);
@@ -112,7 +114,7 @@ void NAdamKernel(const Context& dev_ctx,
                  const DenseTensor& mu_product,
                  const DenseTensor& moment1,
                  const DenseTensor& moment2,
-                 const paddle::optional<DenseTensor>& master_param,
+                 const optional<DenseTensor>& master_param,
                  float beta1,
                  float beta2,
                  float epsilon,
@@ -125,43 +127,42 @@ void NAdamKernel(const Context& dev_ctx,
                  DenseTensor* moment1_out,
                  DenseTensor* moment2_out,
                  DenseTensor* master_param_out) {
-  using MPDType = typename phi::dtype::template MPTypeTrait<T>::Type;
+  using MT = typename dtype::template MPTypeTrait<T>::Type;
   T* param_out_data = dev_ctx.template Alloc<T>(param_out);
 
-  MPDType* momentum_decay_pow_out_data =
-      dev_ctx.template Alloc<MPDType>(momentum_decay_pow_out);
-  MPDType* beta2_pow_out_data = dev_ctx.template Alloc<MPDType>(beta2_pow_out);
-  MPDType* mu_product_out_data =
-      dev_ctx.template Alloc<MPDType>(mu_product_out);
+  MT* momentum_decay_pow_out_data =
+      dev_ctx.template Alloc<MT>(momentum_decay_pow_out);
+  MT* beta2_pow_out_data = dev_ctx.template Alloc<MT>(beta2_pow_out);
+  MT* mu_product_out_data = dev_ctx.template Alloc<MT>(mu_product_out);
 
-  MPDType* moment1_out_data = dev_ctx.template Alloc<MPDType>(moment1_out);
-  MPDType* moment2_out_data = dev_ctx.template Alloc<MPDType>(moment2_out);
+  MT* moment1_out_data = dev_ctx.template Alloc<MT>(moment1_out);
+  MT* moment2_out_data = dev_ctx.template Alloc<MT>(moment2_out);
 
-  const MPDType* master_in_data =
-      multi_precision ? master_param->data<MPDType>() : nullptr;
-  MPDType* master_out_data =
-      multi_precision ? dev_ctx.template Alloc<MPDType>(master_param_out)
-                      : nullptr;
+  const MT* master_in_data =
+      multi_precision ? master_param->data<MT>() : nullptr;
+  MT* master_out_data =
+      multi_precision ? dev_ctx.template Alloc<MT>(master_param_out) : nullptr;
 
-  MPDType beta1_ = static_cast<MPDType>(beta1);
-  MPDType beta2_ = static_cast<MPDType>(beta2);
-  MPDType epsilon_ = static_cast<MPDType>(epsilon);
-  MPDType momentum_decay_ = static_cast<MPDType>(momentum_decay);
+  MT beta1_ = static_cast<MT>(beta1);
+  MT beta2_ = static_cast<MT>(beta2);
+  MT epsilon_ = static_cast<MT>(epsilon);
+  MT momentum_decay_ = static_cast<MT>(momentum_decay);
 
-  int numel = param.numel();
+  int64_t numel = param.numel();
   int block = 512;
-  int grid = (param.numel() + block - 1) / block;
+  int64_t max_grid = dev_ctx.GetCUDAMaxGridDimSize()[0];
+  int grid = std::min((param.numel() + block - 1) / block, max_grid);
   auto stream = dev_ctx.stream();
 
-  NAdamGPUKernel<T, MPDType>
+  NAdamGPUKernel<T, MT>
       <<<block, grid, 0, stream>>>(param.data<T>(),
                                    grad.data<T>(),
-                                   learning_rate.data<MPDType>(),
-                                   momentum_decay_pow.data<MPDType>(),
-                                   beta2_pow.data<MPDType>(),
-                                   mu_product.data<MPDType>(),
-                                   moment1.data<MPDType>(),
-                                   moment2.data<MPDType>(),
+                                   learning_rate.data<MT>(),
+                                   momentum_decay_pow.data<MT>(),
+                                   beta2_pow.data<MT>(),
+                                   mu_product.data<MT>(),
+                                   moment1.data<MT>(),
+                                   moment2.data<MT>(),
                                    master_in_data,
                                    beta1_,
                                    beta2_,
@@ -178,10 +179,5 @@ void NAdamKernel(const Context& dev_ctx,
 }
 }  // namespace phi
 
-PD_REGISTER_KERNEL(nadam,
-                   GPU,
-                   ALL_LAYOUT,
-                   phi::NAdamKernel,
-                   float,
-                   double,
-                   phi::dtype::float16) {}
+PD_REGISTER_KERNEL(
+    nadam, GPU, ALL_LAYOUT, phi::NAdamKernel, float, double, phi::float16) {}

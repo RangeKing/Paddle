@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cstring>
 #include <string>
 
 #include "paddle/phi/core/kernel_registry.h"
@@ -37,33 +38,33 @@ namespace phi {
   const int D = wh_dims[0];              \
   const int D4 = wh_dims[1]
 
-#define INIT_OTHER_DEFINES                                             \
-  const T *x_data = x->data<T>();                                      \
-  const T *wx_data = wx->data<T>();                                    \
-  const T *wh_data = wh->data<T>();                                    \
-  /* diagonal weight*/                                                 \
-  const T *wp_data = bias->data<T>() + D4;                             \
-  /* for peephole only*/                                               \
-  T *checked_cell_data = nullptr;                                      \
-  if (use_peepholes) {                                                 \
-    /* w_ic * Ct-1, w_fc * Ct-1  ; w_oc * Ct => ih*/                   \
-    checked_cell_data = dev_ctx.template Alloc<T>(checked_cell);       \
-  }                                                                    \
-  const phi::jit::lstm_attr_t attr(                                    \
-      D,                                                               \
-      phi::jit::to_kerneltype(gate_activation),                        \
-      phi::jit::to_kerneltype(candidate_activation),                   \
-      phi::jit::to_kerneltype(cell_activation),                        \
-      use_peepholes);                                                  \
-  phi::jit::lstm_t one_step;                                           \
-  one_step.wp = wp_data;                                               \
-  one_step.checked = checked_cell_data;                                \
-  auto ComputeC1H1 = phi::jit::KernelFuncs<phi::jit::LSTMC1H1Tuple<T>, \
-                                           phi::CPUPlace>::Cache()     \
-                         .At(attr);                                    \
-  auto ComputeCtHt = phi::jit::KernelFuncs<phi::jit::LSTMCtHtTuple<T>, \
-                                           phi::CPUPlace>::Cache()     \
-                         .At(attr)
+#define INIT_OTHER_DEFINES                                                     \
+  const T *x_data = x->data<T>();                                              \
+  const T *wx_data = wx->data<T>();                                            \
+  const T *wh_data = wh->data<T>();                                            \
+  /* diagonal weight*/                                                         \
+  const T *wp_data = bias->data<T>() + D4;                                     \
+  /* for peephole only*/                                                       \
+  T *checked_cell_data = nullptr;                                              \
+  if (use_peepholes) {                                                         \
+    /* w_ic * Ct-1, w_fc * Ct-1  ; w_oc * Ct => ih*/                           \
+    checked_cell_data = dev_ctx.template Alloc<T>(checked_cell);               \
+  }                                                                            \
+  const phi::jit::lstm_attr_t attr(                                            \
+      D,                                                                       \
+      phi::jit::to_kerneltype(gate_activation),                                \
+      phi::jit::to_kerneltype(candidate_activation),                           \
+      phi::jit::to_kerneltype(cell_activation),                                \
+      use_peepholes);                                                          \
+  phi::jit::lstm_t one_step;                                                   \
+  one_step.wp = wp_data;                                                       \
+  one_step.checked = checked_cell_data;                                        \
+  auto ComputeC1H1 =                                                           \
+      phi::jit::KernelFuncs<phi::jit::LSTMC1H1Tuple<T>, CPUPlace>::Cache().At( \
+          attr);                                                               \
+  auto ComputeCtHt =                                                           \
+      phi::jit::KernelFuncs<phi::jit::LSTMCtHtTuple<T>, CPUPlace>::Cache().At( \
+          attr)
 
 // Wh GEMM
 #define GEMM_WH_ADDON(bs, prev, out) \
@@ -87,8 +88,8 @@ void SeqCompute(const Context &dev_ctx,
                 const DenseTensor &weight_x_in,
                 const DenseTensor &weight_h_in,
                 const DenseTensor &bias_in,
-                const paddle::optional<DenseTensor> &h0_in,
-                const paddle::optional<DenseTensor> &c0_in,
+                const optional<DenseTensor> &h0_in,
+                const optional<DenseTensor> &c0_in,
                 bool use_peepholes,
                 bool is_reverse,
                 bool use_seq,
@@ -118,9 +119,9 @@ void SeqCompute(const Context &dev_ctx,
   T *xx_data = dev_ctx.template Alloc<T>(xx);
   T *h_out_data = dev_ctx.template Alloc<T>(hidden_out);
   T *c_out_data = dev_ctx.template Alloc<T>(cell_out);
-  auto blas = phi::funcs::GetBlas<Context, T>(dev_ctx);
+  auto blas = funcs::GetBlas<Context, T>(dev_ctx);
 
-  phi::funcs::FCFunctor<Context, T> fc;
+  funcs::FCFunctor<Context, T> fc;
   fc(dev_ctx, total_T, D4, M, x_data, wx_data, xx_data, bias->data<T>());
 
   int xx_offset = D4;
@@ -180,8 +181,8 @@ void BatchCompute(const Context &dev_ctx,
                   const DenseTensor &weight_x_in,
                   const DenseTensor &weight_h_in,
                   const DenseTensor &bias_in,
-                  const paddle::optional<DenseTensor> &h0_in,
-                  const paddle::optional<DenseTensor> &c0_in,
+                  const optional<DenseTensor> &h0_in,
+                  const optional<DenseTensor> &c0_in,
                   bool use_peepholes,
                   bool is_reverse,
                   bool use_seq,
@@ -243,9 +244,9 @@ void BatchCompute(const Context &dev_ctx,
   dev_ctx.template Alloc<T>(hidden_out);
   dev_ctx.template Alloc<T>(cell_out);
 
-  phi::funcs::DenseTensor2BatchFunctor<Context, T> to_batch;
-  auto blas = phi::funcs::GetBlas<Context, T>(dev_ctx);
-  phi::funcs::FCFunctor<Context, T> fc;
+  funcs::DenseTensor2BatchFunctor<Context, T> to_batch;
+  auto blas = funcs::GetBlas<Context, T>(dev_ctx);
+  funcs::FCFunctor<Context, T> fc;
   if (M > D4) {
     fc(dev_ctx, x_dims[0], D4, M, x_data, wx_data, xx_data, bias->data<T>());
     to_batch(dev_ctx, *xx, batched_input, true, is_reverse);
@@ -279,10 +280,10 @@ void BatchCompute(const Context &dev_ctx,
     const T *c0_data = c0->data<T>();
     prev_h_data = reordered_h0_data;
     prev_c_data = reordered_c0_data;
-    size_t sz = D;
+    size_t sz_bytes = sizeof(T) * D;
     for (int i = 0; i < max_bs; ++i) {
-      blas.VCOPY(sz, h0_data + seq_order[i] * D, reordered_h0_data);
-      blas.VCOPY(sz, c0_data + seq_order[i] * D, reordered_c0_data);
+      std::memcpy(reordered_h0_data, h0_data + seq_order[i] * D, sz_bytes);
+      std::memcpy(reordered_c0_data, c0_data + seq_order[i] * D, sz_bytes);
       reordered_h0_data += D;
       reordered_c0_data += D;
     }
@@ -342,7 +343,7 @@ void BatchCompute(const Context &dev_ctx,
     batched_input_data = cur_in_data;
   }
 
-  phi::funcs::Batch2DenseTensorFunctor<Context, T> to_seq;
+  funcs::Batch2DenseTensorFunctor<Context, T> to_seq;
   batched_h_out->set_lod(batched_lod);
   to_seq(dev_ctx, *batched_h_out, hidden_out);
   batched_c_out->set_lod(batched_lod);
@@ -355,8 +356,8 @@ void FusionLSTMKernel(const Context &dev_ctx,
                       const DenseTensor &weight_x_in,
                       const DenseTensor &weight_h_in,
                       const DenseTensor &bias_in,
-                      const paddle::optional<DenseTensor> &h0_in,
-                      const paddle::optional<DenseTensor> &c0_in,
+                      const optional<DenseTensor> &h0_in,
+                      const optional<DenseTensor> &c0_in,
                       bool use_peepholes,
                       bool is_reverse,
                       bool use_seq,

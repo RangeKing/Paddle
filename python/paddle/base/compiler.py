@@ -135,7 +135,7 @@ class CompiledProgram:
         program_or_graph (Graph|Program): This argument is the Program or Graph
             being executed.
         build_strategy(BuildStrategy): This argument is used to compile the
-            program or graph with the specified options, such as operators' fusion
+            program or graph with the specified options, such as operator's fusion
             in the computational graph and memory optimization during the execution
             of the computational graph. For more information about build_strategy,
             please refer to :code:`paddle.static.BuildStrategy`. The default is None.
@@ -144,8 +144,9 @@ class CompiledProgram:
         CompiledProgram
 
     Example:
-        .. code-block:: python
+        .. code-block:: pycon
 
+            >>> # doctest: +SKIP("paddle.static.CompiledProgram doesn't support PIR mode")
             >>> import numpy
             >>> import paddle
             >>> import paddle.static as static
@@ -161,13 +162,14 @@ class CompiledProgram:
             >>> paddle.optimizer.SGD(learning_rate=0.01).minimize(loss)
 
             >>> exe.run(static.default_startup_program())
-            >>> compiled_prog = static.CompiledProgram(
-            ...     static.default_main_program())
+            >>> compiled_prog = static.CompiledProgram(static.default_main_program())
 
             >>> x = numpy.random.random(size=(10, 1)).astype('float32')
-            >>> loss_data, = exe.run(compiled_prog,
-            ...                     feed={"X": x},
-            ...                     fetch_list=[loss.name])
+            >>> (loss_data,) = exe.run(
+            ...     compiled_prog,
+            ...     feed={"X": x},
+            ...     fetch_list=[loss.name],
+            ... )
     """
 
     def __init__(
@@ -205,9 +207,9 @@ class CompiledProgram:
         Returns:
             self
         """
-        assert (
-            not self._is_inference
-        ), "Already compiled with inference, cannot be recompiled."
+        assert not self._is_inference, (
+            "Already compiled with inference, cannot be recompiled."
+        )
 
         assert any(
             [
@@ -238,9 +240,9 @@ class CompiledProgram:
             assert scope is not None, ""
             self._local_scopes = []
 
-        assert isinstance(
-            places, (list, tuple)
-        ), f"Currently, The places type can only be list or tuple, but the input type is {type(places)}."
+        assert isinstance(places, (list, tuple)), (
+            f"Currently, The places type can only be list or tuple, but the input type is {type(places)}."
+        )
 
         if self._build_strategy is None:
             self._build_strategy = BuildStrategy()
@@ -255,9 +257,9 @@ class CompiledProgram:
         ):
             tps = self._program._trainers_endpoints
 
-            assert self._build_strategy.num_trainers == len(
-                tps
-            ), "The trainer numbers is not equal to endpoint numbers."
+            assert self._build_strategy.num_trainers == len(tps), (
+                "The trainer numbers is not equal to endpoint numbers."
+            )
             self._build_strategy.trainers_endpoints = tps
 
         if self._program:
@@ -270,14 +272,13 @@ class CompiledProgram:
             )
 
         if self._program is not None and self._program._enable_dgc:
-            assert (
-                self._build_strategy.num_trainers * len(places) > 1
-            ), "DGC is not available for single card training."
+            assert self._build_strategy.num_trainers * len(places) > 1, (
+                "DGC is not available for single card training."
+            )
             assert (
                 self._build_strategy.reduce_strategy
                 == BuildStrategy.ReduceStrategy.AllReduce
-            ), "DGC \
-                only can be used for AllReduce BuildStrategy."
+            ), "DGC only can be used for AllReduce BuildStrategy."
 
             # DGC doesn't support fuse for now, close fuse.
             self._build_strategy.fuse_all_reduce_ops = False
@@ -364,9 +365,9 @@ class CompiledProgram:
         has_set_place = place_list is not None
         if has_set_place:
             for p in place_list:
-                assert (
-                    p._type() == place._type()
-                ), "Place type not match. You may set wrong type of places."
+                assert p._type() == place._type(), (
+                    "Place type not match. You may set wrong type of places."
+                )
         else:
             if isinstance(place, core.CUDAPlace):
                 place_list = cuda_places()
@@ -586,13 +587,13 @@ class IpuDynamicPatcher:
 
 class IpuStrategy:
     """
-    Help users precisely control the graph building in :code:`paddle.static.IpuCompiledProgram` .
+    Help users precisely control the graph building in :code:`paddle.static.IpuCompiledProgram`.
 
     Returns:
         The IpuStrategy instance.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env:IPU)
 
@@ -638,7 +639,7 @@ class IpuStrategy:
         Use `release_patch` to release the patch.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> # doctest: +REQUIRES(env:IPU)
 
@@ -656,7 +657,7 @@ class IpuStrategy:
         Release the registered IPU functions.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> # doctest: +REQUIRES(env:IPU)
 
@@ -680,15 +681,17 @@ class IpuStrategy:
               None.
 
           Examples:
-                .. code-block:: python
+                .. code-block:: pycon
 
                     >>> # doctest: +REQUIRES(env:IPU)
                     >>> import paddle
                     >>> import paddle.static as static
 
                     >>> linear = paddle.nn.Linear(10, 10)
-                    >>> optimizer = paddle.optimizer.SGD(learning_rate=0.01,
-                    ...                                 parameters=linear.parameters())
+                    >>> optimizer = paddle.optimizer.SGD(
+                    ...     learning_rate=0.01,
+                    ...     parameters=linear.parameters(),
+                    ... )
                     >>> ipu_strategy = static.IpuStrategy()
                     >>> ipu_strategy.set_optimizer(optimizer)
         """
@@ -712,7 +715,7 @@ class IpuStrategy:
               Dict.
 
           Examples:
-                .. code-block:: python
+                .. code-block:: pycon
 
                     >>> # doctest: +REQUIRES(env:IPU)
 
@@ -720,8 +723,10 @@ class IpuStrategy:
                     >>> import paddle.static as static
 
                     >>> linear = paddle.nn.Linear(10, 10)
-                    >>> optimizer = paddle.optimizer.SGD(learning_rate=0.01,
-                    ...                                 parameters=linear.parameters())
+                    >>> optimizer = paddle.optimizer.SGD(
+                    ...     learning_rate=0.01,
+                    ...     parameters=linear.parameters(),
+                    ... )
                     >>> ipu_strategy = static.IpuStrategy()
                     >>> attrs = ipu_strategy.parse_optimizer(optimizer)
         """
@@ -762,7 +767,7 @@ class IpuStrategy:
             None.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> # doctest: +REQUIRES(env:IPU)
 
@@ -772,10 +777,12 @@ class IpuStrategy:
                 >>> paddle.enable_static()
 
                 >>> ipu_strategy = static.IpuStrategy()
-                >>> ipu_strategy.set_graph_config(num_ipus=1,
-                ...                             is_training=True,
-                ...                             micro_batch_size=1,
-                ...                             enable_manual_shard=False)
+                >>> ipu_strategy.set_graph_config(
+                ...     num_ipus=1,
+                ...     is_training=True,
+                ...     micro_batch_size=1,
+                ...     enable_manual_shard=False,
+                ... )
         """
         if num_ipus == 1 and enable_manual_shard:
             raise RuntimeError(
@@ -813,7 +820,7 @@ class IpuStrategy:
             None.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> # doctest: +REQUIRES(env:IPU)
 
@@ -823,10 +830,12 @@ class IpuStrategy:
                 >>> paddle.enable_static()
 
                 >>> ipu_strategy = static.IpuStrategy()
-                >>> ipu_strategy.set_pipelining_config(enable_pipelining=False,
-                ...                                     batches_per_step=1,
-                ...                                     enable_gradient_accumulation=False,
-                ...                                     accumulation_factor=1)
+                >>> ipu_strategy.set_pipelining_config(
+                ...     enable_pipelining=False,
+                ...     batches_per_step=1,
+                ...     enable_gradient_accumulation=False,
+                ...     accumulation_factor=1,
+                ... )
         """
         enable_manual_shard = self.get_option('enable_manual_shard')
         if not enable_manual_shard and enable_pipelining:
@@ -852,7 +861,7 @@ class IpuStrategy:
             None.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> # doctest: +REQUIRES(env:IPU)
 
@@ -892,7 +901,7 @@ class IpuStrategy:
             None.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> # doctest: +REQUIRES(env:IPU)
 
@@ -928,7 +937,7 @@ class IpuStrategy:
             None.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> # doctest: +REQUIRES(env:IPU)
 
@@ -938,7 +947,7 @@ class IpuStrategy:
                 >>> paddle.enable_static()
 
                 >>> ipu_strategy = static.IpuStrategy()
-                >>> options = {'num_ipus':1, 'enable_fp16': True}
+                >>> options = {'num_ipus': 1, 'enable_fp16': True}
                 >>> ipu_strategy.set_options(options)  # type: ignore[arg-type]
         """
         self._ipu_strategy.set_options(options)
@@ -958,7 +967,7 @@ class IpuStrategy:
             option value.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> # doctest: +REQUIRES(env:IPU)
 
@@ -983,7 +992,7 @@ class IpuStrategy:
             None.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> # doctest: +REQUIRES(env:IPU)
 
@@ -1008,7 +1017,7 @@ class IpuStrategy:
             None.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> # doctest: +REQUIRES(env:IPU)
 
@@ -1071,7 +1080,7 @@ class IpuCompiledProgram:
         IpuCompiledProgram
 
     Example:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env:IPU)
 
@@ -1086,12 +1095,18 @@ class IpuCompiledProgram:
 
             >>> ipu_strategy = static.IpuStrategy()
             >>> ipu_strategy.set_graph_config(num_ipus=1, is_training=True, micro_batch_size=1)
-            >>> ipu_strategy.set_pipelining_config(enable_pipelining=False, batches_per_step=1, enable_gradient_accumulation=False, accumulation_factor=1)
+            >>> ipu_strategy.set_pipelining_config(
+            ...     enable_pipelining=False,
+            ...     batches_per_step=1,
+            ...     enable_gradient_accumulation=False,
+            ...     accumulation_factor=1,
+            ... )
             >>> ipu_strategy.set_precision_config(enable_fp16=False)
 
             >>> ipu_compiled_program = static.IpuCompiledProgram(
             ...     main_prog,
-            ...     ipu_strategy=ipu_strategy)
+            ...     ipu_strategy=ipu_strategy,
+            ... )
     """
 
     def __init__(
@@ -1151,7 +1166,7 @@ class IpuCompiledProgram:
             Program
 
         Example:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> # doctest: +REQUIRES(env:IPU)
 
@@ -1166,12 +1181,18 @@ class IpuCompiledProgram:
 
                 >>> ipu_strategy = static.IpuStrategy()
                 >>> ipu_strategy.set_graph_config(num_ipus=1, is_training=True, micro_batch_size=1)
-                >>> ipu_strategy.set_pipelining_config(enable_pipelining=False, batches_per_step=1, enable_gradient_accumulation=False, accumulation_factor=1)
+                >>> ipu_strategy.set_pipelining_config(
+                ...     enable_pipelining=False,
+                ...     batches_per_step=1,
+                ...     enable_gradient_accumulation=False,
+                ...     accumulation_factor=1,
+                ... )
                 >>> ipu_strategy.set_precision_config(enable_fp16=False)
 
                 >>> program = static.IpuCompiledProgram(
                 ...     main_prog,
-                ...     ipu_strategy=ipu_strategy).compile([a.name], [b.name])
+                ...     ipu_strategy=ipu_strategy,
+                ... ).compile([a.name], [b.name])
         """
         self._backend.set_scope(self._scope)
         self._backend.set_ipu_strategy(self._ipu_strategy._ipu_strategy)

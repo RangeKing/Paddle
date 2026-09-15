@@ -19,11 +19,13 @@
 #include "paddle/fluid/framework/new_executor/instruction/instruction_util.h"
 #include "paddle/fluid/framework/new_executor/pir_adaptor/pir_adaptor_util.h"
 
+COMMON_DECLARE_bool(check_cuda_error);
+
 namespace paddle {
 namespace framework {
 TuplePopInstruction::TuplePopInstruction(size_t id,
-                                         const phi::Place& place,
-                                         ::pir::Operation* op,
+                                         const Place& place,
+                                         pir::Operation* op,
                                          ValueExecutionInfo* value_exe_info)
     : InstructionBase(id, place), op_(op), value_exe_info_(value_exe_info) {
   tuple_pop_op_ = op->dyn_cast<pir::TuplePopOp>();
@@ -41,8 +43,12 @@ TuplePopInstruction::TuplePopInstruction(size_t id,
   std::unordered_map<pir::Value, std::vector<int>> outputs;
   for (size_t i = 0; i < tuple_pop_op_.tuple_size(); ++i) {
     auto outlet_element_value = tuple_pop_op_.outlet_element(i);
-    outputs.emplace(outlet_element_value,
-                    GetValueIds(outlet_element_value, *value_exe_info_));
+    if (outlet_element_value.type()) {
+      outputs.emplace(outlet_element_value,
+                      GetValueIds(outlet_element_value, *value_exe_info_));
+    } else {
+      outputs.emplace(outlet_element_value, std::vector<int>{});
+    }
   }
 
   // NOTE(zhangbo): TuplePop will change the variables corresponding to the
@@ -74,9 +80,9 @@ static std::stack<const Variable*> PopElements(VariableRefArray* var_array,
   return rtn;
 }
 void ShareVarData(const Variable* src_var, Variable* dst_var) {
-  if (src_var->IsType<phi::DenseTensor>()) {
-    auto& src_tensor = src_var->Get<phi::DenseTensor>();
-    auto* tmp_dst_tensor = dst_var->GetMutable<phi::DenseTensor>();
+  if (src_var->IsType<DenseTensor>()) {
+    auto& src_tensor = src_var->Get<DenseTensor>();
+    auto* tmp_dst_tensor = dst_var->GetMutable<DenseTensor>();
     if (src_tensor.numel() == 0) {
       tmp_dst_tensor->set_meta(src_tensor.meta());
       if (!src_tensor.IsInitialized()) {
@@ -100,7 +106,7 @@ void ShareVarData(const Variable* src_var, Variable* dst_var) {
     if (src_tensor_array.size() == 0) return;
     dst_tensor_array->resize(src_tensor_array.size());
     for (size_t i = 0; i < src_tensor_array.size(); ++i) {
-      phi::DenseTensor& tmp_dst_tensor = dst_tensor_array->at(i);
+      DenseTensor& tmp_dst_tensor = dst_tensor_array->at(i);
       if (src_tensor_array.at(i).numel() == 0) {
         tmp_dst_tensor.set_meta(src_tensor_array.at(i).meta());
       } else {
@@ -123,6 +129,10 @@ void ShareVarData(const Variable* src_var, Variable* dst_var) {
 
 void TuplePopInstruction::Run() {
   VLOG(6) << "run tuple_pop instruction";
+  if (FLAGS_check_cuda_error) [[unlikely]] {
+    CUDAErrorCheck("TuplePopInstruction begin");
+  }
+
   if (tuple_pop_op_.tuple_size() == 0) {
     stack_element_var_array_->pop_back();
   } else {
@@ -136,10 +146,16 @@ void TuplePopInstruction::Run() {
       VLOG(6) << "pop back var: " << front_var;
       auto outlet_element_value = tuple_pop_op_.outlet_element(i);
       auto grad_var = value_exe_info_->GetVarByValue(outlet_element_value);
+      if (front_var == nullptr && grad_var == nullptr) {
+        continue;
+      }
       ShareVarData(front_var, grad_var);
       Variable* gc_front_var = const_cast<Variable*>(front_var);
       AddEagerGCVar(gc_front_var);
     }
+  }
+  if (FLAGS_check_cuda_error) [[unlikely]] {
+    CUDAErrorCheck("TuplePopInstruction finish");
   }
 }
 

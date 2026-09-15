@@ -11,7 +11,6 @@ limitations under the License. */
 
 #include "paddle/phi/common/float16.h"
 
-#define GLOG_NO_ABBREVIATED_SEVERITIES  // msvc conflict logging with windows.h
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 
@@ -194,7 +193,6 @@ limitations under the License. */
   }
 #endif
 
-#ifdef PADDLE_CUDA_FP16
 namespace paddle {
 namespace platform {
 
@@ -426,4 +424,3 @@ TEST(float16, cast) {
 
 }  // namespace platform
 }  // namespace paddle
-#endif  // PADDLE_CUDA_FP16

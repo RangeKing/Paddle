@@ -12,9 +12,16 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License. */
 
+#include <sstream>
+
 #include "glog/logging.h"
 #include "gtest/gtest.h"
+#include "paddle/phi/backends/cpu/cpu_context.h"
+#ifdef PADDLE_WITH_DNNL
+#include "paddle/phi/backends/onednn/onednn_storage_properties.h"
+#endif
 #include "paddle/phi/core/dense_tensor.h"
+#include "paddle/phi/core/framework/dense_tensor_serialize.h"
 #include "test/cpp/phi/core/allocator.h"
 
 namespace phi {
@@ -195,6 +202,48 @@ TEST(dense_tensor, meta) {
                                       meta_5.valid()));
 }
 
+TEST(dense_tensor, zero_size_strides) {
+  const auto zero_size_dims = common::make_ddim({0, 2048});
+  const auto zero_size_strides = DenseTensorMeta::calc_strides(zero_size_dims);
+  const auto expected_zero_size_strides = common::make_ddim({2048, 1});
+  EXPECT_EQ(zero_size_strides, expected_zero_size_strides);
+  EXPECT_EQ(common::stride(zero_size_dims), expected_zero_size_strides);
+
+  DenseTensorMeta zero_size_meta(DataType::FLOAT32, zero_size_dims);
+  EXPECT_EQ(zero_size_meta.strides, expected_zero_size_strides);
+  EXPECT_TRUE(zero_size_meta.is_contiguous());
+
+  const auto reshaped_zero_size_dims = common::make_ddim({0, 512, 4});
+  EXPECT_EQ(DenseTensorMeta::calc_strides(reshaped_zero_size_dims),
+            common::make_ddim({2048, 4, 1}));
+  EXPECT_EQ(common::stride(reshaped_zero_size_dims),
+            common::make_ddim({2048, 4, 1}));
+
+  const auto zero_size_last_dim = common::make_ddim({1024, 0});
+  const auto expected_zero_size_last_dim_strides = common::make_ddim({1, 1});
+  EXPECT_EQ(DenseTensorMeta::calc_strides(zero_size_last_dim),
+            expected_zero_size_last_dim_strides);
+  EXPECT_EQ(common::stride(zero_size_last_dim),
+            expected_zero_size_last_dim_strides);
+
+  DenseTensorMeta zero_size_last_dim_meta(DataType::FLOAT32,
+                                          zero_size_last_dim);
+  EXPECT_EQ(zero_size_last_dim_meta.strides,
+            expected_zero_size_last_dim_strides);
+  EXPECT_TRUE(zero_size_last_dim_meta.is_contiguous());
+
+  const auto zero_size_middle_dim = common::make_ddim({2, 0, 4});
+  const auto expected_zero_size_middle_dim_strides =
+      common::make_ddim({4, 4, 1});
+  EXPECT_EQ(DenseTensorMeta::calc_strides(zero_size_middle_dim),
+            expected_zero_size_middle_dim_strides);
+  EXPECT_EQ(common::stride(zero_size_middle_dim),
+            expected_zero_size_middle_dim_strides);
+
+  const auto unknown_dims = common::make_ddim({-1, 2048});
+  EXPECT_EQ(DenseTensorMeta::calc_strides(unknown_dims), unknown_dims);
+}
+
 TEST(dense_tensor, def_ctor) {
   DenseTensor tensor_0;
   PADDLE_ENFORCE_EQ(
@@ -280,6 +329,56 @@ TEST(dense_tensor, shallow_copy) {
                         "tensor_1 to have the same meta"));
 }
 
+TEST(dense_tensor, dim_indexing) {
+  const DDim dims({4, 3, 2, 0});
+  const DataType dtype{DataType::INT8};
+  const DataLayout layout{DataLayout::NHWC};
+  const LegacyLoD lod{};
+  DenseTensorMeta meta(dtype, dims, layout, lod);
+
+  auto fancy_allocator = std::unique_ptr<Allocator>(new FancyAllocator);
+  auto* alloc = fancy_allocator.get();
+  DenseTensor tensor_0(alloc, meta);
+  int ndim = tensor_0.dims().size();
+  auto tensor_0_dims = tensor_0.dims();
+  for (int i = -ndim; i < ndim; ++i) {
+    PADDLE_ENFORCE_EQ(
+        tensor_0_dims[(i + ndim) % ndim],
+        tensor_0.dims(i),
+        common::errors::InvalidArgument(
+            "Dimension mismatch at index %d. Expected: %d, but got: %d",
+            i,
+            tensor_0_dims[i],
+            tensor_0.dims(i)));
+  }
+
+  // throw exception for index >= ndim
+  bool caught_exception = false;
+  try {
+    tensor_0.dims(ndim);
+  } catch (const common::enforce::EnforceNotMet& error) {
+    caught_exception = true;
+  }
+  PADDLE_ENFORCE_EQ(
+      caught_exception,
+      true,
+      common::errors::InvalidArgument(
+          "Expected an exception to be thrown for index >= ndim"));
+
+  // throw exception for index < -ndim
+  caught_exception = false;
+  try {
+    tensor_0.dims(-ndim - 1);
+  } catch (const common::enforce::EnforceNotMet& error) {
+    caught_exception = true;
+  }
+  PADDLE_ENFORCE_EQ(
+      caught_exception,
+      true,
+      common::errors::InvalidArgument(
+          "Expected an exception to be thrown for index < -ndim"));
+}
+
 TEST(dense_tensor, storage_properties) {
   const DataType dtype{DataType::FLOAT32};
   const DDim dims({1, 2});
@@ -302,6 +401,30 @@ TEST(dense_tensor, storage_properties) {
                         "Fail to get storage properties. Expected an exception "
                         "to be thrown for OneDNNStorageProperties"));
 #endif
+}
+
+TEST(dense_tensor, reject_invalid_lod_byte_size) {
+  // Regression test for the OOB write in DeserializeFromStream: when the LoD
+  // level byte size is not a multiple of sizeof(size_t), the destination
+  // buffer (size / sizeof(size_t) elements) is smaller than the number of
+  // bytes read, causing a heap-buffer-overflow write. The deserializer must
+  // reject such malformed streams instead of reading past the allocation.
+  phi::CPUPlace place;
+  phi::CPUContext ctx(place);
+  phi::DenseTensor tensor;
+  std::ostringstream oss(std::ios::binary);
+
+  uint32_t version = 0;
+  uint64_t lod_level = 1;
+  uint64_t invalid_lod_bytes = sizeof(size_t) + 1;
+  oss.write(reinterpret_cast<const char*>(&version), sizeof(version));
+  oss.write(reinterpret_cast<const char*>(&lod_level), sizeof(lod_level));
+  oss.write(reinterpret_cast<const char*>(&invalid_lod_bytes),
+            sizeof(invalid_lod_bytes));
+
+  std::istringstream iss(oss.str(), std::ios::binary);
+  EXPECT_THROW(phi::DeserializeFromStream(iss, &tensor, ctx),
+               common::enforce::EnforceNotMet);
 }
 
 }  // namespace tests

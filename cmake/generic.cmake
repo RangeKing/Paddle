@@ -92,7 +92,7 @@ include_directories("${PADDLE_SOURCE_DIR}/paddle/fluid/framework/io")
 if(NOT APPLE AND NOT WIN32)
   find_package(Threads REQUIRED)
   link_libraries(${CMAKE_THREAD_LIBS_INIT})
-  if(WITH_PSLIB OR WITH_DISTRIBUTE)
+  if(WITH_DISTRIBUTE)
     set(CMAKE_CXX_LINK_EXECUTABLE
         "${CMAKE_CXX_LINK_EXECUTABLE} -pthread -ldl -lrt -lz -lssl -lcrypto")
   else()
@@ -276,27 +276,24 @@ function(merge_static_libs TARGET_NAME)
     set(mri_file
         ${CMAKE_CURRENT_BINARY_DIR}/${TARGET_NAME}.mri
         CACHE INTERNAL "phi_static.mri file")
-    get_property(
-      ABS_MERGE_LIB_PATH
-      TARGET ${TARGET_NAME}
-      PROPERTY LOCATION)
-    file(WRITE ${mri_file} "create ${ABS_MERGE_LIB_PATH}\n")
 
+    set(mri_content "create $<TARGET_FILE:${TARGET_NAME}>\n")
     foreach(lib ${libs})
-      get_property(
-        ABS_LIB_PATH
-        TARGET ${lib}
-        PROPERTY LOCATION)
-      file(APPEND ${mri_file} "addlib ${ABS_LIB_PATH}\n")
+      string(APPEND mri_content "addlib $<TARGET_FILE:${lib}>\n")
     endforeach()
-    file(APPEND ${mri_file} "save\nend\n")
+    string(APPEND mri_content "save\nend\n")
+    file(
+      GENERATE
+      OUTPUT ${mri_file}
+      CONTENT "${mri_content}")
 
     add_custom_command(
       TARGET ${TARGET_NAME}
       POST_BUILD
       COMMENT "Merge and generate static lib: lib${TARGET_NAME}.a"
       COMMAND ${CMAKE_AR} -M < ${mri_file}
-      COMMAND ${CMAKE_RANLIB} "$<TARGET_FILE:${TARGET_NAME}>")
+      COMMAND ${CMAKE_RANLIB} "$<TARGET_FILE:${TARGET_NAME}>"
+      VERBATIM)
   endif()
 
   # Windows do not support gcc/nvcc combined compiling. Use msvc 'lib.exe' to merge libs.
@@ -457,6 +454,15 @@ function(cc_test_build TARGET_NAME)
   endif()
 endfunction()
 
+file(TO_NATIVE_PATH "${PADDLE_BINARY_DIR}/python/paddle/libs" PADDLE_LIBS_PATH)
+file(TO_NATIVE_PATH "${PADDLE_BINARY_DIR}/python/paddle/base" PADDLE_BASE_PATH)
+file(TO_NATIVE_PATH "${PADDLE_BINARY_DIR}/paddle/fluid/pybind"
+     PADDLE_PYBIND_PATH)
+file(TO_NATIVE_PATH "${PADDLE_BINARY_DIR}/paddle/fluid/inference"
+     PADDLE_INFERENCE_PATH)
+file(TO_NATIVE_PATH "${PADDLE_BINARY_DIR}/paddle/fluid/inference/capi_exp"
+     PADDLE_INFERENCE_C_PATH)
+
 function(cc_test_run TARGET_NAME)
   if(WITH_TESTING)
     set(oneValueArgs DIR)
@@ -472,25 +478,47 @@ function(cc_test_run TARGET_NAME)
       NAME ${TARGET_NAME}
       COMMAND ${cc_test_COMMAND} ${cc_test_ARGS}
       WORKING_DIRECTORY ${cc_test_DIR})
+    string(
+      REPLACE
+        ";"
+        "\;"
+        PATH
+        "${PADDLE_LIBS_PATH};${PADDLE_BASE_PATH};${PADDLE_PYBIND_PATH};${PADDLE_INFERENCE_PATH};${PADDLE_INFERENCE_C_PATH};$ENV{PATH}"
+    )
     if(NOT "${DEPRECATED_TARGET_NAME}" STREQUAL "")
-      set_property(
-        TEST ${TARGET_NAME}
-        PROPERTY
-          ENVIRONMENT
-          FLAGS_init_allocated_mem=true
-          FLAGS_cudnn_deterministic=true
-          FLAGS_enable_pir_api=0
-          LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${PADDLE_BINARY_DIR}/python/paddle/libs:${PADDLE_BINARY_DIR}/python/paddle/base
-      )
+      if(WIN32)
+        set_property(
+          TEST ${TARGET_NAME}
+          PROPERTY ENVIRONMENT FLAGS_init_allocated_mem=true
+                   FLAGS_cudnn_deterministic=true FLAGS_enable_pir_api=0
+                   "PATH=${PATH}")
+      else()
+        set_property(
+          TEST ${TARGET_NAME}
+          PROPERTY
+            ENVIRONMENT
+            FLAGS_init_allocated_mem=true
+            FLAGS_cudnn_deterministic=true
+            FLAGS_enable_pir_api=0
+            LD_LIBRARY_PATH=$ENV{LD_LIBRARY_PATH}:${PADDLE_BINARY_DIR}/python/paddle/libs:${PADDLE_BINARY_DIR}/python/paddle/base
+        )
+      endif()
     else()
-      set_property(
-        TEST ${TARGET_NAME}
-        PROPERTY
-          ENVIRONMENT
-          FLAGS_init_allocated_mem=true
-          FLAGS_cudnn_deterministic=true
-          LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${PADDLE_BINARY_DIR}/python/paddle/libs:${PADDLE_BINARY_DIR}/python/paddle/base
-      )
+      if(WIN32)
+        set_property(
+          TEST ${TARGET_NAME}
+          PROPERTY ENVIRONMENT FLAGS_init_allocated_mem=true
+                   FLAGS_cudnn_deterministic=true "PATH=${PATH}")
+      else()
+        set_property(
+          TEST ${TARGET_NAME}
+          PROPERTY
+            ENVIRONMENT
+            FLAGS_init_allocated_mem=true
+            FLAGS_cudnn_deterministic=true
+            LD_LIBRARY_PATH=$ENV{LD_LIBRARY_PATH}:${PADDLE_BINARY_DIR}/python/paddle/libs:${PADDLE_BINARY_DIR}/python/paddle/base
+        )
+      endif()
     endif()
     # No unit test should exceed 2 minutes.
     if(WIN32)
@@ -513,45 +541,27 @@ function(cc_test TARGET_NAME)
     set(multiValueArgs SRCS DEPS ARGS)
     cmake_parse_arguments(cc_test "${options}" "${oneValueArgs}"
                           "${multiValueArgs}" ${ARGN})
-    if(WIN32)
-      # NOTE(zhiqiu): on windows platform, the symbols should be exported
-      # explicitly by __declspec(dllexport), however, there are several
-      # symbols not exported, and link error occurs.
-      # so, the tests are not built against dynamic libraries now.
-      cc_test_old(
-        ${TARGET_NAME}
-        SRCS
-        ${cc_test_SRCS}
-        DEPS
-        ${cc_test_DEPS}
-        ARGS
-        ${cc_test_ARGS})
-    else()
-      list(LENGTH cc_test_SRCS len)
-      # message("cc_test_SRCS ${cc_test_SRCS}")
-      # message("cc_test_ARGS ${cc_test_ARGS}")
-
-      if(${len} GREATER 1)
-        message(
-          SEND_ERROR
-            "The number source file of cc_test should be 1, but got ${len}, the source files are: ${cc_test_SRCS}"
-        )
-      endif()
-
-      list(LENGTH cc_test_ARGS len_arg)
-      if(len_arg GREATER_EQUAL 1)
-        set_property(GLOBAL PROPERTY "${TARGET_NAME}_ARGS" "${cc_test_ARGS}")
-        #message("${TARGET_NAME}_ARGS arg ${arg}")
-      endif()
-
-      get_property(test_srcs GLOBAL PROPERTY TEST_SRCS)
-      set(test_srcs ${test_srcs} "${CMAKE_CURRENT_SOURCE_DIR}/${cc_test_SRCS}")
-      set_property(GLOBAL PROPERTY TEST_SRCS "${test_srcs}")
-
-      get_property(test_names GLOBAL PROPERTY TEST_NAMES)
-      set(test_names ${test_names} ${TARGET_NAME})
-      set_property(GLOBAL PROPERTY TEST_NAMES "${test_names}")
+    list(LENGTH cc_test_SRCS len)
+    if(${len} GREATER 1)
+      message(
+        SEND_ERROR
+          "The number source file of cc_test should be 1, but got ${len}, the source files are: ${cc_test_SRCS}"
+      )
     endif()
+    list(LENGTH cc_test_ARGS len_arg)
+    if(len_arg GREATER_EQUAL 1)
+      set_property(GLOBAL PROPERTY "${TARGET_NAME}_ARGS" "${cc_test_ARGS}")
+      #message("${TARGET_NAME}_ARGS arg ${arg}")
+    endif()
+
+    get_property(test_srcs GLOBAL PROPERTY TEST_SRCS)
+    set(test_srcs ${test_srcs} "${CMAKE_CURRENT_SOURCE_DIR}/${cc_test_SRCS}")
+    set_property(GLOBAL PROPERTY TEST_SRCS "${test_srcs}")
+
+    get_property(test_names GLOBAL PROPERTY TEST_NAMES)
+    set(test_names ${test_names} ${TARGET_NAME})
+    set_property(GLOBAL PROPERTY TEST_NAMES "${test_names}")
+    # endif()
   endif()
 endfunction()
 
@@ -562,7 +572,7 @@ function(cc_test_old TARGET_NAME)
     cmake_parse_arguments(cc_test "${options}" "${oneValueArgs}"
                           "${multiValueArgs}" ${ARGN})
     cc_test_build(${TARGET_NAME} SRCS ${cc_test_SRCS} DEPS ${cc_test_DEPS})
-    # we donot test hcom op, because it need complex configuration
+    # we do not test hcom op, because it need complex configuration
     # with more than one machine
     cc_test_run(${TARGET_NAME} COMMAND ${TARGET_NAME} ARGS ${cc_test_ARGS})
   elseif(WITH_TESTING AND NOT TEST ${TARGET_NAME})
@@ -589,6 +599,10 @@ function(paddle_test_build TARGET_NAME)
     endif()
     if(WITH_SHARED_PHI)
       target_link_libraries(${TARGET_NAME} phi)
+      if(WITH_GPU AND NOT WIN32)
+        target_link_libraries(${TARGET_NAME} -Wl,--as-needed phi_core phi_gpu
+                              -Wl,--no-as-needed)
+      endif()
       add_dependencies(${TARGET_NAME} phi)
     endif()
     if(WITH_SHARED_IR)
@@ -599,8 +613,9 @@ function(paddle_test_build TARGET_NAME)
       target_link_libraries(${TARGET_NAME} ${PYTHON_LIBRARIES})
     endif()
     if(WITH_CINN)
-      target_link_libraries(${TARGET_NAME} $<TARGET_LINKER_FILE:cinnapi>
-                            cinn_transforms)
+      target_link_libraries(${TARGET_NAME} -Wl,--as-needed cinnapi
+                            -Wl,--no-as-needed)
+      target_link_libraries(${TARGET_NAME} cinn_transforms)
       add_dependencies(${TARGET_NAME} cinnapi)
     endif()
     if(WITH_XPU)
@@ -722,10 +737,21 @@ function(nv_test TARGET_NAME)
     get_property(os_dependency_modules GLOBAL PROPERTY OS_DEPENDENCY_MODULES)
     target_link_libraries(${TARGET_NAME} ${nv_test_DEPS}
                           ${os_dependency_modules} paddle_gtest_main phi)
+    if(LINUX)
+      # GPU tests link static Paddle archives without libpaddle.so.  Keep this
+      # link group local to nv_test targets so the imperative/framework circular
+      # references are resolved without adding these archives to every gtest.
+      target_circle_link_libraries(${TARGET_NAME} layer op_registry var_helper
+                                   type_info)
+    endif()
     if(WIN32)
       target_link_libraries(${TARGET_NAME} ${PYTHON_LIBRARIES})
     else()
       target_link_libraries(${TARGET_NAME} python)
+      if(WITH_SHARED_PHI)
+        target_link_libraries(${TARGET_NAME} -Wl,--as-needed phi_core phi_gpu
+                              -Wl,--no-as-needed)
+      endif()
     endif()
     add_dependencies(${TARGET_NAME} ${nv_test_DEPS} paddle_gtest_main)
     common_link(${TARGET_NAME})
@@ -734,6 +760,18 @@ function(nv_test TARGET_NAME)
                                               FLAGS_init_allocated_mem=true)
     set_property(TEST ${TARGET_NAME} PROPERTY ENVIRONMENT
                                               FLAGS_cudnn_deterministic=true)
+    if(WIN32)
+      string(
+        REPLACE
+          ";"
+          "\;"
+          PATH
+          "${PADDLE_LIBS_PATH};${PADDLE_BASE_PATH};${PADDLE_PYBIND_PATH};${PADDLE_INFERENCE_PATH};${PADDLE_INFERENCE_C_PATH};$ENV{PATH}"
+      )
+      set_property(
+        TEST ${TARGET_NAME} PROPERTY ENVIRONMENT FLAGS_cudnn_deterministic=true
+                                     "PATH=${PATH}")
+    endif()
     if((CUDA_VERSION GREATER 9.2)
        AND (CUDA_VERSION LESS 11.0)
        AND (MSVC_VERSION LESS 1910))
@@ -846,7 +884,7 @@ function(hip_test TARGET_NAME)
       TEST ${TARGET_NAME}
       PROPERTY
         ENVIRONMENT
-        "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/python/paddle/libs:$LD_LIBRARY_PATH"
+        "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/python/paddle/libs:$ENV{LD_LIBRARY_PATH}"
     )
   endif()
 endfunction()
@@ -1146,8 +1184,8 @@ function(py_proto_compile TARGET_NAME)
       COMMAND ${PYTHON_EXECUTABLE} ${PADDLE_SOURCE_DIR}/cmake/replace_string.py
               ${py_src}
       COMMENT
-        "Replacing 'paddle.fluid' with 'paddle.base' generated by protobuf"
-      COMMENT "Replace ${py_src}")
+        "Replace ${py_src}: Replacing 'paddle.fluid' with 'paddle.base' generated by protobuf"
+    )
   endforeach()
 
   add_custom_target(${TARGET_NAME} ALL DEPENDS protobuf ${TARGET_NAME}_replace)
@@ -1324,52 +1362,4 @@ function(generate_dummy_static_lib)
   configure_file(${PROJECT_SOURCE_DIR}/cmake/dummy.c.in ${dummy_FILE_PATH}
                  @ONLY)
   add_library(${dummy_LIB_NAME} STATIC ${dummy_FILE_PATH})
-endfunction()
-
-function(math_library TARGET)
-  # math_library is a function to create math library.
-  # The interface is the same as cc_library.
-  # But it handle split GPU/CPU code and link some common library.
-  set(cc_srcs)
-  set(cu_srcs)
-  set(hip_srcs)
-  set(math_common_deps device_context framework_proto phi common)
-  if(WITH_GPU)
-    if(${CMAKE_CUDA_COMPILER_VERSION} LESS 11.0)
-      list(APPEND math_common_deps cub)
-    else()
-      list(APPEND math_common_deps)
-    endif()
-  endif()
-  set(multiValueArgs DEPS)
-  cmake_parse_arguments(math_library "${options}" "${oneValueArgs}"
-                        "${multiValueArgs}" ${ARGN})
-
-  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${TARGET}.cc)
-    list(APPEND cc_srcs ${TARGET}.cc)
-  endif()
-  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${TARGET}.cu)
-    list(APPEND cu_srcs ${TARGET}.cu)
-  endif()
-  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${TARGET}.cu.cc)
-    list(APPEND cu_srcs ${TARGET}.cu.cc)
-  endif()
-
-  list(LENGTH cc_srcs cc_srcs_len)
-  if(WITH_GPU)
-    nv_library(
-      ${TARGET}
-      SRCS ${cc_srcs} ${cu_srcs}
-      DEPS ${math_library_DEPS} ${math_common_deps})
-  elseif(WITH_ROCM)
-    hip_library(
-      ${TARGET}
-      SRCS ${cc_srcs} ${cu_srcs}
-      DEPS ${math_library_DEPS} ${math_common_deps})
-  elseif(${cc_srcs_len} GREATER 0)
-    cc_library(
-      ${TARGET}
-      SRCS ${cc_srcs}
-      DEPS ${math_library_DEPS} ${math_common_deps})
-  endif()
 endfunction()

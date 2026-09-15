@@ -16,6 +16,7 @@
 
 #include "paddle/phi/backends/cpu/cpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/blas/blas.h"
 
 namespace phi {
@@ -30,6 +31,15 @@ void MvGradKernel(const Context& dev_ctx,
   auto dout = out_grad;
   auto dx = x_grad;
   auto dvec = vec_grad;
+  if (x.numel() == 0 || vec.numel() == 0) {
+    if (dx) {
+      Full<T, Context>(dev_ctx, dx->dims(), static_cast<T>(0), dx);
+    }
+    if (dvec) {
+      Full<T, Context>(dev_ctx, dvec->dims(), static_cast<T>(0), dvec);
+    }
+    return;
+  }
 
   const auto& dim_x = x.dims();
   int m = static_cast<int>(dim_x[0]);
@@ -53,7 +63,7 @@ void MvGradKernel(const Context& dev_ctx,
   if (dvec) {
     T* dvec_data = dev_ctx.template Alloc<T>(dvec);
 
-    auto blas = phi::funcs::GetBlas<Context, T>(dev_ctx);
+    auto blas = funcs::GetBlas<Context, T>(dev_ctx);
 
     blas.GEMV(true,
               dim_x[0],

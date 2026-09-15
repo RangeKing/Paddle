@@ -29,12 +29,14 @@ void TraceKernel(const Context& dev_ctx,
                  int axis2,
                  DenseTensor* out) {
   auto* out_data = dev_ctx.template Alloc<T>(out);
-
+  if (out && out->numel() == 0) {
+    return;
+  }
   const DenseTensor diag =
       funcs::Diagonal<T, Context>(dev_ctx, &x, offset, axis1, axis2);
   if (diag.numel() > 0) {
-    auto x = phi::EigenMatrix<T>::Reshape(diag, diag.dims().size() - 1);
-    auto output = phi::EigenVector<T>::Flatten(*out);
+    auto x = EigenMatrix<T>::Reshape(diag, diag.dims().size() - 1);
+    auto output = EigenVector<T>::Flatten(*out);
     auto reduce_dim = Eigen::array<int, 1>({1});
     output.device(*dev_ctx.eigen_device()) = x.sum(reduce_dim);
     out->Resize(out->dims());
@@ -53,6 +55,6 @@ PD_REGISTER_KERNEL(trace,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::float16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::float16,
+                   phi::complex64,
+                   phi::complex128) {}

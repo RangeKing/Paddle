@@ -13,9 +13,6 @@
 // limitations under the License.
 
 #include "paddle/phi/backends/gpu/gpu_context.h"
-#include "paddle/phi/common/bfloat16.h"
-#include "paddle/phi/common/complex.h"
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/core/enforce.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/funcs/uniform_random_functor.h"
@@ -39,17 +36,16 @@ void GPUUniformRandomKernel(const Context& dev_ctx,
                             SelectedRows* out) {
   out->set_rows(input.rows());
   out->set_height(input.height());
-  phi::DenseTensor* tensor = out->mutable_value();
+  DenseTensor* tensor = out->mutable_value();
   dev_ctx.template Alloc<T>(tensor);
-  phi::funcs::UniformRandom<T>(
-      reinterpret_cast<const phi::GPUContext&>(dev_ctx),
-      tensor,
-      seed,
-      min,
-      max,
-      diag_num,
-      diag_step,
-      diag_val);
+  funcs::UniformRandom<T>(reinterpret_cast<const GPUContext&>(dev_ctx),
+                          tensor,
+                          seed,
+                          min,
+                          max,
+                          diag_num,
+                          diag_step,
+                          diag_val);
 }
 
 }  // namespace sr
@@ -61,4 +57,4 @@ PD_REGISTER_KERNEL(uniform_random_batch_size_like_sr,
                    phi::sr::GPUUniformRandomKernel,
                    float,
                    double,
-                   phi::dtype::bfloat16) {}
+                   phi::bfloat16) {}

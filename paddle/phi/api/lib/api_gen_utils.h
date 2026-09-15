@@ -131,9 +131,9 @@ void TransStride(phi::DeviceContext* dev_ctx,
                  phi::SelectedRows* from,
                  phi::SelectedRows* to);
 
-void TransStrideLegacy(phi::DeviceContext* dev_ctx,
-                       phi::DenseTensor* from,
-                       phi::DenseTensor* to);
+PADDLE_API void TransStrideLegacy(phi::DeviceContext* dev_ctx,
+                                  phi::DenseTensor* from,
+                                  phi::DenseTensor* to);
 
 /* ------------------ for auto parallel ----------------------- */
 
@@ -181,12 +181,17 @@ CreateKernelDistOutput(std::vector<Tensor*> out,
 std::shared_ptr<phi::distributed::DistTensor> CreateKernelDistOutput(
     Tensor* out, const phi::distributed::ArgDistAttr& dist_attr);
 
-// DistTensor need to set initial dist attr after the dims setted, it is
+// DistTensor need to set initial dist attr after the dims set, it is
 // constructed based dims and current process mesh, before calling this
 // function, the out should hold correct dims
 void SetReplicatedDistAttrForOutput(
     phi::distributed::DistTensor* out,
     const phi::distributed::ProcessMesh& process_mesh);
 
+/* ------------------ for Allocator ----------------------- */
+// Check whether need to compact by current memory stat info and api output
+// Tensor's meta info.
+void CheckAndDoCompact(const std::vector<phi::MetaTensor*>& meta_tensors,
+                       std::string api = "");
 }  // namespace experimental
 }  // namespace paddle

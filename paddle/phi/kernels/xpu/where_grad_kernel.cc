@@ -16,11 +16,11 @@
 
 #include "paddle/phi/backends/xpu/enforce_xpu.h"
 #include "paddle/phi/core/kernel_registry.h"
-
+#include "paddle/phi/kernels/full_kernel.h"
 namespace phi {
 
 template <typename T, typename Context>
-void WhereGradKernel(const Context& ctx,
+void WhereGradKernel(const Context& dev_ctx,
                      const DenseTensor& condition,
                      const DenseTensor& x,
                      const DenseTensor& y,
@@ -28,11 +28,21 @@ void WhereGradKernel(const Context& ctx,
                      DenseTensor* x_grad,
                      DenseTensor* y_grad) {
   using XPUType = typename XPUTypeTrait<T>::Type;
+  if (out_grad.numel() == 0) {
+    if (x_grad) {
+      Full<T, Context>(dev_ctx, x_grad->dims(), static_cast<T>(0), x_grad);
+    }
+    if (y_grad) {
+      Full<T, Context>(dev_ctx, y_grad->dims(), static_cast<T>(0), y_grad);
+    }
+    return;
+  }
+
   const auto* cond_data = condition.data<bool>();
   auto* dout = out_grad.data<T>();
 
-  auto cond_shape = common::vectorize(condition.dims());
-  auto out_shape = common::vectorize(out_grad.dims());
+  auto cond_shape = vectorize(condition.dims());
+  auto out_shape = vectorize(out_grad.dims());
   // use [1] to replace [], because xpu not support []
   if (cond_shape.size() == 0) {
     cond_shape = std::vector<int64_t>({1});
@@ -45,13 +55,13 @@ void WhereGradKernel(const Context& ctx,
   T* dy = nullptr;
 
   if (x_grad != nullptr) {
-    dx = ctx.template Alloc<T>(x_grad);
+    dx = dev_ctx.template Alloc<T>(x_grad);
   }
 
   if (y_grad != nullptr) {
-    dy = ctx.template Alloc<T>(y_grad);
+    dy = dev_ctx.template Alloc<T>(y_grad);
   }
-  int r = xpu::select_grad(ctx.x_context(),
+  int r = xpu::select_grad(dev_ctx.x_context(),
                            cond_data,
                            reinterpret_cast<const XPUType*>(dout),
                            reinterpret_cast<XPUType*>(dx),
@@ -71,5 +81,5 @@ PD_REGISTER_KERNEL(where_grad,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}

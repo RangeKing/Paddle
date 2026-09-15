@@ -21,6 +21,8 @@ limitations under the License. */
 #undef _XOPEN_SOURCE
 #endif
 
+#include <limits>
+
 #include "paddle/fluid/distributed/collective/process_group.h"
 #include "paddle/fluid/distributed/collective/reducer.h"
 #include "paddle/fluid/framework/lod_tensor.h"
@@ -35,6 +37,8 @@ limitations under the License. */
 #if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL)
 #include "paddle/fluid/distributed/collective/async_load.h"
 #include "paddle/fluid/distributed/collective/process_group_nccl.h"
+#include "paddle/phi/backends/gpu/gpu_info.h"
+#include "paddle/phi/core/distributed/nccl_comm_context.h"
 #endif
 
 #if defined(PADDLE_WITH_MPI)
@@ -51,13 +55,16 @@ limitations under the License. */
 
 #if defined(PADDLE_WITH_XPU_BKCL)
 #include "paddle/fluid/distributed/collective/process_group_bkcl.h"
+#include "paddle/fluid/distributed/collective/xpu_async_load.h"
+#endif
+
+#if defined(PADDLE_WITH_FLAGCX) && !defined(PADDLE_WITH_XPU)
+#include "paddle/fluid/distributed/collective/process_group_flagcx.h"
 #endif
 
 #include "paddle/phi/kernels/sync_batch_norm_kernel.h"
 
 namespace paddle::pybind {
-
-using Tensor = paddle::Tensor;
 
 std::shared_ptr<distributed::EagerReducer> CreateEagerReducer(
     py::handle py_tensors,
@@ -81,8 +88,11 @@ using GlooStore = paddle::distributed::ProcessGroupGloo::GlooStore;
 using GlooOptions = paddle::distributed::ProcessGroupGloo::GlooOptions;
 #endif
 
-static UNUSED void *use_ccl_comm_func =
-    phi::detail::GetCCLComm(phi::CPUPlace());
+#if defined(PADDLE_WITH_FLAGCX) && !defined(PADDLE_WITH_XPU)
+using ProcessGroupFlagcx = paddle::distributed::ProcessGroupFlagcx;
+#endif
+
+static UNUSED void *use_ccl_comm_func = phi::detail::GetCCLComm(CPUPlace());
 
 void BindDistributed(py::module *m) {
   py::enum_<distributed::ReduceOp>(*m, "ReduceOp")
@@ -140,6 +150,18 @@ void BindDistributed(py::module *m) {
           .def("eager_connect_ring_exchange",
                &distributed::ProcessGroup::EagerConnectRingExchange,
                py::call_guard<py::gil_scoped_release>())
+#ifdef PADDLE_WITH_NCCL
+          .def("erase_stream",
+               [](distributed::ProcessGroup &self, const Tensor &tensor) {
+                 auto *pg_with_stream =
+                     dynamic_cast<distributed::ProcessGroupWithStream *>(&self);
+                 auto *dense_tensor =
+                     dynamic_cast<DenseTensor *>(tensor.impl().get());
+                 if (pg_with_stream && dense_tensor) {
+                   pg_with_stream->EraseStream(*dense_tensor);
+                 }
+               })
+#endif
           .def(
               "all_reduce",
               [](distributed::ProcessGroup &self,
@@ -149,7 +171,7 @@ void BindDistributed(py::module *m) {
                 auto tensor = CastPyArg2Tensor(py_tensor.ptr(), 0);
                 py::gil_scoped_release release;
                 auto p_dense =
-                    std::dynamic_pointer_cast<phi::DenseTensor>(tensor.impl());
+                    std::dynamic_pointer_cast<DenseTensor>(tensor.impl());
                 auto *out_dense = p_dense.get();
                 auto in_dense = *p_dense;
                 distributed::AllreduceOptions opts{op};
@@ -168,7 +190,7 @@ void BindDistributed(py::module *m) {
                 auto tensor = CastPyArg2Tensor(py_tensor.ptr(), 0);
                 py::gil_scoped_release release;
                 auto p_dense =
-                    std::dynamic_pointer_cast<phi::DenseTensor>(tensor.impl());
+                    std::dynamic_pointer_cast<DenseTensor>(tensor.impl());
                 auto *out_dense = p_dense.get();
                 auto in_dense = *p_dense;
                 distributed::BroadcastOptions opts{src};
@@ -187,7 +209,7 @@ void BindDistributed(py::module *m) {
                 auto tensor = CastPyArg2Tensor(py_tensor.ptr(), 0);
                 py::gil_scoped_release release;
                 auto p_dense =
-                    std::dynamic_pointer_cast<phi::DenseTensor>(tensor.impl());
+                    std::dynamic_pointer_cast<DenseTensor>(tensor.impl());
                 auto out_dense = *p_dense;
                 return self.Send(out_dense, dst, sync_op);
               },
@@ -206,7 +228,7 @@ void BindDistributed(py::module *m) {
                 auto tensor = CastPyArg2Tensor(py_tensor.ptr(), 0);
                 py::gil_scoped_release release;
                 auto p_dense =
-                    std::dynamic_pointer_cast<phi::DenseTensor>(tensor.impl());
+                    std::dynamic_pointer_cast<DenseTensor>(tensor.impl());
                 auto out_dense = *p_dense;
 
                 int64_t numel = p_dense->numel();
@@ -230,7 +252,7 @@ void BindDistributed(py::module *m) {
                 auto tensor = CastPyArg2Tensor(py_tensor.ptr(), 0);
                 py::gil_scoped_release release;
                 auto p_dense =
-                    std::dynamic_pointer_cast<phi::DenseTensor>(tensor.impl());
+                    std::dynamic_pointer_cast<DenseTensor>(tensor.impl());
                 auto *in_dense = p_dense.get();
                 return self.Recv(in_dense, src, sync_op);
               },
@@ -248,7 +270,7 @@ void BindDistributed(py::module *m) {
                 auto tensor = CastPyArg2Tensor(py_tensor.ptr(), 0);
                 py::gil_scoped_release release;
                 auto p_dense =
-                    std::dynamic_pointer_cast<phi::DenseTensor>(tensor.impl());
+                    std::dynamic_pointer_cast<DenseTensor>(tensor.impl());
                 auto *out_dense = p_dense.get();
 
                 int64_t numel = p_dense->numel();
@@ -276,12 +298,12 @@ void BindDistributed(py::module *m) {
                 py::gil_scoped_release release;
 
                 Tensor stack_out_tensor = paddle::stack(out_tensor_list, 0);
-                auto p_out_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
+                auto p_out_tensor = std::dynamic_pointer_cast<DenseTensor>(
                     stack_out_tensor.impl());
                 auto *out_dense = p_out_tensor.get();
 
-                auto p_in_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    in_tensor.impl());
+                auto p_in_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(in_tensor.impl());
                 auto in_dense = *p_in_tensor;
 
                 auto task = self.AllGather(out_dense, in_dense, sync_op);
@@ -304,12 +326,12 @@ void BindDistributed(py::module *m) {
                 auto in_tensor = CastPyArg2Tensor(py_in_tensor.ptr(), 0);
                 py::gil_scoped_release release;
 
-                auto p_out_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    out_tensor.impl());
+                auto p_out_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(out_tensor.impl());
                 auto *out_dense = p_out_tensor.get();
 
-                auto p_in_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    in_tensor.impl());
+                auto p_in_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(in_tensor.impl());
                 auto in_dense = *p_in_tensor;
 
                 return self.AllGather(out_dense, in_dense, sync_op);
@@ -328,30 +350,15 @@ void BindDistributed(py::module *m) {
                     CastPyArg2VectorOfTensor(py_out_tensor_list.ptr(), 0);
                 auto in_tensor_list =
                     CastPyArg2VectorOfTensor(py_in_tensor_list.ptr(), 0);
+                auto out_dense_list = ToDenseTensors(out_tensor_list);
+                auto in_dense_list = ToDenseTensors(in_tensor_list);
+
                 py::gil_scoped_release release;
 
-                Tensor stack_out_tensor = paddle::stack(out_tensor_list, 0);
-                auto p_out_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    stack_out_tensor.impl());
-                auto *out_dense = p_out_tensor.get();
-
-                Tensor stack_in_tensor = paddle::stack(in_tensor_list, 0);
-                auto p_in_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    stack_in_tensor.impl());
-                auto in_dense = *p_in_tensor;
-
                 // in_tensor_list should not be empty
-                int world_size = self.GetSize();
                 auto task =
-                    self.AllToAll(out_dense,
-                                  in_dense,
-                                  GetDefaultSplitSizes(*out_dense, world_size),
-                                  GetDefaultSplitSizes(in_dense, world_size),
-                                  sync_op);
-                auto *dev_ctx =
-                    self.GetDeviceContext(in_tensor_list.back().place());
-                SplitTensor(*dev_ctx, *out_dense, &out_tensor_list);
-                task->UpdateWaitChain(*dev_ctx);
+                    self.AllToAll(&out_dense_list, in_dense_list, sync_op);
+
                 return task;
               },
               py::arg("out"),
@@ -368,22 +375,15 @@ void BindDistributed(py::module *m) {
                 auto in_tensor = CastPyArg2Tensor(py_in_tensor.ptr(), 0);
                 py::gil_scoped_release release;
 
-                auto p_out_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    out_tensor.impl());
+                auto p_out_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(out_tensor.impl());
                 auto *out_dense = p_out_tensor.get();
 
-                auto p_in_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    in_tensor.impl());
+                auto p_in_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(in_tensor.impl());
                 auto in_dense = *p_in_tensor;
 
-                int world_size = self.GetSize();
-
-                return self.AllToAll(
-                    out_dense,
-                    in_dense,
-                    GetDefaultSplitSizes(*out_dense, world_size),
-                    GetDefaultSplitSizes(in_dense, world_size),
-                    sync_op);
+                return self.AllToAll(out_dense, in_dense, {}, {}, sync_op);
               },
               py::arg("out"),
               py::arg("in"),
@@ -401,12 +401,12 @@ void BindDistributed(py::module *m) {
                 auto in_tensor = CastPyArg2Tensor(py_in_tensor.ptr(), 0);
                 py::gil_scoped_release release;
 
-                auto p_out_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    out_tensor.impl());
+                auto p_out_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(out_tensor.impl());
                 auto *out_dense = p_out_tensor.get();
 
-                auto p_in_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    in_tensor.impl());
+                auto p_in_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(in_tensor.impl());
                 auto in_dense = *p_in_tensor;
 
                 return self.AllToAll(
@@ -428,7 +428,7 @@ void BindDistributed(py::module *m) {
                 auto tensor = CastPyArg2Tensor(py_tensor.ptr(), 0);
                 py::gil_scoped_release release;
                 auto p_dense =
-                    std::dynamic_pointer_cast<phi::DenseTensor>(tensor.impl());
+                    std::dynamic_pointer_cast<DenseTensor>(tensor.impl());
                 auto *out_dense = p_dense.get();
                 auto in_dense = *p_dense;
                 distributed::ReduceOptions opts{op, dst};
@@ -451,12 +451,12 @@ void BindDistributed(py::module *m) {
                     CastPyArg2VectorOfTensor(py_in_tensor_list.ptr(), 0);
                 py::gil_scoped_release release;
 
-                auto p_out_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    out_tensor.impl());
+                auto p_out_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(out_tensor.impl());
                 auto out_dense = p_out_tensor.get();
 
                 Tensor stack_in_tensor = paddle::stack(in_tensor_list, 0);
-                auto p_in_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
+                auto p_in_tensor = std::dynamic_pointer_cast<DenseTensor>(
                     stack_in_tensor.impl());
                 auto in_dense = *p_in_tensor;
 
@@ -479,12 +479,12 @@ void BindDistributed(py::module *m) {
                 auto in_tensor = CastPyArg2Tensor(py_in_tensor.ptr(), 0);
                 py::gil_scoped_release release;
 
-                auto p_out_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    out_tensor.impl());
+                auto p_out_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(out_tensor.impl());
                 auto out_dense = p_out_tensor.get();
 
-                auto p_in_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    in_tensor.impl());
+                auto p_in_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(in_tensor.impl());
                 auto in_dense = *p_in_tensor;
 
                 distributed::ReduceScatterOptions opts{op};
@@ -507,11 +507,11 @@ void BindDistributed(py::module *m) {
                     CastPyArg2VectorOfTensor(py_in_tensor_list.ptr(), 0);
                 py::gil_scoped_release release;
 
-                auto p_out_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    out_tensor.impl());
+                auto p_out_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(out_tensor.impl());
                 auto *out_dense = p_out_tensor.get();
                 Tensor stack_in_tensor = paddle::stack(in_tensor_list, 0);
-                auto p_in_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
+                auto p_in_tensor = std::dynamic_pointer_cast<DenseTensor>(
                     stack_in_tensor.impl());
                 auto in_dense = *p_in_tensor;
 
@@ -534,12 +534,12 @@ void BindDistributed(py::module *m) {
                 auto in_tensor = CastPyArg2Tensor(py_in_tensor.ptr(), 0);
                 py::gil_scoped_release release;
 
-                auto p_out_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    out_tensor.impl());
+                auto p_out_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(out_tensor.impl());
                 auto *out_dense = p_out_tensor.get();
 
-                auto p_in_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    in_tensor.impl());
+                auto p_in_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(in_tensor.impl());
                 auto in_dense = *p_in_tensor;
 
                 distributed::ScatterOptions opts{src};
@@ -563,11 +563,11 @@ void BindDistributed(py::module *m) {
                 py::gil_scoped_release release;
 
                 Tensor stack_out_tensor = paddle::stack(out_tensor_list, 0);
-                auto p_out_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
+                auto p_out_tensor = std::dynamic_pointer_cast<DenseTensor>(
                     stack_out_tensor.impl());
                 auto *out_dense = p_out_tensor.get();
-                auto p_in_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    in_tensor.impl());
+                auto p_in_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(in_tensor.impl());
                 auto in_dense = *p_in_tensor;
 
                 distributed::GatherOptions gather_opts{dst};
@@ -576,8 +576,7 @@ void BindDistributed(py::module *m) {
                 auto *dev_ctx =
                     self.GetDeviceContext(in_tensor.place(), use_calc_stream);
                 SplitTensor(*dev_ctx, *out_dense, &out_tensor_list);
-                if (!use_calc_stream &&
-                    dev_ctx->GetPlace() != phi::CPUPlace()) {
+                if (!use_calc_stream && dev_ctx->GetPlace() != CPUPlace()) {
                   // calculate stream will wait comm stream
                   task->UpdateWaitChain(*dev_ctx);
                 }
@@ -609,7 +608,7 @@ void BindDistributed(py::module *m) {
                 distributed::AllreduceOptions opts{};
                 opts.reduce_op = op;
                 auto dense =
-                    std::dynamic_pointer_cast<phi::DenseTensor>(tensor.impl());
+                    std::dynamic_pointer_cast<DenseTensor>(tensor.impl());
                 return self.AllReduce(dense.get(), *dense, opts, false);
               },
               py::arg("tensor"),
@@ -625,7 +624,7 @@ void BindDistributed(py::module *m) {
                 distributed::BroadcastOptions opts{};
                 opts.source_rank = source_rank;
                 auto dense =
-                    std::dynamic_pointer_cast<phi::DenseTensor>(tensor.impl());
+                    std::dynamic_pointer_cast<DenseTensor>(tensor.impl());
                 return self.Broadcast(dense.get(), *dense, opts, false);
               },
               py::arg("tensor"),
@@ -639,7 +638,7 @@ void BindDistributed(py::module *m) {
                 auto tensor = CastPyArg2Tensor(py_tensor.ptr(), 0);
                 py::gil_scoped_release release;
                 auto dense =
-                    std::dynamic_pointer_cast<phi::DenseTensor>(tensor.impl());
+                    std::dynamic_pointer_cast<DenseTensor>(tensor.impl());
                 return self.Send(*dense, dst, false);
               },
               py::arg("tensor"),
@@ -653,7 +652,7 @@ void BindDistributed(py::module *m) {
                 auto tensor = CastPyArg2Tensor(py_tensor.ptr(), 0);
                 py::gil_scoped_release release;
                 auto dense =
-                    std::dynamic_pointer_cast<phi::DenseTensor>(tensor.impl());
+                    std::dynamic_pointer_cast<DenseTensor>(tensor.impl());
                 return self.Recv(dense.get(), src, false);
               },
               py::arg("tensor"),
@@ -667,10 +666,10 @@ void BindDistributed(py::module *m) {
                 auto in_tensor = CastPyArg2Tensor(py_in_tensor.ptr(), 0);
                 auto out_tensor = CastPyArg2Tensor(py_out_tensor.ptr(), 0);
                 py::gil_scoped_release release;
-                auto in_dense = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    in_tensor.impl());
-                auto out_dense = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    out_tensor.impl());
+                auto in_dense =
+                    std::dynamic_pointer_cast<DenseTensor>(in_tensor.impl());
+                auto out_dense =
+                    std::dynamic_pointer_cast<DenseTensor>(out_tensor.impl());
                 return self.AllGather(out_dense.get(), *in_dense, false);
               },
               py::arg("in"),
@@ -687,12 +686,12 @@ void BindDistributed(py::module *m) {
                 auto in_tensor = CastPyArg2Tensor(py_in_tensor.ptr(), 0);
                 py::gil_scoped_release release;
 
-                auto p_out_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    out_tensor.impl());
+                auto p_out_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(out_tensor.impl());
                 auto *out_dense = p_out_tensor.get();
 
-                auto p_in_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    in_tensor.impl());
+                auto p_in_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(in_tensor.impl());
                 auto in_dense = *p_in_tensor;
 
                 int64_t numel = in_dense.numel();
@@ -714,10 +713,10 @@ void BindDistributed(py::module *m) {
                 auto in_tensor = CastPyArg2Tensor(py_in_tensor.ptr(), 0);
                 auto out_tensor = CastPyArg2Tensor(py_out_tensor.ptr(), 0);
                 py::gil_scoped_release release;
-                auto in_dense = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    in_tensor.impl());
-                auto out_dense = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    out_tensor.impl());
+                auto in_dense =
+                    std::dynamic_pointer_cast<DenseTensor>(in_tensor.impl());
+                auto out_dense =
+                    std::dynamic_pointer_cast<DenseTensor>(out_tensor.impl());
 
                 int world_size = self.GetSize();
                 return self.AllToAll(
@@ -741,12 +740,12 @@ void BindDistributed(py::module *m) {
                 auto in_tensor = CastPyArg2Tensor(py_in_tensor.ptr(), 0);
                 py::gil_scoped_release release;
 
-                auto p_out_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    out_tensor.impl());
+                auto p_out_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(out_tensor.impl());
                 auto *out_dense = p_out_tensor.get();
 
-                auto p_in_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    in_tensor.impl());
+                auto p_in_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(in_tensor.impl());
                 auto in_dense = *p_in_tensor;
 
                 return self.AllToAll(
@@ -768,8 +767,8 @@ void BindDistributed(py::module *m) {
                 distributed::ReduceOptions opts{};
                 opts.reduce_op = op;
                 opts.root_rank = dst;
-                auto dense = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    in_tensor.impl());
+                auto dense =
+                    std::dynamic_pointer_cast<DenseTensor>(in_tensor.impl());
                 return self.Reduce(dense.get(), *dense, opts, false);
               },
               py::arg("tensor"),
@@ -787,10 +786,10 @@ void BindDistributed(py::module *m) {
                 py::gil_scoped_release release;
                 distributed::ScatterOptions opts{};
                 opts.root_rank = src;
-                auto in_dense = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    in_tensor.impl());
-                auto out_dense = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    out_tensor.impl());
+                auto in_dense =
+                    std::dynamic_pointer_cast<DenseTensor>(in_tensor.impl());
+                auto out_dense =
+                    std::dynamic_pointer_cast<DenseTensor>(out_tensor.impl());
                 return self.Scatter(out_dense.get(), *in_dense, opts, false);
               },
               py::arg("in"),
@@ -808,12 +807,12 @@ void BindDistributed(py::module *m) {
                 py::gil_scoped_release release;
 
                 Tensor stack_out_tensor = paddle::stack(out_tensor_list, 0);
-                auto p_out_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
+                auto p_out_tensor = std::dynamic_pointer_cast<DenseTensor>(
                     stack_out_tensor.impl());
                 auto *out_dense = p_out_tensor.get();
 
-                auto p_in_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    in_tensor.impl());
+                auto p_in_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(in_tensor.impl());
                 auto in_dense = *p_in_tensor;
                 auto task = self.AllGather(out_dense,
                                            in_dense,
@@ -835,12 +834,12 @@ void BindDistributed(py::module *m) {
                 auto in_tensor = CastPyArg2Tensor(py_in_tensor.ptr(), 0);
                 py::gil_scoped_release release;
 
-                auto p_out_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    out_tensor.impl());
+                auto p_out_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(out_tensor.impl());
                 auto *out_dense = p_out_tensor.get();
 
-                auto p_in_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    in_tensor.impl());
+                auto p_in_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(in_tensor.impl());
                 auto in_dense = *p_in_tensor;
 
                 return self.AllGather(out_dense,
@@ -862,12 +861,12 @@ void BindDistributed(py::module *m) {
                 auto in_tensor = CastPyArg2Tensor(py_in_tensor.ptr(), 0);
                 py::gil_scoped_release release;
 
-                auto p_out_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    out_tensor.impl());
+                auto p_out_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(out_tensor.impl());
                 auto *out_dense = p_out_tensor.get();
 
-                auto p_in_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    in_tensor.impl());
+                auto p_in_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(in_tensor.impl());
                 auto in_dense = *p_in_tensor;
 
                 int64_t numel = in_dense.numel();
@@ -894,7 +893,7 @@ void BindDistributed(py::module *m) {
                 auto tensor = CastPyArg2Tensor(py_tensor.ptr(), 0);
                 py::gil_scoped_release release;
                 auto p_dense =
-                    std::dynamic_pointer_cast<phi::DenseTensor>(tensor.impl());
+                    std::dynamic_pointer_cast<DenseTensor>(tensor.impl());
                 auto in_dense = *p_dense;
                 auto *out_dense = p_dense.get();
                 distributed::AllreduceOptions opts{op};
@@ -916,30 +915,15 @@ void BindDistributed(py::module *m) {
                     CastPyArg2VectorOfTensor(py_out_tensor_list.ptr(), 0);
                 auto in_tensor_list =
                     CastPyArg2VectorOfTensor(py_in_tensor_list.ptr(), 0);
+                auto out_dense_list = ToDenseTensors(out_tensor_list);
+                auto in_dense_list = ToDenseTensors(in_tensor_list);
                 py::gil_scoped_release release;
 
-                Tensor stack_out_tensor = paddle::stack(out_tensor_list, 0);
-                auto p_out_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    stack_out_tensor.impl());
-                auto *out_dense = p_out_tensor.get();
-
-                Tensor stack_in_tensor = paddle::stack(in_tensor_list, 0);
-                auto p_in_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    stack_in_tensor.impl());
-                auto in_dense = *p_in_tensor;
-
                 // in_tensor_list should not be empty
-                int world_size = self.GetSize();
-                auto task =
-                    self.AllToAll(out_dense,
-                                  in_dense,
-                                  GetDefaultSplitSizes(*out_dense, world_size),
-                                  GetDefaultSplitSizes(in_dense, world_size),
-                                  /*sync_op*/ true,
-                                  /*use_calc_stream*/ true);
-                auto *dev_ctx = self.GetDeviceContext(
-                    in_tensor_list.back().place(), /*use_calc_stream*/ true);
-                SplitTensor(*dev_ctx, *out_dense, &out_tensor_list);
+                auto task = self.AllToAll(&out_dense_list,
+                                          in_dense_list,
+                                          /*sync_op*/ true,
+                                          /*use_calc_stream*/ true);
                 return task;
               },
               py::arg("out"),
@@ -954,22 +938,20 @@ void BindDistributed(py::module *m) {
                 auto in_tensor = CastPyArg2Tensor(py_in_tensor.ptr(), 0);
                 py::gil_scoped_release release;
 
-                auto p_out_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    out_tensor.impl());
+                auto p_out_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(out_tensor.impl());
                 auto *out_dense = p_out_tensor.get();
 
-                auto p_in_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    in_tensor.impl());
+                auto p_in_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(in_tensor.impl());
                 auto in_dense = *p_in_tensor;
 
-                int world_size = self.GetSize();
-                return self.AllToAll(
-                    out_dense,
-                    in_dense,
-                    GetDefaultSplitSizes(*out_dense, world_size),
-                    GetDefaultSplitSizes(in_dense, world_size),
-                    /*sync_op*/ true,
-                    /*use_calc_stream*/ true);
+                return self.AllToAll(out_dense,
+                                     in_dense,
+                                     {},
+                                     {},
+                                     /*sync_op*/ true,
+                                     /*use_calc_stream*/ true);
               },
               py::arg("out"),
               py::arg("in"))
@@ -985,12 +967,12 @@ void BindDistributed(py::module *m) {
                 auto in_tensor = CastPyArg2Tensor(py_in_tensor.ptr(), 0);
                 py::gil_scoped_release release;
 
-                auto p_out_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    out_tensor.impl());
+                auto p_out_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(out_tensor.impl());
                 auto *out_dense = p_out_tensor.get();
 
-                auto p_in_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    in_tensor.impl());
+                auto p_in_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(in_tensor.impl());
                 auto in_dense = *p_in_tensor;
 
                 return self.AllToAll(out_dense,
@@ -1013,7 +995,7 @@ void BindDistributed(py::module *m) {
                 auto tensor = CastPyArg2Tensor(py_tensor.ptr(), 0);
                 py::gil_scoped_release release;
                 auto p_dense =
-                    std::dynamic_pointer_cast<phi::DenseTensor>(tensor.impl());
+                    std::dynamic_pointer_cast<DenseTensor>(tensor.impl());
                 auto *out_dense = p_dense.get();
                 auto in_dense = *p_dense;
                 distributed::BroadcastOptions opts{src};
@@ -1035,7 +1017,7 @@ void BindDistributed(py::module *m) {
                 auto tensor = CastPyArg2Tensor(py_tensor.ptr(), 0);
                 py::gil_scoped_release release;
                 auto p_dense =
-                    std::dynamic_pointer_cast<phi::DenseTensor>(tensor.impl());
+                    std::dynamic_pointer_cast<DenseTensor>(tensor.impl());
                 auto *out_dense = p_dense.get();
                 auto in_dense = *p_dense;
                 distributed::ReduceOptions opts{op, dst};
@@ -1060,12 +1042,12 @@ void BindDistributed(py::module *m) {
                     CastPyArg2VectorOfTensor(py_in_tensor_list.ptr(), 0);
                 py::gil_scoped_release release;
 
-                auto p_out_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    out_tensor.impl());
+                auto p_out_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(out_tensor.impl());
                 auto out_dense = p_out_tensor.get();
 
                 Tensor stack_in_tensor = paddle::stack(in_tensor_list, 0);
-                auto p_in_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
+                auto p_in_tensor = std::dynamic_pointer_cast<DenseTensor>(
                     stack_in_tensor.impl());
                 auto in_dense = *p_in_tensor;
 
@@ -1090,12 +1072,12 @@ void BindDistributed(py::module *m) {
                 auto in_tensor = CastPyArg2Tensor(py_in_tensor.ptr(), 0);
                 py::gil_scoped_release release;
 
-                auto p_out_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    out_tensor.impl());
+                auto p_out_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(out_tensor.impl());
                 auto out_dense = p_out_tensor.get();
 
-                auto p_in_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    in_tensor.impl());
+                auto p_in_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(in_tensor.impl());
                 auto in_dense = *p_in_tensor;
 
                 distributed::ReduceScatterOptions opts{op};
@@ -1120,12 +1102,12 @@ void BindDistributed(py::module *m) {
                     CastPyArg2VectorOfTensor(py_in_tensor_list.ptr(), 0);
                 py::gil_scoped_release release;
 
-                auto p_out_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    out_tensor.impl());
+                auto p_out_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(out_tensor.impl());
                 auto *out_dense = p_out_tensor.get();
 
                 Tensor stack_in_tensor = paddle::stack(in_tensor_list, 0);
-                auto p_in_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
+                auto p_in_tensor = std::dynamic_pointer_cast<DenseTensor>(
                     stack_in_tensor.impl());
                 auto in_dense = *p_in_tensor;
 
@@ -1150,12 +1132,12 @@ void BindDistributed(py::module *m) {
                 auto in_tensor = CastPyArg2Tensor(py_in_tensor.ptr(), 0);
                 py::gil_scoped_release release;
 
-                auto p_out_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    out_tensor.impl());
+                auto p_out_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(out_tensor.impl());
                 auto *out_dense = p_out_tensor.get();
 
-                auto p_in_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    in_tensor.impl());
+                auto p_in_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(in_tensor.impl());
                 auto in_dense = *p_in_tensor;
 
                 distributed::ScatterOptions opts{src};
@@ -1177,7 +1159,7 @@ void BindDistributed(py::module *m) {
                 auto tensor = CastPyArg2Tensor(py_tensor.ptr(), 0);
                 py::gil_scoped_release release;
                 auto p_dense =
-                    std::dynamic_pointer_cast<phi::DenseTensor>(tensor.impl());
+                    std::dynamic_pointer_cast<DenseTensor>(tensor.impl());
                 auto out_dense = *p_dense;
                 return self.Send(out_dense,
                                  dst,
@@ -1197,7 +1179,7 @@ void BindDistributed(py::module *m) {
                 auto tensor = CastPyArg2Tensor(py_tensor.ptr(), 0);
                 py::gil_scoped_release release;
                 auto p_dense =
-                    std::dynamic_pointer_cast<phi::DenseTensor>(tensor.impl());
+                    std::dynamic_pointer_cast<DenseTensor>(tensor.impl());
                 auto out_dense = *p_dense;
 
                 int64_t numel = p_dense->numel();
@@ -1224,7 +1206,7 @@ void BindDistributed(py::module *m) {
                 auto tensor = CastPyArg2Tensor(py_tensor.ptr(), 0);
                 py::gil_scoped_release release;
                 auto p_dense =
-                    std::dynamic_pointer_cast<phi::DenseTensor>(tensor.impl());
+                    std::dynamic_pointer_cast<DenseTensor>(tensor.impl());
                 auto *in_dense = p_dense.get();
                 return self.Recv(in_dense,
                                  src,
@@ -1244,7 +1226,7 @@ void BindDistributed(py::module *m) {
                 auto tensor = CastPyArg2Tensor(py_tensor.ptr(), 0);
                 py::gil_scoped_release release;
                 auto p_dense =
-                    std::dynamic_pointer_cast<phi::DenseTensor>(tensor.impl());
+                    std::dynamic_pointer_cast<DenseTensor>(tensor.impl());
                 auto *out_dense = p_dense.get();
 
                 int64_t numel = p_dense->numel();
@@ -1275,9 +1257,167 @@ void BindDistributed(py::module *m) {
                   py::arg("group_id") = 0,
                   py::arg("timeout") = 30 * 60 * 1000,
                   py::arg("nccl_comm_init_option") = 0,
+                  py::arg("nccl_config") = nullptr,
                   py::call_guard<py::gil_scoped_release>())
       .def_static("group_start", distributed::ProcessGroupNCCL::GroupStart)
-      .def_static("group_end", distributed::ProcessGroupNCCL::GroupEnd);
+      .def_static("group_end", distributed::ProcessGroupNCCL::GroupEnd)
+      .def("get_stream", &distributed::ProcessGroupNCCL::GetStream)
+      .def("set_outer_wait", &distributed::ProcessGroupNCCL::SetOuterEventWait)
+      .def("shutdown", &distributed::ProcessGroupNCCL::Shutdown)
+      .def("restart", &distributed::ProcessGroupNCCL::Restart)
+      .def(
+          "eager_connect_ring_exchange",
+          [](distributed::ProcessGroupNCCL &self,
+             std::shared_ptr<phi::distributed::NCCLConfig> nccl_config) {
+            self.EagerConnectRingExchange(nccl_config);
+          },
+          py::arg("nccl_config"),
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "register_comm_buffer",
+          [](distributed::ProcessGroupNCCL &self,
+             py::handle py_tensor,
+             int win_flags) -> uint64_t {
+            auto tensor = CastPyArg2Tensor(py_tensor.ptr(), 0);
+            auto p_tensor =
+                std::dynamic_pointer_cast<phi::DenseTensor>(tensor.impl());
+            // The window covers the whole underlying allocation rather than the
+            // logical bytes of the tensor: core.nccl_mem_alloc() pads the
+            // allocation up to kNCCLWindowAlignment. Requiring offset 0 keeps
+            // this from registering memory the tensor does not own.
+            PADDLE_ENFORCE_EQ(
+                static_cast<bool>(p_tensor->Holder()),
+                true,
+                common::errors::InvalidArgument(
+                    "register_comm_buffer() expects an allocated tensor."));
+            PADDLE_ENFORCE_EQ(
+                p_tensor->meta().offset,
+                0,
+                common::errors::InvalidArgument(
+                    "register_comm_buffer() expects a tensor owning its whole "
+                    "allocation, but got one starting at offset %d of it. "
+                    "Views and slices cannot be registered, register the "
+                    "buffer returned by nccl_symmetric_empty() instead.",
+                    p_tensor->meta().offset));
+            size_t size = p_tensor->Holder()->size();
+            py::gil_scoped_release release;
+            auto *comm_context = self.GetOrCreateCommContext(p_tensor->place());
+            void *win =
+                comm_context->RegisterWindow(p_tensor->data(), size, win_flags);
+            return reinterpret_cast<uint64_t>(win);
+          },
+          py::arg("tensor"),
+          // NCCL_WIN_COLL_SYMMETRIC, the flag required by the zero-SM path.
+          py::arg("win_flags") = 0x01)
+      .def(
+          "deregister_comm_buffer",
+          [](distributed::ProcessGroupNCCL &self, py::handle py_tensor) {
+            auto tensor = CastPyArg2Tensor(py_tensor.ptr(), 0);
+            auto p_tensor =
+                std::dynamic_pointer_cast<phi::DenseTensor>(tensor.impl());
+            py::gil_scoped_release release;
+            auto *comm_context = self.GetOrCreateCommContext(p_tensor->place());
+            comm_context->DeregisterWindow(p_tensor->data());
+          },
+          py::arg("tensor"));
+
+  // Allocates a device buffer through ncclMemAlloc, whose address and size are
+  // padded to NCCLCommContext::kNCCLWindowAlignment so that it can be handed to
+  // ProcessGroupNCCL.register_comm_buffer(). Paddle's own allocator generally
+  // does not meet that alignment requirement.
+#if defined(PADDLE_WITH_NCCL) && NCCL_VERSION_CODE >= 23007
+  m->def(
+      "nccl_mem_alloc",
+      [](const std::vector<int64_t> &shape, phi::DataType dtype) -> py::object {
+        PADDLE_ENFORCE_EQ(
+            phi::dynload::ncclMemAlloc.IsValid(),
+            true,
+            common::errors::Unavailable(
+                "ncclMemAlloc is not provided by the loaded NCCL library, "
+                "which the zero-SM paths need (NCCL 2.30.7 or newer) to "
+                "allocate registrable communication buffers."));
+        constexpr size_t kAlign =
+            phi::distributed::NCCLCommContext::kNCCLWindowAlignment;
+        constexpr size_t kMaxSize = std::numeric_limits<size_t>::max();
+        const size_t element_size = phi::SizeOf(dtype);
+        // phi::SizeOf() returns 0 for DataType::UNDEFINED, which Python can
+        // pass in as core.DataType.UNDEFINED, and the checks below divide by
+        // it. Refuse it here: an integer division by zero raises SIGFPE and
+        // takes the process down instead of raising to the caller.
+        PADDLE_ENFORCE_NE(element_size,
+                          0,
+                          common::errors::InvalidArgument(
+                              "nccl_mem_alloc got dtype %s, which has no "
+                              "element size and cannot be allocated.",
+                              phi::DataTypeToString(dtype)));
+        // Each step below can wrap around for an absurd shape. An overflowed
+        // alloc_bytes would allocate far less than the shape kept in the
+        // tensor's meta, so a later collective would write past the allocation:
+        // check every multiplication and the alignment round-up.
+        size_t numel = 1;
+        for (auto dim : shape) {
+          PADDLE_ENFORCE_GT(dim,
+                            0,
+                            common::errors::InvalidArgument(
+                                "nccl_mem_alloc expects a positive shape, but "
+                                "got %d in one of the dimensions.",
+                                dim));
+          PADDLE_ENFORCE_LE(static_cast<size_t>(dim),
+                            kMaxSize / numel,
+                            common::errors::InvalidArgument(
+                                "nccl_mem_alloc got a shape whose element "
+                                "count overflows size_t."));
+          numel *= static_cast<size_t>(dim);
+        }
+        PADDLE_ENFORCE_LE(
+            numel,
+            kMaxSize / element_size,
+            common::errors::InvalidArgument(
+                "nccl_mem_alloc got a shape of %d elements, whose "
+                "size in bytes overflows size_t.",
+                numel));
+        size_t nbytes = numel * element_size;
+        PADDLE_ENFORCE_LE(nbytes,
+                          kMaxSize - (kAlign - 1),
+                          common::errors::InvalidArgument(
+                              "nccl_mem_alloc got %d bytes, which overflows "
+                              "size_t once padded to the %d byte alignment.",
+                              nbytes,
+                              kAlign));
+        size_t alloc_bytes = (nbytes + kAlign - 1) / kAlign * kAlign;
+
+        void *ptr = nullptr;
+        auto place = phi::GPUPlace(phi::backends::gpu::GetCurrentDeviceId());
+        {
+          py::gil_scoped_release release;
+          ncclResult_t status = phi::dynload::ncclMemAlloc(&ptr, alloc_bytes);
+          PADDLE_ENFORCE_EQ(status,
+                            ncclSuccess,
+                            common::errors::Unavailable(
+                                "ncclMemAlloc failed with %d when allocating "
+                                "%d bytes.",
+                                static_cast<int>(status),
+                                alloc_bytes));
+        }
+        // The tensor keeps the requested shape while its allocation records the
+        // padded size, so the padding stays invisible to the caller.
+        auto alloc = std::make_shared<phi::Allocation>(
+            ptr,
+            alloc_bytes,
+            +[](phi::Allocation *allocation) {
+              if (phi::dynload::ncclMemFree.IsValid()) {
+                phi::dynload::ncclMemFree(allocation->ptr());
+              }
+            },
+            place);
+        phi::DenseTensorMeta meta(dtype, common::make_ddim(shape));
+        paddle::Tensor tensor(
+            std::make_shared<phi::DenseTensor>(alloc, std::move(meta)));
+        return py::reinterpret_steal<py::object>(ToPyObject(tensor));
+      },
+      py::arg("shape"),
+      py::arg("dtype"));
+#endif
 
   py::class_<distributed::AsyncLoad::Task,
              std::shared_ptr<distributed::AsyncLoad::Task>>(*m, "AsyncLoadTask")
@@ -1303,18 +1443,45 @@ void BindDistributed(py::module *m) {
                 auto src_tensor = CastPyArg2Tensor(py_src_tensor.ptr(), 0);
                 py::gil_scoped_release release;
 
-                auto p_dst_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    dst_tensor.impl());
+                auto p_dst_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(dst_tensor.impl());
                 auto *dst_dense = p_dst_tensor.get();
 
-                auto p_src_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    src_tensor.impl());
+                auto p_src_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(src_tensor.impl());
                 auto src_dense = *p_src_tensor;
 
                 return self.Offload(dst_dense, src_dense);
               },
               py::arg("dst"),
               py::arg("src"))
+          .def(
+              "offload_with_offset",
+              [](distributed::AsyncLoad &self,
+                 py::handle py_dst_tensor,
+                 py::handle py_src_tensor,
+                 size_t dst_offset,
+                 size_t src_offset,
+                 size_t offload_size) {
+                auto dst_tensor = CastPyArg2Tensor(py_dst_tensor.ptr(), 0);
+                auto p_dst_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(dst_tensor.impl());
+                auto *dst_dense = p_dst_tensor.get();
+
+                auto src_tensor = CastPyArg2Tensor(py_src_tensor.ptr(), 0);
+                auto p_src_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(src_tensor.impl());
+                auto src_dense = *p_src_tensor;
+
+                return self.OffloadWithOffset(
+                    dst_dense, src_dense, dst_offset, src_offset, offload_size);
+              },
+              py::arg("dst"),
+              py::arg("src"),
+              py::arg("dst_offset"),
+              py::arg("src_offset"),
+              py::arg("offload_size"),
+              py::call_guard<py::gil_scoped_release>())
           .def(
               "reload",
               [](distributed::AsyncLoad &self,
@@ -1324,12 +1491,12 @@ void BindDistributed(py::module *m) {
                 auto src_tensor = CastPyArg2Tensor(py_src_tensor.ptr(), 0);
                 py::gil_scoped_release release;
 
-                auto p_dst_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    dst_tensor.impl());
+                auto p_dst_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(dst_tensor.impl());
                 auto *dst_dense = p_dst_tensor.get();
 
-                auto p_src_tensor = std::dynamic_pointer_cast<phi::DenseTensor>(
-                    src_tensor.impl());
+                auto p_src_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(src_tensor.impl());
                 auto src_dense = *p_src_tensor;
 
                 return self.Reload(dst_dense, src_dense);
@@ -1397,6 +1564,92 @@ void BindDistributed(py::module *m) {
           .def_static("group_end",
                       distributed::ProcessGroupBKCL::GroupEnd,
                       py::call_guard<py::gil_scoped_release>());
+
+  py::class_<distributed::XpuAsyncLoad::Task,
+             std::shared_ptr<distributed::XpuAsyncLoad::Task>>(
+      *m, "XpuAsyncLoadTask")
+      .def("is_completed",
+           &distributed::XpuAsyncLoad::Task::IsCompleted,
+           py::call_guard<py::gil_scoped_release>())
+      .def("xpu_wait",
+           &distributed::XpuAsyncLoad::Task::XpuSynchronize,
+           py::call_guard<py::gil_scoped_release>())
+      .def("cpu_wait",
+           &distributed::XpuAsyncLoad::Task::CpuSynchronize,
+           py::call_guard<py::gil_scoped_release>());
+
+  auto XpuAsyncLoad =
+      py::class_<distributed::XpuAsyncLoad>(*m, "XpuAsyncLoad")
+          .def(py::init<>())
+          .def(
+              "offload",
+              [](distributed::XpuAsyncLoad &self,
+                 py::handle py_dst_tensor,
+                 py::handle py_src_tensor) {
+                auto dst_tensor = CastPyArg2Tensor(py_dst_tensor.ptr(), 0);
+                auto src_tensor = CastPyArg2Tensor(py_src_tensor.ptr(), 0);
+                py::gil_scoped_release release;
+
+                auto p_dst_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(dst_tensor.impl());
+                auto *dst_dense = p_dst_tensor.get();
+
+                auto p_src_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(src_tensor.impl());
+                auto src_dense = *p_src_tensor;
+
+                return self.Offload(dst_dense, src_dense);
+              },
+              py::arg("dst"),
+              py::arg("src"))
+          .def(
+              "offload_with_offset",
+              [](distributed::XpuAsyncLoad &self,
+                 py::handle py_dst_tensor,
+                 py::handle py_src_tensor,
+                 size_t dst_offset,
+                 size_t src_offset,
+                 size_t offload_size) {
+                auto dst_tensor = CastPyArg2Tensor(py_dst_tensor.ptr(), 0);
+                auto p_dst_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(dst_tensor.impl());
+                auto *dst_dense = p_dst_tensor.get();
+
+                auto src_tensor = CastPyArg2Tensor(py_src_tensor.ptr(), 0);
+                auto p_src_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(src_tensor.impl());
+                auto src_dense = *p_src_tensor;
+
+                return self.OffloadWithOffset(
+                    dst_dense, src_dense, dst_offset, src_offset, offload_size);
+              },
+              py::arg("dst"),
+              py::arg("src"),
+              py::arg("dst_offset"),
+              py::arg("src_offset"),
+              py::arg("offload_size"),
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "reload",
+              [](distributed::XpuAsyncLoad &self,
+                 py::handle py_dst_tensor,
+                 py::handle py_src_tensor) {
+                auto dst_tensor = CastPyArg2Tensor(py_dst_tensor.ptr(), 0);
+                auto src_tensor = CastPyArg2Tensor(py_src_tensor.ptr(), 0);
+                py::gil_scoped_release release;
+
+                auto p_dst_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(dst_tensor.impl());
+                auto *dst_dense = p_dst_tensor.get();
+
+                auto p_src_tensor =
+                    std::dynamic_pointer_cast<DenseTensor>(src_tensor.impl());
+                auto src_dense = *p_src_tensor;
+
+                return self.Reload(dst_dense, src_dense);
+              },
+              py::arg("dst"),
+              py::arg("src"));
 #endif
 
   py::class_<distributed::ProcessGroup::Task,
@@ -1427,6 +1680,20 @@ void BindDistributed(py::module *m) {
                   py::call_guard<py::gil_scoped_release>())
       .def_static("create_default_device",
                   &ProcessGroupGloo::createDefaultDevice,
+                  py::call_guard<py::gil_scoped_release>());
+#endif
+
+#if defined(PADDLE_WITH_FLAGCX) && !defined(PADDLE_WITH_XPU)
+  py::class_<ProcessGroupFlagcx, std::shared_ptr<ProcessGroupFlagcx>>(
+      *m, "ProcessGroupFlagcx", ProcessGroup)
+      .def_static("create",
+                  distributed::ProcessGroupFlagcx::CreateProcessGroupFlagcx,
+                  py::arg("store"),
+                  py::arg("rank"),
+                  py::arg("world_size"),
+                  py::arg("group_id") = 0,
+                  py::arg("timeout") = 30 * 60 * 1000,
+                  py::arg("nccl_comm_init_option") = 0,
                   py::call_guard<py::gil_scoped_release>());
 #endif
 

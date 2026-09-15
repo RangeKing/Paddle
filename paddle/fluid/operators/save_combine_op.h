@@ -77,8 +77,7 @@ void SaveCombineTensorKernel(const Context& dev_ctx,
     PADDLE_THROW(common::errors::PreconditionNotMet(
         "%s exists! Cannot save_combine to it when overwrite is set to "
         "false.",
-        file_path,
-        overwrite));
+        file_path));
   }
 
   std::ostringstream ss;
@@ -106,7 +105,7 @@ void SaveCombineTensorKernel(const Context& dev_ctx,
           phi::KernelKey(place, phi::DataLayout::ALL_LAYOUT, in_dtype);
       auto out_kernel_type =
           phi::KernelKey(place, phi::DataLayout::ALL_LAYOUT, out_dtype);
-      phi::DenseTensor out;
+      DenseTensor out;
       framework::TransDataType(in_kernel_type, out_kernel_type, tensor, &out);
       // copy LoD info to the new tensor
       out.set_lod(tensor.lod());
@@ -144,8 +143,7 @@ void SaveCombineVocabKernel(
     PADDLE_THROW(common::errors::PreconditionNotMet(
         "%s exists! Cannot save_combine to it when overwrite is set to "
         "false.",
-        file_path,
-        overwrite));
+        file_path));
   }
 
   std::ostringstream ss;
@@ -194,7 +192,7 @@ class SaveCombineOpKernel : public framework::OpKernel<T> {
     phi::DeviceContextPool& pool = phi::DeviceContextPool::Instance();
     auto& dev_ctx = *pool.Get(place);
 
-    if (inp_vars.size() > 0 && inp_vars[0]->IsType<phi::DenseTensor>()) {
+    if (inp_vars.size() > 0 && inp_vars[0]->IsType<DenseTensor>()) {
       std::vector<const phi::DenseTensor*> x(inp_vars.size());
       for (size_t i = 0; i < inp_vars.size(); i++) {
         PADDLE_ENFORCE_NOT_NULL(
@@ -202,13 +200,13 @@ class SaveCombineOpKernel : public framework::OpKernel<T> {
             common::errors::InvalidArgument("Cannot find variable %s to save.",
                                             inp_var_names[i]));
         PADDLE_ENFORCE_EQ(
-            inp_vars[i]->IsType<phi::DenseTensor>(),
+            inp_vars[i]->IsType<DenseTensor>(),
             true,
             common::errors::InvalidArgument(
                 "SaveCombine operator only supports saving "
-                "phi::DenseTensor or Vocab variable, %s has wrong type.",
+                "DenseTensor or Vocab variable, %s has wrong type.",
                 inp_var_names[i]));
-        x[i] = (&(inp_vars[i]->Get<phi::DenseTensor>()));
+        x[i] = (&(inp_vars[i]->Get<DenseTensor>()));
       }
       SaveCombineTensorKernel<T>(dev_ctx,
                                  x,
@@ -229,7 +227,7 @@ class SaveCombineOpKernel : public framework::OpKernel<T> {
             true,
             common::errors::InvalidArgument(
                 "SaveCombine operator only supports saving "
-                "phi::DenseTensor or Vocab variable, %s has wrong type.",
+                "DenseTensor or Vocab variable, %s has wrong type.",
                 inp_var_names[i]));
         x[i] = (&(inp_vars[i]->Get<framework::Vocab>()));
       }

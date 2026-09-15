@@ -24,7 +24,7 @@
 #include "paddle/pir/include/pass/pass.h"
 #include "paddle/pir/include/pass/pass_registry.h"
 
-namespace {
+namespace pir {
 
 class ConvElementwiseAddPattern : public paddle::drr::DrrPatternBase {
  private:
@@ -76,10 +76,9 @@ class ConvElementwiseAddPattern : public paddle::drr::DrrPatternBase {
     });
 
     pat.AddConstraint([](const paddle::drr::MatchContext &match_ctx) -> bool {
-      auto conv2d_out_shape =
-          pir::GetShapeFromValue(match_ctx.Tensor("conv2d_out"));
+      auto conv2d_out_shape = GetShapeFromValue(match_ctx.Tensor("conv2d_out"));
       auto residual_param_shape =
-          pir::GetShapeFromValue(match_ctx.Tensor("residual_param"));
+          GetShapeFromValue(match_ctx.Tensor("residual_param"));
       // conv_elementwise_add_onednn_fuse_pass does not support broadcast
       if (conv2d_out_shape != residual_param_shape) {
         return false;
@@ -99,6 +98,7 @@ class ConvElementwiseAddPattern : public paddle::drr::DrrPatternBase {
                    {"groups", pat.Attr("groups")},
                    {"data_format", pat.Attr("data_format")},
                    {"mkldnn_data_type", res.StrAttr("float32")},
+                   {"onednn_data_type", res.StrAttr("")},
                    {"fuse_activation", res.StrAttr("")},
                    {"fuse_residual_connection", res.BoolAttr(true)},
                    {"force_fp32_output", res.BoolAttr(false)},
@@ -169,10 +169,9 @@ class ConvElementwiseAddAsYPattern : public paddle::drr::DrrPatternBase {
     });
 
     pat.AddConstraint([](const paddle::drr::MatchContext &match_ctx) -> bool {
-      auto conv2d_out_shape =
-          pir::GetShapeFromValue(match_ctx.Tensor("conv2d_out"));
+      auto conv2d_out_shape = GetShapeFromValue(match_ctx.Tensor("conv2d_out"));
       auto residual_param_shape =
-          pir::GetShapeFromValue(match_ctx.Tensor("residual_param"));
+          GetShapeFromValue(match_ctx.Tensor("residual_param"));
       // conv_elementwise_add_onednn_fuse_pass does not support broadcast
       if (conv2d_out_shape != residual_param_shape) {
         return false;
@@ -192,6 +191,7 @@ class ConvElementwiseAddAsYPattern : public paddle::drr::DrrPatternBase {
                    {"groups", pat.Attr("groups")},
                    {"data_format", pat.Attr("data_format")},
                    {"mkldnn_data_type", res.StrAttr("float32")},
+                   {"onednn_data_type", res.StrAttr("")},
                    {"fuse_activation", res.StrAttr("")},
                    {"fuse_residual_connection", res.BoolAttr(true)},
                    {"force_fp32_output", res.BoolAttr(false)},
@@ -240,6 +240,7 @@ class FusedConvBiasElementwiseAddPattern : public paddle::drr::DrrPatternBase {
             {"groups", pat.Attr("groups")},
             {"data_format", pat.Attr("data_format")},
             {"mkldnn_data_type", pat.Attr("mkldnn_data_type")},
+            {"onednn_data_type", pat.Attr("onednn_data_type")},
             {"fuse_activation", pat.Attr("fuse_activation")},
             {"fuse_residual_connection", pat.Attr("fuse_residual_connection")},
             {"force_fp32_output", pat.Attr("force_fp32_output")},
@@ -288,10 +289,9 @@ class FusedConvBiasElementwiseAddPattern : public paddle::drr::DrrPatternBase {
     });
 
     pat.AddConstraint([](const paddle::drr::MatchContext &match_ctx) -> bool {
-      auto conv2d_out_shape =
-          pir::GetShapeFromValue(match_ctx.Tensor("conv2d_out"));
+      auto conv2d_out_shape = GetShapeFromValue(match_ctx.Tensor("conv2d_out"));
       auto residual_param_shape =
-          pir::GetShapeFromValue(match_ctx.Tensor("residual_param"));
+          GetShapeFromValue(match_ctx.Tensor("residual_param"));
       // conv_elementwise_add_onednn_fuse_pass does not support broadcast
       if (conv2d_out_shape != residual_param_shape) {
         return false;
@@ -311,6 +311,7 @@ class FusedConvBiasElementwiseAddPattern : public paddle::drr::DrrPatternBase {
                    {"groups", pat.Attr("groups")},
                    {"data_format", pat.Attr("data_format")},
                    {"mkldnn_data_type", pat.Attr("mkldnn_data_type")},
+                   {"onednn_data_type", pat.Attr("onednn_data_type")},
                    {"fuse_activation", pat.Attr("fuse_activation")},
                    {"fuse_residual_connection", res.BoolAttr(true)},
                    {"force_fp32_output", pat.Attr("force_fp32_output")},
@@ -361,6 +362,7 @@ class FusedConvBiasElementwiseAddAsYPattern
             {"groups", pat.Attr("groups")},
             {"data_format", pat.Attr("data_format")},
             {"mkldnn_data_type", pat.Attr("mkldnn_data_type")},
+            {"onednn_data_type", pat.Attr("onednn_data_type")},
             {"fuse_activation", pat.Attr("fuse_activation")},
             {"fuse_residual_connection", pat.Attr("fuse_residual_connection")},
             {"force_fp32_output", pat.Attr("force_fp32_output")},
@@ -409,10 +411,9 @@ class FusedConvBiasElementwiseAddAsYPattern
     });
 
     pat.AddConstraint([](const paddle::drr::MatchContext &match_ctx) -> bool {
-      auto conv2d_out_shape =
-          pir::GetShapeFromValue(match_ctx.Tensor("conv2d_out"));
+      auto conv2d_out_shape = GetShapeFromValue(match_ctx.Tensor("conv2d_out"));
       auto residual_param_shape =
-          pir::GetShapeFromValue(match_ctx.Tensor("residual_param"));
+          GetShapeFromValue(match_ctx.Tensor("residual_param"));
       // conv_elementwise_add_onednn_fuse_pass does not support broadcast
       if (conv2d_out_shape != residual_param_shape) {
         return false;
@@ -432,6 +433,7 @@ class FusedConvBiasElementwiseAddAsYPattern
                    {"groups", pat.Attr("groups")},
                    {"data_format", pat.Attr("data_format")},
                    {"mkldnn_data_type", pat.Attr("mkldnn_data_type")},
+                   {"onednn_data_type", pat.Attr("onednn_data_type")},
                    {"fuse_activation", pat.Attr("fuse_activation")},
                    {"fuse_residual_connection", res.BoolAttr(true)},
                    {"force_fp32_output", pat.Attr("force_fp32_output")},
@@ -451,13 +453,13 @@ class FusedConvBiasElementwiseAddAsYPattern
   }
 };
 
-class ConvElementwiseAddFusePass : public pir::PatternRewritePass {
+class ConvElementwiseAddFusePass : public PatternRewritePass {
  public:
   ConvElementwiseAddFusePass()
-      : pir::PatternRewritePass("conv_elementwise_add_onednn_fuse_pass", 2) {}
+      : PatternRewritePass("conv_elementwise_add_onednn_fuse_pass", 2) {}
 
-  pir::RewritePatternSet InitializePatterns(pir::IrContext *context) override {
-    pir::RewritePatternSet ps(context);
+  RewritePatternSet InitializePatterns(IrContext *context) override {
+    RewritePatternSet ps(context);
     ps.Add(paddle::drr::Create<ConvElementwiseAddPattern>(
         context,
         paddle::dialect::Conv2dOp::name(),
@@ -480,10 +482,6 @@ class ConvElementwiseAddFusePass : public pir::PatternRewritePass {
   }
 };
 
-}  // namespace
-
-namespace pir {
-
 std::unique_ptr<Pass> CreateConvElementwiseAddFusePass() {
   return std::make_unique<ConvElementwiseAddFusePass>();
 }
@@ -491,4 +489,4 @@ std::unique_ptr<Pass> CreateConvElementwiseAddFusePass() {
 }  // namespace pir
 
 REGISTER_IR_PASS(conv_elementwise_add_onednn_fuse_pass,
-                 ConvElementwiseAddFusePass);
+                 pir::ConvElementwiseAddFusePass);

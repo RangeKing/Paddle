@@ -29,11 +29,13 @@
 #include "paddle/phi/core/platform/device_context.h"
 #include "paddle/phi/core/type_defs.h"
 
+COMMON_DECLARE_bool(check_cuda_error);
+
 namespace paddle::framework {
 
 LegacyKernelInstruction::LegacyKernelInstruction(
     size_t id,
-    const phi::Place& place,
+    const Place& place,
     pir::Operation* op,
     const ValueExecutionInfo* value_exec_info)
     : InstructionBase(id, place), value_exec_info_(value_exec_info) {
@@ -115,10 +117,10 @@ LegacyKernelInstruction::LegacyKernelInstruction(
   if (infer_meta_interface_) {
     BuildPhiContext<
         phi::InferMetaContext,
-        phi::MetaTensor,
-        phi::MetaTensor,
-        paddle::small_vector<phi::MetaTensor, phi::kInputSmallVectorSize>,
-        paddle::small_vector<phi::MetaTensor, phi::kInputSmallVectorSize>,
+        MetaTensor,
+        MetaTensor,
+        paddle::small_vector<MetaTensor, phi::kInputSmallVectorSize>,
+        paddle::small_vector<MetaTensor, phi::kInputSmallVectorSize>,
         false>(op, *value_exec_info_, yaml_info_parser, &infer_meta_context_);
   }
   VLOG(6) << "finish process infer meta context";
@@ -186,6 +188,10 @@ LegacyKernelInstruction::~LegacyKernelInstruction() {
 }
 
 void LegacyKernelInstruction::Run() {
+  if (FLAGS_check_cuda_error) [[unlikely]] {
+    CUDAErrorCheck("LegacyKernelInstruction " + legacy_op_name_ + " begin");
+  }
+
   VLOG(6) << "Run op " << legacy_op_name_ << " infer meta.";
   if (infer_meta_interface_) {
     infer_meta_interface_->infer_meta_(&(infer_meta_context_));
@@ -195,5 +201,9 @@ void LegacyKernelInstruction::Run() {
   }
   VLOG(6) << "Run op " << legacy_op_name_ << " kernel.";
   (*(phi_kernel_))((kernel_context_));
+
+  if (FLAGS_check_cuda_error) [[unlikely]] {
+    CUDAErrorCheck("LegacyKernelInstruction " + legacy_op_name_ + " finish");
+  }
 }
 }  // namespace paddle::framework

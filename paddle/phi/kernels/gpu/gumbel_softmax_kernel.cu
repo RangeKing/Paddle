@@ -19,16 +19,9 @@
 #include "paddle/phi/kernels/impl/gumbel_softmax_kernel_impl.h"
 
 #if defined(__NVCC__) || defined(__HIPCC__)
-#ifdef __NVCC__
-#include "cub/cub.cuh"
-#endif
-#ifdef __HIPCC__
-#include <hipcub/hipcub.hpp>
-namespace cub = hipcub;
-#endif
-
 #include "paddle/phi/core/generator.h"
 #include "paddle/phi/core/tensor_utils.h"
+#include "paddle/phi/kernels/funcs/cub.h"
 #include "paddle/phi/kernels/funcs/distribution_helper.h"
 #include "paddle/phi/kernels/funcs/math_function.h"
 
@@ -65,15 +58,15 @@ __global__ void OneHotCUDAKernel(const int64_t height,
                                  const T init,
                                  const T* in,
                                  T* out) {
-  typedef cub::BlockReduce<KeyValuePair<int, T>, BlockDim> BlockReduce;
+  typedef cub::BlockReduce<KeyValuePair<int64_t, T>, BlockDim> BlockReduce;
   __shared__ typename BlockReduce::TempStorage temp_storage;
 
   for (int64_t idx = blockIdx.x; idx < height; idx += gridDim.x) {
-    KeyValuePair<int, T> kv_pair = {-1, init};
+    KeyValuePair<int64_t, T> kv_pair = {-1, init};
     int h = idx / size_out_axis;
     int w = idx % size_out_axis;
     cub::ArgMax reducer;
-    for (int k = threadIdx.x; k < width; k += blockDim.x) {
+    for (int64_t k = threadIdx.x; k < width; k += blockDim.x) {
       kv_pair = reducer(
           {k, in[h * width * size_out_axis + k * size_out_axis + w]}, kv_pair);
     }
@@ -88,7 +81,7 @@ __global__ void OneHotCUDAKernel(const int64_t height,
 
 template <typename T>
 struct OneHotGenerator<GPUContext, T> {
-  static void Transform(const GPUContext& ctx,
+  static void Transform(const GPUContext& dev_ctx,
                         const DenseTensor& X,
                         DenseTensor* out,
                         int axis) {
@@ -96,17 +89,17 @@ struct OneHotGenerator<GPUContext, T> {
     const int size_from_axis = funcs::SizeFromAxis(axis, X.dims());
     const int size_out_axis = funcs::SizeOutAxis(axis, X.dims());
     constexpr int thread_size = 512;
-    int64_t max_grid_dimx = ctx.GetCUDAMaxGridDimSize()[0];
+    int64_t max_grid_dimx = dev_ctx.GetCUDAMaxGridDimSize()[0];
     int64_t height = size_to_axis * size_out_axis;
     int block_size = height < max_grid_dimx ? height : max_grid_dimx;
 
     DenseTensor input_tensor;
     input_tensor.Resize(out->dims());
-    ctx.template Alloc<T>(&input_tensor);
-    phi::Copy(ctx, *out, ctx.GetPlace(), false, &input_tensor);
-    funcs::set_constant(ctx, out, static_cast<T>(0.0));
+    dev_ctx.template Alloc<T>(&input_tensor);
+    Copy(dev_ctx, *out, dev_ctx.GetPlace(), false, &input_tensor);
+    funcs::set_constant(dev_ctx, out, static_cast<T>(0.0));
     OneHotCUDAKernel<T, thread_size>
-        <<<block_size, thread_size, 0, ctx.stream()>>>(
+        <<<block_size, thread_size, 0, dev_ctx.stream()>>>(
             height,
             size_from_axis / size_out_axis,
             size_out_axis,
@@ -116,24 +109,26 @@ struct OneHotGenerator<GPUContext, T> {
   }
 };
 
-template <typename T, typename MPType>
+template <typename T, typename MT>
 __global__ void AddGumbelNoiseCUDAKernel(const T* input_data,
                                          T* output_data,
-                                         MPType* noise,
+                                         MT* noise,
                                          const float temperature,
                                          int64_t n) {
-  int index = threadIdx.x + blockIdx.x * blockDim.x;
+  int64_t index =
+      static_cast<int64_t>(threadIdx.x) +
+      static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x);
   int step = blockDim.x * gridDim.x;
   for (int64_t i = index; i < n; i += step) {
-    MPType gumbel_noise = -log(-log(noise[i]));
+    MT gumbel_noise = -log(-log(noise[i]));
     output_data[i] = static_cast<T>(
-        (gumbel_noise + static_cast<MPType>(input_data[i])) / temperature);
+        (gumbel_noise + static_cast<MT>(input_data[i])) / temperature);
   }
 }
 
 template <typename T>
 struct GumbleNoiseGenerator<GPUContext, T> {
-  static void Transform(const GPUContext& ctx,
+  static void Transform(const GPUContext& dev_ctx,
                         const T* input_data,
                         T* output_data,
                         int size_to_axis,
@@ -141,13 +136,13 @@ struct GumbleNoiseGenerator<GPUContext, T> {
                         const float temperature) {
     DenseTensor random_tensor;
     int64_t size = size_to_axis * size_from_axis;
-    random_tensor.Resize(common::make_ddim({size}));
-    using MPType = typename phi::dtype::MPTypeTrait<T>::Type;
-    MPType* random_data = ctx.template Alloc<MPType>(&random_tensor);
+    random_tensor.Resize({size});
+    using MT = typename MPTypeTrait<T>::Type;
+    MT* random_data = dev_ctx.template Alloc<MT>(&random_tensor);
 
     // generate gumbel noise
-    int device_id = ctx.GetPlace().GetDeviceId();
-    auto gen_cuda = ctx.GetGenerator();
+    int device_id = dev_ctx.GetPlace().GetDeviceId();
+    auto gen_cuda = dev_ctx.GetGenerator();
 
     auto seed_offset = gen_cuda->IncrementOffset(1);
     uint64_t seed = seed_offset.first;
@@ -157,14 +152,15 @@ struct GumbleNoiseGenerator<GPUContext, T> {
     thrust::transform(
         index_sequence_begin,
         index_sequence_begin + size,
-        thrust::device_ptr<MPType>(random_data),
-        UniformCUDAGenerator<MPType>(0.00001, 1, seed, size * offset));
+        thrust::device_ptr<MT>(random_data),
+        UniformCUDAGenerator<MT>(0.00001, 1, seed, size * offset));
 
     // add gumbel noise to X
     const int thread_size = 512;
     int64_t block_size = (size + thread_size) / thread_size;
-    AddGumbelNoiseCUDAKernel<T><<<block_size, thread_size, 0, ctx.stream()>>>(
-        input_data, output_data, random_data, temperature, size);
+    AddGumbelNoiseCUDAKernel<T>
+        <<<block_size, thread_size, 0, dev_ctx.stream()>>>(
+            input_data, output_data, random_data, temperature, size);
   }
 };
 
@@ -175,6 +171,6 @@ PD_REGISTER_KERNEL(gumbel_softmax,
                    GPU,
                    ALL_LAYOUT,
                    phi::GumbelSoftmaxKernel,
-                   phi::dtype::float16,
+                   phi::float16,
                    float,
                    double) {}

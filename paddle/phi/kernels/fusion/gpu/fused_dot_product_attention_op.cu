@@ -23,7 +23,7 @@
 #include "paddle/phi/kernels/expand_kernel.h"
 #include "paddle/phi/kernels/gpudnn/mha_cudnn_frontend.h"
 
-PHI_DECLARE_bool(cudnn_deterministic);
+COMMON_DECLARE_bool(cudnn_deterministic);
 
 namespace phi {
 namespace fusion {
@@ -65,29 +65,28 @@ cudnn_frontend::DataType_t get_cudnn_fe_dtype(const phi::DataType &t) {
 }
 
 template <typename T, typename Context>
-void FusedDotProductAttentionKernel(
-    const Context &dev_ctx,
-    const DenseTensor &q,
-    const DenseTensor &k,
-    const DenseTensor &v,
-    const paddle::optional<DenseTensor> &bias,
-    const paddle::optional<DenseTensor> &cu_seqlen_q,
-    const paddle::optional<DenseTensor> &cu_seqlen_kv,
-    float scaling_factor,
-    float dropout_probability,
-    bool is_training,
-    const std::string &mask_type_str,
-    const std::string &bias_type_str,
-    DenseTensor *out,
-    DenseTensor *softmax_out,
-    DenseTensor *rng_state) {
+void FusedDotProductAttentionKernel(const Context &dev_ctx,
+                                    const DenseTensor &q,
+                                    const DenseTensor &k,
+                                    const DenseTensor &v,
+                                    const optional<DenseTensor> &bias,
+                                    const optional<DenseTensor> &cu_seqlen_q,
+                                    const optional<DenseTensor> &cu_seqlen_kv,
+                                    float scaling_factor,
+                                    float dropout_probability,
+                                    bool is_training,
+                                    const std::string &mask_type_str,
+                                    const std::string &bias_type_str,
+                                    DenseTensor *out,
+                                    DenseTensor *softmax_out,
+                                    DenseTensor *rng_state) {
   PADDLE_ENFORCE_GE(dev_ctx.GetComputeCapability(),
                     80,
                     common::errors::PreconditionNotMet(
                         "This op only supports Ampere and later devices, "
                         "but got compute capability: %d.",
                         dev_ctx.GetComputeCapability()));
-  auto cudnn_version = phi::backends::gpu::DnnVersion();
+  auto cudnn_version = backends::gpu::DnnVersion();
   PADDLE_ENFORCE_GE(cudnn_version,
                     8906,
                     common::errors::PreconditionNotMet(
@@ -273,9 +272,9 @@ void FusedDotProductAttentionGradKernel(
     const DenseTensor &q,
     const DenseTensor &k,
     const DenseTensor &v,
-    const paddle::optional<DenseTensor> &bias,
-    const paddle::optional<DenseTensor> &cu_seqlen_q,
-    const paddle::optional<DenseTensor> &cu_seqlen_kv,
+    const optional<DenseTensor> &bias,
+    const optional<DenseTensor> &cu_seqlen_q,
+    const optional<DenseTensor> &cu_seqlen_kv,
     const DenseTensor &O,
     const DenseTensor &softmax_out,
     const DenseTensor &rng_state,
@@ -295,7 +294,7 @@ void FusedDotProductAttentionGradKernel(
                         "This op only supports Ampere and later devices, "
                         "but got compute capability: %d.",
                         dev_ctx.GetComputeCapability()));
-  auto cudnn_version = phi::backends::gpu::DnnVersion();
+  auto cudnn_version = backends::gpu::DnnVersion();
   PADDLE_ENFORCE_GE(cudnn_version,
                     8906,
                     common::errors::PreconditionNotMet(
@@ -497,12 +496,12 @@ PD_REGISTER_KERNEL(fused_dot_product_attention,
                    GPU,
                    ALL_LAYOUT,
                    phi::fusion::FusedDotProductAttentionKernel,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}
 
 PD_REGISTER_KERNEL(fused_dot_product_attention_grad,
                    GPU,
                    ALL_LAYOUT,
                    phi::fusion::FusedDotProductAttentionGradKernel,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}

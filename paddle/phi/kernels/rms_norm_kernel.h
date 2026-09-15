@@ -18,24 +18,24 @@
 namespace phi {
 
 template <typename T, typename Context>
-void RmsNormKernel(const Context& dev_ctx,
-                   const DenseTensor& x,
-                   const paddle::optional<DenseTensor>& bias,
-                   const paddle::optional<DenseTensor>& residual,
-                   const DenseTensor& norm_weight,
-                   const paddle::optional<DenseTensor>& norm_bias,
-                   const float epsilon,
-                   const int begin_norm_axis,
-                   const float quant_scale,
-                   const int quant_round_type,
-                   const float quant_max_bound,
-                   const float quant_min_bound,
-                   DenseTensor* out,
-                   DenseTensor* residual_out,
-                   DenseTensor* inv_var);
+void RmsNormQuantKernel(const Context& dev_ctx,
+                        const DenseTensor& x,
+                        const optional<DenseTensor>& bias,
+                        const optional<DenseTensor>& residual,
+                        const DenseTensor& norm_weight,
+                        const optional<DenseTensor>& norm_bias,
+                        const float epsilon,
+                        const int begin_norm_axis,
+                        const float quant_scale,
+                        const int quant_round_type,
+                        const float quant_max_bound,
+                        const float quant_min_bound,
+                        DenseTensor* out,
+                        DenseTensor* residual_out,
+                        DenseTensor* inv_var);
 
 template <typename T, typename Context>
-void ResidualAddRmsNormWrapper(const Context& ctx,
+void ResidualAddRmsNormWrapper(const Context& dev_ctx,
                                const T* x,
                                const T* residual,
                                const T* bias,
@@ -48,7 +48,7 @@ void ResidualAddRmsNormWrapper(const Context& ctx,
                                T* output);
 
 template <typename T, typename Context>
-void RmsNormWrapper(const Context& ctx,
+void RmsNormWrapper(const Context& dev_ctx,
                     const T* x,
                     const T* weight,
                     const T* bias,

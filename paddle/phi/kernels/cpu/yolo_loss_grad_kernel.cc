@@ -41,12 +41,12 @@ static void CalcBoxLocationLossGrad(T* input_grad,
                                     Box<T> gt,
                                     std::vector<int> anchors,
                                     int an_idx,
-                                    int box_idx,
+                                    int64_t box_idx,
                                     int gi,
                                     int gj,
                                     int grid_size,
                                     int input_size,
-                                    int stride,
+                                    int64_t stride,
                                     T score) {
   T tx = gt.x * grid_size - gi;
   T ty = gt.y * grid_size - gj;
@@ -68,10 +68,10 @@ template <typename T>
 static inline void CalcLabelLossGrad(T* input_grad,
                                      const T loss,
                                      const T* input,
-                                     const int index,
+                                     const int64_t index,
                                      const int label,
                                      const int class_num,
-                                     const int stride,
+                                     const int64_t stride,
                                      const T pos,
                                      const T neg,
                                      T score) {
@@ -92,8 +92,8 @@ static inline void CalcObjnessLossGrad(T* input_grad,
                                        const int an_num,
                                        const int h,
                                        const int w,
-                                       const int stride,
-                                       const int an_stride) {
+                                       const int64_t stride,
+                                       const int64_t an_stride) {
   for (int i = 0; i < n; i++) {
     for (int j = 0; j < an_num; j++) {
       for (int k = 0; k < h; k++) {
@@ -121,7 +121,7 @@ void YoloLossGradKernel(const Context& dev_ctx,
                         const DenseTensor& x,
                         const DenseTensor& gt_box,
                         const DenseTensor& gt_label,
-                        const paddle::optional<DenseTensor>& gt_score,
+                        const optional<DenseTensor>& gt_score,
                         const DenseTensor& objectness_mask,
                         const DenseTensor& gt_match_mask,
                         const DenseTensor& loss_grad,
@@ -148,8 +148,8 @@ void YoloLossGradKernel(const Context& dev_ctx,
   const int b = static_cast<int>(gt_match_mask.dims()[1]);
   int input_size = downsample_ratio * h;
 
-  const int stride = h * w;
-  const int an_stride = (class_num + 5) * stride;
+  const int64_t stride = static_cast<int64_t>(h) * w;
+  const int64_t an_stride = static_cast<int64_t>(class_num + 5) * stride;
 
   T label_pos = 1.0;
   T label_neg = 0.0;
@@ -174,8 +174,7 @@ void YoloLossGradKernel(const Context& dev_ctx,
   if (!(gt_score.is_initialized())) {
     gtscore.Resize({n, b});
     dev_ctx.template Alloc<T>(&gtscore);
-    phi::funcs::SetConstant<Context, T>()(
-        dev_ctx, &gtscore, static_cast<T>(1.0));
+    funcs::SetConstant<Context, T>()(dev_ctx, &gtscore, static_cast<T>(1.0));
     gt_score_data = gtscore.data<T>();
   } else {
     gt_score_data = gt_score.get_ptr()->data<T>();
@@ -190,7 +189,7 @@ void YoloLossGradKernel(const Context& dev_ctx,
         int gi = static_cast<int>(gt.x * w);
         int gj = static_cast<int>(gt.y * h);
 
-        int box_idx = GetEntryIndex(
+        int64_t box_idx = GetEntryIndex(
             i, mask_idx, gj * w + gi, mask_num, an_stride, stride, 0);
         CalcBoxLocationLossGrad<T>(input_grad_data,
                                    loss_grad_data[i],
@@ -207,7 +206,7 @@ void YoloLossGradKernel(const Context& dev_ctx,
                                    score);
 
         int label = gt_label_data[i * b + t];
-        int label_idx = GetEntryIndex(
+        int64_t label_idx = GetEntryIndex(
             i, mask_idx, gj * w + gi, mask_num, an_stride, stride, 5);
         CalcLabelLossGrad<T>(input_grad_data,
                              loss_grad_data[i],

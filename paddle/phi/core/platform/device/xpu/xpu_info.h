@@ -50,6 +50,9 @@ int GetXPUCurrentDeviceId();
 //! Get a list of device ids from environment variable or use all.
 std::vector<int> GetXPUSelectedDevices();
 
+//! Get the properties of the ith XPU device.
+PADDLE_API const gpuDeviceProp &GetDeviceProperties(int id);
+
 /***** Memory Management *****/
 
 //! Copy memory from address src to dst synchronously.
@@ -93,6 +96,10 @@ uint64_t RecordedXPULimitSize(int dev_id);
 bool IsXPUMallocRecorded(int dev_id);
 
 void EmptyCache(void);
+
+int GetXPUDeviceUtilizationRate(int dev_id);
+int64_t GetXPUDeviceTotalMemory(int dev_id);
+int64_t GetXPUDeviceUsedMemory(int dev_id);
 
 }  // namespace platform
 }  // namespace paddle

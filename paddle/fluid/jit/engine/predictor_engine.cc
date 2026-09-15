@@ -25,7 +25,7 @@ namespace jit {
 PredictorEngine::PredictorEngine(
     const std::shared_ptr<FunctionInfo> &info,
     const std::shared_ptr<VariableMap> &params_dict,
-    const phi::Place &place)
+    const Place &place)
     : info_(info),
       params_dict_(params_dict),
       scope_(new framework::Scope()),
@@ -40,9 +40,9 @@ PredictorEngine::PredictorEngine(
     config.EnableUseGpu(100, place_.GetDeviceId());
   } else if (phi::is_cpu_place(place_)) {
     config.DisableGpu();
-    config.EnableMKLDNN();
-    config.EnableMkldnnInt8();
-    config.SetMkldnnCacheCapacity(0);
+    config.EnableONEDNN();
+    config.EnableOnednnInt8();
+    config.SetOnednnCacheCapacity(0);
   }
   config.SetSkipLoadParams(true);
   config.SetApplyOptim(true);
@@ -57,7 +57,7 @@ PredictorEngine::PredictorEngine(
 PredictorEngine::PredictorEngine(
     const std::shared_ptr<FunctionInfo> &info,
     const std::shared_ptr<framework::Scope> &scope,
-    const phi::Place &place,
+    const Place &place,
     const std::shared_ptr<PaddlePredictor> &predictor)
     : info_(info),
       scope_(scope),

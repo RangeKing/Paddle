@@ -145,23 +145,23 @@ class OpConverter {
         }
         break;
 
-      case OpConverterType::GenericPluginCreater:
+      case OpConverterType::GenericPluginCreator:
         LOG(INFO) << "There is no OpConverter for type " << op_desc.Type()
-                  << ", now use generic_plugin_creater!";
-        it = Registry<OpConverter>::Global().Lookup("generic_plugin_creater");
+                  << ", now use generic_plugin_creator!";
+        it = Registry<OpConverter>::Global().Lookup("generic_plugin_creator");
         break;
 
-      case OpConverterType::CustomPluginCreater:
+      case OpConverterType::CustomPluginCreator:
         LOG(INFO) << "There is no OpConverter for type " << op_desc.Type()
-                  << ", now use custom_plugin_creater!";
-        it = Registry<OpConverter>::Global().Lookup("custom_plugin_creater");
+                  << ", now use custom_plugin_creator!";
+        it = Registry<OpConverter>::Global().Lookup("custom_plugin_creator");
         break;
 
-      case OpConverterType::CustomGenericPluginCreater:
+      case OpConverterType::CustomGenericPluginCreator:
         LOG(INFO) << "There is no OpConverter for type " << op_desc.Type()
-                  << ", now use custom_generic_plugin_creater!";
+                  << ", now use custom_generic_plugin_creator!";
         it = Registry<OpConverter>::Global().Lookup(
-            "custom_generic_plugin_creater");
+            "custom_generic_plugin_creator");
         break;
 
       default:
@@ -174,24 +174,24 @@ class OpConverter {
         common::errors::Unimplemented("no OpConverter for optype [%s]",
                                       op_desc.Type()));
 
-    std::string all_outpus_name = "(Outputs:";
-    std::string all_inpus_name = "(Inputs:";
+    std::string all_outputs_name = "(Outputs:";
+    std::string all_inputs_name = "(Inputs:";
     for (auto it1 : op_desc.OutputNames()) {
       for (auto it2 : op_desc.Output(it1)) {
-        all_outpus_name += it2;
-        all_outpus_name += ",";
+        all_outputs_name += it2;
+        all_outputs_name += ",";
       }
     }
-    all_outpus_name += ")";
+    all_outputs_name += ")";
     for (auto it1 : op_desc.InputNames()) {
       for (auto it2 : op_desc.Input(it1)) {
-        all_inpus_name += it2;
-        all_inpus_name += ",";
+        all_inputs_name += it2;
+        all_inputs_name += ",";
       }
     }
 
-    all_inpus_name += ")";
-    VLOG(1) << op_desc.Type() << all_inpus_name << all_outpus_name
+    all_inputs_name += ")";
+    VLOG(1) << op_desc.Type() << all_inputs_name << all_outputs_name
             << "are to be converted to TensorRT layer";
 
     it->SetEngine(engine);
@@ -219,8 +219,8 @@ class OpConverter {
                                      op_desc.Type()));
       }
 
-      auto* output_itensor = engine->GetITensor(output_name);
-      engine->SetTensorDynamicRange(output_itensor, out_scale);
+      auto* output_tensor = engine->GetITensor(output_name);
+      engine->SetTensorDynamicRange(output_tensor, out_scale);
       VLOG(1) << "Set out scale = " << out_scale << " for tensor "
               << output_name << ".";
     }
@@ -231,8 +231,8 @@ class OpConverter {
             float, op_desc.GetAttr("out_" + std::to_string(i) + "_threshold"));
         std::string output_name =
             op_desc.Output(op_desc.OutputNames()[i]).front();
-        auto* output_itensor = engine->GetITensor(output_name);
-        engine->SetTensorDynamicRange(output_itensor, out_scale);
+        auto* output_tensor = engine->GetITensor(output_name);
+        engine->SetTensorDynamicRange(output_tensor, out_scale);
         VLOG(1) << "Set out scale = " << out_scale << " for tensor "
                 << output_name << ".";
       }
@@ -246,10 +246,10 @@ class OpConverter {
     for (size_t i = 0; i < inputs_name.size(); i++) {
       if (op_desc.HasAttr(inputs_name[i])) {
         std::string input_tensor_name = op_desc.Input(inputs_name[i])[0];
-        auto* input_itensor = engine->GetITensor(input_tensor_name);
+        auto* input_tensor = engine->GetITensor(input_tensor_name);
         float input_scale =
             PADDLE_GET_CONST(float, op_desc.GetAttr(inputs_name[i]));
-        engine->SetTensorDynamicRange(input_itensor, input_scale);
+        engine->SetTensorDynamicRange(input_tensor, input_scale);
         VLOG(1) << "Set input tensor scale = " << input_scale
                 << " for tensor: " << input_tensor_name << ".";
       }
@@ -257,10 +257,10 @@ class OpConverter {
     for (size_t i = 0; i < outputs_name.size(); i++) {
       if (op_desc.HasAttr(outputs_name[i])) {
         std::string output_tensor_name = op_desc.Output(outputs_name[i])[0];
-        auto* output_itensor = engine->GetITensor(output_tensor_name);
+        auto* output_tensor = engine->GetITensor(output_tensor_name);
         float output_scale =
             PADDLE_GET_CONST(float, op_desc.GetAttr(outputs_name[i]));
-        engine->SetTensorDynamicRange(output_itensor, output_scale);
+        engine->SetTensorDynamicRange(output_tensor, output_scale);
         VLOG(1) << "Set output tensor scale = " << output_scale
                 << " for tensor: " << output_tensor_name << ".";
       }
@@ -338,7 +338,6 @@ class OpConverter {
 
       auto var_shape = var->GetShape();
       if (engine->with_dynamic_shape()) {
-#if IS_TRT_VERSION_GE(6000)
         if (!(engine->min_input_shape().count(input) &&
               engine->max_input_shape().count(input) &&
               engine->optim_input_shape().count(input))) {
@@ -362,12 +361,12 @@ class OpConverter {
                               optim_input_shape[i],
                               common::errors::InvalidArgument(
                                   "The dim (%d) of the min_input_shape and "
-                                  "optim_input_shape should be same."));
+                                  "optim_input_shape should be same.",
+                                  i));
           }
         }
         engine->DeclareInput(
             input, in_dtype, Vec2TRT_Dims(input_shape, input, true));
-#endif
       } else {
         auto input_dims = Vec2TRT_Dims(var_shape, input);
         if (input_dims.d[0] == -1) {
@@ -698,7 +697,7 @@ class OpConverter {
           std::is_same<T, phi::dtype::float16>::value ||
           std::is_same<T, int32_t>::value)) {
       PADDLE_THROW(common::errors::InvalidArgument(
-          "Unsupported data type (%s) for TensorRT AddConstantLayer, only "
+          "Unsupported data type for TensorRT AddConstantLayer, only "
           "supports float, half or int32_t."));
     }
 
@@ -706,7 +705,7 @@ class OpConverter {
         shape.d, shape.d + shape.nbDims, 1, std::multiplies<int>());
     std::unique_ptr<phi::DenseTensor> tmp_tensor(new phi::DenseTensor());
     tmp_tensor->Resize({data_size});
-    auto* tmp_data = tmp_tensor->mutable_data<T>(phi::CPUPlace());
+    auto* tmp_data = tmp_tensor->mutable_data<T>(CPUPlace());
     for (int i = 0; i < data_size; i++) {
       tmp_data[i] = data[i];
     }
@@ -733,23 +732,25 @@ class OpConverter {
                                         bool scalar = false) {
     if (!(std::is_same<T, float>::value ||
           std::is_same<T, phi::dtype::float16>::value ||
-          std::is_same<T, int32_t>::value)) {
+          std::is_same<T, int32_t>::value || std::is_same<T, bool>::value)) {
       PADDLE_THROW(common::errors::InvalidArgument(
-          "Unsupported data type (%s) for TensorRT AddConstantLayer, only "
-          "supports float, half or int32_t."));
+          "Unsupported data type for TensorRT AddConstantLayer, only "
+          "supports float, half, int32_t or bool."));
     }
 
     std::unique_ptr<phi::DenseTensor> tmp_tensor(new phi::DenseTensor());
     int data_size = data.size();
     tmp_tensor->Resize({data_size});
-    auto* tmp_data = tmp_tensor->mutable_data<T>(phi::CPUPlace());
+    auto* tmp_data = tmp_tensor->mutable_data<T>(CPUPlace());
     for (int i = 0; i < data_size; i++) {
       tmp_data[i] = data[i];
     }
     engine_->SetWeights(weight_name, std::move(tmp_tensor));
 
     nvinfer1::DataType trt_dtype = nvinfer1::DataType::kFLOAT;
-    if (std::is_integral<T>::value) {
+    if (std::is_same<T, bool>::value) {
+      trt_dtype = nvinfer1::DataType::kBOOL;
+    } else if (std::is_integral<T>::value) {
       trt_dtype = nvinfer1::DataType::kINT32;
     }
 
@@ -817,7 +818,7 @@ class OpConverter {
       //     layer->getOutput(i)->getDimensions().nbDims,
       //     0,
       //     common::errors::InvalidArgument(
-      //         "Error occures in Paddle-TRT layer with output name: %s",
+      //         "Error occurred in Paddle-TRT layer with output name: %s",
       //         output_tensor_names[i].c_str()));
     }
     layer->setName((layer_name + ")").c_str());

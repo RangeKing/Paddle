@@ -26,7 +26,7 @@ class PlaceType:
     CPU = 0
     CUDA = 1
     CUDA_PINNED = 2
-    XPU = 3  # unsupport for now
+    XPU = 3  # unsupported for now
 
     @staticmethod
     def default_device():
@@ -89,13 +89,12 @@ class OffloadHelper:
         for ring in rings:
             block._insert_op_without_sync(
                 idx,
-                type="c_broadcast",
-                inputs={'X': param_name},
-                outputs={'Out': param_name},
+                type="broadcast",
+                inputs={'x': param_name},
+                outputs={'out': param_name},
                 attrs={
                     'ring_id': ring,
                     'root': 0,
-                    'use_calc_stream': True,
                     OP_ROLE_KEY: OpRole.Forward,
                 },
             )
@@ -197,15 +196,15 @@ class OffloadHelper:
 
                 if 'subprog' not in output_name:
                     assert output_name == input_name + '.cast_fp16'
-                    assert (
-                        input_name not in param_to_fp16
-                    ), "There must be only one cast op from fp32 param to fp16 param."
+                    assert input_name not in param_to_fp16, (
+                        "There must be only one cast op from fp32 param to fp16 param."
+                    )
                     param_to_fp16[input_name] = output_name
                 else:
                     # fp16-->recompute_var
-                    assert (
-                        input_name in param_to_fp16
-                    ), "param must first be cast to fp16"
+                    assert input_name in param_to_fp16, (
+                        "param must first be cast to fp16"
+                    )
                     fp16_param = param_to_fp16[input_name]
                     fp16_param_to_recompute[fp16_param] = output_name
                     recompute_to_fp16[output_name] = fp16_param
@@ -405,7 +404,7 @@ class OffloadHelper:
 
         def remove_param(input_name):
             global_params.remove(input_name)
-            if input_name in local_params:
+            if input_name in local_params:  # noqa: FURB132
                 local_params.remove(input_name)
             if input_name in param_to_fp16:
                 fp16_param = param_to_fp16.pop(input_name)
@@ -446,15 +445,15 @@ class OffloadHelper:
 
                 if 'subprog' not in output_name:
                     assert output_name == input_name + '.cast_fp16'
-                    assert (
-                        input_name not in param_to_fp16
-                    ), "There must be only one cast op from fp32 param to fp16 param."
+                    assert input_name not in param_to_fp16, (
+                        "There must be only one cast op from fp32 param to fp16 param."
+                    )
                     param_to_fp16[input_name] = output_name
                 else:
                     # fp16-->recompute_var
-                    assert (
-                        input_name in param_to_fp16
-                    ), "param must first be cast to fp16"
+                    assert input_name in param_to_fp16, (
+                        "param must first be cast to fp16"
+                    )
                     fp16_param = param_to_fp16[input_name]
                     fp16_param_to_recompute[fp16_param] = output_name
                     recompute_to_fp16[output_name] = fp16_param
@@ -517,7 +516,7 @@ class OffloadHelper:
 
         # step5: remove fp32 param which not need
         for idx, op in enumerate(block.ops):
-            if op.type not in ['coalesce_tensor', 'c_broadcast']:
+            if op.type not in ['coalesce_tensor', 'c_broadcast', 'broadcast']:
                 continue
             for input_name in op.desc.input_arg_names():
                 if input_name in param_to_fp16:

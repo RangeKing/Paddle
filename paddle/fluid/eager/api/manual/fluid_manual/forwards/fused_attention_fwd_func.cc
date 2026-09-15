@@ -64,15 +64,15 @@ fused_attention_dygraph_function(
 
     paddle::small_vector<std::vector<paddle::Tensor>, egr::kSlotSmallVectorSize>
         amp_tensors_vector = {{X}, {QKVW}, {OutLinearW}};
-    if (LnScale.initialized()) amp_tensors_vector.push_back({LnScale});
-    if (LnBias.initialized()) amp_tensors_vector.push_back({LnBias});
-    if (QKVBias.initialized()) amp_tensors_vector.push_back({QKVBias});
-    if (CacheKV.initialized()) amp_tensors_vector.push_back({CacheKV});
-    if (SrcMask.initialized()) amp_tensors_vector.push_back({SrcMask});
-    if (OutLinearBias.initialized())
+    if (LnScale.has_allocation()) amp_tensors_vector.push_back({LnScale});
+    if (LnBias.has_allocation()) amp_tensors_vector.push_back({LnBias});
+    if (QKVBias.has_allocation()) amp_tensors_vector.push_back({QKVBias});
+    if (CacheKV.has_allocation()) amp_tensors_vector.push_back({CacheKV});
+    if (SrcMask.has_allocation()) amp_tensors_vector.push_back({SrcMask});
+    if (OutLinearBias.has_allocation())
       amp_tensors_vector.push_back({OutLinearBias});
-    if (Ln2Scale.initialized()) amp_tensors_vector.push_back({Ln2Scale});
-    if (Ln2Bias.initialized()) amp_tensors_vector.push_back({Ln2Bias});
+    if (Ln2Scale.has_allocation()) amp_tensors_vector.push_back({Ln2Scale});
+    if (Ln2Bias.has_allocation()) amp_tensors_vector.push_back({Ln2Bias});
 
     auto amp_dst_dtype = paddle::imperative::GetAmpDestDtype(
         "fused_attention", amp_tensors_vector);
@@ -83,43 +83,43 @@ fused_attention_dygraph_function(
     auto NEW_OutLinearW = egr::AmpAutoCast(
         "OutLinearW", OutLinearW, amp_dst_dtype, "fused_attention");
     auto NEW_LnScale =
-        ((LnScale.initialized())
+        ((LnScale.has_allocation())
              ? egr::AmpAutoCast(
                    "LnScale", LnScale, amp_dst_dtype, "fused_attention")
              : LnScale);
     auto NEW_LnBias =
-        ((LnBias.initialized())
+        ((LnBias.has_allocation())
              ? egr::AmpAutoCast(
                    "LnBias", LnBias, amp_dst_dtype, "fused_attention")
              : LnBias);
     auto NEW_QKVBias =
-        ((QKVBias.initialized())
+        ((QKVBias.has_allocation())
              ? egr::AmpAutoCast(
                    "QKVBias", QKVBias, amp_dst_dtype, "fused_attention")
              : QKVBias);
     auto NEW_CacheKV =
-        ((CacheKV.initialized())
+        ((CacheKV.has_allocation())
              ? egr::AmpAutoCast(
                    "CacheKV", CacheKV, amp_dst_dtype, "fused_attention")
              : CacheKV);
     auto NEW_SrcMask =
-        ((SrcMask.initialized())
+        ((SrcMask.has_allocation())
              ? egr::AmpAutoCast(
                    "SrcMask", SrcMask, amp_dst_dtype, "fused_attention")
              : SrcMask);
     auto NEW_OutLinearBias =
-        ((OutLinearBias.initialized()) ? egr::AmpAutoCast("OutLinearBias",
-                                                          OutLinearBias,
-                                                          amp_dst_dtype,
-                                                          "fused_attention")
-                                       : OutLinearBias);
+        ((OutLinearBias.has_allocation()) ? egr::AmpAutoCast("OutLinearBias",
+                                                             OutLinearBias,
+                                                             amp_dst_dtype,
+                                                             "fused_attention")
+                                          : OutLinearBias);
     auto NEW_Ln2Scale =
-        ((Ln2Scale.initialized())
+        ((Ln2Scale.has_allocation())
              ? egr::AmpAutoCast(
                    "Ln2Scale", Ln2Scale, amp_dst_dtype, "fused_attention")
              : Ln2Scale);
     auto NEW_Ln2Bias =
-        ((Ln2Bias.initialized())
+        ((Ln2Bias.has_allocation())
              ? egr::AmpAutoCast(
                    "Ln2Bias", Ln2Bias, amp_dst_dtype, "fused_attention")
              : Ln2Bias);
@@ -147,21 +147,21 @@ fused_attention_dygraph_function(
       {{"X", egr::EagerUtils::TrySyncToVars(X)},
        {"QKVW", egr::EagerUtils::TrySyncToVars(QKVW)},
        {"OutLinearW", egr::EagerUtils::TrySyncToVars(OutLinearW)}};
-  if (LnScale.initialized())
+  if (LnScale.has_allocation())
     ins["LnScale"] = egr::EagerUtils::TrySyncToVars(LnScale);
-  if (LnBias.initialized())
+  if (LnBias.has_allocation())
     ins["LnBias"] = egr::EagerUtils::TrySyncToVars(LnBias);
-  if (QKVBias.initialized())
+  if (QKVBias.has_allocation())
     ins["QKVBias"] = egr::EagerUtils::TrySyncToVars(QKVBias);
-  if (CacheKV.initialized())
+  if (CacheKV.has_allocation())
     ins["CacheKV"] = egr::EagerUtils::TrySyncToVars(CacheKV);
-  if (SrcMask.initialized())
+  if (SrcMask.has_allocation())
     ins["SrcMask"] = egr::EagerUtils::TrySyncToVars(SrcMask);
-  if (OutLinearBias.initialized())
+  if (OutLinearBias.has_allocation())
     ins["OutLinearBias"] = egr::EagerUtils::TrySyncToVars(OutLinearBias);
-  if (Ln2Scale.initialized())
+  if (Ln2Scale.has_allocation())
     ins["Ln2Scale"] = egr::EagerUtils::TrySyncToVars(Ln2Scale);
-  if (Ln2Bias.initialized())
+  if (Ln2Bias.has_allocation())
     ins["Ln2Bias"] = egr::EagerUtils::TrySyncToVars(Ln2Bias);
 
   std::map<std::string, std::vector<std::shared_ptr<egr::EagerVariable>>> outs =
@@ -417,70 +417,67 @@ fused_attention_dygraph_function(
       grad_node->SetGradOutMeta(QKVW, 3);
       grad_node->SetGradOutMeta(OutLinearW, 7);
 
-      if (QKVBias.initialized()) {
+      if (QKVBias.has_allocation()) {
         grad_node->SetTensorWrapper_QKVBias(QKVBias);
         grad_node->SetTensorWrapper_QKVBiasOut(QKVBiasOut);
         grad_node->SetGradOutMeta(QKVBias, 4);
 
         auto QKVBiasOut_accumulation_node =
-            std::make_shared<egr::GradNodeAccumulation>(p_autograd_QKVBiasOut);
+            std::make_shared<egr::GradNodeAccumulation>(QKVBiasOut);
         egr::EagerUtils::SetOutRankWithSlot(p_autograd_QKVBiasOut, 0);
         egr::EagerUtils::SetHistory(p_autograd_QKVBiasOut,
                                     QKVBiasOut_accumulation_node);
-        QKVBiasOut_accumulation_node->SetGradInMeta(QKVBiasOut, 0);
         grad_node->SetGradOutMeta(QKVBiasOut, 11);
       }
 
-      if (SrcMask.initialized()) {
+      if (SrcMask.has_allocation()) {
         grad_node->SetTensorWrapper_SrcMask(SrcMask);
         grad_node->SetTensorWrapper_SrcMaskOut(SrcMaskOut);
 
         auto SrcMaskOut_accumulation_node =
-            std::make_shared<egr::GradNodeAccumulation>(p_autograd_SrcMaskOut);
+            std::make_shared<egr::GradNodeAccumulation>(SrcMaskOut);
         egr::EagerUtils::SetOutRankWithSlot(p_autograd_SrcMaskOut, 0);
         egr::EagerUtils::SetHistory(p_autograd_SrcMaskOut,
                                     SrcMaskOut_accumulation_node);
-        SrcMaskOut_accumulation_node->SetGradInMeta(SrcMaskOut, 0);
         grad_node->SetGradOutMeta(SrcMaskOut, 12);
       }
 
-      if (OutLinearBias.initialized()) {
+      if (OutLinearBias.has_allocation()) {
         grad_node->SetTensorWrapper_OutLinearBias(OutLinearBias);
         grad_node->SetGradOutMeta(OutLinearBias, 8);
       }
 
       if (pre_layer_norm) {
-        if (LnScale.initialized()) {
+        if (LnScale.has_allocation()) {
           grad_node->SetTensorWrapper_LnScale(LnScale);
           grad_node->SetGradOutMeta(LnScale, 1);
         }
-        if (LnBias.initialized()) {
+        if (LnBias.has_allocation()) {
           grad_node->SetTensorWrapper_LnBias(LnBias);
           grad_node->SetGradOutMeta(LnBias, 2);
         }
-        if (LnOut.initialized()) {
+        if (LnOut.has_allocation()) {
           grad_node->SetTensorWrapper_LnOut(LnOut);
 
           auto LnOut_accumulation_node =
-              std::make_shared<egr::GradNodeAccumulation>(p_autograd_LnOut);
+              std::make_shared<egr::GradNodeAccumulation>(LnOut);
           egr::EagerUtils::SetOutRankWithSlot(p_autograd_LnOut, 0);
           egr::EagerUtils::SetHistory(p_autograd_LnOut,
                                       LnOut_accumulation_node);
-          LnOut_accumulation_node->SetGradInMeta(LnOut, 0);
           grad_node->SetGradOutMeta(LnOut, 13);
         }
-        if (LnMean.initialized()) {
+        if (LnMean.has_allocation()) {
           grad_node->SetTensorWrapper_LnMean(LnMean);
         }
-        if (LnVariance.initialized()) {
+        if (LnVariance.has_allocation()) {
           grad_node->SetTensorWrapper_LnVariance(LnVariance);
         }
       } else {
-        if (Ln2Scale.initialized()) {
+        if (Ln2Scale.has_allocation()) {
           grad_node->SetTensorWrapper_Ln2Scale(Ln2Scale);
           grad_node->SetGradOutMeta(Ln2Scale, 9);
         }
-        if (Ln2Bias.initialized()) {
+        if (Ln2Bias.has_allocation()) {
           grad_node->SetTensorWrapper_Ln2Bias(Ln2Bias);
           grad_node->SetGradOutMeta(Ln2Bias, 10);
         }
@@ -490,14 +487,11 @@ fused_attention_dygraph_function(
         grad_node->SetTensorWrapper_Ln2Variance(Ln2Variance);
 
         auto BiasDropoutResidualOut_accumulation_node =
-            std::make_shared<egr::GradNodeAccumulation>(
-                p_autograd_BiasDropoutResidualOut);
+            std::make_shared<egr::GradNodeAccumulation>(BiasDropoutResidualOut);
         egr::EagerUtils::SetOutRankWithSlot(p_autograd_BiasDropoutResidualOut,
                                             0);
         egr::EagerUtils::SetHistory(p_autograd_BiasDropoutResidualOut,
                                     BiasDropoutResidualOut_accumulation_node);
-        BiasDropoutResidualOut_accumulation_node->SetGradInMeta(
-            BiasDropoutResidualOut, 0);
         grad_node->SetGradOutMeta(BiasDropoutResidualOut, 14);
       }
 
@@ -520,68 +514,59 @@ fused_attention_dygraph_function(
       egr::EagerUtils::SetHistory(p_autograd_Y, grad_node);
       grad_node->SetGradInMeta(Y, 19);
       auto QKVOut_accumulation_node =
-          std::make_shared<egr::GradNodeAccumulation>(p_autograd_QKVOut);
+          std::make_shared<egr::GradNodeAccumulation>(QKVOut);
       egr::EagerUtils::SetOutRankWithSlot(p_autograd_QKVOut, 0);
       egr::EagerUtils::SetHistory(p_autograd_QKVOut, QKVOut_accumulation_node);
-      QKVOut_accumulation_node->SetGradInMeta(QKVOut, 0);
       grad_node->SetGradOutMeta(QKVOut, 15);
 
       auto QKTVOut_accumulation_node =
-          std::make_shared<egr::GradNodeAccumulation>(p_autograd_QKTVOut);
+          std::make_shared<egr::GradNodeAccumulation>(QKTVOut);
       egr::EagerUtils::SetOutRankWithSlot(p_autograd_QKTVOut, 0);
       egr::EagerUtils::SetHistory(p_autograd_QKTVOut,
                                   QKTVOut_accumulation_node);
-      QKTVOut_accumulation_node->SetGradInMeta(QKTVOut, 0);
       grad_node->SetGradOutMeta(QKTVOut, 16);
 
       auto TransposeOut2_accumulation_node =
-          std::make_shared<egr::GradNodeAccumulation>(p_autograd_TransposeOut2);
+          std::make_shared<egr::GradNodeAccumulation>(TransposeOut2);
       egr::EagerUtils::SetOutRankWithSlot(p_autograd_TransposeOut2, 0);
       egr::EagerUtils::SetHistory(p_autograd_TransposeOut2,
                                   TransposeOut2_accumulation_node);
-      TransposeOut2_accumulation_node->SetGradInMeta(TransposeOut2, 0);
       grad_node->SetGradOutMeta(TransposeOut2, 17);
 
       auto QKOut_accumulation_node =
-          std::make_shared<egr::GradNodeAccumulation>(p_autograd_QKOut);
+          std::make_shared<egr::GradNodeAccumulation>(QKOut);
       egr::EagerUtils::SetOutRankWithSlot(p_autograd_QKOut, 0);
       egr::EagerUtils::SetHistory(p_autograd_QKOut, QKOut_accumulation_node);
-      QKOut_accumulation_node->SetGradInMeta(QKOut, 0);
       grad_node->SetGradOutMeta(QKOut, 18);
 
       auto SoftmaxOut_accumulation_node =
-          std::make_shared<egr::GradNodeAccumulation>(p_autograd_SoftmaxOut);
+          std::make_shared<egr::GradNodeAccumulation>(SoftmaxOut);
       egr::EagerUtils::SetOutRankWithSlot(p_autograd_SoftmaxOut, 0);
       egr::EagerUtils::SetHistory(p_autograd_SoftmaxOut,
                                   SoftmaxOut_accumulation_node);
-      SoftmaxOut_accumulation_node->SetGradInMeta(SoftmaxOut, 0);
       grad_node->SetGradOutMeta(SoftmaxOut, 19);
 
-      if (AttnDropoutOut.initialized()) {
+      if (AttnDropoutOut.has_allocation()) {
         auto AttnDropoutOut_accumulation_node =
-            std::make_shared<egr::GradNodeAccumulation>(
-                p_autograd_AttnDropoutOut);
+            std::make_shared<egr::GradNodeAccumulation>(AttnDropoutOut);
         egr::EagerUtils::SetOutRankWithSlot(p_autograd_AttnDropoutOut, 0);
         egr::EagerUtils::SetHistory(p_autograd_AttnDropoutOut,
                                     AttnDropoutOut_accumulation_node);
-        AttnDropoutOut_accumulation_node->SetGradInMeta(AttnDropoutOut, 0);
         grad_node->SetGradOutMeta(AttnDropoutOut, 20);
       }
 
       auto FMHAOut_accumulation_node =
-          std::make_shared<egr::GradNodeAccumulation>(p_autograd_FMHAOut);
+          std::make_shared<egr::GradNodeAccumulation>(FMHAOut);
       egr::EagerUtils::SetOutRankWithSlot(p_autograd_FMHAOut, 0);
       egr::EagerUtils::SetHistory(p_autograd_FMHAOut,
                                   FMHAOut_accumulation_node);
-      FMHAOut_accumulation_node->SetGradInMeta(FMHAOut, 0);
       grad_node->SetGradOutMeta(FMHAOut, 21);
 
       auto OutLinearOut_accumulation_node =
-          std::make_shared<egr::GradNodeAccumulation>(p_autograd_OutLinearOut);
+          std::make_shared<egr::GradNodeAccumulation>(OutLinearOut);
       egr::EagerUtils::SetOutRankWithSlot(p_autograd_OutLinearOut, 0);
       egr::EagerUtils::SetHistory(p_autograd_OutLinearOut,
                                   OutLinearOut_accumulation_node);
-      OutLinearOut_accumulation_node->SetGradInMeta(OutLinearOut, 0);
       grad_node->SetGradOutMeta(OutLinearOut, 22);
     }
   }

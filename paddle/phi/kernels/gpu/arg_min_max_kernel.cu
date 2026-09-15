@@ -19,17 +19,10 @@
 
 #if defined(__NVCC__) || defined(__HIPCC__)
 
-#ifdef __NVCC__
-#include "cub/cub.cuh"
-#endif
-#ifdef __HIPCC__
-#include <hipcub/hipcub.hpp>
-namespace cub = hipcub;
-#endif
 #include <limits>
-
 #include "paddle/common/ddim.h"
 #include "paddle/phi/core/utils/data_type.h"
+#include "paddle/phi/kernels/funcs/cub.h"
 #include "paddle/phi/kernels/funcs/math_function.h"
 namespace phi {
 
@@ -55,22 +48,26 @@ using KeyValuePair = cub::KeyValuePair<K, V>;
   FIXED_BLOCK_DIM_CASE_BASE(4, ##__VA_ARGS__);  \
   FIXED_BLOCK_DIM_CASE_BASE(3, ##__VA_ARGS__);
 
-template <typename T, typename IndType, class Reducer, size_t BlockDim>
-__global__ void ArgCUDAKernel(const int64_t height,     // n * h
-                              const int64_t width,      // c
-                              const int64_t post_size,  // h
+template <typename T,
+          typename IndType,
+          class Reducer,
+          size_t BlockDim,
+          typename IndexType>
+__global__ void ArgCUDAKernel(const IndexType height,     // n * h
+                              const IndexType width,      // c
+                              const IndexType post_size,  // h
                               const Reducer reducer,
                               const T init,
                               const T* in,
                               IndType* out) {
-  typedef cub::BlockReduce<KeyValuePair<int, T>, BlockDim> BlockReduce;
+  typedef cub::BlockReduce<KeyValuePair<IndexType, T>, BlockDim> BlockReduce;
   __shared__ typename BlockReduce::TempStorage temp_storage;
 
-  for (int idx = blockIdx.x; idx < height; idx += gridDim.x) {
-    KeyValuePair<int, T> kv_pair = {-1, init};
-    int h = idx / post_size;
-    int w = idx % post_size;
-    for (int k = threadIdx.x; k < width; k += blockDim.x) {
+  for (IndexType idx = blockIdx.x; idx < height; idx += gridDim.x) {
+    KeyValuePair<IndexType, T> kv_pair = {-1, init};
+    IndexType h = idx / post_size;
+    IndexType w = idx % post_size;
+    for (IndexType k = threadIdx.x; k < width; k += blockDim.x) {
       kv_pair =
           reducer({k, in[h * width * post_size + k * post_size + w]}, kv_pair);
     }
@@ -82,8 +79,8 @@ __global__ void ArgCUDAKernel(const int64_t height,     // n * h
   }
 }
 
-template <typename T, typename IndType, class Reducer>
-void ComputeFullArg(const phi::GPUContext& dev_ctx,
+template <typename T, typename IndType, class Reducer, typename IndexType>
+void ComputeFullArg(const GPUContext& dev_ctx,
                     const DenseTensor& input,
                     DenseTensor* indices,
                     const int64_t pre,
@@ -119,27 +116,29 @@ void ComputeFullArg(const phi::GPUContext& dev_ctx,
 
   if (typeid(Reducer) == typeid(cub::ArgMax)) {
     switch (ComputeBlockSize(width)) {
-      FIXED_BLOCK_DIM_CASE(ArgCUDAKernel<T, IndType, Reducer, kBlockDim>
-                           <<<grid_size, kBlockDim, 0, cu_stream>>>(
-                               height,
-                               width,
-                               post,
-                               Reducer(),
-                               std::numeric_limits<T>::lowest(),
-                               in_data,
-                               out_data));
+      FIXED_BLOCK_DIM_CASE(
+          ArgCUDAKernel<T, IndType, Reducer, kBlockDim, IndexType>
+          <<<grid_size, kBlockDim, 0, cu_stream>>>(
+              height,
+              width,
+              post,
+              Reducer(),
+              std::numeric_limits<T>::lowest(),
+              in_data,
+              out_data));
     }
   } else {
     switch (ComputeBlockSize(width)) {
-      FIXED_BLOCK_DIM_CASE(ArgCUDAKernel<T, IndType, Reducer, kBlockDim>
-                           <<<grid_size, kBlockDim, 0, cu_stream>>>(
-                               height,
-                               width,
-                               post,
-                               Reducer(),
-                               std::numeric_limits<T>::max(),
-                               in_data,
-                               out_data));
+      FIXED_BLOCK_DIM_CASE(
+          ArgCUDAKernel<T, IndType, Reducer, kBlockDim, IndexType>
+          <<<grid_size, kBlockDim, 0, cu_stream>>>(
+              height,
+              width,
+              post,
+              Reducer(),
+              std::numeric_limits<T>::max(),
+              in_data,
+              out_data));
     }
   }
 }
@@ -168,20 +167,24 @@ struct VisitDataCudaArgMinMaxFunctor {
 
   template <typename IndType>
   void apply() const {
-    phi::DDim x_dims;
+    DDim x_dims;
     int new_axis = axis;
     if (flatten) {
-      x_dims = common::make_ddim({x.numel()});
+      x_dims = make_ddim({x.numel()});
       // if flatten, the axis just as 0
       new_axis = 0;
     } else {
       x_dims = x.dims();
       if (axis < 0) new_axis = axis + x.dims().size();
     }
+    if (x.numel() == 0) {
+      dev_ctx.template Alloc<IndType>(out);
+      return;
+    }
     // For 0D Tensor
     if (x.dims().size() == 0) {
       dev_ctx.template Alloc<IndType>(out);
-      phi::funcs::set_constant(dev_ctx, out, static_cast<IndType>(0));
+      funcs::set_constant(dev_ctx, out, static_cast<IndType>(0));
       return;
     }
 
@@ -199,7 +202,27 @@ struct VisitDataCudaArgMinMaxFunctor {
       post *= x_dims[i];
     }
 
-    ComputeFullArg<T, IndType, Reducer>(dev_ctx, x, out, pre, post, n);
+    // All variable declaration of height,max_grid_dimx,grid_size
+    // must in sync with that of ComputeFullArg.
+    int64_t height = pre * post;
+    int64_t max_grid_dimx = dev_ctx.GetCUDAMaxGridDimSize()[0];
+    int64_t grid_size = height < max_grid_dimx ? height : max_grid_dimx;
+    int max_block_size = 1024;  // upper bound of ComputeBlockSize
+    // outer grid-stride loop: `idx` peaks at `height - 1 + gridDim.x`
+    // inner block-stride loop: `k` peaks at `width - 1 + blockDim.x`
+    if (numel > std::numeric_limits<int32_t>::max() ||
+        height + grid_size - 1 >
+            std::numeric_limits<int32_t>::max() ||  // avoid last loop increment
+                                                    // overflow in line66
+        n - 1 + max_block_size >
+            std::numeric_limits<int32_t>::max()) {  // avoid last loop increment
+                                                    // overflow in line70
+      ComputeFullArg<T, IndType, Reducer, int64_t>(
+          dev_ctx, x, out, pre, post, n);
+    } else {
+      ComputeFullArg<T, IndType, Reducer, int32_t>(
+          dev_ctx, x, out, pre, post, n);
+    }
   }
 };
 
@@ -211,19 +234,19 @@ void ArgMinMaxOpCUDAKernel(const Context& dev_ctx,
                            bool flatten,
                            DataType dtype,
                            DenseTensor* out) {
-  PADDLE_ENFORCE_GT(
+  PADDLE_ENFORCE_GE(
       x.numel(),
       0,
       common::errors::InvalidArgument(
           "argmin/argmax input numel must > 0, bug got %d", x.numel()));
   if (dtype == DataType::UNDEFINED) {
     phi::VisitDataTypeTiny(
-        phi::DataType::INT64,
+        DataType::INT64,
         VisitDataCudaArgMinMaxFunctor<Context, T, Reducer>(
             dev_ctx, x, axis.to<int64_t>(), keepdims, flatten, out));
     return;
   }
-  phi::VisitDataTypeTiny(
+  VisitDataTypeTiny(
       dtype,
       VisitDataCudaArgMinMaxFunctor<Context, T, Reducer>(
           dev_ctx, x, axis.to<int64_t>(), keepdims, flatten, out));
@@ -261,8 +284,8 @@ PD_REGISTER_KERNEL(argmin,
                    GPU,
                    ALL_LAYOUT,
                    phi::ArgMinKernel,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
+                   phi::float16,
+                   phi::bfloat16,
                    float,
                    double,
                    int32_t,
@@ -276,8 +299,8 @@ PD_REGISTER_KERNEL(argmax,
                    GPU,
                    ALL_LAYOUT,
                    phi::ArgMaxKernel,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
+                   phi::float16,
+                   phi::bfloat16,
                    float,
                    double,
                    int32_t,

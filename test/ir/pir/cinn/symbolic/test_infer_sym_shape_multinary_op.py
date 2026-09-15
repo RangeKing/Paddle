@@ -205,11 +205,8 @@ class TakeAlongAxisNet(paddle.nn.Layer):
         super().__init__()
 
     def forward(self, x, indices):
-        out = paddle.take_along_axis(x, indices, axis=0)
-        out = paddle.take_along_axis(x, indices, axis=1)
-        out = paddle.take_along_axis(x, indices, axis=-1)
-        out = paddle.take_along_axis(x, indices, axis=-2)
-        return out
+        out1 = paddle.take_along_axis(x, indices, axis=0)
+        return out1
 
 
 class TakeAlongAxisOpInferSymbolicShapeTest(TestBase):
@@ -222,14 +219,10 @@ class TakeAlongAxisOpInferSymbolicShapeTest(TestBase):
         ]
         self.expected = [
             [
-                'shape[S3, S1, S2], data[NULL]',
-                'shape[S0, S4, S2], data[NULL]',
-                'shape[S0, S1, S5], data[NULL]',
-                'shape[S0, S4, S2], data[NULL]',
+                'shape[S3, S4, S5], data[NULL]',
             ],
         ]
 
-    @unittest.skip("TODO: xiongkun")
     def test_eval_symbolic(self):
         net = TakeAlongAxisNet()
 
@@ -388,6 +381,38 @@ class InterpolateOpInferSymbolicShapeTest(TestBase):
         )
         out = net(self.x)
         return out
+
+
+class CELUInplaceNet(paddle.nn.Layer):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        F.celu(x, inplace=True)
+
+        return x
+
+
+class CELUOpInferSymbolicShapeTest(TestBase):
+    def prepare_data(self):
+        self.cases = [np.random.rand(2, 3, 4)]
+        self.expected = ['shape[S0, S1, S2], data[NULL]']
+
+    def test_eval_symbolic(self):
+        net = CELUInplaceNet()
+
+        for i in range(len(self.cases)):
+            x = self.cases[i]
+            x_spec = InputSpec(
+                shape=[None for index in range(len(x.shape))], dtype='float32'
+            )
+
+            input_spec = [x_spec]
+            net = apply_to_static(net, True, input_spec)
+            net.eval()
+            check_infer_results(net, input_spec, 'pd_op.celu_', self.expected)
+
+        return True
 
 
 if __name__ == '__main__':

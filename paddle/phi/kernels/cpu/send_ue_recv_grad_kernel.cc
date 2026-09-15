@@ -23,6 +23,7 @@
 #include "paddle/phi/kernels/cpu/graph_send_recv_funcs.h"
 #include "paddle/phi/kernels/cpu/graph_send_ue_recv_funcs.h"
 #include "paddle/phi/kernels/empty_kernel.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/math_function.h"
 #include "paddle/phi/kernels/impl/graph_message_passing_impl.h"
 #include "paddle/phi/kernels/reduce_sum_kernel.h"
@@ -30,13 +31,13 @@
 namespace phi {
 
 template <typename Context, typename T, typename IndexT>
-void CalculateXGrad(const Context& ctx,
+void CalculateXGrad(const Context& dev_ctx,
                     const T* out_grad,
                     const T* x_data UNUSED,
                     const T* e_data,
-                    const phi::DDim& out_grad_dims,
-                    const phi::DDim& x_dims,
-                    const phi::DDim& e_dims,
+                    const DDim& out_grad_dims,
+                    const DDim& x_dims,
+                    const DDim& e_dims,
                     const IndexT* s_index,
                     const IndexT* d_index,
                     const std::string& message_op,
@@ -61,26 +62,24 @@ void CalculateXGrad(const Context& ctx,
               out_grad_tensor, x_grad_tensor, src, dst, false, sum_functor);
         }
       } else {
-        DenseTensor x_grad_v2 =
-            phi::EmptyLike<T, Context>(ctx, out_grad_tensor);
-        phi::funcs::SetConstant<Context, T>()(
-            ctx, &x_grad_v2, static_cast<T>(0));
+        DenseTensor x_grad_v2 = EmptyLike<T, Context>(dev_ctx, out_grad_tensor);
+        funcs::SetConstant<Context, T>()(
+            dev_ctx, &x_grad_v2, static_cast<T>(0));
         for (int64_t i = 0; i < index_size; i++) {
           IndexT src = s_index[i];
           IndexT dst = d_index[i];
           ElementwiseInnerOperation<T, IndexT, GraphSendRecvSumFunctor<T>>(
               out_grad_tensor, &x_grad_v2, src, dst, false, sum_functor);
         }
-        DenseTensor x_grad_out =
-            phi::Sum<T, Context>(ctx,
-                                 x_grad_v2,
-                                 phi::IntArray(reduce_idx),
-                                 phi::CppTypeToDataType<T>::Type(),
-                                 true);
+        DenseTensor x_grad_out = Sum<T, Context>(dev_ctx,
+                                                 x_grad_v2,
+                                                 IntArray(reduce_idx),
+                                                 CppTypeToDataType<T>::Type(),
+                                                 true);
         memcpy(x_grad, x_grad_out.data<T>(), x_grad_out.numel() * sizeof(T));
       }
     } else if (message_op == "MUL") {
-      const auto& bcast = phi::CalcBCastInfo(out_grad_dims, e_dims);
+      const auto& bcast = CalcBCastInfo(out_grad_dims, e_dims);
       if (!reduce) {
 #ifdef PADDLE_WITH_MKLML
 #pragma omp parallel for
@@ -104,10 +103,9 @@ void CalculateXGrad(const Context& ctx,
           }
         }
       } else {
-        DenseTensor x_grad_v2 =
-            phi::EmptyLike<T, Context>(ctx, out_grad_tensor);
-        phi::funcs::SetConstant<Context, T>()(
-            ctx, &x_grad_v2, static_cast<T>(0));
+        DenseTensor x_grad_v2 = EmptyLike<T, Context>(dev_ctx, out_grad_tensor);
+        funcs::SetConstant<Context, T>()(
+            dev_ctx, &x_grad_v2, static_cast<T>(0));
         T* x_grad_v2_data = x_grad_v2.data<T>();
 #ifdef PADDLE_WITH_MKLML
 #pragma omp parallel for
@@ -130,12 +128,11 @@ void CalculateXGrad(const Context& ctx,
             }
           }
         }
-        DenseTensor x_grad_out =
-            phi::Sum<T, Context>(ctx,
-                                 x_grad_v2,
-                                 phi::IntArray(reduce_idx),
-                                 phi::CppTypeToDataType<T>::Type(),
-                                 true);
+        DenseTensor x_grad_out = Sum<T, Context>(dev_ctx,
+                                                 x_grad_v2,
+                                                 IntArray(reduce_idx),
+                                                 CppTypeToDataType<T>::Type(),
+                                                 true);
         memcpy(x_grad, x_grad_out.data<T>(), x_grad_out.numel() * sizeof(T));
       }
     }
@@ -148,34 +145,32 @@ void CalculateXGrad(const Context& ctx,
           IndexT dst = d_index[i];
           auto out_grad_slice = out_grad_tensor.Slice(src, src + 1);
           auto x_grad_slice = x_grad_tensor->Slice(dst, dst + 1);
-          auto eigen_out_grad = phi::EigenVector<T>::Flatten(out_grad_slice);
-          auto eigen_x_grad = phi::EigenVector<T>::Flatten(x_grad_slice);
+          auto eigen_out_grad = EigenVector<T>::Flatten(out_grad_slice);
+          auto eigen_x_grad = EigenVector<T>::Flatten(x_grad_slice);
           eigen_x_grad += (eigen_out_grad / static_cast<T>(s_count[src]));
         }
       } else {
-        DenseTensor x_grad_v2 =
-            phi::EmptyLike<T, Context>(ctx, out_grad_tensor);
-        phi::funcs::SetConstant<Context, T>()(
-            ctx, &x_grad_v2, static_cast<T>(0));
+        DenseTensor x_grad_v2 = EmptyLike<T, Context>(dev_ctx, out_grad_tensor);
+        funcs::SetConstant<Context, T>()(
+            dev_ctx, &x_grad_v2, static_cast<T>(0));
         for (int64_t i = 0; i < index_size; i++) {
           IndexT src = s_index[i];
           IndexT dst = d_index[i];
           auto out_grad_slice = out_grad_tensor.Slice(src, src + 1);
           auto x_grad_slice = x_grad_v2.Slice(dst, dst + 1);
-          auto eigen_out_grad = phi::EigenVector<T>::Flatten(out_grad_slice);
-          auto eigen_x_grad = phi::EigenVector<T>::Flatten(x_grad_slice);
+          auto eigen_out_grad = EigenVector<T>::Flatten(out_grad_slice);
+          auto eigen_x_grad = EigenVector<T>::Flatten(x_grad_slice);
           eigen_x_grad += (eigen_out_grad / static_cast<T>(s_count[src]));
         }
-        DenseTensor x_grad_out =
-            phi::Sum<T, Context>(ctx,
-                                 x_grad_v2,
-                                 phi::IntArray(reduce_idx),
-                                 phi::CppTypeToDataType<T>::Type(),
-                                 true);
+        DenseTensor x_grad_out = Sum<T, Context>(dev_ctx,
+                                                 x_grad_v2,
+                                                 IntArray(reduce_idx),
+                                                 CppTypeToDataType<T>::Type(),
+                                                 true);
         memcpy(x_grad, x_grad_out.data<T>(), x_grad_out.numel() * sizeof(T));
       }
     } else if (message_op == "MUL") {
-      const auto& bcast = phi::CalcBCastInfo(out_grad_dims, e_dims);
+      const auto& bcast = CalcBCastInfo(out_grad_dims, e_dims);
       if (!reduce) {
 #ifdef PADDLE_WITH_MKLML
 #pragma omp parallel for
@@ -197,10 +192,9 @@ void CalculateXGrad(const Context& ctx,
           }
         }
       } else {
-        DenseTensor x_grad_v2 =
-            phi::EmptyLike<T, Context>(ctx, out_grad_tensor);
-        phi::funcs::SetConstant<Context, T>()(
-            ctx, &x_grad_v2, static_cast<T>(0));
+        DenseTensor x_grad_v2 = EmptyLike<T, Context>(dev_ctx, out_grad_tensor);
+        funcs::SetConstant<Context, T>()(
+            dev_ctx, &x_grad_v2, static_cast<T>(0));
         T* x_grad_v2_data = x_grad_v2.data<T>();
 #ifdef PADDLE_WITH_MKLML
 #pragma omp parallel for
@@ -221,12 +215,11 @@ void CalculateXGrad(const Context& ctx,
             x_grad_off[j] += (val / s_count[src]);
           }
         }
-        DenseTensor x_grad_out =
-            phi::Sum<T, Context>(ctx,
-                                 x_grad_v2,
-                                 phi::IntArray(reduce_idx),
-                                 phi::CppTypeToDataType<T>::Type(),
-                                 true);
+        DenseTensor x_grad_out = Sum<T, Context>(dev_ctx,
+                                                 x_grad_v2,
+                                                 IntArray(reduce_idx),
+                                                 CppTypeToDataType<T>::Type(),
+                                                 true);
         memcpy(x_grad, x_grad_out.data<T>(), x_grad_out.numel() * sizeof(T));
       }
     }
@@ -237,8 +230,8 @@ template <typename T, typename IndexT>
 void CalculateEGrad(const T* out_grad_data,
                     const T* x_data,
                     const T* e_data UNUSED,
-                    const phi::DDim& x_dims,
-                    const phi::DDim& e_dims,
+                    const DDim& x_dims,
+                    const DDim& e_dims,
                     const IndexT* s_index,
                     const IndexT* d_index,
                     const std::string& message_op,
@@ -246,7 +239,7 @@ void CalculateEGrad(const T* out_grad_data,
                     int64_t index_size,
                     T* e_grad,
                     const DenseTensor* dst_count = nullptr) {
-  const auto& bcast = phi::CalcBCastInfo(x_dims, e_dims);
+  const auto& bcast = CalcBCastInfo(x_dims, e_dims);
   if (reduce_op == "SUM") {
 #ifdef PADDLE_WITH_MKLML
 #pragma omp parallel for
@@ -307,8 +300,8 @@ template <typename T, typename IndexT>
 void CalculateXEGradForMinMax(const T* out_grad,
                               const T* x_data,
                               const T* e_data,
-                              const phi::DDim& x_dims,
-                              const phi::DDim& e_dims,
+                              const DDim& x_dims,
+                              const DDim& e_dims,
                               const IndexT* s_index,
                               const IndexT* d_index,
                               const std::string& message_op,
@@ -318,7 +311,7 @@ void CalculateXEGradForMinMax(const T* out_grad,
                               T* e_grad,
                               const DenseTensor* out = nullptr) {
   const T* out_data = out->data<T>();
-  const auto& bcast = phi::CalcBCastInfo(x_dims, e_dims);
+  const auto& bcast = CalcBCastInfo(x_dims, e_dims);
 #ifdef PADDLE_WITH_MKLML
 #pragma omp parallel for
 #endif
@@ -357,7 +350,7 @@ void CalculateXEGradForMinMax(const T* out_grad,
 
 template <typename Context, typename T, typename IndexT>
 void GraphSendUERecvGradOpKernelLaunchHelper(
-    const Context& ctx,
+    const Context& dev_ctx,
     const DenseTensor& out_grad,
     const DenseTensor& x,
     const DenseTensor& y,
@@ -369,11 +362,14 @@ void GraphSendUERecvGradOpKernelLaunchHelper(
     DenseTensor* y_grad,
     const DenseTensor* dst_count = nullptr,
     const DenseTensor* out = nullptr) {
-  const int& index_size = dst_index.dims()[0];  // NOLINT
+  // TODO(large-tensor): downstream functors may still use int; guard until
+  // upgraded.
+  const int64_t& index_size = dst_index.dims()[0];
+  // NOLINT
 
-  ctx.template Alloc<T>(x_grad);
+  dev_ctx.template Alloc<T>(x_grad);
   T* x_grad_data = x_grad->data<T>();
-  ctx.template Alloc<T>(y_grad);
+  dev_ctx.template Alloc<T>(y_grad);
   T* y_grad_data = y_grad->data<T>();
   const auto& x_dims = x.dims();
   const auto& y_dims = y.dims();
@@ -398,7 +394,7 @@ void GraphSendUERecvGradOpKernelLaunchHelper(
   const IndexT* d_index = dst_index.data<IndexT>();
 
   if (reduce_op == "SUM" || reduce_op == "MEAN") {
-    CalculateXGrad<Context, T, IndexT>(ctx,
+    CalculateXGrad<Context, T, IndexT>(dev_ctx,
                                        out_grad_data,
                                        x_data,
                                        y_data,
@@ -445,22 +441,30 @@ void GraphSendUERecvGradOpKernelLaunchHelper(
 }
 
 template <typename T, typename Context>
-void SendUERecvGradKernel(const Context& ctx,
+void SendUERecvGradKernel(const Context& dev_ctx,
                           const DenseTensor& x,
                           const DenseTensor& y,
                           const DenseTensor& src_index,
                           const DenseTensor& dst_index,
-                          const paddle::optional<DenseTensor>& out,
-                          const paddle::optional<DenseTensor>& dst_count,
+                          const optional<DenseTensor>& out,
+                          const optional<DenseTensor>& dst_count,
                           const DenseTensor& out_grad,
                           const std::string& message_op,
                           const std::string& reduce_op,
                           DenseTensor* x_grad,
                           DenseTensor* y_grad) {
   auto index_type = src_index.dtype();
-  if (index_type == phi::DataType::INT32) {
+
+  if (out_grad.numel() == 0 || x.numel() == 0 || y.numel() == 0 ||
+      src_index.numel() == 0 || dst_index.numel() == 0) {
+    Full<T, Context>(dev_ctx, x_grad->dims(), 0, x_grad);
+    Full<T, Context>(dev_ctx, y_grad->dims(), 0, y_grad);
+    return;
+  }
+
+  if (index_type == DataType::INT32) {
     GraphSendUERecvGradOpKernelLaunchHelper<Context, T, int32_t>(
-        ctx,
+        dev_ctx,
         out_grad,
         x,
         y,
@@ -472,9 +476,9 @@ void SendUERecvGradKernel(const Context& ctx,
         y_grad,
         dst_count.get_ptr(),
         out.get_ptr());
-  } else if (index_type == phi::DataType::INT64) {
+  } else if (index_type == DataType::INT64) {
     GraphSendUERecvGradOpKernelLaunchHelper<Context, T, int64_t>(
-        ctx,
+        dev_ctx,
         out_grad,
         x,
         y,

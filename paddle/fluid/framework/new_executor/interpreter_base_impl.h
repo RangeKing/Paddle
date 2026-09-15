@@ -65,7 +65,7 @@ class InterpreterBaseImpl {
   virtual ~InterpreterBaseImpl() = default;
   virtual paddle::framework::FetchList Run(
       const std::vector<std::string>& feed_names,
-      const std::vector<phi::DenseTensor>& feed_tensors,
+      const std::vector<DenseTensor>& feed_tensors,
       bool need_fetch = true,
       bool enable_job_schedule_profiler = false,
       bool switch_stream = false) = 0;
@@ -97,7 +97,7 @@ class InterpreterBaseImpl {
 
   virtual const Scope* local_scope() const = 0;
 
-  virtual const phi::Place& GetPlace() const = 0;
+  virtual const Place& GetPlace() const = 0;
 
   virtual void SetOutputHooks(const std::vector<HookFunc>& hookfuncs) = 0;
 
@@ -119,11 +119,13 @@ class InterpreterBaseImpl {
 
   virtual std::tuple<double, double> InterpreterRunTime() = 0;
 
+  virtual void SetCUDAGraphState(uint8_t cuda_graph_state) = 0;
+
   // Only for debug
   virtual Variable* DebugVar(const std::string& name) const = 0;
 };
 
-inline void SetDeviceId(const phi::Place& place) {
+inline void SetDeviceId(const Place& place) {
   // TODO(zhiqiu): reduce the cost
   if (phi::is_gpu_place(place)) {
 #if !defined(PADDLE_WITH_CUDA) && !defined(PADDLE_WITH_HIP)

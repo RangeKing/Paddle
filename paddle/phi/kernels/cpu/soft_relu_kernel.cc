@@ -27,7 +27,6 @@
 
 #include <type_traits>
 
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/core/tensor_utils.h"
 #include "paddle/phi/kernels/funcs/activation_functor.h"
@@ -56,19 +55,12 @@ void SoftmaxKernel(const Context& dev_ctx,
                    DenseTensor* out) {
   dev_ctx.template Alloc<T>(out);
 
-  auto x_flatten = phi::EigenVector<T>::Flatten(x);
-  auto out_flatten = phi::EigenVector<T>::Flatten(*out);
+  auto x_flatten = EigenVector<T>::Flatten(x);
+  auto out_flatten = EigenVector<T>::Flatten(*out);
   auto* eigen_dev = dev_ctx.eigen_device();
   SoftReluFunctor<T> functor;
   functor.SetAttrs(threshold);
-  // use 32bit index to speed up computation
-  bool use_32bit_index = out_flatten.size() < Eigen::NumTraits<int>::highest();
-  bool is_gpu_place = dev_ctx.GetPlace().GetType() == phi::AllocationType::GPU;
-  if (use_32bit_index && is_gpu_place) {
-    functor(*eigen_dev, To32BitIndex(x_flatten), To32BitIndex(out_flatten));
-  } else {
-    functor(*eigen_dev, x_flatten, out_flatten);
-  }
+  functor(*eigen_dev, x_flatten, out_flatten);
 }
 
 }  // namespace phi

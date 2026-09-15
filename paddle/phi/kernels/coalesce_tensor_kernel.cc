@@ -194,8 +194,7 @@ void CoalesceTensorKernel(const Context &dev_ctx,
 
   // Alloc the continuous space
   void *fused_tensor_ptr = dev_ctx.Alloc(
-      &fused_output->Resize(common::make_ddim({static_cast<int64_t>(numel)})),
-      dtype);
+      &fused_output->Resize({static_cast<int64_t>(numel)}), dtype);
   VLOG(10) << "Fused tensor addr " << fused_tensor_ptr;
 
   // Init the continuous space
@@ -285,8 +284,8 @@ PD_REGISTER_KERNEL(coalesce_tensor,
                    GPU,
                    ALL_LAYOUT,
                    phi::CoalesceTensorKernel,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
+                   phi::float16,
+                   phi::bfloat16,
                    int,
                    float,
                    double) {
@@ -300,7 +299,8 @@ PD_REGISTER_KERNEL(coalesce_tensor,
                    GPU,
                    ALL_LAYOUT,
                    phi::CoalesceTensorKernel,
-                   phi::dtype::float16,
+                   phi::float16,
+                   phi::bfloat16,
                    int,
                    float,
                    double) {
@@ -314,7 +314,8 @@ PD_REGISTER_KERNEL(coalesce_tensor,
                    XPU,
                    ALL_LAYOUT,
                    phi::CoalesceTensorKernel,
-                   phi::dtype::float16,
+                   phi::float16,
+                   phi::bfloat16,
                    int,
                    float,
                    double) {

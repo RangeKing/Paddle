@@ -45,8 +45,7 @@ UNK_IDX = 0
 
 class Conll05st(Dataset):
     """
-    Implementation of `Conll05st <https://www.cs.upc.edu/~srlconll/soft.html>`_
-    test dataset.
+    This class implements the Conll05st test dataset. For details, please refer to the relevant documentation:https://aclanthology.org/W05-0620.pdf
 
     Note: only support download test dataset automatically for that
           only test dataset of Conll05st is public.
@@ -72,7 +71,7 @@ class Conll05st(Dataset):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.text.datasets import Conll05st
@@ -88,13 +87,13 @@ class Conll05st(Dataset):
             >>> conll05st = Conll05st()
 
             >>> for i in range(10):
-            ...     pred_idx, mark, label= conll05st[i][-3:]
+            ...     pred_idx, mark, label = conll05st[i][-3:]
             ...     pred_idx = paddle.to_tensor(pred_idx)
             ...     mark = paddle.to_tensor(mark)
             ...     label = paddle.to_tensor(label)
             ...
             ...     model = SimpleNet()
-            ...     pred_idx, mark, label= model(pred_idx, mark, label)
+            ...     pred_idx, mark, label = model(pred_idx, mark, label)
             ...     print(pred_idx.item(), mark.item(), label.item())
             >>> # doctest: +SKIP('label will change')
             65840 5 1991
@@ -133,18 +132,18 @@ class Conll05st(Dataset):
     ):
         self.data_file = data_file
         if self.data_file is None:
-            assert (
-                download
-            ), "data_file is not set and downloading automatically is disabled"
+            assert download, (
+                "data_file is not set and downloading automatically is disabled"
+            )
             self.data_file = _check_exists_and_download(
                 data_file, DATA_URL, DATA_MD5, 'conll05st', download
             )
 
         self.word_dict_file = word_dict_file
         if self.word_dict_file is None:
-            assert (
-                download
-            ), "word_dict_file is not set and downloading automatically is disabled"
+            assert download, (
+                "word_dict_file is not set and downloading automatically is disabled"
+            )
             self.word_dict_file = _check_exists_and_download(
                 word_dict_file,
                 WORDDICT_URL,
@@ -155,9 +154,9 @@ class Conll05st(Dataset):
 
         self.verb_dict_file = verb_dict_file
         if self.verb_dict_file is None:
-            assert (
-                download
-            ), "verb_dict_file is not set and downloading automatically is disabled"
+            assert download, (
+                "verb_dict_file is not set and downloading automatically is disabled"
+            )
             self.verb_dict_file = _check_exists_and_download(
                 verb_dict_file,
                 VERBDICT_URL,
@@ -168,9 +167,9 @@ class Conll05st(Dataset):
 
         self.target_dict_file = target_dict_file
         if self.target_dict_file is None:
-            assert (
-                download
-            ), "target_dict_file is not set and downloading automatically is disabled"
+            assert download, (
+                "target_dict_file is not set and downloading automatically is disabled"
+            )
             self.target_dict_file = _check_exists_and_download(
                 target_dict_file,
                 TRGDICT_URL,
@@ -181,9 +180,9 @@ class Conll05st(Dataset):
 
         self.emb_file = emb_file
         if self.emb_file is None:
-            assert (
-                download
-            ), "emb_file is not set and downloading automatically is disabled"
+            assert download, (
+                "emb_file is not set and downloading automatically is disabled"
+            )
             self.emb_file = _check_exists_and_download(
                 emb_file, EMB_URL, EMB_MD5, 'conll05st', download
             )
@@ -232,9 +231,10 @@ class Conll05st(Dataset):
         self.sentences = []
         self.predicates = []
         self.labels = []
-        with gzip.GzipFile(fileobj=wf) as words_file, gzip.GzipFile(
-            fileobj=pf
-        ) as props_file:
+        with (
+            gzip.GzipFile(fileobj=wf) as words_file,
+            gzip.GzipFile(fileobj=pf) as props_file,
+        ):
             sentences = []
             labels = []
             one_seg = []
@@ -244,8 +244,8 @@ class Conll05st(Dataset):
 
                 if len(label) == 0:  # end of sentence
                     for i in range(len(one_seg[0])):
-                        a_kind_lable = [x[i] for x in one_seg]
-                        labels.append(a_kind_lable)
+                        a_kind_label = [x[i] for x in one_seg]
+                        labels.append(a_kind_label)
 
                     if len(labels) >= 1:
                         verb_list = []
@@ -292,7 +292,9 @@ class Conll05st(Dataset):
         wf.close()
         tf.close()
 
-    def __getitem__(self, idx: int) -> tuple[
+    def __getitem__(
+        self, idx: int
+    ) -> tuple[
         npt.NDArray[np.int_],
         npt.NDArray[np.int_],
         npt.NDArray[np.int_],
@@ -370,7 +372,7 @@ class Conll05st(Dataset):
 
         Examples:
 
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> from paddle.text.datasets import Conll05st
 
@@ -386,7 +388,7 @@ class Conll05st(Dataset):
 
         Examples:
 
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> from paddle.text.datasets import Conll05st
 

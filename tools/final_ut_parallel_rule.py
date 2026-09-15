@@ -25,7 +25,7 @@ def classify_cases_by_mem(rootPath):
         'test_trt_convert_pool2d',
         'test_fc_fuse_pass',
         'test_trt_convert_depthwise_conv2d',
-        'test_quant2_int8_resnet50_mkldnn',
+        'test_quant2_int8_resnet50_onednn',
         'test_conv_elementwise_add_act_fuse_pass',
         'test_trt_convert_conv2d',
         'test_paddle_save_load',
@@ -50,16 +50,16 @@ def classify_cases_by_mem(rootPath):
         'trt_quant_int8_yolov3_r50_test',
         'test_gru_op',
         'test_post_training_quantization_while',
-        'test_mkldnn_log_softmax_op',
-        'test_mkldnn_matmulv2_op',
-        'test_mkldnn_shape_op',
+        'test_onednn_log_softmax_op',
+        'test_onednn_matmulv2_op',
+        'test_onednn_shape_op',
         'interceptor_pipeline_short_path_test',
         'interceptor_pipeline_long_path_test',
         'test_cpuonly_spawn',
     ]  # 木桶原理 110s-200s之间的case 以及容易timeout
 
     case_always_timeout = [
-        'test_quant2_int8_resnet50_channelwise_mkldnn',
+        'test_quant2_int8_resnet50_channelwise_onednn',
         'test_parallel_dygraph_unused_variables_gloo',
         'test_seq2seq',
         'test_pool3d_op',
@@ -67,7 +67,7 @@ def classify_cases_by_mem(rootPath):
         'test_dropout_op',
         'test_parallel_dygraph_sync_batch_norm',
         'test_conv3d_op',
-        'test_quant2_int8_resnet50_range_mkldnn',
+        'test_quant2_int8_resnet50_range_onednn',
     ]  # always timeout
 
     f = open(case_filename)
@@ -100,7 +100,7 @@ def classify_cases_by_mem(rootPath):
         json.dump(all_tests_by_card, f)
 
     with open("/pre_test/ut_mem_map.json", 'r') as load_f:
-        new_lastest_mem = json.load(load_f)
+        new_latest_mem = json.load(load_f)
     no_parallel_case = '^job$'
     for cardType in all_tests_by_card:
         case_mem_0 = '^job$'
@@ -112,15 +112,15 @@ def classify_cases_by_mem(rootPath):
                 no_parallel_case = no_parallel_case + '|^' + case + '$'
                 continue
 
-            if case not in new_lastest_mem:
+            if case not in new_latest_mem:
                 continue
 
             # mem = 0
-            if new_lastest_mem[case]["mem_nvidia"] == 0:
+            if new_latest_mem[case]["mem_nvidia"] == 0:
                 case_mem_0 = case_mem_0 + '|^' + case + '$'
             # mem != 0
             else:
-                case_mem_1[case] = new_lastest_mem[case]["mem_nvidia"]
+                case_mem_1[case] = new_latest_mem[case]["mem_nvidia"]
 
         with open(f'/pre_test/{cardType}_mem0', 'w') as f:
             f.write(case_mem_0)

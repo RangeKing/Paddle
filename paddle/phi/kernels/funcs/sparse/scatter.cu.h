@@ -41,10 +41,12 @@ __global__ void ScatterKernel(const T* input,
                               const int rulebook_len,
                               const int channels,
                               T* out) {
-  int tid = threadIdx.x + blockIdx.x * blockDim.x;
+  int64_t tid =
+      static_cast<int64_t>(threadIdx.x) +
+      static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x);
   const int vec_channels = channels / VecSize;
-  using LoadT = phi::AlignedVector<T, VecSize>;
-  using StoreT = phi::AlignedVector<T, VecSize>;
+  using LoadT = AlignedVector<T, VecSize>;
+  using StoreT = AlignedVector<T, VecSize>;
   for (int i = tid; i < non_zero_num * vec_channels;
        i += gridDim.x * blockDim.x) {
     int indices_i = i / vec_channels;
@@ -58,15 +60,14 @@ __global__ void ScatterKernel(const T* input,
     for (int j = start; j < end; j++) {
       const int out_feature_i = out_index[j];
       LoadT vec_in;
-      phi::Load<T, VecSize>(
-          input + out_feature_i * channels + channels_i * VecSize, &vec_in);
+      Load<T, VecSize>(input + out_feature_i * channels + channels_i * VecSize,
+                       &vec_in);
 #pragma unroll
       for (int k = 0; k < VecSize; k++) {
         sums[k] += vec_in[k];
       }
     }
-    phi::Store<T, VecSize>(sums,
-                           out + indices_i * channels + channels_i * VecSize);
+    Store<T, VecSize>(sums, out + indices_i * channels + channels_i * VecSize);
   }
 }
 
@@ -82,18 +83,19 @@ __global__ void ScatterKernelV2(const T* input,
                                 const int channels,
                                 const int buffer_counts,
                                 T* out) {
-  int tid = threadIdx.x + blockIdx.x * blockDim.x;
+  int64_t tid =
+      static_cast<int64_t>(threadIdx.x) +
+      static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x);
   const int vec_channels = channels / VecSize;
-  using LoadT = phi::AlignedVector<T, VecSize>;
-  using StoreT = phi::AlignedVector<T, VecSize>;
+  using LoadT = AlignedVector<T, VecSize>;
+  using StoreT = AlignedVector<T, VecSize>;
   for (int i = tid; i < non_zero_num * vec_channels;
        i += gridDim.x * blockDim.x) {
     int indices_i = i / vec_channels;
     int channels_i = i - indices_i * vec_channels;
 
     StoreT sums = {static_cast<T>(0)};
-    phi::Load<T, VecSize>(out + indices_i * channels + channels_i * VecSize,
-                          &sums);
+    Load<T, VecSize>(out + indices_i * channels + channels_i * VecSize, &sums);
     for (int it = 0; it < buffer_counts; it++) {
       int len = index_counts[indices_i + it * non_zero_num];
       const int group_offset = it * kernel_size * non_zero_num;
@@ -101,7 +103,7 @@ __global__ void ScatterKernelV2(const T* input,
         const int out_feature_i =
             index_groups[indices_i * kernel_size + j + group_offset];
         LoadT vec_in;
-        phi::Load<T, VecSize>(
+        Load<T, VecSize>(
             input + out_feature_i * channels + channels_i * VecSize, &vec_in);
 #pragma unroll
         for (int k = 0; k < VecSize; k++) {
@@ -109,8 +111,7 @@ __global__ void ScatterKernelV2(const T* input,
         }
       }
     }
-    phi::Store<T, VecSize>(sums,
-                           out + indices_i * channels + channels_i * VecSize);
+    Store<T, VecSize>(sums, out + indices_i * channels + channels_i * VecSize);
   }
 }
 

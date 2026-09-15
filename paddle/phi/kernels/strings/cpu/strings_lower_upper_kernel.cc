@@ -15,8 +15,6 @@ limitations under the License. */
 #include "paddle/phi/common/pstring.h"
 #include "paddle/phi/core/kernel_registry.h"
 
-using pstring = ::phi::dtype::pstring;
-
 namespace phi::strings {
 
 template <typename ContextT>
@@ -38,7 +36,17 @@ void StringUpperKernel(const ContextT& dev_ctx,
                           UTF8CaseConverter<ContextT, UTF8ToUpper>,
                           ContextT>()(dev_ctx, x, use_utf8_encoding, out);
 }
+#ifdef _WIN32
+template PADDLE_API void StringLowerKernel<CPUContext>(const CPUContext&,
+                                                       const StringTensor& x,
+                                                       bool,
+                                                       StringTensor*);
 
+template PADDLE_API void StringUpperKernel<CPUContext>(const CPUContext&,
+                                                       const StringTensor& x,
+                                                       bool,
+                                                       StringTensor*);
+#endif
 }  // namespace phi::strings
 
 PD_REGISTER_KERNEL_FOR_ALL_DTYPE(

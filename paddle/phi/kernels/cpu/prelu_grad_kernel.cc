@@ -16,7 +16,7 @@
 
 #include "paddle/phi/backends/cpu/cpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
-
+#include "paddle/phi/kernels/full_kernel.h"
 namespace phi {
 
 template <typename T, typename Context>
@@ -28,6 +28,13 @@ void PReluGradKernel(const Context& dev_ctx,
                      const std::string& mode,
                      DenseTensor* x_grad,
                      DenseTensor* alpha_grad) {
+  if (x_grad->numel() == 0) {
+    dev_ctx.template Alloc<T>(x_grad);
+    if (alpha_grad) {
+      Full<T, Context>(dev_ctx, alpha_grad->dims(), 0, alpha_grad);
+    }
+    return;
+  }
   const T* alpha_ptr = alpha.data<T>();
   const T* x_ptr = x.data<T>();
   const T* out_grad_ptr = out_grad.data<T>();

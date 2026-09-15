@@ -14,10 +14,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal, Union
+from typing import TYPE_CHECKING, Any, Literal, TypeAlias
 
 from PIL import Image
-from typing_extensions import TypeAlias
 
 from paddle.utils import try_import
 
@@ -28,7 +27,7 @@ if TYPE_CHECKING:
     from paddle import Tensor
 
     _ImageBackend: TypeAlias = Literal["pil", "cv2", "tensor"]
-    _ImageDataType: TypeAlias = Union[Tensor, PILImage, npt.NDArray[Any]]
+    _ImageDataType: TypeAlias = Tensor | PILImage | npt.NDArray[Any]
 
 __all__ = []
 
@@ -46,7 +45,7 @@ def set_image_backend(backend: _ImageBackend) -> None:
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import os
             >>> import shutil
@@ -111,7 +110,7 @@ def get_image_backend() -> _ImageBackend:
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> from paddle.vision import get_image_backend
 
@@ -139,7 +138,7 @@ def image_load(
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import numpy as np
             >>> from PIL import Image

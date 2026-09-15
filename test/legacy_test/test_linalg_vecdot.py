@@ -17,6 +17,7 @@ import sys
 import unittest
 
 import numpy as np
+from op_test import get_places
 
 import paddle
 from paddle.base import core
@@ -34,9 +35,7 @@ class VecDotTestCase(unittest.TestCase):
         self.init_config()
         self.generate_input()
         self.generate_expected_output()
-        self.places = [paddle.CPUPlace()]
-        if paddle.is_compiled_with_cuda():
-            self.places.append(paddle.CUDAPlace(0))
+        self.places = get_places()
 
     def generate_input(self):
         np.random.seed(123)
@@ -111,6 +110,34 @@ class VecDotTestCaseAxis(VecDotTestCase):
     def init_config(self):
         self.dtype = 'float64'
         self.input_shape = (3, 4, 5)
+        self.axis = 1
+
+
+class VecDotTestCaseZeroSize2D(VecDotTestCase):
+    def init_config(self):
+        self.dtype = 'float32'
+        self.input_shape = (0, 4)
+        self.axis = -1
+
+
+class VecDotTestCaseZeroSize3D(VecDotTestCase):
+    def init_config(self):
+        self.dtype = 'float32'
+        self.input_shape = (2, 0, 4)
+        self.axis = -1
+
+
+class VecDotTestCaseZeroSize3DAxis1(VecDotTestCase):
+    def init_config(self):
+        self.dtype = 'float32'
+        self.input_shape = (2, 0, 0)
+        self.axis = 0
+
+
+class VecDotTestCaseZeroSize3DAxis2(VecDotTestCase):
+    def init_config(self):
+        self.dtype = 'float32'
+        self.input_shape = (2, 0, 0)
         self.axis = 1
 
 

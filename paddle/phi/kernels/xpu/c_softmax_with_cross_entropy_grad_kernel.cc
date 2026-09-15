@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "paddle/phi/kernels/c_softmax_with_cross_entropy_grad_kernel.h"
 #include "paddle/phi/backends/xpu/xpu_context.h"
 #include "paddle/phi/common/memory_utils.h"
 #include "paddle/phi/core/kernel_registry.h"
@@ -35,26 +36,27 @@ void CSoftmaxWithCrossEntropyGradKernel(const Context& dev_ctx,
                                         int rank,
                                         int nranks,
                                         DenseTensor* logits_grad) {
+#if defined(PADDLE_WITH_XPU_BKCL)
   using XPUType = typename XPUTypeTrait<T>::Type;
-  const phi::DenseTensor* labels = &label_in;
-  const phi::DenseTensor* loss_grad = &loss_grad_in;
-  phi::DenseTensor* logit_grad = logits_grad;
-  const phi::DenseTensor* softmax = &softmax_in;
+  const DenseTensor* labels = &label_in;
+  const DenseTensor* loss_grad = &loss_grad_in;
+  DenseTensor* logit_grad = logits_grad;
+  const DenseTensor* softmax = &softmax_in;
 
   if (logit_grad != softmax) {
-    phi::Copy(dev_ctx, *softmax, dev_ctx.GetPlace(), false, logit_grad);
+    Copy(dev_ctx, *softmax, dev_ctx.GetPlace(), false, logit_grad);
   }
   const auto softmax_dims = softmax->dims();
   const int axis = softmax_dims.size() - 1;
-  const int64_t N = phi::funcs::SizeToAxis(axis, softmax_dims);
-  const int64_t D = phi::funcs::SizeFromAxis(axis, softmax_dims);
+  const int64_t N = funcs::SizeToAxis(axis, softmax_dims);
+  const int64_t D = funcs::SizeFromAxis(axis, softmax_dims);
 
   const int64_t start_index = rank * D;
   const int64_t end_index = start_index + D;
   const auto& label_type = labels->dtype();
 
   int ret = 0;
-  if (label_type == phi::DataType::INT32) {
+  if (label_type == DataType::INT32) {
     ret = xpu::mask_label_by_index_grad<XPUType, int32_t>(
         dev_ctx.x_context(),
         reinterpret_cast<const XPUType*>(loss_grad->data<T>()),
@@ -65,7 +67,7 @@ void CSoftmaxWithCrossEntropyGradKernel(const Context& dev_ctx,
         N,
         D,
         ignore_index);
-  } else if (label_type == phi::DataType::INT64) {
+  } else if (label_type == DataType::INT64) {
     ret = xpu::mask_label_by_index_grad<XPUType, int64_t>(
         dev_ctx.x_context(),
         reinterpret_cast<const XPUType*>(loss_grad->data<T>()),
@@ -78,6 +80,11 @@ void CSoftmaxWithCrossEntropyGradKernel(const Context& dev_ctx,
         ignore_index);
   }
   PADDLE_ENFORCE_XDNN_SUCCESS(ret, "mask_label_by_index_grad");
+#else
+  PADDLE_THROW(common::errors::PreconditionNotMet(
+      "PaddlePaddle is not compiled with DWITH_XPU_BKCL, please recompile with "
+      "DWITH_XPU_BKCL for using c_softmax_with_cross_entropy_grad."));
+#endif
 }
 
 }  // namespace phi
@@ -87,4 +94,4 @@ PD_REGISTER_KERNEL(c_softmax_with_cross_entropy_grad,
                    ALL_LAYOUT,
                    phi::CSoftmaxWithCrossEntropyGradKernel,
                    float,
-                   phi::dtype::bfloat16) {}
+                   phi::bfloat16) {}

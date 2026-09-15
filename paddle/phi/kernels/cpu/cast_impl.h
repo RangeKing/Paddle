@@ -16,7 +16,6 @@
 
 #include "paddle/phi/backends/cpu/cpu_context.h"
 
-// See Note [ Why still include the fluid headers? ]
 #include "paddle/phi/common/transform.h"
 
 namespace phi {
@@ -26,17 +25,77 @@ struct CastOpTransformFunctor {
   HOSTDEVICE OutT operator()(InT in) const { return static_cast<OutT>(in); }
 };
 
+template <>
+struct CastOpTransformFunctor<::phi::dtype::float8_e5m2, ::phi::complex64> {
+  HOSTDEVICE ::phi::complex64 operator()(::phi::dtype::float8_e5m2 in) const {
+    return ::phi::complex64(static_cast<float>(in));
+  }
+};
+
+template <>
+struct CastOpTransformFunctor<::phi::dtype::float8_e5m2, ::phi::complex128> {
+  HOSTDEVICE ::phi::complex128 operator()(::phi::dtype::float8_e5m2 in) const {
+    return ::phi::complex128(static_cast<double>(in));
+  }
+};
+
+template <>
+struct CastOpTransformFunctor<::phi::dtype::float8_e4m3fn, ::phi::complex64> {
+  HOSTDEVICE ::phi::complex64 operator()(::phi::dtype::float8_e4m3fn in) const {
+    return ::phi::complex64(static_cast<float>(in));
+  }
+};
+
+template <>
+struct CastOpTransformFunctor<::phi::dtype::float8_e4m3fn, ::phi::complex128> {
+  HOSTDEVICE ::phi::complex128 operator()(
+      ::phi::dtype::float8_e4m3fn in) const {
+    return ::phi::complex128(static_cast<double>(in));
+  }
+};
+
+template <>
+struct CastOpTransformFunctor<::phi::dtype::bfloat16, ::phi::complex64> {
+  HOSTDEVICE ::phi::complex64 operator()(::phi::dtype::bfloat16 in) const {
+    return ::phi::complex64(static_cast<float>(in));
+  }
+};
+
+template <>
+struct CastOpTransformFunctor<::phi::dtype::bfloat16, ::phi::complex128> {
+  HOSTDEVICE ::phi::complex128 operator()(::phi::dtype::bfloat16 in) const {
+    return ::phi::complex128(static_cast<double>(in));
+  }
+};
+
+template <>
+struct CastOpTransformFunctor<::phi::dtype::float16, ::phi::complex64> {
+  HOSTDEVICE ::phi::complex64 operator()(::phi::dtype::float16 in) const {
+    return ::phi::complex64(static_cast<float>(in));
+  }
+};
+
+template <>
+struct CastOpTransformFunctor<::phi::dtype::float16, ::phi::complex128> {
+  HOSTDEVICE ::phi::complex128 operator()(::phi::dtype::float16 in) const {
+    return ::phi::complex128(static_cast<double>(in));
+  }
+};
+
 template <typename InT, typename OutT>
 void CastKernelImpl(const CPUContext& dev_ctx,
                     const DenseTensor& x,
                     DataType out_dtype,
                     DenseTensor* out) {
-  auto* in_begin = x.data<InT>();
   auto numel = x.numel();
-  auto* in_end = in_begin + numel;
-
   auto* out_begin = dev_ctx.Alloc<OutT>(out);
   out->set_type(out_dtype);
+  if (numel == 0) {
+    return;
+  }
+
+  auto* in_begin = x.data<InT>();
+  auto* in_end = in_begin + numel;
 
   phi::Transform<CPUContext> trans;
   trans(dev_ctx,
@@ -52,6 +111,12 @@ void CastInplaceKernelImpl(const CPUContext& dev_ctx,
                            DataType out_dtype,
                            DenseTensor* out) {
   auto numel = x.numel();
+  if (numel == 0) {
+    dev_ctx.Alloc<OutT>(out);
+    out->set_type(out_dtype);
+    return;
+  }
+
   auto* in_begin = new InT[numel];
   auto* in_end = in_begin + numel;
   auto* data_origin = x.data<InT>();

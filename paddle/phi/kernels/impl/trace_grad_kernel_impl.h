@@ -81,33 +81,37 @@ struct TraceGradFunctor {
 };
 
 template <typename T, typename Context>
-void TraceGradKernel(const Context& ctx,
+void TraceGradKernel(const Context& dev_ctx,
                      const DenseTensor& x UNUSED,
                      const DenseTensor& out_grad,
                      int offset,
                      int axis1,
                      int axis2,
                      DenseTensor* in_grad) {
+  if (in_grad && in_grad->numel() == 0) {
+    dev_ctx.template Alloc<T>(in_grad);
+    return;
+  }
   auto input_dims = in_grad->dims();
   auto input_stride = common::stride(input_dims);
   auto output_dims = out_grad.dims();
-  auto output_stride = output_dims.size() == 0 ? phi::DDim(output_dims)
-                                               : common::stride(output_dims);
+  auto output_stride =
+      output_dims.size() == 0 ? DDim(output_dims) : common::stride(output_dims);
 
   auto* out_data = out_grad.data<T>();
-  T* x_data = ctx.template Alloc<T>(in_grad);
+  T* x_data = dev_ctx.template Alloc<T>(in_grad);
 
-  phi::funcs::SetConstant<Context, T> set_zero;
+  funcs::SetConstant<Context, T> set_zero;
 
-  set_zero(ctx, in_grad, static_cast<T>(0.0));
+  set_zero(dev_ctx, in_grad, static_cast<T>(0.0));
   auto dim1 = axis1;
   auto dim2 = axis2;
   auto dim1_ = dim1 < 0 ? input_dims.size() + dim1 : dim1;
   auto dim2_ = dim2 < 0 ? input_dims.size() + dim2 : dim2;
-  auto len1 = input_dims[std::min(dim1_, dim2_)];
-  auto len2 = input_dims[std::max(dim1_, dim2_)];
-  auto stride1 = input_stride[std::min(dim1_, dim2_)];
-  auto stride2 = input_stride[std::max(dim1_, dim2_)];
+  auto len1 = input_dims[dim1_];
+  auto len2 = input_dims[dim2_];
+  auto stride1 = input_stride[dim1_];
+  auto stride2 = input_stride[dim2_];
 
   int offset_stride = 0;
   if (offset >= 0) {
@@ -121,9 +125,9 @@ void TraceGradKernel(const Context& ctx,
   int64_t pos = std::abs(offset) * offset_stride;
   if (diag_size > 0) {
 #if defined(__NVCC__) || defined(__HIPCC__)
-    thrust::device_vector<int64_t> output_vec(common::vectorize(output_stride));
+    thrust::device_vector<int64_t> output_vec(vectorize(output_stride));
     const int64_t* output_arr = thrust::raw_pointer_cast(output_vec.data());
-    thrust::device_vector<int64_t> input_vec(common::vectorize(input_stride));
+    thrust::device_vector<int64_t> input_vec(vectorize(input_stride));
     const int64_t* input_arr = thrust::raw_pointer_cast(input_vec.data());
 
 #else
@@ -131,7 +135,7 @@ void TraceGradKernel(const Context& ctx,
     const auto* input_arr = input_stride.Get();
 #endif
 
-    phi::funcs::ForRange<Context> for_range(ctx, in_grad->numel());
+    funcs::ForRange<Context> for_range(dev_ctx, in_grad->numel());
     TraceGradFunctor<T> functor(out_data,
                                 output_arr,
                                 input_arr,

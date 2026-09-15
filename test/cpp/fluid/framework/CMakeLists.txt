@@ -1,4 +1,8 @@
+if(WIN32)
+  remove_definitions(-DPADDLE_DLL_EXPORT)
+endif()
 add_subdirectory(details)
+add_subdirectory(ir)
 
 paddle_test(data_type_test SRCS data_type_test.cc)
 
@@ -66,12 +70,12 @@ if(WITH_GPU)
   nv_test(
     data_device_transform_test
     SRCS data_device_transform_test.cu
-    DEPS operator op_registry device_context phi common scope)
+    DEPS operator op_registry phi common scope)
 elseif(WITH_ROCM)
   hip_test(
     data_device_transform_test
     SRCS data_device_transform_test.cu
-    DEPS operator op_registry device_context phi common scope)
+    DEPS operator op_registry phi common scope)
 endif()
 
 if(WITH_GPU)
@@ -116,11 +120,11 @@ cc_test(
 cc_test(
   operator_test
   SRCS operator_test.cc
-  DEPS operator op_registry device_context)
+  DEPS operator op_registry phi)
 cc_test(
   operator_exception_test
   SRCS operator_exception_test.cc
-  DEPS operator op_registry device_context)
+  DEPS operator op_registry phi)
 
 cc_test(
   version_test
@@ -149,56 +153,15 @@ elseif(WITH_ROCM)
     DEPS op_registry)
 endif()
 
-if(WITH_PSCORE)
-  get_property(RPC_DEPS GLOBAL PROPERTY RPC_DEPS)
-  if(WITH_HETERPS)
-    cc_test(
-      dist_multi_trainer_test
-      SRCS dist_multi_trainer_test.cc
-      DEPS conditional_block_op executor gloo_wrapper ${RPC_DEPS}
-           graph_gpu_wrapper)
-    cc_test(
-      heter_pipeline_trainer_test
-      SRCS heter_pipeline_trainer_test.cc
-      DEPS conditional_block_op
-           generated_op
-           heter_listen_and_serv_op
-           executor
-           heter_server
-           gloo_wrapper
-           phi
-           common
-           ${RPC_DEPS}
-           graph_gpu_wrapper)
-  else()
-    cc_test(
-      dist_multi_trainer_test
-      SRCS dist_multi_trainer_test.cc
-      DEPS conditional_block_op executor gloo_wrapper ${RPC_DEPS})
-    cc_test(
-      heter_pipeline_trainer_test
-      SRCS heter_pipeline_trainer_test.cc
-      DEPS conditional_block_op
-           generated_op
-           heter_listen_and_serv_op
-           executor
-           heter_server
-           gloo_wrapper
-           phi
-           common
-           ${RPC_DEPS})
-  endif()
-else()
-  cc_test(
-    dist_multi_trainer_test
-    SRCS dist_multi_trainer_test.cc
-    DEPS conditional_block_op executor gloo_wrapper)
-endif()
+cc_test(
+  dist_multi_trainer_test
+  SRCS dist_multi_trainer_test.cc
+  DEPS conditional_block_op executor gloo_wrapper)
 
 cc_test(
   prune_test
   SRCS prune_test.cc
-  DEPS op_info prune device_context)
+  DEPS op_info prune phi)
 cc_test(
   var_type_inference_test
   SRCS var_type_inference_test.cc
@@ -212,7 +175,7 @@ cc_test(
 cc_test(
   op_kernel_type_test
   SRCS op_kernel_type_test.cc
-  DEPS phi common device_context framework_proto op_kernel_type)
+  DEPS phi common framework_proto op_kernel_type)
 
 cc_test(tuple_test SRCS tuple_test.cc)
 
@@ -222,11 +185,6 @@ cc_test(
   dlpack_tensor_test
   SRCS dlpack_tensor_test.cc
   DEPS dlpack_tensor glog)
-
-cc_test(
-  op_compatible_info_test
-  SRCS op_compatible_info_test.cc
-  DEPS op_compatible_info proto_desc string_helper glog)
 
 cc_test(
   infershape_utils_test

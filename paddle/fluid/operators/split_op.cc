@@ -21,6 +21,7 @@ limitations under the License. */
 #include "paddle/fluid/prim/api/composite_backward/composite_backward_api.h"
 #include "paddle/fluid/prim/utils/static/composite_grad_desc_maker.h"
 #include "paddle/fluid/prim/utils/static/desc_tensor.h"
+#include "paddle/phi/backends/onednn/onednn_helper.h"
 #include "paddle/phi/infermeta/unary.h"
 
 namespace paddle {
@@ -80,11 +81,11 @@ class SplitOp : public framework::OperatorWithKernel {
       const paddle::small_vector<framework::InferShapeVarPtr,
                                  phi::kInputSmallVectorSize>
           &sections_varptr_list = ctx->GetInputVarPtrs("SectionsTensorList");
-      std::vector<phi::DenseTensor> sections_from_tensor;
+      std::vector<DenseTensor> sections_from_tensor;
       sections_from_tensor.reserve(sections_tensor_list_size);
       for (const auto &section_varptr : sections_varptr_list) {
         Variable *var = PADDLE_GET_CONST(Variable *, section_varptr);
-        sections_from_tensor.emplace_back(var->Get<phi::DenseTensor>());
+        sections_from_tensor.emplace_back(var->Get<DenseTensor>());
       }
       sections_final = phi::IntArray(sections_from_tensor);
     } else if (!ctx->IsRuntime() && ctx->HasInputs("SectionsTensorList")) {
@@ -118,12 +119,13 @@ class SplitOp : public framework::OperatorWithKernel {
         framework::OperatorWithKernel::IndicateVarDataType(ctx, "X");
 
 #ifdef PADDLE_WITH_DNNL
-    if (this->CanMKLDNNBeUsed(ctx, input_data_type)) {
+    if (this->CanONEDNNBeUsed(ctx, input_data_type)) {
       // OneDNN uses blocking format, which cannot be always supported with
       // reorders, because if blocked dimension is not divisible by 8 or
       // 16(depending on which blocking format is used) submemory cannot be
       // created, so in that scenario a fallback is needed
-      const auto x_md = ctx.Input<phi::DenseTensor>("X")->mem_desc();
+      const auto x_md =
+          phi::funcs::GetOneDNNMemDesc(*ctx.Input<DenseTensor>("X"));
       if (x_md.get_inner_nblks() == 0) {
         return phi::KernelKey(phi::Backend::ONEDNN,
                               phi::DataLayout::ONEDNN,
@@ -136,7 +138,7 @@ class SplitOp : public framework::OperatorWithKernel {
 
   phi::KernelKey GetKernelTypeForVar(
       const std::string &var_name,
-      const phi::DenseTensor &tensor,
+      const DenseTensor &tensor,
       const phi::KernelKey &expected_kernel_type) const override {
     if (var_name == "AxisTensor" || var_name == "SectionsTensorList") {
       return phi::KernelKey(phi::Backend::ALL_BACKEND,

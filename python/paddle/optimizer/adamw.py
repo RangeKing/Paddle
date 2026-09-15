@@ -21,6 +21,11 @@ from typing import TYPE_CHECKING
 import paddle
 from paddle import pir
 from paddle.base.libpaddle import DataType
+from paddle.distributed.flex_checkpoint.dcp.sharded_weight import (
+    ShardedStateDict,
+    ShardedWeight,
+    create_sharded_weight_with_new_local,
+)
 from paddle.pir import Value
 
 from .. import _C_ops
@@ -109,11 +114,15 @@ class AdamW(Optimizer):
         name (str|None, optional): Normally there is no need for user to set this property.
             For more information, please refer to :ref:`api_guide_Name`.
             The default value is None.
+
+    Keyword Args:
+        maximize (bool, optional): Maximize the objective with respect to the params, instead of minimizing. The default value is False.
+
     Notes:
         **Currently, AdamW doesn't support sparse parameter optimization.**
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -181,6 +190,7 @@ class AdamW(Optimizer):
             Sequence[Tensor] | Sequence[_AdamParameterConfig] | None
         ) = None,
         weight_decay: float | Tensor = 0.01,
+        use_lowprecision_moment: bool = False,
         lr_ratio: Callable[[Tensor], float] | None = None,
         apply_decay_param_fun: Callable[[str], bool] | None = None,
         grad_clip: GradientClipBase | None = None,
@@ -188,6 +198,8 @@ class AdamW(Optimizer):
         multi_precision: bool = False,
         amsgrad: bool = False,
         name: str | None = None,
+        *,
+        maximize: bool = False,
     ) -> None:
         assert learning_rate is not None
         assert beta1 is not None
@@ -254,9 +266,9 @@ class AdamW(Optimizer):
         if self._parameter_list:
             if isinstance(self._parameter_list[0], dict):
                 for param_group in self._parameter_list:
-                    assert (
-                        'params' in param_group
-                    ), 'params should be set in parameters if parameter groups are optimized in different options'
+                    assert 'params' in param_group, (
+                        'params should be set in parameters if parameter groups are optimized in different options'
+                    )
                 self._dtype = self._parameter_list[0]['params'][0].dtype
             else:
                 self._dtype = self._parameter_list[0].dtype
@@ -280,6 +292,7 @@ class AdamW(Optimizer):
         self._params_name = set()
         self._apply_decay_param_fun = apply_decay_param_fun
         self._weight_decay = float(weight_decay)
+        self._use_lowprecision_moment = use_lowprecision_moment
         self._grad_clip = grad_clip
         self._lr_ratio = lr_ratio
         self._beta1 = beta1
@@ -288,6 +301,7 @@ class AdamW(Optimizer):
         self._lazy_mode = lazy_mode
         self._multi_precision = multi_precision
         self._master_weights = {}
+        self._maximize = maximize
         # whether to use AMSGrad
         self._amsgrad = amsgrad
 
@@ -314,6 +328,12 @@ class AdamW(Optimizer):
 
         self._create_master_grad_states()
 
+        self._use_fusion_storage = False
+        self._need_refuse = False
+        self.fusion_storage = None
+        self._fuse_buffer_version = 0
+        self.merged_model_params = None
+
     def _set_auxiliary_var(self, key, val):
         self._auxiliary_vars[key] = val
 
@@ -322,6 +342,9 @@ class AdamW(Optimizer):
             return self._auxiliary_vars[key]
         else:
             return None
+
+    def get_lr_dtype(self) -> paddle.dtype:
+        return paddle.float64
 
     def _add_param_group(self, param_group):
         """
@@ -363,11 +386,17 @@ class AdamW(Optimizer):
         self._param_groups.append(param_group)
 
     def _add_moments_pows(self, p):
+        fp32_dtype = (
+            DataType.FLOAT32 if in_pir_mode() else core.VarDesc.VarType.FP32
+        )
         acc_dtype = p.dtype
         if self._is_dtype_fp16_or_bf16(acc_dtype):
-            acc_dtype = (
-                DataType.FLOAT32 if in_pir_mode() else core.VarDesc.VarType.FP32
+            moment_dtype = (
+                acc_dtype if self._use_lowprecision_moment else fp32_dtype
             )
+            acc_dtype = fp32_dtype
+        else:
+            moment_dtype = acc_dtype
         if core.is_compiled_with_xpu():
             import os
 
@@ -388,18 +417,22 @@ class AdamW(Optimizer):
                         dtype=core.VarDesc.VarType.FP16,
                     )
             else:
-                self._add_accumulator(self._moment1_acc_str, p, dtype=acc_dtype)
-                self._add_accumulator(self._moment2_acc_str, p, dtype=acc_dtype)
+                self._add_accumulator(
+                    self._moment1_acc_str, p, dtype=moment_dtype
+                )
+                self._add_accumulator(
+                    self._moment2_acc_str, p, dtype=moment_dtype
+                )
                 if self._amsgrad:
                     self._add_accumulator(
-                        self._moment2_acc_max_str, p, dtype=acc_dtype
+                        self._moment2_acc_max_str, p, dtype=moment_dtype
                     )
         else:
-            self._add_accumulator(self._moment1_acc_str, p, dtype=acc_dtype)
-            self._add_accumulator(self._moment2_acc_str, p, dtype=acc_dtype)
+            self._add_accumulator(self._moment1_acc_str, p, dtype=moment_dtype)
+            self._add_accumulator(self._moment2_acc_str, p, dtype=moment_dtype)
             if self._amsgrad:
                 self._add_accumulator(
-                    self._moment2_acc_max_str, p, dtype=acc_dtype
+                    self._moment2_acc_max_str, p, dtype=moment_dtype
                 )
         self._add_accumulator(
             name=self._beta1_pow_acc_str,
@@ -617,31 +650,63 @@ class AdamW(Optimizer):
 
     @imperative_base.no_grad
     @framework.non_static_only
-    def step(self) -> None:
+    def step(
+        self, closure: Callable[[], Tensor] | None = None
+    ) -> Tensor | None:
         """
         Execute the optimizer and update parameters once.
 
+        Args:
+            closure (Callable|None, optional): A closure that reevaluates the model
+                and returns the loss. It should be a callable that takes no arguments
+                and returns a Tensor. This is useful for optimizers that need to
+                evaluate the loss multiple times (e.g., line search). Default is None.
+
         Returns:
-            None
+            Tensor|None: If closure is provided, returns the loss value computed by
+                the closure. Otherwise returns None.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
 
-                >>> a = paddle.rand([2,13], dtype="float32")
+                >>> x = paddle.rand([2, 13], dtype="float32")
                 >>> linear = paddle.nn.Linear(13, 5)
                 >>> # This can be any optimizer supported by dygraph.
-                >>> opt = paddle.optimizer.AdamW(learning_rate = 0.01,
-                ...                             parameters = linear.parameters())
-                >>> out = linear(a)
+                >>> opt = paddle.optimizer.AdamW(
+                ...     learning_rate=0.01,
+                ...     parameters=linear.parameters(),
+                ... )
+                >>> out = linear(x)
                 >>> out.backward()
                 >>> opt.step()
                 >>> opt.clear_grad()
+
+                >>> # usage 1: not use closure
+                >>> opt.zero_grad()
+                >>> output = linear(x)
+                >>> loss = paddle.mean(output)
+                >>> loss.backward()
+                >>> opt.step()
+
+                >>> # usage 2: use closure
+                >>> def closure():
+                ...     opt.zero_grad()
+                ...     output = linear(x)
+                ...     loss = paddle.mean(output)
+                ...     loss.backward()
+                ...     return loss
+                >>> step_loss = opt.step(closure)
         """
+        loss = None
+        if closure is not None:
+            with imperative_base.enable_grad():
+                loss = closure()
+
         if paddle.base.dygraph.base.in_to_static_mode():
             self._declarative_step()
-            return
+            return loss
 
         if not isinstance(self._parameter_list[0], dict):
             params_grads = []
@@ -668,7 +733,10 @@ class AdamW(Optimizer):
                             raise RuntimeError(
                                 "AdamW don't support weight_decay with sparse parameters, please set it to None."
                             )
-                    params_grads.append((param, grad_var))
+                    if self._maximize is True:
+                        params_grads.append((param, -grad_var))
+                    else:
+                        params_grads.append((param, grad_var))
 
             optimize_ops = self._apply_optimize(
                 loss=None, startup_program=None, params_grads=params_grads
@@ -700,13 +768,17 @@ class AdamW(Optimizer):
                                 raise RuntimeError(
                                     "AdamW don't support weight_decay with sparse parameters, please set it to None."
                                 )
-                        params_grads['params'].append((param, grad_var))
+                        if self._maximize is True:
+                            params_grads['params'].append((param, -grad_var))
+                        else:
+                            params_grads['params'].append((param, grad_var))
                 params_grads.update(
                     {k: v for k, v in param_group.items() if k != 'params'}
                 )
                 self._apply_optimize(
                     loss=None, startup_program=None, params_grads=params_grads
                 )
+        return loss
 
     def _update_param_group(self, parameters):
         self._beta1 = parameters.get('beta1', self._default_dict['beta1'])
@@ -721,3 +793,108 @@ class AdamW(Optimizer):
         parameters = parameters.get('params')
 
         return parameters
+
+    def sharded_state_dict(
+        self,
+        model_sharded_state_dict: ShardedStateDict,
+    ) -> ShardedStateDict:
+        """
+        Convert optimizer state dict to a sharded state dict based on model sharding information.
+
+        Args:
+            model_sharded_state_dict (dict): Sharded state dict of the model, containing tensor metadata.
+
+        Returns:
+            dict: A new optimizer state dict where weights are wrapped as ShardedWeight.
+        """
+
+        _FP32_MASTER = "fp32_master_0"
+        _MOMENT_NAME = "moment"
+        _optimizer_scalar_name = [
+            "beta1_pow_acc_0",
+            "beta2_pow_acc_0",
+        ]
+        _optimizer_non_scaler_name = [
+            "moment1_0",
+            "moment2_0",
+            "velocity_0",
+        ]
+
+        def _generate_base_static_name(vname):
+            if _FP32_MASTER in vname:
+                return tuple(vname.split("_" + _FP32_MASTER + "_", 1))
+            for name in _optimizer_scalar_name + _optimizer_non_scaler_name:
+                if vname.endswith(name):
+                    return vname[: -(len(name) + 1)], name
+            raise ValueError(f"Cannot split variable name: {vname}.")
+
+        optimizer_sharded_state_dict = {}
+        optimizer_state_dict = self.state_dict()
+        # Build name mapping and remove non-tensor entries from optimizer state
+        static_to_struct_mapping = {}
+        model_sharded_state_dict = dict(
+            sorted(model_sharded_state_dict.items())
+        )
+        for k, v in model_sharded_state_dict.items():
+            # When shared weights exist, the v.local_tensor.name of shared parameters are identical, but only the first parameter has optimizer states. Therefore, only the key-value pairs of the first occurrence in the shared parameter group need to be retained.
+            if v.local_tensor.name not in static_to_struct_mapping:
+                static_to_struct_mapping[v.local_tensor.name] = k
+
+        master_weights = optimizer_state_dict.pop("master_weights", None)
+        optimizer_state_dict.pop("LR_Scheduler", None)
+
+        # Process main optimizer states
+        for key, tensor in optimizer_state_dict.items():
+            static_name, optim_state_type = _generate_base_static_name(key)
+            struct_name = static_to_struct_mapping[static_name]
+            sharded_weight = model_sharded_state_dict[struct_name]
+
+            unified_name = f"{struct_name}.{optim_state_type}"
+
+            # Determine tensor partitioning scheme
+            if _MOMENT_NAME in optim_state_type:
+                if tensor.is_dist():
+                    optimizer_sharded_state_dict[unified_name] = ShardedWeight(
+                        key=unified_name,
+                        local_tensor=tensor,
+                        local_shape=tensor.shape,
+                        global_shape=tensor.shape,
+                        global_offset=sharded_weight.global_offset,
+                    )
+                else:
+                    optimizer_sharded_state_dict[unified_name] = (
+                        create_sharded_weight_with_new_local(
+                            unified_name, tensor, sharded_weight
+                        )
+                    )
+            else:  # Non-momentum parameters
+                optimizer_sharded_state_dict[unified_name] = ShardedWeight(
+                    key=unified_name,
+                    local_tensor=tensor,
+                    local_shape=(1,),
+                    global_shape=(1,),
+                    global_offset=(0,),
+                )
+
+        # Process master weights if using mixed precision
+        if master_weights is not None:
+            for key, tensor in master_weights.items():
+                struct_name = static_to_struct_mapping[key]
+                sharded_weight = model_sharded_state_dict[struct_name]
+                unified_name = f"{struct_name}.w_0"
+                if tensor.is_dist():
+                    optimizer_sharded_state_dict[unified_name] = ShardedWeight(
+                        key=unified_name,
+                        local_tensor=tensor,
+                        local_shape=tensor.shape,
+                        global_shape=tensor.shape,
+                        global_offset=sharded_weight.global_offset,
+                    )
+                else:
+                    optimizer_sharded_state_dict[unified_name] = (
+                        create_sharded_weight_with_new_local(
+                            unified_name, tensor, sharded_weight
+                        )
+                    )
+
+        return optimizer_sharded_state_dict

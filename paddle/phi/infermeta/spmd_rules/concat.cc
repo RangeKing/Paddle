@@ -47,11 +47,11 @@ std::tuple<std::string, std::string> FillConcatNotation(int64_t n_axis,
 
 SpmdInfo ConcatInferSpmd(const std::vector<DistMetaTensor>& x, int axis) {
   /*
-# paddle.concat requires all tensors must either have the same shape (except
-# in the concatenating dimension) or be "empty". "Empty" here strictly means
-# tensor.shape is torch.Size([0]). When tensor.ndim > 1, it will be treated
-# as a non-empty tensor and the shape must match on non-cat dimensions.
- */
+    paddle.concat requires all tensors must either have the same shape (except
+    in the concatenating dimension) or be "empty". "Empty" here strictly means
+    tensor.ndim == 0. When tensor.ndim > 0, it will be treated
+    as a non-empty tensor and the shape must match on non-cat dimensions.
+   */
 
   // 1、check tensors shapes
   std::vector<std::vector<int64_t>> tensor_shapes;
@@ -59,7 +59,7 @@ SpmdInfo ConcatInferSpmd(const std::vector<DistMetaTensor>& x, int axis) {
                  x.end(),
                  std::back_inserter(tensor_shapes),
                  [](const DistMetaTensor& meta) {
-                   return common::vectorize<int64_t>(meta.dims());
+                   return vectorize<int64_t>(meta.dims());
                  });
   bool all_empty =
       std::all_of(tensor_shapes.begin(), tensor_shapes.end(), IsEmpty);
@@ -85,8 +85,17 @@ SpmdInfo ConcatInferSpmd(const std::vector<DistMetaTensor>& x, int axis) {
   std::string align_axis;
   std::tie(all_axis, align_axis) = FillConcatNotation(ndim, dim);
   std::vector<std::string> axis_names(input_attrs.size(), all_axis);
-  AlignDimsSharding(
-      &input_attrs, tensor_shapes, axis_names, {}, align_axis, true);
+  if (ndim == 1 && align_axis.empty()) {
+    // Simply set the 1D tensor to Replicate, and calling AlignDimsSharding
+    // requires !align_axis.empty()
+    std::vector<int64_t> dims_mapping(1, -1);
+    for (size_t i = 0; i < input_attrs.size(); i++) {
+      input_attrs[i].set_dims_mapping(dims_mapping);
+    }
+  } else {
+    AlignDimsSharding(
+        &input_attrs, tensor_shapes, axis_names, {}, align_axis, true);
+  }
 
   auto out_dist_attr =
       CopyTensorDistAttrForOutput(input_attrs[non_empty_index]);
@@ -122,7 +131,7 @@ SpmdInfo ConcatGradInferSpmdDynamic(const std::vector<DistMetaTensor>& x,
                  x.end(),
                  std::back_inserter(tensor_shapes),
                  [](const DistMetaTensor& meta) {
-                   return common::vectorize<int64_t>(meta.dims());
+                   return vectorize<int64_t>(meta.dims());
                  });
   bool all_empty =
       std::all_of(tensor_shapes.begin(), tensor_shapes.end(), IsEmpty);
@@ -145,7 +154,7 @@ SpmdInfo ConcatGradInferSpmdDynamic(const std::vector<DistMetaTensor>& x,
         return meta.dist_attr();
       });
   input_attrs.push_back(output_grad.dist_attr());
-  tensor_shapes.push_back(common::vectorize<int64_t>(output_grad.dims()));
+  tensor_shapes.push_back(vectorize<int64_t>(output_grad.dims()));
   std::string all_axis;
   std::string align_axis;
   std::tie(all_axis, align_axis) = FillConcatNotation(ndim, dim);

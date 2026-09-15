@@ -70,9 +70,9 @@ const std::shared_ptr<VariableWrapper>& GetVariableWrapper(
   return var;
 }
 
-const phi::DenseTensor* GetTensorFromVar(const framework::Variable& var) {
-  if (var.IsType<phi::DenseTensor>()) {
-    return &(var.Get<phi::DenseTensor>());
+const DenseTensor* GetTensorFromVar(const framework::Variable& var) {
+  if (var.IsType<DenseTensor>()) {
+    return &(var.Get<DenseTensor>());
   } else if (var.IsType<phi::SelectedRows>()) {
     return &(var.Get<phi::SelectedRows>().value());
   } else {
@@ -103,7 +103,7 @@ void HandleComplexGradToRealGrad(const NameVarMap<VarType>& outs) {
                 << " var `" << var->Name() << "` to "
                 << framework::DataTypeToString(var->ForwardDataType())
                 << " real var in dynamic graph.";
-        phi::DenseTensor out;
+        DenseTensor out;
         framework::TransComplexToReal(
             var->ForwardDataType(), var->DataType(), *tensor, &out);
         SetTensorToVariable(var->Var(), out, var->MutableVar());
@@ -176,7 +176,7 @@ PreparedOp PrepareImpl(
   // OneDNN variant of code reads attributes in some of GetKernelTypeForVar and
   // GetKernelType functions, so we need to copy the attributes there.
   // Const qualifier of Attrs had to be discarded to overwrite it.
-  if (FLAGS_use_mkldnn) {
+  if (FLAGS_use_mkldnn || FLAGS_use_onednn) {
     auto& mutable_op_attrs = const_cast<framework::AttributeMap&>(op.Attrs());
     mutable_op_attrs = default_attrs;
     for (auto& attr : attrs) {
@@ -206,7 +206,7 @@ PreparedOp PrepareImpl(
 // 3. Whether onednn kernel can be used.
 #ifdef PADDLE_WITH_DNNL
   if (!op.DnnFallback() && !paddle::platform::in_onednn_white_list(op.Type()) &&
-      op.CanMKLDNNBeUsed(dygraph_exe_ctx, expected_kernel_key.dtype())) {
+      op.CanONEDNNBeUsed(dygraph_exe_ctx, expected_kernel_key.dtype())) {
     expected_kernel_key.set_backend(phi::Backend::ONEDNN);
     expected_kernel_key.set_layout(phi::DataLayout::ONEDNN);
   }
@@ -219,9 +219,10 @@ PreparedOp PrepareImpl(
 #endif
 
 #if defined(PADDLE_WITH_XPU)
-  bool is_xpu_unsupport = expected_kernel_key.backend() == phi::Backend::XPU &&
-                          !paddle::platform::is_xpu_support_op(
-                              op.Type(), expected_kernel_key.dtype());
+  bool is_xpu_unsupported =
+      expected_kernel_key.backend() == phi::Backend::XPU &&
+      !paddle::platform::is_xpu_support_op(op.Type(),
+                                           expected_kernel_key.dtype());
 #endif
 
   bool has_phi_kernel = false;
@@ -292,7 +293,7 @@ PreparedOp PrepareImpl(
 
     if (phi_kernel.IsValid()
 #if defined(PADDLE_WITH_XPU) && !defined(PADDLE_WITH_XPU_KP)
-        && !is_xpu_unsupport
+        && !is_xpu_unsupported
 #endif
     ) {
       VLOG(6) << "Dynamic mode PrepareImpl - kernel name: " << phi_kernel_name
@@ -333,7 +334,8 @@ PreparedOp PrepareImpl(
           if (phi::is_gpu_place(place) &&
               ((attrs.find("use_calc_stream") != attrs.end() &&
                 PADDLE_GET_CONST(bool, attrs.at("use_calc_stream"))) ||
-               phi_kernel_name == "c_softmax_with_cross_entropy")) {
+               phi_kernel_name == "c_softmax_with_cross_entropy" ||
+               phi_kernel_name == "c_softmax_with_multi_label_cross_entropy")) {
             static_cast<phi::GPUContext*>(dev_ctx)->SetCUDAStream(
                 original_stream, false);
             auto& instance =
@@ -370,7 +372,8 @@ PreparedOp PrepareImpl(
           if (phi::is_xpu_place(place) &&
               ((attrs.find("use_calc_stream") != attrs.end() &&
                 PADDLE_GET_CONST(bool, attrs.at("use_calc_stream"))) ||
-               phi_kernel_name == "c_softmax_with_cross_entropy")) {
+               phi_kernel_name == "c_softmax_with_cross_entropy" ||
+               phi_kernel_name == "c_softmax_with_multi_label_cross_entropy")) {
             static_cast<phi::XPUContext*>(dev_ctx)->SetStream(original_stream,
                                                               false);
             auto& instance =
@@ -426,10 +429,10 @@ PreparedOp PrepareImpl(
        kernels_iter->second.find(fluid_kernel_type) ==
            kernels_iter->second.end())
 #if defined(PADDLE_WITH_XPU) && !defined(PADDLE_WITH_XPU_KP)
-      || is_xpu_unsupport
+      || is_xpu_unsupported
 #endif
 #if defined(PADDLE_WITH_XPU_KP)
-      || (is_xpu_unsupport && !is_xpu_kp_support)
+      || (is_xpu_unsupported && !is_xpu_kp_support)
 #endif
   ) {
     if (has_phi_kernel) {
@@ -440,7 +443,7 @@ PreparedOp PrepareImpl(
         VLOG(6) << "Dynamic mode PrepareImpl - kernel name: " << phi_kernel_name
                 << " | kernel key: " << phi_cpu_kernel_key
                 << " | kernel: " << phi_cpu_kernel;
-        auto* cpu_ctx = pool.Get(phi::CPUPlace());
+        auto* cpu_ctx = pool.Get(CPUPlace());
         return PreparedOp(op,
                           empty_ctx,
                           phi_cpu_kernel_key,
@@ -465,11 +468,11 @@ PreparedOp PrepareImpl(
 
 #if defined(PADDLE_WITH_XPU) && !defined(PADDLE_WITH_XPU_KP)
   if (phi::is_xpu_place(fluid_kernel_type.place_) &&
-      (kernel_iter == kernels.end() || is_xpu_unsupport)) {
+      (kernel_iter == kernels.end() || is_xpu_unsupported)) {
     VLOG(3) << "fluid missing XPU kernel: " << op.Type()
             << ", expected_kernel_key:" << fluid_kernel_type
             << ", fallbacking to CPU one!";
-    fluid_kernel_type.place_ = phi::CPUPlace();
+    fluid_kernel_type.place_ = CPUPlace();
     kernel_iter = kernels.find(fluid_kernel_type);
   }
 #endif
@@ -489,11 +492,11 @@ PreparedOp PrepareImpl(
               << ", using_kernel_key:" << fluid_kernel_type;
     }
     if (!is_xpu_kp_support &&
-        (kernel_iter == kernels.end() || is_xpu_unsupport)) {
+        (kernel_iter == kernels.end() || is_xpu_unsupported)) {
       VLOG(3) << "fluid missing XPU kernel: " << op.Type()
               << ", expected_kernel_key:" << fluid_kernel_type
               << ", fallbacking to CPU one!";
-      fluid_kernel_type.place_ = phi::CPUPlace();
+      fluid_kernel_type.place_ = CPUPlace();
       kernel_iter = kernels.find(fluid_kernel_type);
     }
   }
@@ -504,7 +507,7 @@ PreparedOp PrepareImpl(
     VLOG(3) << "missing IPU kernel: " << op.Type()
             << ", expected_kernel_key:" << fluid_kernel_type
             << ", fallbacking to CPU one!";
-    fluid_kernel_type.place_ = phi::CPUPlace();
+    fluid_kernel_type.place_ = CPUPlace();
     kernel_iter = kernels.find(fluid_kernel_type);
   }
 #endif
@@ -514,7 +517,7 @@ PreparedOp PrepareImpl(
     VLOG(3) << "missing " << place.GetDeviceType() << " kernel: " << op.Type()
             << ", expected_kernel_key:" << expected_kernel_key
             << ", fallbacking to CPU one!";
-    fluid_kernel_type.place_ = phi::CPUPlace();
+    fluid_kernel_type.place_ = CPUPlace();
     kernel_iter = kernels.find(fluid_kernel_type);
   }
 #endif

@@ -133,20 +133,20 @@ void ProcessOperatorSupplementEvents(
 
 void HostTracer::PrepareTracing() {
   // warm up
-  HostTraceLevel::GetInstance().SetLevel(options_.trace_level);
+  SetHostTraceLevel(options_.trace_level);
   state_ = TracerState::READY;
 }
 
 void HostTracer::StartTracing() {
   PADDLE_ENFORCE_EQ(
-      state_ == TracerState::READY || state_ == TracerState::STOPED,
+      state_ == TracerState::READY || state_ == TracerState::STOPPED,
       true,
       common::errors::PreconditionNotMet("TracerState must be READY"));
-  HostEventRecorder<CommonEvent>::GetInstance().GatherEvents();
-  HostEventRecorder<CommonMemEvent>::GetInstance().GatherEvents();
+  GatherCommonHostEvents();
+  GatherCommonHostMemEvents();
   HostEventRecorder<OperatorSupplementOriginEvent>::GetInstance()
       .GatherEvents();
-  HostTraceLevel::GetInstance().SetLevel(options_.trace_level);
+  SetHostTraceLevel(options_.trace_level);
   state_ = TracerState::STARTED;
 }
 
@@ -155,20 +155,19 @@ void HostTracer::StopTracing() {
       state_,
       TracerState::STARTED,
       common::errors::PreconditionNotMet("TracerState must be STARTED"));
-  HostTraceLevel::GetInstance().SetLevel(HostTraceLevel::kDisabled);
-  state_ = TracerState::STOPED;
+  SetHostTraceLevel(HostTraceLevel::kDisabled);
+  state_ = TracerState::STOPPED;
 }
 
 void HostTracer::CollectTraceData(TraceEventCollector* collector) {
   PADDLE_ENFORCE_EQ(
       state_,
-      TracerState::STOPED,
-      common::errors::PreconditionNotMet("TracerState must be STOPED"));
-  HostEventSection<CommonEvent> host_events =
-      HostEventRecorder<CommonEvent>::GetInstance().GatherEvents();
+      TracerState::STOPPED,
+      common::errors::PreconditionNotMet("TracerState must be STOPPED"));
+  HostEventSection<CommonEvent> host_events = GatherCommonHostEvents();
   ProcessHostEvents(host_events, collector);
   HostEventSection<CommonMemEvent> host_mem_events =
-      HostEventRecorder<CommonMemEvent>::GetInstance().GatherEvents();
+      GatherCommonHostMemEvents();
   ProcessHostMemEvents(host_mem_events, collector);
   HostEventSection<OperatorSupplementOriginEvent> op_supplement_events =
       HostEventRecorder<OperatorSupplementOriginEvent>::GetInstance()

@@ -15,13 +15,19 @@
 import unittest
 
 import numpy as np
-from op_test import OpTest
+from op_test import OpTest, get_device_place, is_custom_device
 
 import paddle
 from paddle import base, incubate
 from paddle.base import core
 
 paddle.enable_static()
+
+_softmax_mask_fuse_upper_triangle_python_api = getattr(
+    paddle.incubate.softmax_mask_fuse_upper_triangle,
+    '__wrapped__',
+    paddle.incubate.softmax_mask_fuse_upper_triangle,
+)
 
 
 def _get_softmax_upper(x, fp16=True):
@@ -38,12 +44,13 @@ def _get_softmax_upper(x, fp16=True):
 
 
 @unittest.skipIf(
-    not core.is_compiled_with_cuda(), "core is not compiled with CUDA"
+    not (core.is_compiled_with_cuda() or is_custom_device()),
+    "core is not compiled with CUDA",
 )
 class TestSoftmaxMaskFuseOp(OpTest):
     def setUp(self):
         self.op_type = "fused_softmax_mask_upper_triangle"
-        self.python_api = paddle.incubate.softmax_mask_fuse_upper_triangle
+        self.python_api = _softmax_mask_fuse_upper_triangle_python_api
         x = np.random.random((1, 4, 32, 32)).astype("float16")
         self.inputs = {'X': x}
         rst = _get_softmax_upper(x)
@@ -51,22 +58,37 @@ class TestSoftmaxMaskFuseOp(OpTest):
 
     def test_check_output(self):
         self.check_output_with_place(
-            core.CUDAPlace(0), check_pir=True, check_symbol_infer=False
+            get_device_place(), check_pir=True, check_symbol_infer=False
         )
 
     def test_check_grad(self):
         self.check_grad_with_place(
-            core.CUDAPlace(0), ["X"], "Out", check_pir=True
+            get_device_place(), ["X"], "Out", check_pir=True
         )
 
 
 @unittest.skipIf(
-    not core.is_compiled_with_cuda(), "core is not compiled with CUDA"
+    not (core.is_compiled_with_cuda() or is_custom_device()),
+    "core is not compiled with CUDA",
+)
+class TestSoftmaxMaskFuseOp_ZeroSize(TestSoftmaxMaskFuseOp):
+    def setUp(self):
+        self.op_type = "fused_softmax_mask_upper_triangle"
+        self.python_api = _softmax_mask_fuse_upper_triangle_python_api
+        x = np.random.random((1, 1, 0, 32)).astype("float16")
+        self.inputs = {'X': x}
+        rst = _get_softmax_upper(x)
+        self.outputs = {'Out': rst}
+
+
+@unittest.skipIf(
+    not (core.is_compiled_with_cuda() or is_custom_device()),
+    "core is not compiled with CUDA",
 )
 class TestSoftmaxMaskFuseOp1(OpTest):
     def setUp(self):
         self.op_type = "fused_softmax_mask_upper_triangle"
-        self.python_api = paddle.incubate.softmax_mask_fuse_upper_triangle
+        self.python_api = _softmax_mask_fuse_upper_triangle_python_api
         x = np.random.random((1, 4, 32, 32))
         self.inputs = {'X': x}
         rst = _get_softmax_upper(x)
@@ -90,7 +112,8 @@ class TestSoftmaxMaskFuseOp1(OpTest):
 
 
 @unittest.skipIf(
-    not core.is_compiled_with_cuda(), "core is not compiled with CUDA"
+    not (core.is_compiled_with_cuda() or is_custom_device()),
+    "core is not compiled with CUDA",
 )
 class TestDropoutBiasFuseOp2(unittest.TestCase):
     # test the python side API for softmax_mask_fuse op
@@ -111,7 +134,7 @@ class TestDropoutBiasFuseOp2(unittest.TestCase):
                 x_in_np = np.random.random((1, 4, 32, 32)).astype(dtype)
                 rst_np = _get_softmax_upper(x_in_np, dtype == 'float16')
 
-                exe = base.Executor(base.CUDAPlace(0))
+                exe = base.Executor(get_device_place())
                 fetches = exe.run(
                     paddle.static.default_main_program(),
                     feed={"x": x_in_np},
@@ -121,7 +144,7 @@ class TestDropoutBiasFuseOp2(unittest.TestCase):
 
     def test_dygraph(self):
         for dtype in self.dtypes:
-            with base.dygraph.guard(base.CUDAPlace(0)):
+            with base.dygraph.guard(get_device_place()):
                 x_in_np = np.random.random((1, 4, 32, 32)).astype(dtype)
                 rst_np = _get_softmax_upper(x_in_np, dtype == 'float16')
                 input_x = paddle.to_tensor(x_in_np)

@@ -23,7 +23,6 @@ from dygraph_to_static_utils import (
 )
 
 import paddle
-from paddle.framework import use_pir_api
 from paddle.jit.dy2static.program_translator import (
     ConcreteProgram,
     StaticFunction,
@@ -115,7 +114,7 @@ class TestStaticFunctionInstance(Dy2StTestBase):
         self.assertTrue(isinstance(net_2.forward, StaticFunction))
         self.assertNotEqual(net_1.forward, net_2.forward)
 
-        # convert layer into static progam of net_1
+        # convert layer into static program of net_1
         net_1.forward.concrete_program  # noqa: B018
         self.assertTrue(len(net_1.forward.program_cache) == 1)
         # check no conversion applid with net_2
@@ -163,7 +162,7 @@ class TestInputSpec(Dy2StTestBase):
         # 6. test input with dict
         out = net.func_with_dict({'x': x, 'y': y})
 
-        # 7. test input with lits contains dict
+        # 7. test input with list contains dict
         int_np = np.ones([1]).astype('float32')
         out = net.func_with_list_dict([int_np, {'x': x, 'y': y}])
 
@@ -174,7 +173,7 @@ class TestInputSpec(Dy2StTestBase):
 
         net = SimpleNet()
 
-        # 1. kwargs and input_spec should not be specificed in same time
+        # 1. kwargs and input_spec should not be specified in same time
         with self.assertRaises(ValueError):
             net(x, a=1, other_kwarg=2)
 
@@ -201,10 +200,8 @@ class TestInputSpec(Dy2StTestBase):
             input_spec=[InputSpec([-1, 10]), InputSpec([-1, 10], name='y')],
         )
         cp1 = net.add_func.concrete_program
-        if use_pir_api():
-            self.assertTrue(cp1.inputs[-1].shape == [-1, 10])
-        else:
-            self.assertTrue(cp1.inputs[-1].shape == (-1, 10))
+        self.assertTrue(cp1.inputs[-1].shape == [-1, 10])
+
         self.assertTrue(cp1.inputs[-1].name == 'y')
 
         # generate another program
@@ -213,10 +210,8 @@ class TestInputSpec(Dy2StTestBase):
             input_spec=[InputSpec([10]), InputSpec([10], name='label')],
         )
         cp2 = net.add_func.concrete_program
-        if use_pir_api():
-            self.assertTrue(cp2.inputs[-1].shape == [10])
-        else:
-            self.assertTrue(cp2.inputs[-1].shape == (10,))
+        self.assertTrue(cp2.inputs[-1].shape == [10])
+
         self.assertTrue(cp2.inputs[-1].name == 'label')
         # Note(Aurelius84): New instance will be returned if we use `to_static(foo)` every time.
         # So number of cache program is 1.

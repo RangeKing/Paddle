@@ -74,37 +74,36 @@ class TrtConvertFlipTest(TrtLayerAutoScanTest):
 
                 yield program_config
 
-    def sample_predictor_configs(
-        self, program_config
-    ) -> tuple[paddle_infer.Config, list[int], float]:
-        def generate_dynamic_shape(attrs):
-            if self.dims == 4:
-                self.dynamic_shape.min_input_shape = {
-                    "input_data": [1, 3 - 1, 3 - 1, 24 - 1]
-                }
-                self.dynamic_shape.max_input_shape = {
-                    "input_data": [9, 3 + 1, 3 + 1, 24 + 1]
-                }
-                self.dynamic_shape.opt_input_shape = {
-                    "input_data": [1, 3, 3, 24]
-                }
-            elif self.dims == 3:
-                self.dynamic_shape.min_input_shape = {
-                    "input_data": [1, 3 - 1, 24 - 1]
-                }
-                self.dynamic_shape.max_input_shape = {
-                    "input_data": [9, 3 + 1, 24 + 1]
-                }
-                self.dynamic_shape.opt_input_shape = {"input_data": [1, 3, 24]}
-            elif self.dims == 2:
-                self.dynamic_shape.min_input_shape = {"input_data": [1, 24]}
-                self.dynamic_shape.max_input_shape = {"input_data": [9, 24]}
-                self.dynamic_shape.opt_input_shape = {"input_data": [1, 24]}
-            elif self.dims == 1:
-                self.dynamic_shape.min_input_shape = {"input_data": [24 - 1]}
-                self.dynamic_shape.max_input_shape = {"input_data": [24 + 1]}
-                self.dynamic_shape.opt_input_shape = {"input_data": [24]}
+    def generate_dynamic_shape(self, attrs):
+        if self.dims == 4:
+            self.dynamic_shape.min_input_shape = {
+                "input_data": [1, 3 - 1, 3 - 1, 24 - 1]
+            }
+            self.dynamic_shape.max_input_shape = {
+                "input_data": [9, 3 + 1, 3 + 1, 24 + 1]
+            }
+            self.dynamic_shape.opt_input_shape = {"input_data": [1, 3, 3, 24]}
+        elif self.dims == 3:
+            self.dynamic_shape.min_input_shape = {
+                "input_data": [1, 3 - 1, 24 - 1]
+            }
+            self.dynamic_shape.max_input_shape = {
+                "input_data": [9, 3 + 1, 24 + 1]
+            }
+            self.dynamic_shape.opt_input_shape = {"input_data": [1, 3, 24]}
+        elif self.dims == 2:
+            self.dynamic_shape.min_input_shape = {"input_data": [1, 24]}
+            self.dynamic_shape.max_input_shape = {"input_data": [9, 24]}
+            self.dynamic_shape.opt_input_shape = {"input_data": [1, 24]}
+        elif self.dims == 1:
+            self.dynamic_shape.min_input_shape = {"input_data": [24 - 1]}
+            self.dynamic_shape.max_input_shape = {"input_data": [24 + 1]}
+            self.dynamic_shape.opt_input_shape = {"input_data": [24]}
+        return self.dynamic_shape
 
+    def sample_predictor_configs(
+        self, program_config, run_pir=False
+    ) -> tuple[paddle_infer.Config, list[int], float]:
         def clear_dynamic_shape():
             self.dynamic_shape.min_input_shape = {}
             self.dynamic_shape.max_input_shape = {}
@@ -123,20 +122,27 @@ class TrtConvertFlipTest(TrtLayerAutoScanTest):
         self.trt_param.workspace_size = 1073741824
 
         # for dynamic_shape
-        generate_dynamic_shape(attrs)
+        self.generate_dynamic_shape(attrs)
         self.trt_param.precision = paddle_infer.PrecisionType.Float32
         program_config.set_input_type(np.float32)
-        yield self.create_inference_config(), generate_trt_nodes_num(
-            attrs, True
-        ), 1e-5
+        yield (
+            self.create_inference_config(),
+            generate_trt_nodes_num(attrs, True),
+            1e-5,
+        )
         self.trt_param.precision = paddle_infer.PrecisionType.Half
         program_config.set_input_type(np.float16)
-        yield self.create_inference_config(), generate_trt_nodes_num(
-            attrs, True
-        ), 1e-3
+        yield (
+            self.create_inference_config(),
+            generate_trt_nodes_num(attrs, True),
+            1e-3,
+        )
 
     def test(self):
+        # test for old ir
         self.run_test()
+        # test for pir
+        self.run_test(run_pir=True)
 
 
 if __name__ == "__main__":

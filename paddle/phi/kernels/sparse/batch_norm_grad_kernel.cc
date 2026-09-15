@@ -25,11 +25,11 @@ void BatchNormCooGradKernel(const Context& dev_ctx,
                             const SparseCooTensor& x,
                             const DenseTensor& scale,
                             const DenseTensor& bias,
-                            const paddle::optional<DenseTensor>& mean,
-                            const paddle::optional<DenseTensor>& variance,
+                            const optional<DenseTensor>& mean,
+                            const optional<DenseTensor>& variance,
                             const DenseTensor& saved_mean,
                             const DenseTensor& saved_variance,
-                            const paddle::optional<DenseTensor>& reserve_space,
+                            const optional<DenseTensor>& reserve_space,
                             const SparseCooTensor& y_grad,
                             float momentum,
                             float epsilon,
@@ -51,8 +51,8 @@ void BatchNormCooGradKernel(const Context& dev_ctx,
                         "True or False at the same time."));
 
   if (scale_grad && bias_grad) {
-    *scale_grad = phi::EmptyLike<T, Context>(dev_ctx, scale);
-    *bias_grad = phi::EmptyLike<T, Context>(dev_ctx, bias);
+    *scale_grad = EmptyLike<T, Context>(dev_ctx, scale);
+    *bias_grad = EmptyLike<T, Context>(dev_ctx, bias);
   }
   phi::BatchNormGradKernel<T, Context>(dev_ctx,
                                        x.values(),
@@ -92,7 +92,7 @@ PD_REGISTER_KERNEL(batch_norm_coo_grad,
                    ALL_LAYOUT,
                    phi::sparse::BatchNormCooGradKernel,
                    float,
-                   phi::dtype::float16) {
+                   phi::float16) {
   kernel->InputAt(0).SetDataLayout(phi::DataLayout::SPARSE_COO);
 }
 #endif
@@ -104,7 +104,7 @@ PD_REGISTER_KERNEL(batch_norm_coo_grad,
                    phi::sparse::BatchNormCooGradKernel,
                    float,
                    double,
-                   phi::dtype::float16) {
+                   phi::float16) {
   kernel->InputAt(0).SetDataLayout(phi::DataLayout::SPARSE_COO);
   if (kernel_key.dtype() == phi::DataType::FLOAT16) {
     kernel->OutputAt(0).SetDataType(phi::DataType::FLOAT32);  // x_grad

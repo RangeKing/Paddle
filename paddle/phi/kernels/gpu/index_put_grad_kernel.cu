@@ -96,9 +96,9 @@ void LaunchIndexPutGradCudaKernel(
     const bool accumulate,
     DenseTensor* value_grad,
     DenseTensor* x_grad) {
-  phi::Allocator::AllocationPtr indices_holder_1, indices_holder_2;
+  Allocator::AllocationPtr indices_holder_1, indices_holder_2;
   if (x_grad) {
-    phi::Copy(dev_ctx, out_grad, dev_ctx.GetPlace(), false, x_grad);
+    Copy(dev_ctx, out_grad, dev_ctx.GetPlace(), false, x_grad);
     if (!accumulate) {
       T* x_grad_data = x_grad->data<T>();
 
@@ -115,7 +115,7 @@ void LaunchIndexPutGradCudaKernel(
       const int64_t numel = indices[0]->numel();
       auto pd_indices = funcs::GetDevicePointerArray<int64_t, Context>(
           dev_ctx, indices, &indices_holder_1);
-      auto config = phi::backends::gpu::GetGpuLaunchConfig1D(dev_ctx, numel);
+      auto config = backends::gpu::GetGpuLaunchConfig1D(dev_ctx, numel);
       SetZeroCudaKernel<T><<<config.block_per_grid,
                              config.thread_per_block,
                              0,
@@ -137,7 +137,7 @@ void LaunchIndexPutGradCudaKernel(
   const int64_t numel = indices[0]->numel();
   auto pd_indices = funcs::GetDevicePointerArray<int64_t, Context>(
       dev_ctx, indices, &indices_holder_2);
-  auto config = phi::backends::gpu::GetGpuLaunchConfig1D(dev_ctx, numel);
+  auto config = backends::gpu::GetGpuLaunchConfig1D(dev_ctx, numel);
 
   if (value_grad) {
     if (value_grad->numel() == 1) {
@@ -199,9 +199,8 @@ void LaunchIndexPutGradCudaKernel(
                                                       numel,
                                                       tmp_value_grad_data);
 
-      std::vector<int64_t> after_dims =
-          common::vectorize(tmp_value_grad.dims());
-      std::vector<int64_t> before_dims = common::vectorize(value_grad->dims());
+      std::vector<int64_t> after_dims = vectorize(tmp_value_grad.dims());
+      std::vector<int64_t> before_dims = vectorize(value_grad->dims());
       std::vector<int64_t> compress_dims;
       std::vector<int64_t> dims_without_1;
 
@@ -209,7 +208,7 @@ void LaunchIndexPutGradCudaKernel(
           &after_dims, &before_dims, &compress_dims, &dims_without_1);
 
       auto pre_dims = value_grad->dims();
-      value_grad->Resize(common::make_ddim(dims_without_1));
+      value_grad->Resize(dims_without_1);
       IntArray v_axis(compress_dims);
       SumKernel<T, Context>(dev_ctx,
                             tmp_value_grad,
@@ -231,6 +230,15 @@ void IndexPutGradKernel(const Context& dev_ctx,
                         bool accumulate,
                         DenseTensor* x_grad,
                         DenseTensor* value_grad) {
+  if (out_grad.numel() == 0) {
+    dev_ctx.template Alloc<T>(x_grad);
+    // Fill value_grad with 0.
+    if (value_grad) {
+      Full<T, Context>(dev_ctx, value_grad->dims(), 0, value_grad);
+    }
+    return;
+  }
+
   PADDLE_ENFORCE_EQ(
       x.dtype(),
       value.dtype(),
@@ -238,15 +246,15 @@ void IndexPutGradKernel(const Context& dev_ctx,
           "The data type of tensor value must be same to the data type "
           "of tensor x."));
   std::vector<DenseTensor> tmp_args;
-  std::vector<const phi::DenseTensor*> int_indices_v =
+  std::vector<const DenseTensor*> int_indices_v =
       funcs::DealWithBoolIndices<T, Context>(dev_ctx, indices, &tmp_args);
   if (int_indices_v.empty()) {
     if (x_grad) {
-      phi::Copy(dev_ctx, out_grad, dev_ctx.GetPlace(), false, x_grad);
+      Copy(dev_ctx, out_grad, dev_ctx.GetPlace(), false, x_grad);
     }
     if (value_grad) {
       FullKernel<T, Context>(dev_ctx,
-                             common::vectorize(value_grad->dims()),
+                             vectorize(value_grad->dims()),
                              0.0f,
                              value_grad->dtype(),
                              value_grad);
@@ -256,14 +264,14 @@ void IndexPutGradKernel(const Context& dev_ctx,
 
   auto bd_dim = funcs::BroadCastTensorsDims(int_indices_v);
 
-  std::vector<int64_t> res_dim_v(common::vectorize(bd_dim));
-  std::vector<const phi::DenseTensor*> res_indices_v(x.dims().size(), nullptr);
+  std::vector<int64_t> res_dim_v(vectorize(bd_dim));
+  std::vector<const DenseTensor*> res_indices_v(x.dims().size(), nullptr);
   std::vector<DenseTensor> tmp_res_indices_v;
   std::vector<DenseTensor> range_tensor_v;
 
   for (int i = int_indices_v.size(); i < x.dims().size(); ++i) {
     range_tensor_v.emplace_back(funcs::GetRangeCudaTensor<int64_t, Context>(
-        dev_ctx, x.dims()[i], phi::DataType::INT64));
+        dev_ctx, x.dims()[i], DataType::INT64));
   }
 
   funcs::DealWithIndices<T, Context>(dev_ctx,
@@ -293,7 +301,7 @@ PD_REGISTER_KERNEL(index_put_grad,
                    int16_t,
                    uint8_t,
                    int8_t,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::complex64,
+                   phi::complex128) {}

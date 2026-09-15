@@ -61,26 +61,33 @@ extern bool HasCUDADriver();
   __macro(cuDeviceGetAttribute);                        \
   __macro(cuDeviceGet)
 
-#if CUDA_VERSION >= 10020
-#define CUDA_ROUTINE_EACH_VVM(__macro)    \
-  __macro(cuMemGetAllocationGranularity); \
-  __macro(cuMemAddressReserve);           \
-  __macro(cuMemCreate);                   \
-  __macro(cuMemMap);                      \
-  __macro(cuMemSetAccess);                \
-  __macro(cuMemUnmap);                    \
-  __macro(cuMemRelease);                  \
-  __macro(cuMemAddressFree)
+#define CUDA_ROUTINE_EACH_VVM(__macro)             \
+  __macro(cuMemGetAllocationGranularity);          \
+  __macro(cuMemAddressReserve);                    \
+  __macro(cuMemCreate);                            \
+  __macro(cuMemMap);                               \
+  __macro(cuMemSetAccess);                         \
+  __macro(cuMemUnmap);                             \
+  __macro(cuMemRelease);                           \
+  __macro(cuMemAddressFree);                       \
+  __macro(cuMemExportToShareableHandle);           \
+  __macro(cuMemGetAllocationPropertiesFromHandle); \
+  __macro(cuMemImportFromShareableHandle)
 
 #define CUDA_ROUTINE_EACH_CUDA_GRAPH(__macro) \
   __macro(cuGraphNodeGetType);                \
   __macro(cuGraphKernelNodeGetParams);        \
-  __macro(cuGraphExecKernelNodeSetParams)
+  __macro(cuGraphExecKernelNodeSetParams);
+
+#if CUDA_VERSION >= 12040
+#define CUDA_ROUTINE_EACH_CUDA_GRAPH_12(__macro) __macro(cuFuncGetParamInfo);
+#else
+#define CUDA_ROUTINE_EACH_CUDA_GRAPH_12(__macro)
+#endif
 
 CUDA_ROUTINE_EACH_VVM(DECLARE_DYNAMIC_LOAD_CUDA_WRAP);
 CUDA_ROUTINE_EACH_CUDA_GRAPH(DECLARE_DYNAMIC_LOAD_CUDA_WRAP);
-#endif
-
+CUDA_ROUTINE_EACH_CUDA_GRAPH_12(DECLARE_DYNAMIC_LOAD_CUDA_WRAP);
 CUDA_ROUTINE_EACH(DECLARE_DYNAMIC_LOAD_CUDA_WRAP);
 
 #undef DECLARE_DYNAMIC_LOAD_CUDA_WRAP

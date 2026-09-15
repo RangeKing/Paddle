@@ -23,11 +23,12 @@
 #include "paddle/cinn/common/type.h"
 #include "paddle/cinn/hlir/op/op_util.h"
 #include "paddle/cinn/lang/compute.h"
+#include "paddle/cinn/optim/simplify_util.h"
 #include "paddle/cinn/runtime/flags.h"
 
 namespace cinn {
 namespace ir {
-using attr_t = absl::variant<int, float, bool, std::string>;
+using attr_t = std::variant<int, float, bool, std::string>;
 
 Expr operator<<(Expr a, Expr b) {
   PADDLE_ENFORCE_EQ(a.type().is_int() || a.type().is_uint(),
@@ -96,18 +97,29 @@ Expr BitwiseOrCallImpl(common::UnknownArch,
                        Expr a,
                        Expr b) {
   std::stringstream ss;
-  ss << "Unsupport arch: " << target.arch_str() << " for bitwise_or.";
+  ss << "Unsupported arch: " << target.arch_str() << " for bitwise_or.";
   PADDLE_THROW(::common::errors::InvalidArgument(ss.str()));
 }
 
 Expr BitwiseOrCallImpl(common::X86Arch, const Target &target, Expr a, Expr b) {
-  return lang::CallExtern("bitwise_or", {a, b}, {{"vectorizable", false}});
+  Expr c = lang::CallExtern("bitwise_or", {a, b}, {{"vectorizable", false}});
+  c->set_type(a.type());
+  return c;
 }
 
 Expr BitwiseOrCallImpl(common::ARMArch, const Target &target, Expr a, Expr b) {
   std::stringstream ss;
-  ss << "Unsupport arch: " << target.arch_str() << " for bitwise_or.";
+  ss << "Unsupported arch: " << target.arch_str() << " for bitwise_or.";
   PADDLE_THROW(::common::errors::InvalidArgument(ss.str()));
+}
+
+Expr BitwiseOrCallImpl(common::CustomDeviceArch,
+                       const Target &target,
+                       Expr a,
+                       Expr b) {
+  Type t_a = a.type();
+  auto func_name = hlir::GetExternFuncName(target, t_a, "bitwise_or");
+  return lang::CallExtern(func_name, {a, b}, {{"vectorizable", false}});
 }
 
 Expr BitwiseOrCallImpl(common::NVGPUArch,
@@ -170,21 +182,32 @@ Expr BitwiseAndCallImpl(common::UnknownArch,
                         Expr a,
                         Expr b) {
   std::stringstream ss;
-  ss << "Unsupport arch: " << target.arch_str() << " for bitwise_and.";
+  ss << "Unsupported arch: " << target.arch_str() << " for bitwise_and.";
   PADDLE_THROW(::common::errors::InvalidArgument(ss.str()));
 }
 
 Expr BitwiseAndCallImpl(common::X86Arch, const Target &target, Expr a, Expr b) {
-  return lang::CallExtern("bitwise_and", {a, b}, {{"vectorizable", false}});
+  Expr c = lang::CallExtern("bitwise_and", {a, b}, {{"vectorizable", false}});
+  c->set_type(a.type());
+  return c;
 }
 
 Expr BitwiseAndCallImpl(common::ARMArch, const Target &target, Expr a, Expr b) {
   std::stringstream ss;
-  ss << "Unsupport arch: " << target.arch_str() << " for bitwise_and.";
+  ss << "Unsupported arch: " << target.arch_str() << " for bitwise_and.";
   PADDLE_THROW(::common::errors::InvalidArgument(ss.str()));
 }
 
 Expr BitwiseAndCallImpl(common::NVGPUArch,
+                        const Target &target,
+                        Expr a,
+                        Expr b) {
+  Type t_a = a.type();
+  auto func_name = hlir::GetExternFuncName(target, t_a, "bitwise_and");
+  return lang::CallExtern(func_name, {a, b}, {{"vectorizable", false}});
+}
+
+Expr BitwiseAndCallImpl(common::CustomDeviceArch,
                         const Target &target,
                         Expr a,
                         Expr b) {
@@ -244,21 +267,32 @@ Expr BitwiseXorCallImpl(common::UnknownArch,
                         Expr a,
                         Expr b) {
   std::stringstream ss;
-  ss << "Unsupport arch: " << target.arch_str() << " for bitwise_xor.";
+  ss << "Unsupported arch: " << target.arch_str() << " for bitwise_xor.";
   PADDLE_THROW(::common::errors::InvalidArgument(ss.str()));
 }
 
 Expr BitwiseXorCallImpl(common::X86Arch, const Target &target, Expr a, Expr b) {
-  return lang::CallExtern("bitwise_xor", {a, b}, {{"vectorizable", false}});
+  Expr c = lang::CallExtern("bitwise_xor", {a, b}, {{"vectorizable", false}});
+  c->set_type(a.type());
+  return c;
 }
 
 Expr BitwiseXorCallImpl(common::ARMArch, const Target &target, Expr a, Expr b) {
   std::stringstream ss;
-  ss << "Unsupport arch: " << target.arch_str() << " for bitwise_xor.";
+  ss << "Unsupported arch: " << target.arch_str() << " for bitwise_xor.";
   PADDLE_THROW(::common::errors::InvalidArgument(ss.str()));
 }
 
 Expr BitwiseXorCallImpl(common::NVGPUArch,
+                        const Target &target,
+                        Expr a,
+                        Expr b) {
+  Type t_a = a.type();
+  auto func_name = hlir::GetExternFuncName(target, t_a, "bitwise_xor");
+  return lang::CallExtern(func_name, {a, b}, {{"vectorizable", false}});
+}
+
+Expr BitwiseXorCallImpl(common::CustomDeviceArch,
                         const Target &target,
                         Expr a,
                         Expr b) {
@@ -315,21 +349,30 @@ Expr operator^(Expr a, Expr b) {
 
 Expr BitwiseNotCallImpl(common::UnknownArch, const Target &target, Expr a) {
   std::stringstream ss;
-  ss << "Unsupport arch: " << target.arch_str() << " for bitwise_not.";
+  ss << "Unsupported arch: " << target.arch_str() << " for bitwise_not.";
   PADDLE_THROW(::common::errors::InvalidArgument(ss.str()));
 }
 
 Expr BitwiseNotCallImpl(common::X86Arch, const Target &target, Expr a) {
-  return lang::CallExtern("bitwise_not", {a}, {{"vectorizable", false}});
+  Expr c = lang::CallExtern("bitwise_not", {a}, {{"vectorizable", false}});
+  c->set_type(a->type());
+  return c;
 }
 
 Expr BitwiseNotCallImpl(common::ARMArch, const Target &target, Expr a) {
   std::stringstream ss;
-  ss << "Unsupport arch: " << target.arch_str() << " for bitwise_not.";
+  ss << "Unsupported arch: " << target.arch_str() << " for bitwise_not.";
   PADDLE_THROW(::common::errors::InvalidArgument(ss.str()));
 }
 
 Expr BitwiseNotCallImpl(common::NVGPUArch, const Target &target, Expr a) {
+  auto func_name = hlir::GetExternFuncName(target, a->type(), "bitwise_not");
+  return lang::CallExtern(func_name, {a}, {{"vectorizable", false}});
+}
+
+Expr BitwiseNotCallImpl(common::CustomDeviceArch,
+                        const Target &target,
+                        Expr a) {
   auto func_name = hlir::GetExternFuncName(target, a->type(), "bitwise_not");
   return lang::CallExtern(func_name, {a}, {{"vectorizable", false}});
 }
@@ -368,7 +411,7 @@ static IndexExpr SimplifyAdd(const IndexExpr &lhs, const IndexExpr &rhs) {
 
   // 3 + d0 ===> d0 + 3.
   // d0 + (d1 + d2) ===> (d1 + d2) + d0.
-  if (!ComparePriority(lhs, rhs)) {
+  if (optim::ComparePriority(lhs, rhs) == -1) {
     return rhs + lhs;
   }
 
@@ -433,16 +476,77 @@ static IndexExpr SimplifyAdd(const IndexExpr &lhs, const IndexExpr &rhs) {
 
   if (!rhs.As<IntImm>()) {
     // dynamic branch!
-    if (common::IsSumPartialBySymbol(lhs, rhs))
-      return common::SimplifySymbolicAdd(lhs, rhs);
+    if (optim::IsSumPartialBySymbol(lhs, rhs))
+      return optim::SimplifySymbolicAdd(lhs, rhs);
+
     if (auto rhs_mul = rhs.As<ir::Mul>()) {
       if (rhs_mul->b().as_index().is_constant()) {
-        if (common::IsSumPartialBySymbol(lhs, rhs_mul->a().as_index())) {
-          return common::SimplifySymbolicAdd(
+        if (optim::IsSumPartialBySymbol(lhs, rhs_mul->a().as_index())) {
+          return optim::SimplifySymbolicAdd(
               lhs, rhs_mul->a().as_index(), rhs_mul->b().as_index());
         }
       }
     }
+
+    // (S0 * S1 * S2) + (S2 * S1 * S3) ==> (S0 + S3) * (S1 * S2)
+    auto MergeByCommonFactor =
+        [](const ir::IndexExpr &lhs,
+           const ir::IndexExpr &rhs) -> std::optional<ir::IndexExpr> {
+      auto flatten_mul_lhs = optim::GetFlattenExprs<ir::Mul>(lhs);
+      auto flatten_mul_rhs = optim::GetFlattenExprs<ir::Mul>(rhs);
+
+      if (flatten_mul_lhs.size() > 1 && flatten_mul_rhs.size() > 1) {
+        ir::IndexExpr common_factor(lhs.type(), 1);
+        std::unordered_map<ir::IndexExpr, int> lhs_count;
+        std::unordered_map<ir::IndexExpr, int> rhs_count;
+
+        for (auto &l : flatten_mul_lhs) lhs_count[l]++;
+        for (auto &r : flatten_mul_rhs) rhs_count[r]++;
+        // Find common factor
+        for (auto &l : flatten_mul_lhs) {
+          if (rhs_count[l] > 0) {
+            common_factor = l * common_factor;
+            rhs_count[l]--;
+            lhs_count[l]--;
+          }
+        }
+        // Find Lhs remainder
+        ir::IndexExpr lhs_remainder(lhs.type(), 1);
+        for (auto &l : flatten_mul_lhs) {
+          while (lhs_count[l] > 0) {
+            lhs_remainder = l * lhs_remainder;
+            lhs_count[l]--;
+          }
+        }
+        // Find Rhs remainder
+        ir::IndexExpr rhs_remainder(rhs.type(), 1);
+        for (auto &r : flatten_mul_rhs) {
+          while (rhs_count[r] > 0) {
+            rhs_remainder = r * rhs_remainder;
+            rhs_count[r]--;
+          }
+        }
+
+        if (common_factor != ir::IndexExpr(1))
+          return (lhs_remainder + rhs_remainder) * common_factor;
+      }
+      return std::nullopt;
+    };
+
+    auto flatten_add_lhs = optim::GetFlattenExprs<ir::Add>(lhs);
+
+    bool found = false;
+    ir::IndexExpr res(lhs.type(), 0);
+    for (size_t i = 0; i < flatten_add_lhs.size(); ++i) {
+      auto merge_res = MergeByCommonFactor(flatten_add_lhs[i], rhs);
+      if (!found && merge_res.has_value()) {
+        res = res + merge_res.value();
+        found = true;
+      } else {
+        res = res + flatten_add_lhs[i];
+      }
+    }
+    if (found) return res;
   }
 
   return Add::Make(lhs, rhs);
@@ -455,7 +559,7 @@ static IndexExpr SimplifyMul(const IndexExpr &lhs, const IndexExpr &rhs) {
 
   // 3 * d0 ===> d0 * 3.
   // d0 * (d1 + d2) ===> (d1 + d2) * d0.
-  if (!ComparePriority(lhs, rhs)) {
+  if (optim::ComparePriority(lhs, rhs) == -1) {
     return rhs * lhs;
   }
 
@@ -533,24 +637,17 @@ static IndexExpr SimplifyDiv(const IndexExpr &lhs, const IndexExpr &rhs) {
         }
       }
     }
-
-    // S0 / 2 / 5 ===> S0 / 10.
-    if (lhsDiv) {
-      if (auto lrhs = lhsDiv->b().as_index().As<IntImm>()) {
-        return lhsDiv->a().as_index() /
-               IndexExpr(lrhs->type(), lrhs->value * rhsConst->value);
-      }
-    }
   } else {
     // dynamic branch!
-    if (common::IsDivisiblieBySymbol(lhs, rhs, ir::IrNodeTy::Div)) {
-      return common::SimplifySymbolicDivide(lhs, rhs, ir::IrNodeTy::Div);
+    if (auto res = optim::DivByPartMul(lhs, rhs, ir::IrNodeTy::Div)) {
+      return res.value();
     }
+  }
 
-    // TODO(liujinnan): Deal dynamic shape, e.g. S0 / S1 / S2 ===> S0 / (S1 *
-    // S2). if (auto lhsDiv = lhs.As<Div>()) {
-    //   return lhsDiv->a().as_index() / (lhsDiv->b().as_index() * rhs);
-    // }
+  // static and dynamic common branch!
+  // S0 / S1 / 2 ===> S0 / (S1 * 2).
+  if (auto lhsDiv = lhs.As<Div>()) {
+    return lhsDiv->a().as_index() / (lhsDiv->b().as_index() * rhs);
   }
 
   return Div::Make(lhs, rhs);
@@ -593,8 +690,14 @@ static IndexExpr SimplifyMod(const IndexExpr &lhs, const IndexExpr &rhs) {
     }
   } else {
     // dynamic branch!
-    if (common::IsDivisiblieBySymbol(lhs, rhs, ir::IrNodeTy::Mod))
+    if (auto res = optim::DivByPartMul(lhs, rhs, ir::IrNodeTy::Mod)) {
       return IndexExpr(0);
+    }
+  }
+
+  // static and dynamic common branch!
+  if (auto res = optim::SimplifyComplexMod(lhs, rhs)) {
+    return res.value();
   }
 
   return Mod::Make(lhs, rhs);

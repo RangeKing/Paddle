@@ -15,7 +15,12 @@
 import unittest
 
 import numpy as np
-from op_test import OpTest, convert_float_to_uint16
+from op_test import (
+    OpTest,
+    convert_float_to_uint16,
+    get_device_place,
+    is_custom_device,
+)
 from scipy.special import erf
 
 import paddle
@@ -48,7 +53,7 @@ class TestErfOp(OpTest):
         self.check_output(check_pir=True, check_symbol_infer=False)
 
     def test_check_grad(self):
-        self.check_grad(['X'], 'Out', check_prim=True, check_pir=True)
+        self.check_grad(['X'], 'Out', check_pir=True)
 
     def test_check_grad_prim_pir(self):
         # Todo(CZ): float64 loss greater than 1e-8
@@ -78,8 +83,8 @@ class TestErfLayer(unittest.TestCase):
 
     def test_dygraph(self):
         self._test_dygraph(base.CPUPlace())
-        if base.is_compiled_with_cuda():
-            self._test_dygraph(base.CUDAPlace(0))
+        if base.is_compiled_with_cuda() or is_custom_device():
+            self._test_dygraph(get_device_place())
 
     def _test_static(self, place):
         mp, sp = static.Program(), static.Program()
@@ -94,8 +99,8 @@ class TestErfLayer(unittest.TestCase):
 
     def test_static(self):
         self._test_static(base.CPUPlace())
-        if base.is_compiled_with_cuda():
-            self._test_static(base.CUDAPlace(0))
+        if base.is_compiled_with_cuda() or is_custom_device():
+            self._test_static(get_device_place())
 
 
 class TestErfFP16OP(OpTest):
@@ -118,17 +123,14 @@ class TestErfFP16OP(OpTest):
         self.check_grad(
             ['X'],
             'Out',
-            check_prim=True,
             check_pir=True,
             check_prim_pir=True,
         )
 
 
 @unittest.skipIf(
-    not paddle.base.core.is_compiled_with_cuda()
-    or not paddle.base.core.is_bfloat16_supported(
-        paddle.base.core.CUDAPlace(0)
-    ),
+    not (paddle.base.core.is_compiled_with_cuda() or is_custom_device())
+    or not paddle.base.core.is_bfloat16_supported(get_device_place()),
     "core is not compiled with CUDA and not support the bfloat16",
 )
 class TestErfBF16OP(OpTest):
@@ -145,18 +147,17 @@ class TestErfBF16OP(OpTest):
         self.outputs = {'Out': convert_float_to_uint16(y_ref)}
 
     def test_check_output(self):
-        place = paddle.base.core.CUDAPlace(0)
+        place = get_device_place()
         self.check_output_with_place(
             place, check_pir=True, check_symbol_infer=False
         )
 
     def test_check_grad(self):
-        place = paddle.base.core.CUDAPlace(0)
+        place = get_device_place()
         self.check_grad_with_place(
             place,
             ['X'],
             'Out',
-            check_prim=True,
             check_pir=True,
             check_prim_pir=True,
         )

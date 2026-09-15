@@ -28,28 +28,31 @@ void TemporalShiftKernel(const Context& dev_ctx,
                          float shift_ratio,
                          const std::string& data_format_str,
                          DenseTensor* out) {
+  if (out && out->numel() == 0) {
+    dev_ctx.template Alloc<T>(out);
+    return;
+  }
   auto* input = &x;
   auto* output = out;
-  int t = seg_num;
-  const DataLayout data_layout = common::StringToDataLayout(data_format_str);
+  int64_t t = seg_num;
+  const DataLayout data_layout = StringToDataLayout(data_format_str);
 
-  const int nt = input->dims()[0];
-  const int n = nt / t;
-  const int c =
-      (data_layout == DataLayout::kNCHW ? input->dims()[1] : input->dims()[3]);
-  const int h =
-      (data_layout == DataLayout::kNCHW ? input->dims()[2] : input->dims()[1]);
-  const int w =
-      (data_layout == DataLayout::kNCHW ? input->dims()[3] : input->dims()[2]);
+  const int64_t nt = input->dims()[0];
+  const int64_t n = nt / t;
+  const int64_t c =
+      (data_layout == DataLayout::NCHW ? input->dims()[1] : input->dims()[3]);
+  const int64_t h =
+      (data_layout == DataLayout::NCHW ? input->dims()[2] : input->dims()[1]);
+  const int64_t w =
+      (data_layout == DataLayout::NCHW ? input->dims()[3] : input->dims()[2]);
 
-  DDim out_dims =
-      (data_layout == DataLayout::kNCHW ? common::make_ddim({nt, c, h, w})
-                                        : common::make_ddim({nt, h, w, c}));
+  DDim out_dims = (data_layout == DataLayout::NCHW ? make_ddim({nt, c, h, w})
+                                                   : make_ddim({nt, h, w, c}));
   const T* input_data = input->data<T>();
   output->Resize(out_dims);
   T* output_data = dev_ctx.template Alloc<T>(output);
 
-  if (data_layout == DataLayout::kNCHW) {
+  if (data_layout == DataLayout::NCHW) {
     int r = xpu::temporal_shift(dev_ctx.x_context(),
                                 input_data,
                                 output_data,

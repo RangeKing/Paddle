@@ -20,6 +20,8 @@
 
 #include "glog/logging.h"
 
+#include "paddle/common/flags.h"
+
 namespace phi {
 namespace distributed {
 namespace tcputils {
@@ -176,9 +178,10 @@ SocketType tcp_listen(const std::string host,
                     common::errors::InvalidArgument(
                         "Bind network on %s:%s failed.", node, port));
 
-  ::listen(sockfd, LISTENQ);
+  ::listen(sockfd, FLAGS_tcp_max_syn_backlog);
 
-  VLOG(0) << "The server starts to listen on " << node << ":" << port;
+  VLOG(0) << "The server starts to listen on " << node << ":" << port
+          << "; setting synclog to " << FLAGS_tcp_max_syn_backlog;
   return sockfd;
 }
 

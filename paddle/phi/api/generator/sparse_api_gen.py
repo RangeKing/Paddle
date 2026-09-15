@@ -16,17 +16,19 @@ import argparse
 
 import yaml
 from api_base import PREFIX_TENSOR_NAME
-from api_gen import ForwardAPI
+from api_gen import ForwardAPI, backward_api_black_list
 
 
 class SparseAPI(ForwardAPI):
     def __init__(self, api_item_yaml):
         super().__init__(api_item_yaml)
 
-    def gene_api_declaration(self):
+    def gene_api_declaration(
+        self, grad_flag=False, append_predefined_out=False
+    ):
         return f"""
 // {", ".join(self.outputs['names'])}
-{super().gene_api_declaration()}
+{super().gene_api_declaration(append_predefined_out=False)}
 """
 
     def gene_output(
@@ -351,9 +353,9 @@ class SparseAPI(ForwardAPI):
   {return_code}"""
 
     def get_condition_code(self, kernel_name):
-        assert self.kernel['dispatch'][
-            kernel_name
-        ], f"{self.api} api: the tensor type of inputs and outputs for kernel isn't set, see also 'kernel:func' of 'conv3d' in sparse_ops.yaml."
+        assert self.kernel['dispatch'][kernel_name], (
+            f"{self.api} api: the tensor type of inputs and outputs for kernel isn't set, see also 'kernel:func' of 'conv3d' in sparse_ops.yaml."
+        )
         input_types = self.kernel['dispatch'][kernel_name][0]
         sparse_type_map = {
             'sparse_coo': 'DataLayout::SPARSE_COO',
@@ -392,7 +394,9 @@ class SparseAPI(ForwardAPI):
   }}
 """
 
-    def gene_base_api_code(self, inplace_flag=False):
+    def gene_base_api_code(
+        self, inplace_flag=False, grad_flag=False, append_predefined_out=False
+    ):
         api_func_name = self.get_api_func_name()
         if inplace_flag and api_func_name[-1] != '_':
             api_func_name += '_'
@@ -403,7 +407,7 @@ class SparseAPI(ForwardAPI):
             )
 
         return f"""
-PADDLE_API {self.get_return_type(inplace_flag)} {api_func_name}({self.get_define_args(inplace_flag)}) {{
+PADDLE_API {self.get_return_type(inplace_flag)} {api_func_name}({self.get_define_args(inplace_flag, grad_flag=grad_flag, append_predefined_out=False)}) {{
 {kernel_dispatch_code}
   PADDLE_THROW(common::errors::Unimplemented(
           "The kernel of ({self.api}) for input tensors is unimplemented, please check the type of input tensors."));
@@ -438,11 +442,13 @@ def source_include(header_file_path):
 #include "paddle/phi/infermeta/binary.h"
 #include "paddle/phi/infermeta/ternary.h"
 #include "paddle/phi/infermeta/multiary.h"
+#include "paddle/phi/infermeta/backward.h"
 #include "paddle/utils/none.h"
 
 #include "paddle/phi/infermeta/sparse/unary.h"
 #include "paddle/phi/infermeta/sparse/binary.h"
 #include "paddle/phi/infermeta/sparse/multiary.h"
+#include "paddle/phi/infermeta/sparse/backward.h"
 
 COMMON_DECLARE_int32(low_precision_op_list);
 COMMON_DECLARE_bool(benchmark);
@@ -466,9 +472,16 @@ namespace sparse {
     )
 
 
-def generate_api(api_yaml_path, header_file_path, source_file_path):
-    with open(api_yaml_path, 'r') as f:
-        apis = yaml.load(f, Loader=yaml.FullLoader)
+def generate_api(
+    api_yaml_path, header_file_path, source_file_path, grad_flag=False
+):
+    apis = []
+
+    for each_api_yaml in api_yaml_path:
+        with open(each_api_yaml, 'r') as f:
+            api_list = yaml.load(f, Loader=yaml.FullLoader)
+            if api_list:
+                apis.extend(api_list)
     header_file = open(header_file_path, 'w')
     source_file = open(source_file_path, 'w')
 
@@ -484,10 +497,20 @@ def generate_api(api_yaml_path, header_file_path, source_file_path):
 
     for api in apis:
         sparse_api = SparseAPI(api)
+        if sparse_api.api in backward_api_black_list:
+            continue
         if sparse_api.is_dygraph_api:
             sparse_api.is_dygraph_api = False
-        header_file.write(sparse_api.gene_api_declaration())
-        source_file.write(sparse_api.gene_api_code())
+        header_file.write(
+            sparse_api.gene_api_declaration(
+                grad_flag=grad_flag, append_predefined_out=False
+            )
+        )
+        source_file.write(
+            sparse_api.gene_api_code(
+                grad_flag=grad_flag, append_predefined_out=False
+            )
+        )
 
     header_file.write(namespace[1])
     source_file.write(namespace[1])
@@ -503,6 +526,7 @@ def main():
     parser.add_argument(
         '--api_yaml_path',
         help='path to sparse api yaml file',
+        nargs='+',
         default='paddle/phi/ops/yaml/sparse_ops.yaml',
     )
 
@@ -518,13 +542,42 @@ def main():
         default='paddle/phi/api/lib/sparse_api.cc',
     )
 
+    parser.add_argument(
+        '--backward_api_yaml_path',
+        help='path to sparse api yaml file',
+        nargs='+',
+        default='paddle/phi/ops/yaml/sparse_backward_ops.yaml',
+    )
+
+    parser.add_argument(
+        '--backward_api_header_path',
+        help='output of generated api header code file',
+        default='paddle/phi/api/backward/sparse_backward_api.h',
+    )
+
+    parser.add_argument(
+        '--backward_api_source_path',
+        help='output of generated api source code file',
+        default='paddle/phi/api/lib/sparse_backward_api.cc',
+    )
+
     options = parser.parse_args()
 
     api_yaml_path = options.api_yaml_path
     header_file_path = options.api_header_path
     source_file_path = options.api_source_path
-
-    generate_api(api_yaml_path, header_file_path, source_file_path)
+    backward_api_yaml_path = options.backward_api_yaml_path
+    backward_header_file_path = options.backward_api_header_path
+    backward_source_file_path = options.backward_api_source_path
+    generate_api(
+        api_yaml_path, header_file_path, source_file_path, grad_flag=False
+    )
+    generate_api(
+        backward_api_yaml_path,
+        backward_header_file_path,
+        backward_source_file_path,
+        grad_flag=True,
+    )
 
 
 if __name__ == '__main__':

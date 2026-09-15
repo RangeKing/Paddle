@@ -36,7 +36,7 @@ class TestCrossAttentionXPUFusePass(PassAutoScanTest):
         # Here we will compose a program
         # Still has some risks that the program is invalid or cause bug while running
         # Use function `is_program_valid` to filter the invalid programs before running
-        # Use function `add_skip_pass_case` to ignore the programs even if they cause bug while runing
+        # Use function `add_skip_pass_case` to ignore the programs even if they cause bug while running
 
         # q: matmul + add + reshape + transpose + scale
         q_mul_op = OpConfig(
@@ -239,7 +239,7 @@ class TestCrossAttentionXPUFusePass(PassAutoScanTest):
         return program_config
 
     def test(self):
-        self.run_and_statis(
+        self.run_and_statistics(
             quant=False,
             max_examples=2,
             min_success_num=2,

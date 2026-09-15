@@ -20,7 +20,6 @@ import sys
 import jinja2
 import yaml
 
-# fmt: off
 # import from paddle/fluid/operators/generator
 sys.path.append(
     str(pathlib.Path(__file__).resolve().parents[2] / 'operators/generator')
@@ -31,7 +30,9 @@ from parse_utils import to_named_dict
 
 # import from paddle/fluid/pir/dialect/op_generator/api_gen.py
 sys.path.append(
-    str(pathlib.Path(__file__).resolve().parents[2] / 'pir/dialect/op_generator')
+    str(
+        pathlib.Path(__file__).resolve().parents[2] / 'pir/dialect/op_generator'
+    )
 )
 
 from decomp_interface_gen_op_list import (
@@ -72,6 +73,7 @@ PRIM_VJP = [
     'add_grad',
     'amax_grad',
     'amin_grad',
+    'angle_grad',
     'argsort_grad',
     'assign_grad',
     'atan_grad',
@@ -101,6 +103,7 @@ PRIM_VJP = [
     'logsumexp_grad',
     'masked_select_grad',
     'matmul_grad',
+    'linear_v2_grad',
     'max_grad',
     'maximum_grad',
     'minimum_grad',
@@ -114,6 +117,7 @@ PRIM_VJP = [
     'roll_grad',
     'rsqrt_grad',
     'scale_grad',
+    "div_scale_grad",
     'scatter_grad',
     'scatter_nd_add_grad',
     'sigmoid_grad',
@@ -156,8 +160,13 @@ CUSTOM_VJP = [
     'softsign_grad',
     'stack_grad',
     'swish_grad',
+    'elu_grad',
     'swiglu_grad',
     'p_norm_grad',
+    'masked_fill_grad',
+    'index_put_grad',
+    'index_add_grad',
+    "var_grad",
 ]  # custom vjp list of composite op
 
 VJP_COMPS = PRIM_VJP + CUSTOM_VJP

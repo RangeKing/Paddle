@@ -14,77 +14,161 @@
 
 #pragma once
 
+#include "paddle/common/enforce.h"
 #include "paddle/phi/common/memory_utils.h"
 #include "paddle/phi/core/enforce.h"
 #include "paddle/utils/optional.h"
 
 #include "paddle/phi/core/dense_tensor.h"
+#include "paddle/phi/kernels/activation_kernel.h"
 #include "paddle/phi/kernels/elementwise_subtract_kernel.h"
-#include "paddle/phi/kernels/impl/activation_impl.h"
 #include "paddle/phi/kernels/matmul_kernel.h"
 #include "paddle/phi/kernels/reduce_sum_kernel.h"
 
 #if defined(PADDLE_WITH_CUDA)
 #include "paddle/phi/backends/dynload/cusolver.h"
+#endif
+
+#if defined(PADDLE_WITH_HIP)
+#include "paddle/phi/backends/dynload/rocsolver.h"
+#endif
+
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #endif
 
 namespace phi {
 
 inline int GetBatchCount(const DDim& dims) {
-  int count = 1;
+  int64_t count = 1;
   int num_dims = dims.size();
   for (int i = 0; i < num_dims - 2; ++i) {
     count *= dims[i];
   }
-  return count;
+  PADDLE_ENFORCE_LE_INT_MAX(count, "lstsq batch count");
+  return static_cast<int>(count);
 }
 
 inline int GetMatrixStride(const DDim& dims) {
   int num_dims = dims.size();
-  return dims[num_dims - 1] * dims[num_dims - 2];
+  int64_t stride = dims[num_dims - 1] * dims[num_dims - 2];
+  PADDLE_ENFORCE_LE_INT_MAX(stride, "lstsq matrix stride");
+  return static_cast<int>(stride);
 }
 
 inline bool IsComplexDtype(const DataType& type) {
   return (type == DataType::COMPLEX64 || type == DataType::COMPLEX128);
 }
 
-template <typename DeviceContext, typename T>
-inline void GetResidualsTensor(const DeviceContext& dev_ctx,
+template <typename Context, typename T>
+inline void GetResidualsTensor(const Context& dev_ctx,
                                const DenseTensor& x,
                                const DenseTensor& y,
+                               const std::string& driver,
                                DenseTensor* solution,
-                               DenseTensor* residuals) {
+                               DenseTensor* residuals,
+                               DenseTensor* rank) {
   auto x_dims = x.dims();
   int dim_size = x_dims.size();
-  int m = x_dims[dim_size - 2];
-  int n = x_dims[dim_size - 1];
+  int64_t m = x_dims[dim_size - 2];
+  int64_t n = x_dims[dim_size - 1];
 
-  if (m > n) {
-    DenseTensor matmul_tensor =
-        phi::Matmul<T>(dev_ctx, x, *solution, false, false);
-    DenseTensor sub_tensor = phi::Subtract<T>(dev_ctx, matmul_tensor, y);
-    DenseTensor* pow_tensor = new DenseTensor();
-    pow_tensor->Resize(sub_tensor.dims());
-    dev_ctx.template Alloc<T>(pow_tensor);
-    phi::PowKernel<T>(dev_ctx, sub_tensor, Scalar(2), pow_tensor);
+  // Note(zrr1999): Although m and n are declared as int64_t, the rank tensor
+  // stores int values (see rank->data<int>() usage below), so effectively these
+  // dimensions are limited to int range in the current implementation.
+  if (m > n && driver != "gelsy") {
+    bool compute_residuals = true;
+    if ((driver == "gelss" || driver == "gelsd") && rank->numel() != 0) {
+      if (dim_size == 2) {
+        compute_residuals = rank->data<int>()[0] == n;
+      } else {
+        compute_residuals = std::all_of(rank->data<int>(),
+                                        rank->data<int>() + rank->numel(),
+                                        [n](int r) { return r == n; });
+      }
+    }
+    if (compute_residuals) {
+      DenseTensor matmul_tensor =
+          Matmul<T>(dev_ctx, x, *solution, false, false);
+      DenseTensor sub_tensor = Subtract<T>(dev_ctx, matmul_tensor, y);
+      DenseTensor pow_tensor;
+      pow_tensor.Resize(sub_tensor.dims());
+      dev_ctx.template Alloc<T>(&pow_tensor);
+      PowKernel<T>(dev_ctx, sub_tensor, Scalar(2), &pow_tensor);
 
-    auto sum_tensor = phi::Sum<T>(
-        dev_ctx, *pow_tensor, phi::IntArray({-2}), pow_tensor->dtype(), false);
-    phi::Copy<DeviceContext>(
-        dev_ctx, sum_tensor, dev_ctx.GetPlace(), true, residuals);
-  } else {
-    IntArray empty_shape({0});
-    DenseTensor empty_tensor =
-        phi::Empty<T, DeviceContext>(dev_ctx, empty_shape);
-    phi::Copy<DeviceContext>(
-        dev_ctx, empty_tensor, dev_ctx.GetPlace(), true, residuals);
+      auto sum_tensor = Sum<T>(
+          dev_ctx, pow_tensor, IntArray({-2}), pow_tensor.dtype(), false);
+      Copy<Context>(dev_ctx, sum_tensor, dev_ctx.GetPlace(), true, residuals);
+      return;
+    }
   }
+
+  IntArray empty_shape({0});
+  DenseTensor empty_tensor = Empty<T, Context>(dev_ctx, empty_shape);
+  Copy<Context>(dev_ctx, empty_tensor, dev_ctx.GetPlace(), true, residuals);
 }
 
+#ifdef PADDLE_WITH_HIP
+template <typename Context, typename T>
+inline void BatchedOrmqr(const Context& dev_ctx,
+                         bool left,
+                         bool transpose,
+                         int batch_size,
+                         int m,
+                         int n,
+                         int k,
+                         T* a,
+                         int a_stride,
+                         T* tau,
+                         int tau_stride,
+                         T* other,
+                         int other_stride);
+
+#define FUNC_WITH_TYPES(m) m(float, s) m(double, d)
+#define ORMQR_BATCH_INSTANCE(T, C)                                        \
+  template <>                                                             \
+  inline void BatchedOrmqr<GPUContext, T>(const GPUContext& dev_ctx,      \
+                                          bool left,                      \
+                                          bool transpose,                 \
+                                          int batch_size,                 \
+                                          int m,                          \
+                                          int n,                          \
+                                          int k,                          \
+                                          T* a,                           \
+                                          int a_stride,                   \
+                                          T* tau,                         \
+                                          int tau_stride,                 \
+                                          T* other,                       \
+                                          int other_stride) {             \
+    auto side = left ? rocblas_side_left : rocblas_side_right;            \
+    auto trans =                                                          \
+        transpose ? rocblas_operation_transpose : rocblas_operation_none; \
+    int lda = std::max<int>(1, left ? m : n);                             \
+    int ldc = std::max<int>(1, m);                                        \
+    auto handle = dev_ctx.cusolver_dn_handle();                           \
+    for (int i = 0; i < batch_size; ++i) {                                \
+      T* a_working_ptr = &a[i * a_stride];                                \
+      T* tau_working_ptr = &tau[i * tau_stride];                          \
+      T* other_working_ptr = &other[i * other_stride];                    \
+      PADDLE_ENFORCE_GPU_SUCCESS(                                         \
+          dynload::rocsolver_##C##ormqr(handle,                           \
+                                        side,                             \
+                                        trans,                            \
+                                        m,                                \
+                                        n,                                \
+                                        k,                                \
+                                        a_working_ptr,                    \
+                                        lda,                              \
+                                        tau_working_ptr,                  \
+                                        other_working_ptr,                \
+                                        ldc));                            \
+    }                                                                     \
+  }
+FUNC_WITH_TYPES(ORMQR_BATCH_INSTANCE);
+#endif
 #if defined(PADDLE_WITH_CUDA)
-template <typename DeviceContext, typename T>
-inline void BatchedOrmqr(const DeviceContext& dev_ctx,
+template <typename Context, typename T>
+inline void BatchedOrmqr(const Context& dev_ctx,
                          bool left,
                          bool transpose,
                          int batch_size,
@@ -119,11 +203,11 @@ inline void BatchedOrmqr<GPUContext, float>(const GPUContext& dev_ctx,
   int ldc = std::max<int>(1, m);
 
   auto handle = dev_ctx.cusolver_dn_handle();
-  PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cusolverDnSormqr_bufferSize(
+  PADDLE_ENFORCE_GPU_SUCCESS(dynload::cusolverDnSormqr_bufferSize(
       handle, side, trans, m, n, k, a, lda, tau, other, ldc, &lwork));
-  DenseTensor* info = new DenseTensor();
-  info->Resize(common::make_ddim({1}));
-  int* info_d = dev_ctx.template Alloc<int>(info);
+  DenseTensor info;
+  info.Resize({1});
+  int* info_d = dev_ctx.template Alloc<int>(&info);
 
   for (int i = 0; i < batch_size; ++i) {
     float* a_working_ptr = &a[i * a_stride];
@@ -131,29 +215,29 @@ inline void BatchedOrmqr<GPUContext, float>(const GPUContext& dev_ctx,
     float* other_working_ptr = &other[i * other_stride];
 
     handle = dev_ctx.cusolver_dn_handle();
-    DenseTensor* workspace = new DenseTensor();
-    workspace->Resize(common::make_ddim({lwork}));
-    float* workspace_ptr = dev_ctx.template Alloc<float>(workspace);
+    DenseTensor workspace;
+    workspace.Resize({lwork});
+    float* workspace_ptr = dev_ctx.template Alloc<float>(&workspace);
 
     // compute ormgr
-    PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cusolverDnSormqr(handle,
-                                                              side,
-                                                              trans,
-                                                              m,
-                                                              n,
-                                                              k,
-                                                              a_working_ptr,
-                                                              lda,
-                                                              tau_working_ptr,
-                                                              other_working_ptr,
-                                                              ldc,
-                                                              workspace_ptr,
-                                                              lwork,
-                                                              info_d));
+    PADDLE_ENFORCE_GPU_SUCCESS(dynload::cusolverDnSormqr(handle,
+                                                         side,
+                                                         trans,
+                                                         m,
+                                                         n,
+                                                         k,
+                                                         a_working_ptr,
+                                                         lda,
+                                                         tau_working_ptr,
+                                                         other_working_ptr,
+                                                         ldc,
+                                                         workspace_ptr,
+                                                         lwork,
+                                                         info_d));
 
     // check the error info
     int info_h;
-    memory_utils::Copy(phi::CPUPlace(),
+    memory_utils::Copy(CPUPlace(),
                        &info_h,
                        dev_ctx.GetPlace(),
                        info_d,
@@ -188,11 +272,11 @@ inline void BatchedOrmqr<GPUContext, double>(const GPUContext& dev_ctx,
   int ldc = std::max<int>(1, m);
 
   auto handle = dev_ctx.cusolver_dn_handle();
-  PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cusolverDnDormqr_bufferSize(
+  PADDLE_ENFORCE_GPU_SUCCESS(dynload::cusolverDnDormqr_bufferSize(
       handle, side, trans, m, n, k, a, lda, tau, other, ldc, &lwork));
-  DenseTensor* info = new DenseTensor();
-  info->Resize(common::make_ddim({1}));
-  int* info_d = dev_ctx.template Alloc<int>(info);
+  DenseTensor info;
+  info.Resize({1});
+  int* info_d = dev_ctx.template Alloc<int>(&info);
 
   for (int i = 0; i < batch_size; ++i) {
     double* a_working_ptr = &a[i * a_stride];
@@ -200,29 +284,29 @@ inline void BatchedOrmqr<GPUContext, double>(const GPUContext& dev_ctx,
     double* other_working_ptr = &other[i * other_stride];
 
     handle = dev_ctx.cusolver_dn_handle();
-    DenseTensor* workspace = new DenseTensor();
-    workspace->Resize(common::make_ddim({lwork}));
-    double* workspace_ptr = dev_ctx.template Alloc<double>(workspace);
+    DenseTensor workspace;
+    workspace.Resize({lwork});
+    double* workspace_ptr = dev_ctx.template Alloc<double>(&workspace);
 
     // compute ormgr
-    PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cusolverDnDormqr(handle,
-                                                              side,
-                                                              trans,
-                                                              m,
-                                                              n,
-                                                              k,
-                                                              a_working_ptr,
-                                                              lda,
-                                                              tau_working_ptr,
-                                                              other_working_ptr,
-                                                              ldc,
-                                                              workspace_ptr,
-                                                              lwork,
-                                                              info_d));
+    PADDLE_ENFORCE_GPU_SUCCESS(dynload::cusolverDnDormqr(handle,
+                                                         side,
+                                                         trans,
+                                                         m,
+                                                         n,
+                                                         k,
+                                                         a_working_ptr,
+                                                         lda,
+                                                         tau_working_ptr,
+                                                         other_working_ptr,
+                                                         ldc,
+                                                         workspace_ptr,
+                                                         lwork,
+                                                         info_d));
 
     // check the error info
     int info_h;
-    memory_utils::Copy(phi::CPUPlace(),
+    memory_utils::Copy(CPUPlace(),
                        &info_h,
                        dev_ctx.GetPlace(),
                        info_d,

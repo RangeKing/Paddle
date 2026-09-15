@@ -24,12 +24,12 @@ from typing import (
     Generic,
     Literal,
     Protocol,
-    TypeVar,
+    TypeAlias,
     overload,
 )
 
 import numpy as np
-from typing_extensions import TypeAlias
+from typing_extensions import TypeVar
 
 import paddle
 
@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     _TransformInputKeys: TypeAlias = Sequence[
         Literal["image", "coords", "boxes", "mask"]
     ]
+    _ImageDataType: TypeAlias = Tensor | PILImage | npt.NDArray[Any]
     from .functional import (
         _InterpolationCv2,
         _InterpolationPil,
@@ -53,11 +54,9 @@ if TYPE_CHECKING:
 
 
 _InputT = TypeVar(
-    "_InputT", "Tensor", "PILImage", "npt.NDArray[Any]", contravariant=True
+    "_InputT", bound="_ImageDataType", contravariant=True, default=Any
 )
-_RetT = TypeVar(
-    "_RetT", "Tensor", "PILImage", "npt.NDArray[Any]", covariant=True
-)
+_RetT = TypeVar("_RetT", bound="_ImageDataType", covariant=True, default=Any)
 
 
 class _Transform(Protocol, Generic[_InputT, _RetT]):
@@ -129,7 +128,7 @@ class Compose(_Transform[_InputT, _RetT]):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> from paddle.vision.datasets import Flowers
             >>> from paddle.vision.transforms import Compose, ColorJitter, Resize
@@ -212,7 +211,7 @@ class BaseTransform(_Transform[_InputT, _RetT]):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import numpy as np
             >>> from PIL import Image
@@ -226,8 +225,7 @@ class BaseTransform(_Transform[_InputT, _RetT]):
             ...         return img.shape[:2][::-1]
             ...     else:
             ...         raise TypeError("Unexpected type {}".format(type(img)))
-            ...
-            >>> class CustomRandomFlip(BaseTransform): # type: ignore[type-arg]
+            >>> class CustomRandomFlip(BaseTransform):
             ...     def __init__(self, prob=0.5, keys=None):
             ...         super().__init__(keys)
             ...         self.prob = prob
@@ -266,9 +264,8 @@ class BaseTransform(_Transform[_InputT, _RetT]):
             ...         if self.params['flip']:
             ...             return F.hflip(mask)
             ...         return mask
-            ...
             >>> # create fake inputs
-            >>> fake_img = Image.fromarray((np.random.rand(400, 500, 3) * 255.).astype('uint8'))
+            >>> fake_img = Image.fromarray((np.random.rand(400, 500, 3) * 255.0).astype('uint8'))
             >>> fake_boxes = np.array([[2, 3, 200, 300], [50, 60, 80, 100]])
             >>> fake_mask = fake_img.convert('L')
             >>> # only transform for image:
@@ -377,19 +374,19 @@ class ToTensor(BaseTransform[_InputT, "Tensor"]):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> from PIL import Image
             >>> import paddle
             >>> import paddle.vision.transforms as T
             >>> import paddle.vision.transforms.functional as F
 
-            >>> img_arr = ((paddle.rand((4, 5, 3)) * 255.).astype('uint8')).numpy()
+            >>> img_arr = ((paddle.rand((4, 5, 3)) * 255.0).astype('uint8')).numpy()
             >>> fake_img = Image.fromarray(img_arr)
             >>> transform = T.ToTensor()
-            >>> tensor = transform(fake_img)  # type: ignore[call-overload]
+            >>> tensor = transform(fake_img)
             >>> print(tensor.shape)
-            [3, 4, 5]
+            paddle.Size([3, 4, 5])
             >>> print(tensor.dtype)
             paddle.float32
     """
@@ -449,19 +446,19 @@ class Resize(BaseTransform[_InputT, _RetT]):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import numpy as np
             >>> from PIL import Image
             >>> from paddle.vision.transforms import Resize
 
-            >>> fake_img = Image.fromarray((np.random.rand(256, 300, 3) * 255.).astype(np.uint8))
+            >>> fake_img = Image.fromarray((np.random.rand(256, 300, 3) * 255.0).astype(np.uint8))
             >>> transform = Resize(size=224)
-            >>> converted_img = transform(fake_img) # type: ignore[call-overload]
+            >>> converted_img = transform(fake_img)
             >>> print(converted_img.size)
             (262, 224)
-            >>> transform = Resize(size=(200,150))
-            >>> converted_img = transform(fake_img) # type: ignore[call-overload]
+            >>> transform = Resize(size=(200, 150))
+            >>> converted_img = transform(fake_img)
             >>> print(converted_img.size)
             (150, 200)
     """
@@ -522,15 +519,15 @@ class RandomResizedCrop(BaseTransform[_InputT, _RetT]):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import numpy as np
             >>> from PIL import Image
             >>> from paddle.vision.transforms import RandomResizedCrop
 
             >>> transform = RandomResizedCrop(224)
-            >>> fake_img = Image.fromarray((np.random.rand(300, 320, 3) * 255.).astype(np.uint8))
-            >>> fake_img = transform(fake_img)  # type: ignore[call-overload]
+            >>> fake_img = Image.fromarray((np.random.rand(300, 320, 3) * 255.0).astype(np.uint8))
+            >>> fake_img = transform(fake_img)
             >>> print(fake_img.size)
             (224, 224)
 
@@ -728,15 +725,15 @@ class CenterCrop(BaseTransform[_InputT, _RetT]):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import numpy as np
             >>> from PIL import Image
             >>> from paddle.vision.transforms import CenterCrop
 
             >>> transform = CenterCrop(224)
-            >>> fake_img = Image.fromarray((np.random.rand(300, 320, 3) * 255.).astype(np.uint8))
-            >>> fake_img = transform(fake_img)  # type: ignore[call-overload]
+            >>> fake_img = Image.fromarray((np.random.rand(300, 320, 3) * 255.0).astype(np.uint8))
+            >>> fake_img = transform(fake_img)
             >>> print(fake_img.size)
             (224, 224)
 
@@ -773,7 +770,7 @@ class RandomHorizontalFlip(BaseTransform[_InputT, _RetT]):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> fake_img = paddle.to_tensor([[[0, 0, 1], [0, 0, 1], [1, 1, 1]]])
@@ -836,7 +833,7 @@ class RandomVerticalFlip(BaseTransform[_InputT, _RetT]):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> fake_img = paddle.to_tensor([[[0, 0, 1], [0, 0, 1], [1, 1, 1]]])
@@ -906,19 +903,20 @@ class Normalize(BaseTransform[_InputT, _RetT]):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
             :name: code-example
 
             >>> import paddle
             >>> from paddle.vision.transforms import Normalize
             >>> paddle.seed(2023)
 
-            >>> normalize = Normalize(mean=[127.5, 127.5, 127.5],
-            ...                         std=[127.5, 127.5, 127.5],
-            ...                         data_format='HWC')
-            ...
-            >>> fake_img = paddle.rand([300,320,3]).numpy() * 255.
-            >>> fake_img = normalize(fake_img)  # type: ignore[call-overload]
+            >>> normalize = Normalize(
+            ...     mean=[127.5, 127.5, 127.5],
+            ...     std=[127.5, 127.5, 127.5],
+            ...     data_format='HWC',
+            ... )
+            >>> fake_img = paddle.rand([300, 320, 3]).numpy() * 255.0
+            >>> fake_img = normalize(fake_img)
             >>> print(fake_img.shape)
             (300, 320, 3)
             >>> print(fake_img.max(), fake_img.min())
@@ -977,15 +975,15 @@ class Transpose(BaseTransform[_InputT, _RetT]):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import numpy as np
             >>> from PIL import Image
             >>> from paddle.vision.transforms import Transpose
 
             >>> transform = Transpose()
-            >>> fake_img = Image.fromarray((np.random.rand(300, 320, 3) * 255.).astype(np.uint8))
-            >>> fake_img = transform(fake_img)  # type: ignore[call-overload]
+            >>> fake_img = Image.fromarray((np.random.rand(300, 320, 3) * 255.0).astype(np.uint8))
+            >>> fake_img = transform(fake_img)
             >>> print(fake_img.shape)
             (3, 300, 320)
 
@@ -1030,7 +1028,7 @@ class BrightnessTransform(BaseTransform[_InputT, _RetT]):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import numpy as np
             >>> from PIL import Image
@@ -1038,12 +1036,16 @@ class BrightnessTransform(BaseTransform[_InputT, _RetT]):
             >>> np.random.seed(2023)
 
             >>> transform = BrightnessTransform(0.4)
-            >>> fake_img = Image.fromarray((np.random.rand(224, 224, 3) * 255.).astype(np.uint8))
-            >>> print(fake_img.load()[1,1]) # type: ignore[index]
+            >>> fake_img = Image.fromarray((np.random.rand(224, 224, 3) * 255.0).astype(np.uint8))
+            >>> fake_img_pixels = fake_img.load()
+            >>> assert fake_img_pixels is not None
+            >>> print(fake_img_pixels[1, 1])
             (60, 169, 34)
             >>> # doctest: +SKIP('random sample in Brightness function')
-            >>> fake_img = transform(fake_img) # type: ignore[call-overload]
-            >>> print(fake_img.load()[1,1])
+            >>> fake_img = transform(fake_img)
+            >>> converted_img_pixels = fake_img.load()
+            >>> assert converted_img_pixels is not None
+            >>> print(converted_img_pixels[1, 1])
             (68, 192, 38)
 
     """
@@ -1081,15 +1083,15 @@ class ContrastTransform(BaseTransform[_InputT, _RetT]):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import numpy as np
             >>> from PIL import Image
             >>> from paddle.vision.transforms import ContrastTransform
 
             >>> transform = ContrastTransform(0.4)
-            >>> fake_img = Image.fromarray((np.random.rand(224, 224, 3) * 255.).astype(np.uint8))
-            >>> fake_img = transform(fake_img)  # type: ignore[call-overload]
+            >>> fake_img = Image.fromarray((np.random.rand(224, 224, 3) * 255.0).astype(np.uint8))
+            >>> fake_img = transform(fake_img)
             >>> print(fake_img.size)
             (224, 224)
 
@@ -1130,15 +1132,15 @@ class SaturationTransform(BaseTransform[_InputT, _RetT]):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import numpy as np
             >>> from PIL import Image
             >>> from paddle.vision.transforms import SaturationTransform
 
             >>> transform = SaturationTransform(0.4)
-            >>> fake_img = Image.fromarray((np.random.rand(224, 224, 3) * 255.).astype(np.uint8))
-            >>> fake_img = transform(fake_img)  # type: ignore[call-overload]
+            >>> fake_img = Image.fromarray((np.random.rand(224, 224, 3) * 255.0).astype(np.uint8))
+            >>> fake_img = transform(fake_img)
             >>> print(fake_img.size)
             (224, 224)
     """
@@ -1176,15 +1178,15 @@ class HueTransform(BaseTransform[_InputT, _RetT]):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import numpy as np
             >>> from PIL import Image
             >>> from paddle.vision.transforms import HueTransform
 
             >>> transform = HueTransform(0.4)
-            >>> fake_img = Image.fromarray((np.random.rand(224, 224, 3) * 255.).astype(np.uint8))
-            >>> fake_img = transform(fake_img)  # type: ignore[call-overload]
+            >>> fake_img = Image.fromarray((np.random.rand(224, 224, 3) * 255.0).astype(np.uint8))
+            >>> fake_img = transform(fake_img)
             >>> print(fake_img.size)
             (224, 224)
 
@@ -1231,15 +1233,15 @@ class ColorJitter(BaseTransform[_InputT, _RetT]):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import numpy as np
             >>> from PIL import Image
             >>> from paddle.vision.transforms import ColorJitter
 
             >>> transform = ColorJitter(0.4, 0.4, 0.4, 0.4)
-            >>> fake_img = Image.fromarray((np.random.rand(224, 224, 3) * 255.).astype(np.uint8))
-            >>> fake_img = transform(fake_img)  # type: ignore[call-overload]
+            >>> fake_img = Image.fromarray((np.random.rand(224, 224, 3) * 255.0).astype(np.uint8))
+            >>> fake_img = transform(fake_img)
             >>> print(fake_img.size)
             (224, 224)
 
@@ -1347,20 +1349,20 @@ class RandomCrop(BaseTransform[_InputT, _RetT]):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
             :name: code-example1
 
             >>> import paddle
             >>> from paddle.vision.transforms import RandomCrop
             >>> transform = RandomCrop(224)
 
-            >>> fake_img = paddle.randint(0, 255, shape=(3, 324,300), dtype = 'int32')
+            >>> fake_img = paddle.randint(0, 255, size=(3, 324, 300), dtype='int32')
             >>> print(fake_img.shape)
-            [3, 324, 300]
+            paddle.Size([3, 324, 300])
 
             >>> crop_img = transform(fake_img)
             >>> print(crop_img.shape)
-            [3, 224, 224]
+            paddle.Size([3, 224, 224])
     """
 
     size: Size2
@@ -1472,15 +1474,15 @@ class Pad(BaseTransform[_InputT, _RetT]):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import numpy as np
             >>> from PIL import Image
             >>> from paddle.vision.transforms import Pad
 
             >>> transform = Pad(2)
-            >>> fake_img = Image.fromarray((np.random.rand(224, 224, 3) * 255.).astype(np.uint8))
-            >>> fake_img = transform(fake_img)  # type: ignore[call-overload]
+            >>> fake_img = Image.fromarray((np.random.rand(224, 224, 3) * 255.0).astype(np.uint8))
+            >>> fake_img = transform(fake_img)
             >>> print(fake_img.size)
             (228, 228)
     """
@@ -1597,16 +1599,21 @@ class RandomAffine(BaseTransform[_InputT, _RetT]):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.vision.transforms import RandomAffine
 
-            >>> transform = RandomAffine([-90, 90], translate=[0.2, 0.2], scale=[0.5, 0.5], shear=[-10, 10])
+            >>> transform = RandomAffine(
+            ...     [-90, 90],
+            ...     translate=[0.2, 0.2],
+            ...     scale=[0.5, 0.5],
+            ...     shear=[-10, 10],
+            ... )
             >>> fake_img = paddle.randn((3, 256, 300)).astype(paddle.float32)
             >>> fake_img = transform(fake_img)
             >>> print(fake_img.shape)
-            [3, 256, 300]
+            paddle.Size([3, 256, 300])
     """
 
     degrees: float | list[float] | tuple[float, float]
@@ -1770,15 +1777,15 @@ class RandomRotation(BaseTransform[_InputT, _RetT]):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import numpy as np
             >>> from PIL import Image
             >>> from paddle.vision.transforms import RandomRotation
 
             >>> transform = RandomRotation(90)
-            >>> fake_img = Image.fromarray((np.random.rand(200, 150, 3) * 255.).astype(np.uint8))
-            >>> fake_img = transform(fake_img)  # type: ignore[call-overload]
+            >>> fake_img = Image.fromarray((np.random.rand(200, 150, 3) * 255.0).astype(np.uint8))
+            >>> fake_img = transform(fake_img)
             >>> print(fake_img.size)
             (150, 200)
     """
@@ -1875,7 +1882,7 @@ class RandomPerspective(BaseTransform[_InputT, _RetT]):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.vision.transforms import RandomPerspective
@@ -1884,7 +1891,7 @@ class RandomPerspective(BaseTransform[_InputT, _RetT]):
             >>> fake_img = paddle.randn((3, 200, 150)).astype(paddle.float32)
             >>> fake_img = transform(fake_img)
             >>> print(fake_img.shape)
-            [3, 200, 150]
+            paddle.Size([3, 200, 150])
     """
 
     prob: float
@@ -1902,9 +1909,9 @@ class RandomPerspective(BaseTransform[_InputT, _RetT]):
     ) -> None:
         super().__init__(keys)
         assert 0 <= prob <= 1, "probability must be between 0 and 1"
-        assert (
-            0 <= distortion_scale <= 1
-        ), "distortion_scale must be between 0 and 1"
+        assert 0 <= distortion_scale <= 1, (
+            "distortion_scale must be between 0 and 1"
+        )
         assert interpolation in ['nearest', 'bilinear', 'bicubic']
         assert isinstance(fill, (numbers.Number, str, list, tuple))
 
@@ -2004,15 +2011,15 @@ class Grayscale(BaseTransform[_InputT, _RetT]):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import numpy as np
             >>> from PIL import Image
             >>> from paddle.vision.transforms import Grayscale
 
             >>> transform = Grayscale()
-            >>> fake_img = Image.fromarray((np.random.rand(224, 224, 3) * 255.).astype(np.uint8))
-            >>> fake_img = transform(fake_img)  # type: ignore[call-overload]
+            >>> fake_img = Image.fromarray((np.random.rand(224, 224, 3) * 255.0).astype(np.uint8))
+            >>> fake_img = transform(fake_img)
             >>> print(np.array(fake_img).shape)
             (224, 224)
     """
@@ -2064,7 +2071,7 @@ class RandomErasing(BaseTransform[_InputT, _RetT]):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -2098,24 +2105,24 @@ class RandomErasing(BaseTransform[_InputT, _RetT]):
         keys: _TransformInputKeys | None = None,
     ) -> None:
         super().__init__(keys)
-        assert isinstance(
-            scale, (tuple, list)
-        ), "scale should be a tuple or list"
-        assert (
-            scale[0] >= 0 and scale[1] <= 1 and scale[0] <= scale[1]
-        ), "scale should be of kind (min, max) and in range [0, 1]"
-        assert isinstance(
-            ratio, (tuple, list)
-        ), "ratio should be a tuple or list"
-        assert (
-            ratio[0] >= 0 and ratio[0] <= ratio[1]
-        ), "ratio should be of kind (min, max)"
-        assert (
-            prob >= 0 and prob <= 1
-        ), "The probability should be in range [0, 1]"
-        assert isinstance(
-            value, (numbers.Number, str, tuple, list)
-        ), "value should be a number, tuple, list or str"
+        assert isinstance(scale, (tuple, list)), (
+            "scale should be a tuple or list"
+        )
+        assert scale[0] >= 0 and scale[1] <= 1 and scale[0] <= scale[1], (
+            "scale should be of kind (min, max) and in range [0, 1]"
+        )
+        assert isinstance(ratio, (tuple, list)), (
+            "ratio should be a tuple or list"
+        )
+        assert ratio[0] >= 0 and ratio[0] <= ratio[1], (
+            "ratio should be of kind (min, max)"
+        )
+        assert prob >= 0 and prob <= 1, (
+            "The probability should be in range [0, 1]"
+        )
+        assert isinstance(value, (numbers.Number, str, tuple, list)), (
+            "value should be a number, tuple, list or str"
+        )
         if isinstance(value, str) and value != "random":
             raise ValueError("value must be 'random' when type is str")
 

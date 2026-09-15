@@ -24,9 +24,6 @@ limitations under the License. */
 #include "paddle/phi/kernels/funcs/blas/blas.h"
 #include "paddle/phi/kernels/funcs/math_function.h"
 #include "paddle/phi/kernels/sparse/gpu/conv.cu.h"
-#if defined(PADDLE_WITH_CUTLASS) && SPCONV_WITH_CUTLASS
-#include "paddle/phi/kernels/sparse/gpu/gather_gemm_scatter.h"
-#endif
 
 namespace phi {
 namespace sparse {
@@ -66,38 +63,36 @@ void Conv3dCooGradGPUKernel(const GPUContext& dev_ctx,
   const int out_channels = is2D ? kernel_dims[3] : kernel_dims[4];
 
   int rulebook_len = 0;
-  const IntT* rulebook_ptr = phi::funcs::sparse::GetRulebookPtr<IntT>(
-      out, rulebook, key, &rulebook_len);
-  const int* counter_ptr = phi::funcs::sparse::GetCounterPtr(out, counter, key);
+  const IntT* rulebook_ptr =
+      funcs::sparse::GetRulebookPtr<IntT>(out, rulebook, key, &rulebook_len);
+  const int* counter_ptr = funcs::sparse::GetCounterPtr(out, counter, key);
 
-  phi::DenseTensor in_features =
-      phi::Empty<T>(dev_ctx, {rulebook_len, in_channels});
-  phi::DenseTensor d_x_features =
-      phi::Empty<T>(dev_ctx, {rulebook_len, in_channels});
-  phi::DenseTensor out_grad_features =
-      phi::Empty<T>(dev_ctx, {rulebook_len, out_channels});
+  DenseTensor in_features = Empty<T>(dev_ctx, {rulebook_len, in_channels});
+  DenseTensor d_x_features = Empty<T>(dev_ctx, {rulebook_len, in_channels});
+  DenseTensor out_grad_features =
+      Empty<T>(dev_ctx, {rulebook_len, out_channels});
 
   T* in_features_ptr = in_features.data<T>();
   T* d_x_features_ptr = d_x_features.data<T>();
   T* out_grad_features_ptr = out_grad_features.data<T>();
   T* d_kernel_ptr = nullptr;
   if (!is_params_freezing) {
-    *kernel_grad = phi::EmptyLike<T>(dev_ctx, kernel);
+    *kernel_grad = EmptyLike<T>(dev_ctx, kernel);
     d_kernel_ptr = kernel_grad->data<T>();
-    phi::backends::gpu::GpuMemsetAsync(
+    backends::gpu::GpuMemsetAsync(
         d_kernel_ptr, 0, sizeof(T) * kernel_grad->numel(), dev_ctx.stream());
   }
 
   int half_kernel_size = kernel_size / 2;
-  auto blas = phi::funcs::GetBlas<GPUContext, T>(dev_ctx);
-  DenseTensor x_grad_indices = phi::EmptyLike<IntT>(dev_ctx, x.indices());
-  DenseTensor x_grad_values = phi::EmptyLike<T>(dev_ctx, x.values());
+  auto blas = funcs::GetBlas<GPUContext, T>(dev_ctx);
+  DenseTensor x_grad_indices = EmptyLike<IntT>(dev_ctx, x.indices());
+  DenseTensor x_grad_values = EmptyLike<T>(dev_ctx, x.values());
   T* x_grad_values_ptr = x_grad_values.data<T>();
-  phi::backends::gpu::GpuMemsetAsync(x_grad_values_ptr,
-                                     0,
-                                     sizeof(T) * x_grad_values.numel(),
-                                     dev_ctx.stream());
-  phi::backends::gpu::GpuMemsetAsync(
+  backends::gpu::GpuMemsetAsync(x_grad_values_ptr,
+                                0,
+                                sizeof(T) * x_grad_values.numel(),
+                                dev_ctx.stream());
+  backends::gpu::GpuMemsetAsync(
       d_x_features_ptr, 0, sizeof(T) * d_x_features.numel(), dev_ctx.stream());
   phi::Copy<GPUContext>(
       dev_ctx, x.indices(), dev_ctx.GetPlace(), false, &x_grad_indices);
@@ -116,77 +111,57 @@ void Conv3dCooGradGPUKernel(const GPUContext& dev_ctx,
   offsets[kernel_size] = offset;
 
   if (subm) {
-    phi::funcs::sparse::SubmPreProcess<T, GPUContext>(dev_ctx,
-                                                      x,
-                                                      kernel,
-                                                      out_grad.values(),
-                                                      in_channels,
-                                                      out_channels,
-                                                      half_kernel_size,
-                                                      kernel_grad,
-                                                      &x_grad_values);
+    funcs::sparse::SubmPreProcess<T, GPUContext>(dev_ctx,
+                                                 x,
+                                                 kernel,
+                                                 out_grad.values(),
+                                                 in_channels,
+                                                 out_channels,
+                                                 half_kernel_size,
+                                                 kernel_grad,
+                                                 &x_grad_values);
     if (max_count == 0) {
       return;
     }
   }
 
-  auto config =
-      phi::backends::gpu::GetGpuLaunchConfig1D(dev_ctx, rulebook_len, 1);
-  DenseTensor unique_value = phi::Empty<int>(
-      dev_ctx, {static_cast<int>(x_grad->nnz() * kernel_size * 2)});
-  DenseTensor out_index =
-      phi::Empty<int>(dev_ctx, {static_cast<int>(x.nnz() * 2)});
+  auto config = backends::gpu::GetGpuLaunchConfig1D(dev_ctx, rulebook_len, 1);
+  DenseTensor unique_value =
+      Empty<int>(dev_ctx, {static_cast<int>(x_grad->nnz() * kernel_size * 2)});
+  DenseTensor out_index = Empty<int>(dev_ctx, {static_cast<int>(x.nnz() * 2)});
   int* out_index_ptr = out_index.data<int>();
   int* unique_value_ptr = unique_value.data<int>();
-  phi::backends::gpu::GpuMemsetAsync(
+  backends::gpu::GpuMemsetAsync(
       out_index_ptr, 0, sizeof(int) * x.nnz() * 2, dev_ctx.stream());
 
-#if defined(PADDLE_WITH_CUTLASS) && SPCONV_WITH_CUTLASS
-  bool cutlass = true;
-  if (dev_ctx.GetComputeCapability() < 80) cutlass = false;
+  GroupIndicesV2<<<config.block_per_grid,
+                   config.thread_per_block,
+                   0,
+                   dev_ctx.stream()>>>(rulebook_len,
+                                       x.nnz(),
+                                       kernel_size,
+                                       offsets[kernel_size / 2],
+                                       rulebook_ptr,
+                                       out_index_ptr,
+                                       unique_value_ptr);
 
-  if (in_channels % 4 != 0 || out_channels % 4 != 0) cutlass = false;
+  GatherV2<T, IntT>(dev_ctx,
+                    x.values().data<T>(),
+                    out_index_ptr,
+                    unique_value_ptr,
+                    x.nnz(),
+                    kernel_size,
+                    in_channels,
+                    2,
+                    in_features_ptr);
 
-  if (std::is_same<T, phi::dtype::float16>::value ||
-      std::is_same<T, double>::value)
-    cutlass = false;
+  Gather<T, IntT>(dev_ctx,
+                  out_grad.values().data<T>(),
+                  rulebook_ptr + rulebook_len,
+                  rulebook_len,
+                  out_channels,
+                  out_grad_features_ptr);
 
-  if (!std::is_same<IntT, int32_t>::value) cutlass = false;
-
-  if (!cutlass) {
-#endif
-
-    GroupIndexsV2<<<config.block_per_grid,
-                    config.thread_per_block,
-                    0,
-                    dev_ctx.stream()>>>(rulebook_len,
-                                        x.nnz(),
-                                        kernel_size,
-                                        offsets[kernel_size / 2],
-                                        rulebook_ptr,
-                                        out_index_ptr,
-                                        unique_value_ptr);
-
-    GatherV2<T, IntT>(dev_ctx,
-                      x.values().data<T>(),
-                      out_index_ptr,
-                      unique_value_ptr,
-                      x.nnz(),
-                      kernel_size,
-                      in_channels,
-                      2,
-                      in_features_ptr);
-
-    Gather<T, IntT>(dev_ctx,
-                    out_grad.values().data<T>(),
-                    rulebook_ptr + rulebook_len,
-                    rulebook_len,
-                    out_channels,
-                    out_grad_features_ptr);
-
-#if defined(PADDLE_WITH_CUTLASS) && SPCONV_WITH_CUTLASS
-  }
-#endif
   const T* kernel_ptr = kernel.data<T>();
   T* tmp_d_x_ptr = nullptr;
   T* tmp_d_kernel_ptr = nullptr;
@@ -206,102 +181,45 @@ void Conv3dCooGradGPUKernel(const GPUContext& dev_ctx,
       tmp_d_kernel_ptr = d_kernel_ptr + i * in_channels * out_channels;
     }
 
-#if defined(PADDLE_WITH_CUTLASS) && SPCONV_WITH_CUTLASS
-    if (cutlass) {
-      const IntT* gather_x_indices = rulebook_ptr + offsets[i];
-      const IntT* scatter_x_indices = rulebook_ptr + offsets[i];
-      const IntT* gather_out_indices = rulebook_ptr + rulebook_len + offsets[i];
-      const size_t key = autotune::GenKey(M / features_num_range, N, K);
-      if (!is_params_freezing) {
-        // call gemm: d_kernel = transpose(x) * out_grad
-        // (in_channels, n) * (n, out_channels)
-        static cutlass::device_memory::allocation<uint8_t> workspace(
-            workspace_size);
-        GatherGemmScatterDriver<80, true, false>(
-            dev_ctx,
-            key,
-            x.values().data<T>(),
-            out_grad.values().data<T>(),
-            tmp_d_kernel_ptr,
-            tmp_d_kernel_ptr,
-            in_channels,
-            out_channels,
-            counter_ptr[i],
-            gather_x_indices,
-            gather_out_indices,
-            static_cast<const IntT*>(nullptr),
-            static_cast<const T>(1.0),
-            static_cast<const T>(0.0),
-            &workspace);
-      }
-      // call gemm: d_x = out_grad * transpose(kernel)
-      // (n, out_channels) * (out_channels, in_channels)
-      GatherGemmScatterDriver<80, false, true>(
-          dev_ctx,
-          key,
-          out_grad.values().data<T>(),
-          tmp_kernel_ptr,
-          x_grad_values_ptr,
-          x_grad_values_ptr,
-          counter_ptr[i],
-          in_channels,
-          out_channels,
-          gather_out_indices,
-          static_cast<const IntT*>(nullptr),
-          scatter_x_indices,
-          static_cast<const T>(1.0),
-          static_cast<const T>(1.0),
-          nullptr);
-    } else {
-#endif
-      if (!is_params_freezing) {
-        // call gemm: d_kernel = transpose(x) * out_grad
-        // (in_channels, n) * (n, out_channels)
-        blas.GEMM(CblasTrans,
-                  CblasNoTrans,
-                  K,
-                  N,
-                  M,
-                  static_cast<T>(1),
-                  tmp_in_ptr,
-                  tmp_out_grad_ptr,
-                  static_cast<T>(0),
-                  tmp_d_kernel_ptr);
-      }
-
-      // call gemm: d_x = out_grad * transpose(kernel)
-      // (n, out_channels) * (out_channels, in_channels)
-      blas.GEMM(CblasNoTrans,
-                CblasTrans,
-                M,
+    if (!is_params_freezing) {
+      // call gemm: d_kernel = transpose(x) * out_grad
+      // (in_channels, n) * (n, out_channels)
+      blas.GEMM(CblasTrans,
+                CblasNoTrans,
                 K,
                 N,
+                M,
                 static_cast<T>(1),
+                tmp_in_ptr,
                 tmp_out_grad_ptr,
-                tmp_kernel_ptr,
                 static_cast<T>(0),
-                tmp_d_x_ptr);
-#if defined(PADDLE_WITH_CUTLASS) && SPCONV_WITH_CUTLASS
+                tmp_d_kernel_ptr);
     }
-#endif
+
+    // call gemm: d_x = out_grad * transpose(kernel)
+    // (n, out_channels) * (out_channels, in_channels)
+    blas.GEMM(CblasNoTrans,
+              CblasTrans,
+              M,
+              K,
+              N,
+              static_cast<T>(1),
+              tmp_out_grad_ptr,
+              tmp_kernel_ptr,
+              static_cast<T>(0),
+              tmp_d_x_ptr);
   }
 
   // 4. scatter
-#if defined(PADDLE_WITH_CUTLASS) && SPCONV_WITH_CUTLASS
-  if (!cutlass) {
-#endif
-    phi::funcs::sparse::ScatterV2<T>(dev_ctx,
-                                     d_x_features_ptr,
-                                     out_index.data<int>(),
-                                     unique_value.data<int>(),
-                                     x_grad->nnz(),
-                                     kernel_size,
-                                     in_channels,
-                                     2,
-                                     x_grad_values_ptr);
-#if defined(PADDLE_WITH_CUTLASS) && SPCONV_WITH_CUTLASS
-  }
-#endif
+  funcs::sparse::ScatterV2<T>(dev_ctx,
+                              d_x_features_ptr,
+                              out_index.data<int>(),
+                              unique_value.data<int>(),
+                              x_grad->nnz(),
+                              kernel_size,
+                              in_channels,
+                              2,
+                              x_grad_values_ptr);
 }
 
 template <typename T, typename Context>
@@ -348,6 +266,6 @@ PD_REGISTER_KERNEL(conv3d_coo_grad,
                    phi::sparse::Conv3dCooGradKernel,
                    float,
                    double,
-                   phi::dtype::float16) {
+                   phi::float16) {
   kernel->InputAt(0).SetDataLayout(phi::DataLayout::SPARSE_COO);
 }

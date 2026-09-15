@@ -22,11 +22,11 @@ limitations under the License. */
 namespace phi {
 namespace funcs {
 
-inline bool GetSeedDataAndIncrement(const phi::GPUContext& dev_ctx,
-                                    const phi::DenseTensor* seed,
+inline bool GetSeedDataAndIncrement(const GPUContext& dev_ctx,
+                                    const DenseTensor* seed,
                                     const bool is_fix_seed,
                                     const int seed_val,
-                                    const int offset,
+                                    const uint64_t offset,
                                     uint64_t* seed_data,
                                     uint64_t* increment,
                                     bool use_copy = true) {
@@ -34,8 +34,8 @@ inline bool GetSeedDataAndIncrement(const phi::GPUContext& dev_ctx,
 
   if (seed) {
     if (use_copy) {
-      phi::DenseTensor seed_cpu_tensor;
-      phi::Copy(dev_ctx, *seed, phi::CPUPlace(), true, &seed_cpu_tensor);
+      DenseTensor seed_cpu_tensor;
+      phi::Copy(dev_ctx, *seed, CPUPlace(), true, &seed_cpu_tensor);
       *seed_data = static_cast<uint64_t>(seed_cpu_tensor.data<int>()[0]);
     }
     *increment = offset;

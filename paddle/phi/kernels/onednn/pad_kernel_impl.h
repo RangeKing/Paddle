@@ -107,12 +107,12 @@ template <typename T, typename Context>
 void PadOpKernel(const Context& dev_ctx,
                  const DenseTensor& x,
                  const std::vector<int64_t>& paddings,
-                 float pad_value,
+                 double pad_value,
                  DenseTensor* out) {
   const auto& onednn_engine = dev_ctx.GetEngine();
   auto& astream = OneDNNContext::tls().get_stream();
 
-  std::vector<int64_t> x_tz = common::vectorize(x.dims());
+  std::vector<int64_t> x_tz = vectorize(x.dims());
   // due to the need of supporting NDHWC, inferring out shape
   // must be done inside the kernel
   std::vector<int64_t> out_tz(x_tz);
@@ -120,13 +120,13 @@ void PadOpKernel(const Context& dev_ctx,
   for (size_t i = 0; i < paddings.size() / 2; ++i) {
     out_tz[out_tz.size() - 1 - i] += paddings[2 * i] + paddings[2 * i + 1];
   }
-  out->Resize(common::make_ddim(out_tz));
+  out->Resize(out_tz);
 
   funcs::ReorderOneDNNHandler reorder_handler(
       x_tz, x.dtype(), funcs::ToOneDNNDataType(x.dtype()), onednn_engine);
 
   auto reorder_src_memory_p = reorder_handler.AcquireSrcMemory(
-      x.mem_desc(), funcs::to_void_cast(x.data<T>()));
+      phi::funcs::GetOneDNNMemDesc(x), funcs::to_void_cast(x.data<T>()));
   auto reorder_dst_memory_p = reorder_handler.AcquireDstMemory(
       out,
       out_tz,
@@ -172,6 +172,6 @@ void PadOpKernel(const Context& dev_ctx,
   reorder_p->execute(astream, *reorder_src_memory_p, *slice_mem_p);
   astream.wait();
 
-  out->set_mem_desc(reorder_dst_memory_p->get_desc());
+  phi::funcs::SetOneDNNMemDesc(out, reorder_dst_memory_p->get_desc());
 }
 }  // namespace phi

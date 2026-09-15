@@ -14,8 +14,10 @@
 
 #pragma once
 
+#include <algorithm>
 #include <chrono>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -48,20 +50,59 @@ using phi::distributed::ProcessGroup;
 using phi::distributed::ProcessGroupIdMap;
 using phi::distributed::ProcessGroupMapFromGid;
 
-static void CheckTensorContiguous(const phi::DenseTensor& tensor) {
+static void CheckTensorContiguous(const DenseTensor& tensor) {
   if (!tensor.meta().is_contiguous()) {
     PADDLE_THROW(
         common::errors::InvalidArgument("The tensor must be contiguous"));
   }
 }
 
-static void CheckTensorContiguous(const std::vector<phi::DenseTensor>& inputs) {
+static void CheckTensorContiguous(const std::vector<DenseTensor>& inputs) {
   for (const auto& tensor : inputs) {
     if (!tensor.meta().is_contiguous()) {
       PADDLE_THROW(
           common::errors::InvalidArgument("The tensor must be contiguous"));
     }
   }
+}
+
+static void CheckTensorSamePlace(const std::vector<DenseTensor>& tensors) {
+  for (const auto& tensor : tensors) {
+    if (tensor.place() != tensors[0].place()) {
+      PADDLE_THROW(
+          common::errors::InvalidArgument("The tensors must be in the same "
+                                          "place"));
+    }
+  }
+}
+
+static std::vector<int64_t> GetAllToAllSplitSizes(
+    const std::vector<DenseTensor>& tensors) {
+  std::vector<int64_t> split_sizes(tensors.size());
+  std::transform(tensors.begin(),
+                 tensors.end(),
+                 split_sizes.begin(),
+                 [](const DenseTensor& tensor) { return tensor.numel(); });
+  return split_sizes;
+}
+
+static std::vector<const void*> GetTensorPtrs(
+    const std::vector<DenseTensor>& tensors) {
+  std::vector<const void*> tensor_ptrs(tensors.size());
+  std::transform(tensors.begin(),
+                 tensors.end(),
+                 tensor_ptrs.begin(),
+                 [](const DenseTensor& tensor) { return tensor.data(); });
+  return tensor_ptrs;
+}
+
+static int64_t GetTensorNumel(const std::vector<DenseTensor>& tensors) {
+  return std::accumulate(tensors.begin(),
+                         tensors.end(),
+                         int64_t(0),
+                         [](int64_t sum, const DenseTensor& tensor) {
+                           return sum + tensor.numel();
+                         });
 }
 
 }  //  namespace distributed

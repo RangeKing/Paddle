@@ -19,83 +19,90 @@
 
 namespace phi {
 template <typename T, typename Context>
-void ScatterNdAddKernel(const Context &ctx,
+void ScatterNdAddKernel(const Context &dev_ctx,
                         const DenseTensor &x,
                         const DenseTensor &index,
                         const DenseTensor &updates,
                         DenseTensor *out) {
-  const T *x_ptr = x.data<T>();
-  const T *updates_ptr = updates.data<T>();
+  using XPUType = typename XPUTypeTrait<T>::Type;
+  if (out && out->numel() == 0) {
+    dev_ctx.template Alloc<T>(out);
+    return;
+  }
+  const XPUType *x_ptr = reinterpret_cast<const XPUType *>(x.data<T>());
+  const XPUType *updates_ptr =
+      reinterpret_cast<const XPUType *>(updates.data<T>());
 
-  T *out_ptr = ctx.template Alloc<T>(out);
-  int r = xpu::copy(ctx.x_context(), x_ptr, out_ptr, x.numel());
+  dev_ctx.template Alloc<T>(out);
+  XPUType *out_ptr = reinterpret_cast<XPUType *>(out->data<T>());
+  int r = xpu::copy(dev_ctx.x_context(), x_ptr, out_ptr, x.numel());
   PADDLE_ENFORCE_XDNN_SUCCESS(r, "copy");
 
   if (updates.numel() == 0) return;
 
   if (index.numel() == 0) {
     int64_t index_dims_size = index.dims().size();
-    int loop_time = static_cast<int>(
-        index_dims_size == 0 ? 1
-                             : common::product(common::slice_ddim(
-                                   index.dims(), 0, index_dims_size - 1)));
+    int64_t loop_time =
+        index_dims_size == 0
+            ? 1
+            : common::product(slice_ddim(index.dims(), 0, index_dims_size - 1));
 
-    for (int i = 0; i < loop_time; i++) {
-      r = xpu::broadcast_add<T>(ctx.x_context(),
-                                updates_ptr + out->numel() * i,
-                                out_ptr,
-                                out_ptr,
-                                {out->numel()},
-                                {out->numel()});
+    for (int64_t i = 0; i < loop_time; i++) {
+      r = xpu::broadcast_add<XPUType>(dev_ctx.x_context(),
+                                      updates_ptr + out->numel() * i,
+                                      out_ptr,
+                                      out_ptr,
+                                      {out->numel()},
+                                      {out->numel()});
       PADDLE_ENFORCE_XDNN_SUCCESS(r, "copy");
     }
     return;
   }
 
-  const phi::DataType index_type = index.dtype();
+  const DataType index_type = index.dtype();
   bool index_type_match =
-      index_type == phi::DataType::INT32 || index_type == phi::DataType::INT64;
+      index_type == DataType::INT32 || index_type == DataType::INT64;
   PADDLE_ENFORCE_EQ(index_type_match,
                     true,
                     common::errors::InvalidArgument(
                         "Index holds the wrong type, it holds [%s], but "
                         "desires to be [%s] or [%s].",
                         index_type,
-                        phi::DataType::INT32,
-                        phi::DataType::INT64));
+                        DataType::INT32,
+                        DataType::INT64));
 
-  auto x_shape = common::vectorize<int64_t>(x.dims());
-  auto index_shape = common::vectorize<int64_t>(index.dims());
+  auto x_shape = vectorize<int64_t>(x.dims());
+  auto index_shape = vectorize<int64_t>(index.dims());
   if (index_shape.size() == 1) {
     index_shape.insert(index_shape.begin(), 1);
   }
   xpu::VectorParam<int64_t> x_vec = {
-      x_shape.data(), static_cast<int>(x_shape.size()), nullptr};
+      x_shape.data(), static_cast<int64_t>(x_shape.size()), nullptr};
 
-  int index_size = static_cast<int>(index.numel());
+  int64_t index_size = index.numel();
 
-  if (index_type == phi::DataType::INT32) {
+  if (index_type == DataType::INT32) {
     auto index_data = const_cast<int *>(index.data<int>());
     xpu::VectorParam<int> index_vec{nullptr, index_size, index_data};
-    r = xpu::scatter_nd<T, int>(ctx.x_context(),
-                                nullptr,
-                                updates_ptr,
-                                out_ptr,
-                                index_vec,
-                                x_vec,
-                                index_shape,
-                                false);
+    r = xpu::scatter_nd<XPUType, int>(dev_ctx.x_context(),
+                                      nullptr,
+                                      updates_ptr,
+                                      out_ptr,
+                                      index_vec,
+                                      x_vec,
+                                      index_shape,
+                                      false);
   } else {
     auto index_data = const_cast<int64_t *>(index.data<int64_t>());
     xpu::VectorParam<int64_t> index_vec{nullptr, index_size, index_data};
-    r = xpu::scatter_nd<T, int64_t>(ctx.x_context(),
-                                    nullptr,
-                                    updates_ptr,
-                                    out_ptr,
-                                    index_vec,
-                                    x_vec,
-                                    index_shape,
-                                    false);
+    r = xpu::scatter_nd<XPUType, int64_t>(dev_ctx.x_context(),
+                                          nullptr,
+                                          updates_ptr,
+                                          out_ptr,
+                                          index_vec,
+                                          x_vec,
+                                          index_shape,
+                                          false);
   }
 
   PADDLE_ENFORCE_XDNN_SUCCESS(r, "scatter_nd_add");
@@ -106,6 +113,8 @@ PD_REGISTER_KERNEL(scatter_nd_add,
                    XPU,
                    ALL_LAYOUT,
                    phi::ScatterNdAddKernel,
+                   phi::float16,
+                   phi::bfloat16,
                    float,
-                   int64_t,
-                   int) {}
+                   int,
+                   int64_t) {}

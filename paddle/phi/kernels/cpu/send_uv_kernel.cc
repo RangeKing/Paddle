@@ -18,6 +18,7 @@
 #include "paddle/phi/backends/cpu/cpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/cpu/graph_send_ue_recv_funcs.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/impl/graph_message_passing_impl.h"
 
 namespace phi {
@@ -50,14 +51,17 @@ void GraphSendUVCpuKernel(const BroadCastInfo& bcast,
 }
 
 template <typename Context, typename T, typename IndexT>
-void GraphSendUVOpKernelLaunchHelper(const Context& ctx,
+void GraphSendUVOpKernelLaunchHelper(const Context& dev_ctx,
                                      const DenseTensor& x,
                                      const DenseTensor& y,
                                      const DenseTensor& src_index,
                                      const DenseTensor& dst_index,
                                      const std::string& message_op,
                                      DenseTensor* out) {
-  const int& index_size = src_index.dims()[0];  // NOLINT
+  // TODO(large-tensor): downstream functors may still use int; guard until
+  // upgraded.
+  const int64_t& index_size = src_index.dims()[0];
+  // NOLINT
   PADDLE_ENFORCE_GT(
       index_size,
       0,
@@ -65,10 +69,10 @@ void GraphSendUVOpKernelLaunchHelper(const Context& ctx,
                               "should be greater than 0, but received %d.",
                               index_size));
 
-  ctx.template Alloc<T>(out);
+  dev_ctx.template Alloc<T>(out);
   T* out_data = out->data<T>();
 
-  const auto& bcast_info = phi::CalcBCastInfo(x.dims(), y.dims());
+  const auto& bcast_info = CalcBCastInfo(x.dims(), y.dims());
   const T* x_data = x.data<T>();
   const T* y_data = y.data<T>();
   const IndexT* s_index = src_index.data<IndexT>();
@@ -97,7 +101,7 @@ void GraphSendUVOpKernelLaunchHelper(const Context& ctx,
 }
 
 template <typename T, typename Context>
-void SendUVKernel(const Context& ctx,
+void SendUVKernel(const Context& dev_ctx,
                   const DenseTensor& x,
                   const DenseTensor& y,
                   const DenseTensor& src_index,
@@ -105,12 +109,19 @@ void SendUVKernel(const Context& ctx,
                   const std::string& message_op,
                   DenseTensor* out) {
   auto index_type = src_index.dtype();
-  if (index_type == phi::DataType::INT32) {
+
+  if (x.numel() == 0 || y.numel() == 0 || src_index.numel() == 0 ||
+      dst_index.numel() == 0) {
+    Full<T, Context>(dev_ctx, out->dims(), 0, out);
+    return;
+  }
+
+  if (index_type == DataType::INT32) {
     GraphSendUVOpKernelLaunchHelper<Context, T, int32_t>(
-        ctx, x, y, src_index, dst_index, message_op, out);
-  } else if (index_type == phi::DataType::INT64) {
+        dev_ctx, x, y, src_index, dst_index, message_op, out);
+  } else if (index_type == DataType::INT64) {
     GraphSendUVOpKernelLaunchHelper<Context, T, int64_t>(
-        ctx, x, y, src_index, dst_index, message_op, out);
+        dev_ctx, x, y, src_index, dst_index, message_op, out);
   }
 }
 

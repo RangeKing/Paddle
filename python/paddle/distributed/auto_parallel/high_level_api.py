@@ -34,9 +34,9 @@ class ToDistributedConfig:
 
 def cost_model(matched_programs, device_num, node_num):
     # TODO(jeff41404): multi-node will be supported later
-    assert (
-        node_num == 1
-    ), "we only support single node now, multi-node will be supported later"
+    assert node_num == 1, (
+        "we only support single node now, multi-node will be supported later"
+    )
 
     # TODO(jeff41404): will evaluate the best combination of parallel strategies
     # based on cost_model and return global_mesh, currently using pre-defined parallel strategy
@@ -224,7 +224,9 @@ def record_program_ops_post_hook(layer, inputs, outputs):
         assert (
             layer._op_recorder.start >= 0
             and layer._op_recorder.is_valid is True
-        ), f"{layer._full_name} has not recorded the start of the corresponding ops before"
+        ), (
+            f"{layer._full_name} has not recorded the start of the corresponding ops before"
+        )
         end = len(default_main_program().global_block().ops)
         # some layers, such as rotary_embedding, will not add new ops to program
         # assert end > layer._op_recorder.start, f"{layer._full_name} has not added new ops to the program"
@@ -298,7 +300,7 @@ def to_distributed(
         dataloader. The dataloader can be used in distributed training.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +SKIP('run in distributed env')
             >>> import math
@@ -309,7 +311,7 @@ def to_distributed(
             >>> from paddle.distributed import to_distributed
             >>> from paddle.distributed.auto_parallel.high_level_api import ToDistributedConfig
 
-            >>> EPOCHES = 1
+            >>> EPOCHS = 1
             >>> VOCAB_SIZE = 8000
             >>> BATCH_NUM = 2
             >>> BATCH_SIZE = 4
@@ -318,13 +320,15 @@ def to_distributed(
             >>> SEQ_LENGTH = 1024
             >>> N_HEAD = 32
             >>> NUM_HIDDEN_LAYERS = 4
-            >>> class RandomDataset(paddle.io.Dataset): # type: ignore[type-arg]
+            >>> class RandomDataset(paddle.io.Dataset):  # type: ignore[type-arg]
             ...     def __init__(self, inputs, labels, num_samples):
             ...         self.inputs = inputs
             ...         self.labels = labels
             ...         self.num_samples = num_samples
+            ...
             ...     def __getitem__(self, idx):
             ...         return self.inputs[idx], self.labels[idx]
+            ...
             ...     def __len__(self):
             ...         return self.num_samples
 
@@ -334,12 +338,7 @@ def to_distributed(
             ...         self.dim = dim
             ...         self.max_position_embeddings = max_position_embeddings
             ...         self.base = base
-            ...         self.inv_freq = 1.0 / (
-            ...             self.base ** (
-            ...                 paddle.cast(paddle.arange(0, self.dim, 2), dtype="float32")
-            ...                 / self.dim
-            ...             )
-            ...         )
+            ...         self.inv_freq = 1.0 / (self.base ** (paddle.cast(paddle.arange(0, self.dim, 2), dtype="float32") / self.dim))
             ...         self._set_cos_sin_cache(seq_len=max_position_embeddings)
 
             ...     def _set_cos_sin_cache(self, seq_len):
@@ -387,20 +386,14 @@ def to_distributed(
             ...     query_states = paddle.transpose(query_states, [0, 2, 1, 3])
             ...     key_states = paddle.transpose(key_states, [0, 2, 1, 3])
             ...     value_states = paddle.transpose(value_states, [0, 2, 1, 3])
-            ...     attn_weights = paddle.matmul(
-            ...         query_states / math.sqrt(head_dim), key_states.transpose([0, 1, 3, 2])
-            ...     )
+            ...     attn_weights = paddle.matmul(query_states / math.sqrt(head_dim), key_states.transpose([0, 1, 3, 2]))
             ...     attention_mask = attention_mask.reshape([bsz, 1, q_len, kv_seq_len])
             ...     attn_weights = attn_weights + attention_mask
             ...     if not paddle.in_dynamic_mode():
-            ...         attn_weights = F.softmax(attn_weights, axis=-1, dtype="float32").astype(
-            ...             query_states.dtype
-            ...         )
+            ...         attn_weights = F.softmax(attn_weights, axis=-1, dtype="float32").astype(query_states.dtype)
             ...     else:
             ...         with paddle.amp.auto_cast(False):
-            ...             attn_weights = F.softmax(
-            ...                 attn_weights, axis=-1, dtype="float32"
-            ...             ).astype(query_states.dtype)
+            ...             attn_weights = F.softmax(attn_weights, axis=-1, dtype="float32").astype(query_states.dtype)
             ...     attn_output = paddle.matmul(attn_weights, value_states)
             ...     attn_output = attn_output.transpose([0, 2, 1, 3])
             ...     attn_output = attn_output.reshape([bsz, q_len, head_dim * num_heads])
@@ -412,21 +405,11 @@ def to_distributed(
             ...         self.hidden_size = hidden_size
             ...         self.num_heads = n_head
             ...         self.head_dim = hidden_size // n_head
-            ...         self.q_proj = nn.Linear(
-            ...             hidden_size, hidden_size, bias_attr=False
-            ...         )
-            ...         self.k_proj = nn.Linear(
-            ...             hidden_size, hidden_size, bias_attr=False
-            ...         )
-            ...         self.v_proj = nn.Linear(
-            ...             hidden_size, hidden_size, bias_attr=False
-            ...         )
-            ...         self.o_proj = nn.Linear(
-            ...             hidden_size, hidden_size, bias_attr=False
-            ...         )
-            ...         self.rotary_emb = RotaryEmbedding(
-            ...             self.head_dim, max_position_embeddings=SEQ_LENGTH, base=10000
-            ...         )
+            ...         self.q_proj = nn.Linear(hidden_size, hidden_size, bias_attr=False)
+            ...         self.k_proj = nn.Linear(hidden_size, hidden_size, bias_attr=False)
+            ...         self.v_proj = nn.Linear(hidden_size, hidden_size, bias_attr=False)
+            ...         self.o_proj = nn.Linear(hidden_size, hidden_size, bias_attr=False)
+            ...         self.rotary_emb = RotaryEmbedding(self.head_dim, max_position_embeddings=SEQ_LENGTH, base=10000)
 
             ...     def forward(
             ...         self,
@@ -466,18 +449,12 @@ def to_distributed(
             ...         super().__init__()
             ...         self.hidden_size = hidden_size
             ...         self.intermediate_size = intermediate_size
-            ...         self.gate_proj = nn.Linear(
-            ...             hidden_size, intermediate_size, bias_attr=False
-            ...         )
-            ...         self.up_proj = nn.Linear(
-            ...             hidden_size, intermediate_size, bias_attr=False
-            ...         )
-            ...         self.down_proj = nn.Linear(
-            ...             intermediate_size, hidden_size, bias_attr=False
-            ...         )
+            ...         self.gate_proj = nn.Linear(hidden_size, intermediate_size, bias_attr=False)
+            ...         self.up_proj = nn.Linear(hidden_size, intermediate_size, bias_attr=False)
+            ...         self.down_proj = nn.Linear(intermediate_size, hidden_size, bias_attr=False)
 
             ...     def forward(self, x):
-            ...         x = paddle.incubate.nn.functional.swiglu(
+            ...         x = paddle.nn.functional.swiglu(
             ...             self.gate_proj(x), self.up_proj(x)
             ...         )
             ...         out = self.down_proj(x)
@@ -537,22 +514,16 @@ def to_distributed(
             ...         hidden_states = residual + hidden_states
             ...         return hidden_states
 
-            >>> def _prepare_decoder_attention_mask(
-            ...     attention_mask, input_shape, dtype
-            ... ):
+            >>> def _prepare_decoder_attention_mask(attention_mask, input_shape, dtype):
             ...     batch_size, src_length = attention_mask.shape[0], attention_mask.shape[-1]
             ...     batch_size, target_length = input_shape
             ...     attention_mask = attention_mask[:, None, None, :].astype("bool")
             ...     attention_mask.stop_gradient = True
             ...     expanded_attn_mask = attention_mask.expand([batch_size, 1, target_length, src_length])
             ...     mask = paddle.tril(paddle.ones((target_length, target_length), dtype="bool"))
-            ...     combined_attention_mask = mask[None, None, :, :].expand(
-            ...         [batch_size, 1, target_length, target_length]
-            ...     )
-            ...     expanded_attn_mask = (expanded_attn_mask & combined_attention_mask)
-            ...     expanded_attn_mask = paddle.where(
-            ...         expanded_attn_mask, 0.0, paddle.finfo(dtype).min
-            ...     ).astype(dtype)
+            ...     combined_attention_mask = mask[None, None, :, :].expand([batch_size, 1, target_length, target_length])
+            ...     expanded_attn_mask = expanded_attn_mask & combined_attention_mask
+            ...     expanded_attn_mask = paddle.where(expanded_attn_mask, 0.0, paddle.finfo(dtype).min).astype(dtype)
             ...     return expanded_attn_mask
 
             >>> class Model(nn.Layer):
@@ -570,21 +541,14 @@ def to_distributed(
             ...             vocab_size,
             ...             hidden_size,
             ...         )
-            ...         self.layers = nn.LayerList(
-            ...             [
-            ...                 DecoderLayer()
-            ...                 for i in range(NUM_HIDDEN_LAYERS)
-            ...             ]
-            ...         )
+            ...         self.layers = nn.LayerList([DecoderLayer() for i in range(NUM_HIDDEN_LAYERS)])
             ...         self.norm = RMSNorm(hidden_size)
             ...         self.weight = self.create_parameter(
             ...             shape=[hidden_size, vocab_size],
             ...             dtype=paddle.get_default_dtype(),
             ...         )
             ...         self.ignore_index = -100
-            ...         self.loss_func = paddle.nn.CrossEntropyLoss(
-            ...             reduction="none", ignore_index=self.ignore_index
-            ...         )
+            ...         self.loss_func = paddle.nn.CrossEntropyLoss(reduction="none", ignore_index=self.ignore_index)
 
             ...     def forward(
             ...         self,
@@ -635,28 +599,19 @@ def to_distributed(
             ...                 loss = paddle.sum(masked_lm_loss * binary_sequence) / count
             ...         return (loss, logits)
 
-            >>> model = Model() # There is no distributed code or markup in Model
-            >>> input_seqs = np.random.randint(
-            ...     low=0, high=1024, size=(BATCH_SIZE * BATCH_NUM, SEQ_LENGTH)
-            ... ).astype("int64")
-            >>> labels = np.random.randint(
-            ...     low=0, high=1024, size=(BATCH_SIZE * BATCH_NUM, SEQ_LENGTH)
-            ... ).astype("int64")
-            >>> dataset = RandomDataset(
-            ...     input_seqs, labels, BATCH_SIZE * BATCH_NUM
-            ... )
+            >>> model = Model()  # There is no distributed code or markup in Model
+            >>> input_seqs = np.random.randint(low=0, high=1024, size=(BATCH_SIZE * BATCH_NUM, SEQ_LENGTH)).astype("int64")
+            >>> labels = np.random.randint(low=0, high=1024, size=(BATCH_SIZE * BATCH_NUM, SEQ_LENGTH)).astype("int64")
+            >>> dataset = RandomDataset(input_seqs, labels, BATCH_SIZE * BATCH_NUM)
             >>> sampler = paddle.io.BatchSampler(
-            ...     dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=True
+            ...     dataset,
+            ...     batch_size=BATCH_SIZE,
+            ...     shuffle=False,
+            ...     drop_last=True,
             ... )
-            >>> loader = paddle.io.DataLoader(
-            ...     dataset, batch_sampler=sampler
-            ... )
-            >>> opt = paddle.optimizer.SGD(
-            ...     learning_rate=0.1, parameters=model.parameters()
-            ... )
-            >>> input_seq_spec = paddle.static.InputSpec(
-            ...     [BATCH_SIZE, SEQ_LENGTH], 'float32', 'input_seq', True
-            ... )
+            >>> loader = paddle.io.DataLoader(dataset, batch_sampler=sampler)
+            >>> opt = paddle.optimizer.SGD(learning_rate=0.1, parameters=model.parameters())
+            >>> input_seq_spec = paddle.static.InputSpec([BATCH_SIZE, SEQ_LENGTH], 'float32', 'input_seq', True)
             >>> dist_config = ToDistributedConfig()
             >>> dist_config.sequence_parallel = True
 
@@ -670,7 +625,7 @@ def to_distributed(
             ...     config=dist_config,
             ... )
 
-            >>> for epoch in range(EPOCHES):
+            >>> for epoch in range(EPOCHS):
             ...     dist_model.train()
             ...     for i, data in enumerate(dist_loader()):
             ...         inputs, labels = data
@@ -754,9 +709,9 @@ def to_distributed(
     for pattern_name, matched_patterns in results.items():
         # process one pattern
         pattern_ops_dist_infos = get_pattern(pattern_name).ops_dist_infos
-        assert (
-            pattern_ops_dist_infos is not None
-        ), f"{pattern_name} does not contain ops_dist_infos, cannot reshard, please check"
+        assert pattern_ops_dist_infos is not None, (
+            f"{pattern_name} does not contain ops_dist_infos, cannot reshard, please check"
+        )
         processed_patterns = []
         for matched_pattern in matched_patterns:
             # convert pattern_ops_dist_infos to program_ops_dist_infos
@@ -764,9 +719,9 @@ def to_distributed(
             for pattern_ops_id, op_dist_info in pattern_ops_dist_infos.items():
                 program_ops_id = []
                 for pattern_op_id in pattern_ops_id:
-                    assert (
-                        pattern_op_id in matched_pattern.keys()
-                    ), f"please check ops_dist_infos of {pattern_name}, {pattern_op_id} not in matched_pattern: {matched_pattern.keys()}"
+                    assert pattern_op_id in matched_pattern.keys(), (
+                        f"please check ops_dist_infos of {pattern_name}, {pattern_op_id} not in matched_pattern: {matched_pattern.keys()}"
+                    )
                     program_op_id = matched_pattern[pattern_op_id]
                     program_ops_id.append(program_op_id)
                 program_ops_dist_infos[tuple(program_ops_id)] = op_dist_info
@@ -789,9 +744,9 @@ def to_distributed(
     if with_mp:
         num_hidden_layers = len(matched_programs[DECODER_LAYER_NAME])
         for pattern_name, processed_patterns in matched_programs.items():
-            assert (
-                len(processed_patterns) == num_hidden_layers
-            ), "transformer patterns matched are incomplete"
+            assert len(processed_patterns) == num_hidden_layers, (
+                "transformer patterns matched are incomplete"
+            )
             for idx, processed_pattern in enumerate(processed_patterns):
                 local_mesh = mesh
                 if with_pp:
@@ -801,9 +756,9 @@ def to_distributed(
                     local_mesh = mesh.get_mesh_with_dim("pp", pp_stage_id)
 
                 for program_ops_id, dist_infos in processed_pattern.items():
-                    assert (
-                        program_ops_id in ops_id_to_layer.keys()
-                    ), f"program_ops: {program_ops_id} is not corresponding to a dynamic layer"
+                    assert program_ops_id in ops_id_to_layer.keys(), (
+                        f"program_ops: {program_ops_id} is not corresponding to a dynamic layer"
+                    )
                     dynamic_layer = ops_id_to_layer[program_ops_id]
                     mesh_num_dims = len(local_mesh.shape)
                     sharding_info = dist_infos.get_dist_info(mesh_num_dims)
@@ -832,9 +787,9 @@ def to_distributed(
 
         if decoder_layers is not None:
             num_decoder_blocks = len(decoder_layers)
-            assert (
-                num_decoder_blocks == num_hidden_layers
-            ), f"decoder pattern layers matched are incomplete, num_decoder_blocks: {num_decoder_blocks} should be equal to num_hidden_layers: {num_hidden_layers}"
+            assert num_decoder_blocks == num_hidden_layers, (
+                f"decoder pattern layers matched are incomplete, num_decoder_blocks: {num_decoder_blocks} should be equal to num_hidden_layers: {num_hidden_layers}"
+            )
 
             pp_degree = mesh.get_dim_size("pp")
             num_blocks_per_stage = num_decoder_blocks // pp_degree

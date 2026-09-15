@@ -23,40 +23,39 @@ limitations under the License. */
 
 namespace phi::distributed {
 
-using phi::distributed::auto_parallel::str_join;
-
 ////////////////// Utils Functions //////////////////
 
-TensorDistAttr GetMatmulInferedDistAttr(
+TensorDistAttr GetMatmulInferredDistAttr(
     const TensorDistAttr& origin_dist_attr,
     const std::vector<int64_t>& shape,
     const std::string& tensor_axis,
-    const std::unordered_map<std::string, int64_t>& axis_to_dim_map,
+    const std::unordered_map<std::string, std::vector<int64_t>>&
+        axis_to_dim_map,
     bool trans_axis) {
   TensorDistAttr dist_attr = CopyTensorDistAttrForOutput(origin_dist_attr);
-  std::vector<int64_t> infered_dims_mapping;
-  infered_dims_mapping.reserve(tensor_axis.size());
+  std::vector<std::vector<int64_t>> inferred_dims_mapping;
+  inferred_dims_mapping.reserve(tensor_axis.size());
 
   for (size_t i = 0; i < tensor_axis.size(); ++i) {
-    if (shape.size() > i && shape[i] == 1) {
-      infered_dims_mapping.push_back(-1);
+    if (i < shape.size() && shape[i] == 1) {
+      inferred_dims_mapping.push_back(std::vector<int64_t>({}));
     } else {
       auto itr = axis_to_dim_map.find(tensor_axis.substr(i, 1));
       if (itr == axis_to_dim_map.end()) {
         // infer the k axis as -1 in inferbackward.
-        infered_dims_mapping.push_back(-1);
+        inferred_dims_mapping.push_back(std::vector<int64_t>({}));
       } else {
-        infered_dims_mapping.push_back(itr->second);
+        inferred_dims_mapping.push_back(itr->second);
       }
     }
   }
 
   if (trans_axis) {
-    std::iter_swap(infered_dims_mapping.end() - 2,
-                   infered_dims_mapping.end() - 1);
+    std::iter_swap(inferred_dims_mapping.end() - 2,
+                   inferred_dims_mapping.end() - 1);
   }
 
-  dist_attr.set_dims_mapping(infered_dims_mapping);
+  dist_attr.set_dims_mapping(inferred_dims_mapping);
   return dist_attr;
 }
 
@@ -118,14 +117,16 @@ SpmdInfo MatmulInferSpmd(const DistMetaTensor& x,
                          bool trans_x,
                          bool trans_y) {
   // Step0: verify input args based on matmul logic
-  auto ori_x_shape = common::vectorize(x.dims());
-  auto ori_y_shape = common::vectorize(y.dims());
+  auto ori_x_shape = vectorize(x.dims());
+  auto ori_y_shape = vectorize(y.dims());
   int x_ndim = static_cast<int>(ori_x_shape.size());
   int y_ndim = static_cast<int>(ori_y_shape.size());
   const auto& x_dist_attr_src = x.dist_attr();
   const auto& y_dist_attr_src = y.dist_attr();
-  std::vector<int64_t> x_dims_mapping = x_dist_attr_src.dims_mapping();
-  std::vector<int64_t> y_dims_mapping = y_dist_attr_src.dims_mapping();
+  std::vector<std::vector<int64_t>> x_dims_mapping =
+      x_dist_attr_src.multi_dims_mapping();
+  std::vector<std::vector<int64_t>> y_dims_mapping =
+      y_dist_attr_src.multi_dims_mapping();
   PADDLE_ENFORCE_EQ(
       x_ndim,
       x_dims_mapping.size(),
@@ -176,14 +177,28 @@ SpmdInfo MatmulInferSpmd(const DistMetaTensor& x,
     std::iter_swap(y_dims_mapping.end() - 2, y_dims_mapping.end() - 1);
   }
   // Step2.1: Sharding Merge
-  std::pair<std::string, std::vector<int64_t>> x_pair(x_axes, x_dims_mapping);
-  std::pair<std::string, std::vector<int64_t>> y_pair(y_axes, y_dims_mapping);
-  auto axis_to_dim_map = ShardingMergeForTensors({x_pair, y_pair});
+  std::pair<std::string, std::vector<std::vector<int64_t>>> x_pair(
+      x_axes, x_dims_mapping);
+  std::pair<std::string, std::vector<std::vector<int64_t>>> y_pair(
+      y_axes, y_dims_mapping);
+  auto x_shape = vectorize(x.dims());
+  auto y_shape = vectorize(y.dims());
+  if (trans_x) {
+    std::iter_swap(x_shape.end() - 2, x_shape.end() - 1);
+  }
+  if (trans_y) {
+    std::iter_swap(y_shape.end() - 2, y_shape.end() - 1);
+  }
+  const auto& axis_sizes =
+      GetAxesSizes({{x_axes, x_shape}, {y_axes, y_shape}}, true);
+  const auto& mesh_shape = x_dist_attr_src.process_mesh().shape();
+  auto axis_to_dim_map =
+      ShardingMergeForTensorsMatmul({x_pair, y_pair}, axis_sizes, mesh_shape);
 
   // Step2.2: Infer Output's Dims Mapping.
   TensorDistAttr output_dist_attr_dst =
       CopyTensorDistAttrForOutput(x_dist_attr_src);
-  std::vector<int64_t> out_dims_mapping;
+  std::vector<std::vector<int64_t>> out_dims_mapping;
   out_dims_mapping.reserve(out_axes.size());
   for (size_t i = 0; i < out_axes.size(); ++i) {
     out_dims_mapping.push_back(axis_to_dim_map[out_axes.substr(i, 1)]);
@@ -191,17 +206,9 @@ SpmdInfo MatmulInferSpmd(const DistMetaTensor& x,
   output_dist_attr_dst.set_dims_mapping(out_dims_mapping);
 
   // Step2.3: Merge and get Inputs' New Dims Mapping.
-  auto x_shape = common::vectorize(x.dims());
-  auto y_shape = common::vectorize(y.dims());
-  if (trans_x) {
-    std::iter_swap(x_shape.end() - 2, x_shape.end() - 1);
-  }
-  if (trans_y) {
-    std::iter_swap(y_shape.end() - 2, y_shape.end() - 1);
-  }
-  TensorDistAttr x_dist_attr_dst = GetMatmulInferedDistAttr(
+  TensorDistAttr x_dist_attr_dst = GetMatmulInferredDistAttr(
       x_dist_attr_src, x_shape, x_axes, axis_to_dim_map, trans_x);
-  TensorDistAttr y_dist_attr_dst = GetMatmulInferedDistAttr(
+  TensorDistAttr y_dist_attr_dst = GetMatmulInferredDistAttr(
       y_dist_attr_src, y_shape, y_axes, axis_to_dim_map, trans_y);
 
   // Step2.3: Handle Partial
@@ -226,11 +233,11 @@ SpmdInfo MatmulInferSpmdReverse(const DistMetaTensor& x,
                                 const DistMetaTensor& out,
                                 bool trans_x,
                                 bool trans_y) {
-  auto out_shape = common::vectorize(out.dims());
+  auto out_shape = vectorize(out.dims());
   int out_ndim = static_cast<int>(out_shape.size());
 
-  auto x_shape = common::vectorize(x.dims());
-  auto y_shape = common::vectorize(y.dims());
+  auto x_shape = vectorize(x.dims());
+  auto y_shape = vectorize(y.dims());
   int x_ndim = static_cast<int>(x_shape.size());
   int y_ndim = static_cast<int>(y_shape.size());
   int max_ndim = std::max(x_ndim, y_ndim);
@@ -243,7 +250,8 @@ SpmdInfo MatmulInferSpmdReverse(const DistMetaTensor& x,
                         out_ndim));
 
   auto out_dist_attr_src = out.dist_attr();
-  std::vector<int64_t> out_dims_mapping = out_dist_attr_src.dims_mapping();
+  std::vector<std::vector<int64_t>> out_dims_mapping =
+      out_dist_attr_src.multi_dims_mapping();
 
   // step1: build Einsum Notation
   std::string x_axes;
@@ -253,12 +261,14 @@ SpmdInfo MatmulInferSpmdReverse(const DistMetaTensor& x,
 
   // step2: Sharding Propagation
   // should not use input dims mapping for backward sharding merge
-  auto axis_to_dim_map =
-      ShardingMergeForTensors({{out_axes, out_dims_mapping}}, false);
+  const auto& axis_size = GetAxesSizes({{out_axes, out_shape}}, true);
+  const auto& mesh_shape = out_dist_attr_src.process_mesh().shape();
+  auto axis_to_dim_map = ShardingMergeForTensors(
+      {{out_axes, out_dims_mapping}}, axis_size, mesh_shape, false);
 
-  TensorDistAttr x_dist_attr_dst = GetMatmulInferedDistAttr(
+  TensorDistAttr x_dist_attr_dst = GetMatmulInferredDistAttr(
       x.dist_attr(), x_shape, x_axes, axis_to_dim_map, trans_x);
-  TensorDistAttr y_dist_attr_dst = GetMatmulInferedDistAttr(
+  TensorDistAttr y_dist_attr_dst = GetMatmulInferredDistAttr(
       y.dist_attr(), y_shape, y_axes, axis_to_dim_map, trans_y);
 
   // step3: Handle Partial
@@ -280,7 +290,8 @@ static bool DistAttrsAreBasicallyEqual(
     const phi::distributed::TensorDistAttr& in_dist_attr,
     const phi::distributed::TensorDistAttr& out_dist_attr) {
   return (in_dist_attr.process_mesh() == out_dist_attr.process_mesh() &&
-          in_dist_attr.dims_mapping() == out_dist_attr.dims_mapping() &&
+          in_dist_attr.multi_dims_mapping() ==
+              out_dist_attr.multi_dims_mapping() &&
           in_dist_attr.partial_status() == out_dist_attr.partial_status());
 }
 
@@ -291,7 +302,7 @@ SpmdInfo MatmulGradInferSpmd(const DistMetaTensor& x_,
                              bool trans_y) {
   DistMetaTensor x = x_, y = y_;
   auto get_attr = [](const ArgDistAttr& attr) -> const TensorDistAttr& {
-    return paddle::get<TensorDistAttr>(attr);
+    return PADDLE_GET_CONST(TensorDistAttr, attr);
   };
 
   auto confirm_dist_attr_same_fn = [&](const ArgDistAttr& x_dist_attr,
@@ -339,7 +350,8 @@ SpmdInfo MatmulGradInferSpmd(const DistMetaTensor& x_,
       [&](const TensorDistAttr& dist_attr,
           const TensorDistAttr& infer_dist_attr) -> bool {
     return (dist_attr.process_mesh() != infer_dist_attr.process_mesh() ||
-            dist_attr.dims_mapping() != infer_dist_attr.dims_mapping() ||
+            dist_attr.multi_dims_mapping() !=
+                infer_dist_attr.multi_dims_mapping() ||
             dist_attr.partial_status() != infer_dist_attr.partial_status());
   };
   if (is_dist_attr_not_equal(x.dist_attr(), infer_x_dist_attr)) {
@@ -348,6 +360,10 @@ SpmdInfo MatmulGradInferSpmd(const DistMetaTensor& x_,
   if (is_dist_attr_not_equal(y.dist_attr(), infer_y_dist_attr)) {
     y = DistMetaTensor(y.dims(), infer_y_dist_attr);
   }
+
+  const std::vector<int64_t> x_shape = vectorize(x.dims());
+  const std::vector<int64_t> y_shape = vectorize(y.dims());
+  const std::vector<int64_t> out_grad_shape = vectorize(out_grad.dims());
 
   SpmdInfo dx_spmd_info;
   SpmdInfo dy_spmd_info;
@@ -364,10 +380,10 @@ SpmdInfo MatmulGradInferSpmd(const DistMetaTensor& x_,
       confirm_dist_attr_same_fn(
           dy_spmd_info.first[0], out_grad, "trans x&y: dy-out_grad");
       confirm_dist_attr_same_fn(dy_spmd_info.first[1], x, "trans x&y: dy-x");
-      auto x_grad =
-          ReduceGradBroadCastDims(x.dist_attr(), dx_spmd_info.second[0]);
-      auto y_grad =
-          ReduceGradBroadCastDims(y.dist_attr(), dy_spmd_info.second[0]);
+      auto x_grad = ReduceGradBroadCastDims(
+          x.dist_attr(), dx_spmd_info.second[0], x_shape, out_grad_shape);
+      auto y_grad = ReduceGradBroadCastDims(
+          y.dist_attr(), dy_spmd_info.second[0], y_shape, out_grad_shape);
       return {
           {dy_spmd_info.first[1], dx_spmd_info.first[0], dx_spmd_info.first[1]},
           {x_grad, y_grad}};
@@ -383,10 +399,10 @@ SpmdInfo MatmulGradInferSpmd(const DistMetaTensor& x_,
       confirm_dist_attr_same_fn(dy_spmd_info.first[0], x, "trans x: dy-x");
       confirm_dist_attr_same_fn(
           dy_spmd_info.first[1], out_grad, "trans x: dy-out_grad");
-      auto x_grad =
-          ReduceGradBroadCastDims(x.dist_attr(), dx_spmd_info.second[0]);
-      auto y_grad =
-          ReduceGradBroadCastDims(y.dist_attr(), dy_spmd_info.second[0]);
+      auto x_grad = ReduceGradBroadCastDims(
+          x.dist_attr(), dx_spmd_info.second[0], x_shape, out_grad_shape);
+      auto y_grad = ReduceGradBroadCastDims(
+          y.dist_attr(), dy_spmd_info.second[0], y_shape, out_grad_shape);
       return {
           {dy_spmd_info.first[0], dx_spmd_info.first[0], dx_spmd_info.first[1]},
           {x_grad, y_grad}};
@@ -404,10 +420,10 @@ SpmdInfo MatmulGradInferSpmd(const DistMetaTensor& x_,
       confirm_dist_attr_same_fn(
           dy_spmd_info.first[0], out_grad, "trans y: dy-out_grad");
       confirm_dist_attr_same_fn(dy_spmd_info.first[1], x, "trans y: dy-x");
-      auto x_grad =
-          ReduceGradBroadCastDims(x.dist_attr(), dx_spmd_info.second[0]);
-      auto y_grad =
-          ReduceGradBroadCastDims(y.dist_attr(), dy_spmd_info.second[0]);
+      auto x_grad = ReduceGradBroadCastDims(
+          x.dist_attr(), dx_spmd_info.second[0], x_shape, out_grad_shape);
+      auto y_grad = ReduceGradBroadCastDims(
+          y.dist_attr(), dy_spmd_info.second[0], y_shape, out_grad_shape);
       return {
           {dy_spmd_info.first[1], dx_spmd_info.first[1], dx_spmd_info.first[0]},
           {x_grad, y_grad}};
@@ -422,10 +438,10 @@ SpmdInfo MatmulGradInferSpmd(const DistMetaTensor& x_,
       confirm_dist_attr_with_arg_same_fn(dx_spmd_info.first[0],
                                          dy_spmd_info.first[1],
                                          "no trans: dy-out_grad");
-      auto x_grad =
-          ReduceGradBroadCastDims(x.dist_attr(), dx_spmd_info.second[0]);
-      auto y_grad =
-          ReduceGradBroadCastDims(y.dist_attr(), dy_spmd_info.second[0]);
+      auto x_grad = ReduceGradBroadCastDims(
+          x.dist_attr(), dx_spmd_info.second[0], x_shape, out_grad_shape);
+      auto y_grad = ReduceGradBroadCastDims(
+          y.dist_attr(), dy_spmd_info.second[0], y_shape, out_grad_shape);
       return {
           {dy_spmd_info.first[0], dx_spmd_info.first[1], dx_spmd_info.first[0]},
           {x_grad, y_grad}};

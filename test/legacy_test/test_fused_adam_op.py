@@ -15,7 +15,7 @@
 import unittest
 
 import numpy as np
-from op_test import OpTest
+from op_test import OpTest, is_custom_device
 
 import paddle
 
@@ -161,7 +161,7 @@ class TestFusedAdamOp(OpTest):
                 ("moments2_max" + str(i), np.zeros_like(inputs_list[0][i]))
                 for i in range(num)
             ],
-            'LearningRate': np.array([learning_rate]).astype("float32"),
+            'LearningRate': np.array([learning_rate]).astype("float64"),
             'Beta1Pows': [
                 ("beta1_pows" + str(i), inputs_list[4][i]) for i in range(num)
             ],
@@ -205,7 +205,7 @@ class TestFusedAdamOp(OpTest):
 
     def test_check_output(self):
         paddle.enable_static()
-        if paddle.is_compiled_with_cuda():
+        if paddle.is_compiled_with_cuda() or is_custom_device():
             self.check_output(
                 no_check_set=self.no_check_set, check_dygraph=False
             )

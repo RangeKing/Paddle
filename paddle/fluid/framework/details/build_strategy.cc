@@ -23,6 +23,7 @@ limitations under the License. */
 
 PD_DECLARE_bool(convert_all_blocks);
 COMMON_DECLARE_bool(use_mkldnn);
+COMMON_DECLARE_bool(use_onednn);
 #ifdef PADDLE_WITH_CINN
 PD_DECLARE_bool(use_cinn);
 #endif
@@ -113,15 +114,15 @@ class ParallelExecutorPassBuilder : public ir::PassBuilder {
   }
 
   void AppendOpFusePasses() {
-    // 1. infernce pass if enabled.
+    // 1. inference pass if enabled.
     AppendPassWithCheck(
         strategy_.enable_inference_pass_ && strategy_.delete_dropout_,
         "delete_dropout_op_x_pass");
     AppendPassWithCheck(
-        strategy_.enable_inference_pass_ && strategy_.use_mkldnn_,
+        strategy_.enable_inference_pass_ && strategy_.use_onednn_,
         "onednn_placement_pass");
 
-    // 2. trainning pass
+    // 2. training pass
 #ifdef PADDLE_WITH_CUDNN_FRONTEND
     AppendPassWithCheck(strategy_.fuse_dot_product_attention_,
                         "fuse_dot_product_attention_pass");
@@ -203,22 +204,23 @@ class ParallelExecutorPassBuilder : public ir::PassBuilder {
 
   void AppendPassToSetMkldnnAttr(const std::string &pass_name) {
 #ifdef PADDLE_WITH_DNNL
-    if (FLAGS_use_mkldnn) {
+    if (FLAGS_use_mkldnn || FLAGS_use_onednn) {
       AppendPass(pass_name);
-    } else if (!strategy_.mkldnn_enabled_op_types_.empty()) {
-      VLOG(1) << "mkldnn_enabled_op_types specify the operator type list to "
-                 "use MKLDNN acceleration. It is null in default, means "
-                 "that all the operators supported by MKLDNN will be "
+    } else if (!strategy_.onednn_enabled_op_types_.empty()) {
+      VLOG(1) << "onednn_enabled_op_types specify the operator type list to "
+                 "use ONEDNN acceleration. It is null in default, means "
+                 "that all the operators supported by ONEDNN will be "
                  "accelerated. And it should not be set when "
-                 "FLAGS_use_mkldnn=false.";
+                 "FLAGS_use_onednn=false.";
     }
 #else
-    PADDLE_ENFORCE_NE(FLAGS_use_mkldnn,
-                      true,
-                      common::errors::PreconditionNotMet(
-                          "FLAGS_use_mkldnn has been set to True, but "
-                          "PaddlePaddle is compiled without MKLDNN. "
-                          "Please compile PaddlePaddle with MKLDNN first."));
+    PADDLE_ENFORCE_NE(
+        FLAGS_use_mkldnn || FLAGS_use_onednn,
+        true,
+        common::errors::PreconditionNotMet(
+            "FLAGS_use_mkldnn or FLAGS_use_onednn has been set to True, but "
+            "PaddlePaddle is compiled without ONEDNN. "
+            "Please compile PaddlePaddle with ONEDNN first."));
 #endif
   }
 
@@ -281,13 +283,13 @@ ir::Graph *BuildStrategy::Apply(ir::Graph *graph,
 
 #if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL)
       platform::NCCLCommunicator *nctx =
-          (use_device == p::kCUDA) ? nccl_ctxs : nullptr;
+          (use_device == kCUDA) ? nccl_ctxs : nullptr;
       pass->Erase(kNCCLCtxs);
       pass->SetNotOwned<platform::NCCLCommunicator>(kNCCLCtxs, nctx);
 #elif defined(PADDLE_WITH_XPU) && defined(PADDLE_WITH_XPU_BKCL)
       // ToDo: more check
       platform::BKCLCommunicator *bkcl_ctx =
-          (use_device == p::kXPU) ? bkcl_ctxs : nullptr;
+          (use_device == kXPU) ? bkcl_ctxs : nullptr;
       pass->Erase(kBKCLCtxs);
       pass->SetNotOwned<platform::BKCLCommunicator>(kBKCLCtxs, bkcl_ctx);
 #endif
@@ -295,32 +297,32 @@ ir::Graph *BuildStrategy::Apply(ir::Graph *graph,
       pass->Erase(kNRanks);
       pass->Set<size_t>(kNRanks, new size_t(nranks));
     } else if (pass->Type() == "fuse_relu_depthwise_conv_pass") {
-      if (use_device != p::kCUDA) {
+      if (use_device != kCUDA) {
         VLOG(1) << "fuse_relu_depthwise_conv_pass is only supported on "
                    "GPU, skipped.";
         continue;
       }
     } else if (pass->Type() == "fusion_group_pass") {
-      pass->Set<bool>("use_gpu", new bool((use_device == p::kCUDA)));
-      if (use_device != p::kCUDA) {
+      pass->Set<bool>("use_gpu", new bool((use_device == kCUDA)));
+      if (use_device != kCUDA) {
         VLOG(1) << "fusion_group_pass is only supported on GPU, skipped.";
         continue;
       }
     } else if (pass->Type() == "fuse_bn_act_pass") {
-      if (use_device != p::kCUDA) {
+      if (use_device != kCUDA) {
         VLOG(1) << "fuse_bn_act_pass is only supported on "
                    "GPU, skipped.";
         continue;
       }
     } else if (pass->Type() == "fuse_bn_add_act_pass") {
-      if (use_device != p::kCUDA) {
+      if (use_device != kCUDA) {
         VLOG(1) << "fuse_bn_add_act_pass is only supported on "
                    "GPU, skipped.";
         continue;
       }
     } else if (pass->Type() == "onednn_placement_pass") {
-      pass->Set("mkldnn_enabled_op_types",
-                new std::unordered_set<std::string>(mkldnn_enabled_op_types_));
+      pass->Set("onednn_enabled_op_types",
+                new std::unordered_set<std::string>(onednn_enabled_op_types_));
     }
     VLOG(1) << "Start Apply Pass " << pass->Type();
     if (FLAGS_convert_all_blocks) {
@@ -356,8 +358,6 @@ USE_PASS(delete_dropout_op_x_pass);
 #ifdef PADDLE_WITH_CUDA
 USE_PASS(fused_attention_pass);
 USE_PASS(fuse_adamw_op_pass);
-#endif
-#ifdef PADDLE_WITH_CUDA
 USE_PASS(fused_feedforward_pass);
 #endif
 #ifdef PADDLE_WITH_DNNL

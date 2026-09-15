@@ -45,7 +45,7 @@ namespace py = pybind11;
 namespace reader = operators::reader;
 
 static paddle::optional<std::vector<int64_t>> DiffTensorShape(
-    const phi::DenseTensor &tensor,
+    const DenseTensor &tensor,
     const std::vector<int64_t> &target_shape,
     size_t num_places) {
   auto tensor_shape = tensor.dims();
@@ -103,7 +103,7 @@ static paddle::optional<std::vector<int64_t>> DiffTensorShape(
 // Check whether the tensor shape matches the VarDesc shape
 // Return the different shape if exists
 static paddle::optional<std::vector<int64_t>> DiffTensorShapeWithVarDesc(
-    const phi::DenseTensor &tensor,
+    const DenseTensor &tensor,
     const framework::VarDesc &var_desc,
     size_t num_places) {
   auto desc_shape = var_desc.GetShape();
@@ -127,7 +127,7 @@ template <typename QueueType>
 class MultiDeviceFeedReader {
  public:
   using ResultDictList =
-      std::vector<std::unordered_map<std::string, phi::DenseTensor>>;
+      std::vector<std::unordered_map<std::string, DenseTensor>>;
   using ResultList = std::vector<phi::TensorArray>;
 
   static constexpr bool kKeepOrder =
@@ -143,7 +143,8 @@ class MultiDeviceFeedReader {
       const std::vector<phi::Place> &dst_places,
       bool use_double_buffer,
       bool drop_last,
-      bool pin_memory = false)
+      bool pin_memory = false,
+      int reader_buffer_size = 2)
       : queue_(queue),
         names_(names),
         pool_(new ::ThreadPool(dst_places.size())),
@@ -152,7 +153,8 @@ class MultiDeviceFeedReader {
         exceptions_(),
         ret_(),
         drop_last_(drop_last),
-        pin_memory_(pin_memory) {
+        pin_memory_(pin_memory),
+        reader_buffer_size_(reader_buffer_size) {
     std::vector<phi::DDim> dims;
     for (auto &shape : shapes) {
       dims.push_back(common::make_ddim(shape));
@@ -172,15 +174,19 @@ class MultiDeviceFeedReader {
     };
 
     readers_.reserve(dst_places.size());
+    if (reader_buffer_size_ <= 2) {
+      reader_buffer_size_ = 2;
+    }
     for (size_t i = 0; i < dst_places.size(); ++i) {
       auto &p = dst_places[i];
       auto *holder = new framework::ReaderHolder();
       auto reader = create_or_get_reader(i);
       if (use_double_buffer) {
-        VLOG(10) << "Creating " << i << "-th BufferedReader";
+        VLOG(3) << "Creating " << i << "-th BufferedReader"
+                << " with buffer_size: " << reader_buffer_size_;
         holder->Reset(
             framework::MakeDecoratedReader<operators::reader::BufferedReader>(
-                reader, p, 2, pin_memory_));
+                reader, p, reader_buffer_size_, pin_memory_));
       } else {
         if (phi::is_gpu_place(p)) {
           PADDLE_THROW(common::errors::PermissionDenied(
@@ -349,6 +355,7 @@ class MultiDeviceFeedReader {
   std::vector<phi::TensorArray> ret_;
   bool drop_last_;
   bool pin_memory_;
+  int reader_buffer_size_;
 };
 
 template <typename QueueType>
@@ -370,7 +377,7 @@ void BindMultiDeviceReader(py::module *module, const char *reader_name) {
             auto &tensor_list = result_list[0];
             std::vector<std::shared_ptr<imperative::VarBase>> var_list;
             var_list.reserve(tensor_list.size());
-            auto func = [](phi::DenseTensor &dense_tensor) {
+            auto func = [](DenseTensor &dense_tensor) {
               std::string act_name =
                   imperative::GetCurrentTracer()->GenerateUniqueName(
                       "generated_var");
@@ -379,8 +386,7 @@ void BindMultiDeviceReader(py::module *module, const char *reader_name) {
               new_var->SetType(framework::proto::VarType::DENSE_TENSOR);
               new_var->SetDataType(
                   framework::TransToProtoVarType(dense_tensor.dtype()));
-              auto *tensor =
-                  new_var->MutableVar()->GetMutable<phi::DenseTensor>();
+              auto *tensor = new_var->MutableVar()->GetMutable<DenseTensor>();
               *tensor = std::move(dense_tensor);
               return new_var;
             };
@@ -401,7 +407,7 @@ void BindReader(py::module *module) {
   auto &m = *module;
 
   m.def("diff_tensor_shape",
-        [](const phi::DenseTensor &tensor,
+        [](const DenseTensor &tensor,
            const framework::VarDesc &var_desc,
            size_t num_places) -> py::object {
           auto diff = DiffTensorShapeWithVarDesc(tensor, var_desc, num_places);
@@ -413,7 +419,7 @@ void BindReader(py::module *module) {
         });
 
   m.def("diff_tensor_shape",
-        [](const phi::DenseTensor &tensor,
+        [](const DenseTensor &tensor,
            const std::vector<int64_t> &target_shape,
            size_t num_places) -> py::object {
           auto diff = DiffTensorShape(tensor, target_shape, num_places);
@@ -501,7 +507,8 @@ void BindReader(py::module *module) {
          const std::vector<phi::Place> &dst_places,
          bool use_double_buffer,
          bool drop_last,
-         bool pin_memory) {
+         bool pin_memory,
+         int reader_buffer_size) {
         return new MultiDeviceFeedReader<reader::DenseTensorBlockingQueue>(
             queue,
             names,
@@ -511,8 +518,19 @@ void BindReader(py::module *module) {
             dst_places,
             use_double_buffer,
             drop_last,
-            pin_memory);
+            pin_memory,
+            reader_buffer_size);
       },
+      py::arg("queue"),
+      py::arg("names"),
+      py::arg("shapes"),
+      py::arg("dtypes"),
+      py::arg("need_check_feed"),
+      py::arg("dst_places"),
+      py::arg("use_double_buffer"),
+      py::arg("drop_last"),
+      py::arg("pin_memory"),
+      py::arg("reader_buffer_size") = 2,
       py::return_value_policy::take_ownership);
 
   m.def(
@@ -526,7 +544,8 @@ void BindReader(py::module *module) {
          const std::vector<phi::Place> &dst_places,
          bool use_double_buffer,
          bool drop_last,
-         bool pin_memory) {
+         bool pin_memory,
+         int reader_buffer_size) {
         queue->SetDeviceCount(dst_places.size());
         return new MultiDeviceFeedReader<
             reader::OrderedMultiDeviceDenseTensorBlockingQueue>(
@@ -538,8 +557,19 @@ void BindReader(py::module *module) {
             dst_places,
             use_double_buffer,
             drop_last,
-            pin_memory);
+            pin_memory,
+            reader_buffer_size);
       },
+      py::arg("queue"),
+      py::arg("names"),
+      py::arg("shapes"),
+      py::arg("dtypes"),
+      py::arg("need_check_feed"),
+      py::arg("dst_places"),
+      py::arg("use_double_buffer"),
+      py::arg("drop_last"),
+      py::arg("pin_memory"),
+      py::arg("reader_buffer_size") = 2,
       py::return_value_policy::take_ownership);
 }
 

@@ -29,20 +29,20 @@ size_t FindPos(const std::vector<int64_t>& rows, int64_t value) {
 }  // namespace
 
 template <typename T>
-struct DenseAdagradFunctor<phi::CPUContext, T> {
-  void operator()(const phi::CPUContext& ctx,
+struct DenseAdagradFunctor<CPUContext, T> {
+  void operator()(const CPUContext& dev_ctx,
                   const DenseTensor& param_t,
                   const DenseTensor& grad_t,
                   const DenseTensor& moment_t,
                   const DenseTensor& learning_rate,
-                  const paddle::optional<DenseTensor>& master_param,
+                  const optional<DenseTensor>& master_param,
                   float epsilon_t,
                   bool multi_precision,
                   DenseTensor* param_out_tensor,
                   DenseTensor* moment_out_tensor,
                   DenseTensor* master_param_outs) {
-    ctx.template Alloc<T>(param_out_tensor);
-    ctx.template Alloc<T>(moment_out_tensor);
+    dev_ctx.template Alloc<T>(param_out_tensor);
+    dev_ctx.template Alloc<T>(moment_out_tensor);
 
     T epsilon = static_cast<T>(epsilon_t);
 
@@ -54,7 +54,7 @@ struct DenseAdagradFunctor<phi::CPUContext, T> {
 
     auto param_out = EigenVector<T>::Flatten(*param_out_tensor);
     auto moment_out = EigenVector<T>::Flatten(*moment_out_tensor);
-    auto place = *ctx.eigen_device();
+    auto place = *dev_ctx.eigen_device();
 
     moment_out.device(place) = moment + grad * grad;
     Eigen::DSizes<int, 1> m_dsize(static_cast<int>(moment_out_tensor->numel()));
@@ -65,26 +65,25 @@ struct DenseAdagradFunctor<phi::CPUContext, T> {
 };
 
 template <typename T>
-struct SparseAdagradFunctor<phi::CPUContext, T> {
-  void operator()(const phi::CPUContext& context,
-                  const phi::SelectedRows& grad,
+struct SparseAdagradFunctor<CPUContext, T> {
+  void operator()(const CPUContext& dev_ctx,
+                  const SelectedRows& grad,
                   const DenseTensor& learning_rate,
                   T epsilon,
                   DenseTensor* moment,
                   DenseTensor* param) {
     // 1. g_m.rows = set(g.rows)
     auto grad_width = grad.value().dims()[1];
-    phi::funcs::scatter::MergeAdd<phi::CPUContext, T> merge_func;
-    auto grad_merge = merge_func(context, grad);
+    funcs::scatter::MergeAdd<CPUContext, T> merge_func;
+    auto grad_merge = merge_func(dev_ctx, grad);
     auto& merge_rows = grad_merge.rows();
     auto* grad_merge_data = grad_merge.mutable_value()->template data<T>();
 
     // 2. m += g_m * g_m
-    auto grad_square =
-        SquareSelectedRows<phi::CPUContext, T>(context, grad_merge);
+    auto grad_square = SquareSelectedRows<CPUContext, T>(dev_ctx, grad_merge);
 
-    phi::funcs::SelectedRowsAddToTensor<phi::CPUContext, T> functor;
-    functor(context, grad_square, moment);
+    funcs::SelectedRowsAddToTensor<CPUContext, T> functor;
+    functor(dev_ctx, grad_square, moment);
 
     // 3. update parameter
     auto* lr = learning_rate.data<T>();
@@ -101,10 +100,10 @@ struct SparseAdagradFunctor<phi::CPUContext, T> {
   }
 };
 
-template struct SparseAdagradFunctor<phi::CPUContext, float>;
-template struct SparseAdagradFunctor<phi::CPUContext, double>;
-template struct DenseAdagradFunctor<phi::CPUContext, float>;
-template struct DenseAdagradFunctor<phi::CPUContext, double>;
+template struct SparseAdagradFunctor<CPUContext, float>;
+template struct SparseAdagradFunctor<CPUContext, double>;
+template struct DenseAdagradFunctor<CPUContext, float>;
+template struct DenseAdagradFunctor<CPUContext, double>;
 
 }  // namespace phi
 

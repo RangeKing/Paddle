@@ -75,7 +75,7 @@ class QuantConfig:
         weight(QuanterFactory | None): The global quantizer used to quantize the weights.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> from paddle.quantization import QuantConfig
             >>> from paddle.quantization.quanters import FakeQuanterWithAbsMaxObserver
@@ -121,7 +121,7 @@ class QuantConfig:
             weight(QuanterFactory | None): Quanter used for weights. Default is None.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> from paddle.nn import Linear
@@ -129,9 +129,9 @@ class QuantConfig:
                 >>> from paddle.quantization.quanters import FakeQuanterWithAbsMaxObserver
 
                 >>> class Model(paddle.nn.Layer):
-                ...    def __init__(self):
-                ...        super().__init__()
-                ...        self.fc = Linear(576, 120)
+                ...     def __init__(self):
+                ...         super().__init__()
+                ...         self.fc = Linear(576, 120)
                 >>> model = Model()
                 >>> quanter = FakeQuanterWithAbsMaxObserver(moving_rate=0.9)
                 >>> q_config = QuantConfig(activation=None, weight=None)
@@ -170,7 +170,7 @@ class QuantConfig:
             weight(QuanterFactory | None): Quanter used for weights. Default is None.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> from paddle.nn import Linear
@@ -215,17 +215,19 @@ class QuantConfig:
 
         Args:
             layer_type(type[Layer] | list[type[Layer]]): One or a list of layers' type. It should be subclass of
-            `paddle.nn.Layer`. Python build-in function `type()` can be used to get the type of a layer.
+            `paddle.nn.Layer`. Python built-in function `type()` can be used to get the type of a layer.
             activation(QuanterFactory | None): Quanter used for activations. Default is None.
             weight(QuanterFactory | None): Quanter used for weights. Default is None.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> from paddle.nn import Linear
                 >>> from paddle.quantization import QuantConfig
-                >>> from paddle.quantization.quanters import FakeQuanterWithAbsMaxObserver
+                >>> from paddle.quantization.quanters import (
+                ...     FakeQuanterWithAbsMaxObserver,
+                ... )
 
                 >>> class Model(paddle.nn.Layer):
                 ...     def __init__(self):
@@ -269,12 +271,14 @@ class QuantConfig:
             target(type[Layer]): The type of layers that will be converted to.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> from paddle.nn import Conv2D
                 >>> from paddle.quantization import QuantConfig
-                >>> from paddle.quantization.quanters import FakeQuanterWithAbsMaxObserver
+                >>> from paddle.quantization.quanters import (
+                ...     FakeQuanterWithAbsMaxObserver,
+                ... )
                 >>> quanter = FakeQuanterWithAbsMaxObserver(moving_rate=0.9)
                 >>> q_config = QuantConfig(activation=None, weight=None)
                 >>> class CustomizedQuantedConv2D(paddle.nn.Layer):
@@ -285,7 +289,9 @@ class QuantConfig:
         """
         assert isinstance(source, type) and issubclass(
             source, paddle.nn.Layer
-        ), "The source layer to be placed should be a subclass of paddle.nn.Layer"
+        ), (
+            "The source layer to be placed should be a subclass of paddle.nn.Layer"
+        )
         assert isinstance(target, type) and issubclass(
             target, paddle.nn.Layer
         ), "The target layer should be a subclass of paddle.nn.qat.Layer"
@@ -302,7 +308,7 @@ class QuantConfig:
             layer_type(type[Layer]): The type of layer to be declared as leaf.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> from paddle.nn import Sequential
                 >>> from paddle.quantization import QuantConfig
@@ -409,7 +415,7 @@ class QuantConfig:
             model(Layer): The model to be specified by the config.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> from paddle.nn import Linear, Sequential
@@ -419,7 +425,7 @@ class QuantConfig:
                 >>> class Model(paddle.nn.Layer):
                 ...     def __init__(self):
                 ...         super().__init__()
-                ...         self.fc = Sequential(Linear(576, 120),Linear(576, 120))
+                ...         self.fc = Sequential(Linear(576, 120), Linear(576, 120))
                 >>> model = Model()
                 >>> quanter = FakeQuanterWithAbsMaxObserver(moving_rate=0.9)
                 >>> q_config = QuantConfig(activation=None, weight=None)

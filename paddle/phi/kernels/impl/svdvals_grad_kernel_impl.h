@@ -34,28 +34,32 @@ void SvdvalsGradKernel(const Context& dev_ctx,
                        const DenseTensor& x,
                        const DenseTensor& s_grad,
                        DenseTensor* x_grad) {
+  if (x_grad && x_grad->numel() == 0) {
+    dev_ctx.template Alloc<T>(x_grad);
+    return;
+  }
   auto x_dims = x.dims();
-  int rows = static_cast<int>(x_dims[x_dims.size() - 2]);
-  int cols = static_cast<int>(x_dims[x_dims.size() - 1]);
-  int batches = static_cast<int>(x.numel() / (rows * cols));
+  int64_t rows = x_dims[x_dims.size() - 2];
+  int64_t cols = x_dims[x_dims.size() - 1];
+  int64_t batches = x.numel() / (rows * cols);
   DenseTensor dX_term;
   if (batches == 1) {
     dX_term = Diag<T, Context>(dev_ctx, s_grad, 0, 0);
   } else {
     MetaTensor meta_dX(&dX_term);
     DiagEmbedInferMeta(s_grad, 0, -1, -2, &meta_dX);
-    phi::DiagEmbedKernel<T, Context>(dev_ctx, s_grad, 0, -1, -2, &dX_term);
+    DiagEmbedKernel<T, Context>(dev_ctx, s_grad, 0, -1, -2, &dX_term);
   }
 
   DenseTensor U, VH, S_recomputed;
   MetaTensor meta_u(&U), meta_s(&S_recomputed), meta_vh(&VH);
   SvdInferMeta(x, false, &meta_u, &meta_s, &meta_vh);
-  phi::SvdKernel<T, Context>(dev_ctx,
-                             x,
-                             false,
-                             &U,
-                             &S_recomputed,
-                             &VH);  // Crucial: recomputing SVD
+  SvdKernel<T, Context>(dev_ctx,
+                        x,
+                        false,
+                        &U,
+                        &S_recomputed,
+                        &VH);  // Crucial: recomputing SVD
   *x_grad =
       Matmul<T, Context>(dev_ctx, Matmul<T, Context>(dev_ctx, U, dX_term), VH);
 }

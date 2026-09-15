@@ -57,7 +57,7 @@ class TestFcXPUFusePass(PassAutoScanTest):
         # Here we will compose a program
         # Still has some risks that the program is invalid or cause bug while running
         # Use function `is_program_valid` to filter the invalid programs before running
-        # Use function `add_skip_pass_case` to ignore the programs even if they cause bug while runing
+        # Use function `add_skip_pass_case` to ignore the programs even if they cause bug while running
         matmul_v2_op = OpConfig(
             "matmul_v2",
             inputs={"X": ["matmul_v2_x"], "Y": ["matmul_v2_y"]},
@@ -91,7 +91,7 @@ class TestFcXPUFusePass(PassAutoScanTest):
         return program_config
 
     def test(self):
-        self.run_and_statis(
+        self.run_and_statistics(
             quant=False, max_examples=25, passes=["fc_xpu_fuse_pass"]
         )
 

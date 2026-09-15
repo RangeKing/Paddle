@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "paddle/phi/kernels/affine_channel_kernel.h"
 #include <string>
 #include <unordered_map>
-
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/funcs/eigen/common.h"
 
@@ -46,12 +46,12 @@ void AffineChannelKernel(const Context& dev_ctx,
   auto* y = out;
   dev_ctx.template Alloc<T>(y);
 
-  const phi::DataLayout layout = common::StringToDataLayout(data_layout);
+  const DataLayout layout = StringToDataLayout(data_layout);
 
   auto dims = x->dims();
   int N = static_cast<int>(dims[0]);
-  int C = static_cast<int>(
-      layout == phi::DataLayout::kNCHW ? dims[1] : dims[dims.size() - 1]);
+  int C = static_cast<int>(layout == DataLayout::NCHW ? dims[1]
+                                                      : dims[dims.size() - 1]);
   int HxW = static_cast<int>(x->numel() / N / C);
 
   auto* scale_d = scale->data<T>();
@@ -61,8 +61,8 @@ void AffineChannelKernel(const Context& dev_ctx,
 
   auto* x_d = x->data<T>();
   auto* y_d = y->data<T>();
-  if (layout == phi::DataLayout::kNCHW) {
-    int stride = C * HxW;
+  if (layout == DataLayout::NCHW) {
+    int64_t stride = static_cast<int64_t>(C) * HxW;
     for (int i = 0; i < N; i++) {
       ConstEigenArrayMap<T> x_e(x_d, HxW, C);
       EigenArrayMap<T> y_e(y_d, HxW, C);
@@ -71,7 +71,7 @@ void AffineChannelKernel(const Context& dev_ctx,
       y_d += stride;
     }
   } else {
-    int num = N * HxW;
+    int64_t num = static_cast<int64_t>(N) * HxW;
     ConstEigenArrayMap<T> x_e(x_d, C, num);
     EigenArrayMap<T> y_e(y_d, C, num);
     y_e = (x_e.colwise() * a_e).colwise() + b_e;

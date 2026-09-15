@@ -22,6 +22,7 @@ import numpy as np
 import paddle
 from paddle.base import framework
 from paddle.distribution import distribution
+from paddle.utils.decorator_utils import param_one_alias
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -55,7 +56,7 @@ class Geometric(distribution.Distribution):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.distribution import Geometric
@@ -143,7 +144,7 @@ class Geometric(distribution.Distribution):
 
         Examples:
 
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> from paddle.distribution import Geometric
@@ -176,7 +177,7 @@ class Geometric(distribution.Distribution):
 
         Examples:
 
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> from paddle.distribution import Geometric
@@ -195,6 +196,7 @@ class Geometric(distribution.Distribution):
                 f"Expected type of k is number.Real|framework.Variable|Value, but got {type(k)}"
             )
 
+    @param_one_alias(["shape", "sample_shape"])
     def sample(self, shape: Sequence[int] = []) -> Tensor:
         """Sample from Geometric distribution with sample shape.
 
@@ -206,14 +208,14 @@ class Geometric(distribution.Distribution):
 
         Examples:
 
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> from paddle.distribution import Geometric
 
                 >>> paddle.seed(2023)
                 >>> geom = Geometric(0.5)
-                >>> print(geom.sample((2,2)))
+                >>> print(geom.sample((2, 2)))
                 Tensor(shape=[2, 2], dtype=float32, place=Place(cpu), stop_gradient=True,
                 [[0., 0.],
                  [1., 0.]])
@@ -221,6 +223,7 @@ class Geometric(distribution.Distribution):
         with paddle.no_grad():
             return self.rsample(shape)
 
+    @param_one_alias(["shape", "sample_shape"])
     def rsample(self, shape: Sequence[int] = []) -> Tensor:
         """Generate samples of the specified shape.
 
@@ -232,14 +235,14 @@ class Geometric(distribution.Distribution):
 
         Examples:
 
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> from paddle.distribution import Geometric
 
                 >>> paddle.seed(2023)
                 >>> geom = Geometric(0.5)
-                >>> print(geom.rsample((2,2)))
+                >>> print(geom.rsample((2, 2)))
                 Tensor(shape=[2, 2], dtype=float32, place=Place(cpu), stop_gradient=True,
                 [[0., 0.],
                  [1., 0.]])
@@ -270,7 +273,7 @@ class Geometric(distribution.Distribution):
 
         Examples:
 
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> from paddle.distribution import Geometric
@@ -300,7 +303,7 @@ class Geometric(distribution.Distribution):
 
         Examples:
 
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> from paddle.distribution import Geometric
@@ -334,7 +337,7 @@ class Geometric(distribution.Distribution):
 
         Examples:
 
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> from paddle.distribution import Geometric

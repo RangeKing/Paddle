@@ -245,6 +245,32 @@ class SolveOpConfig : public SpecialOpConfig {
   }
 };
 
+class Pad3dOpConfig : public SpecialOpConfig {
+ public:
+  Pad3dOpConfig() : SpecialOpConfig(true, false, false) {}
+  bool supportsFormatCombination(int pos,
+                                 const nvinfer1::PluginTensorDesc* in_out,
+                                 int nb_inputs,
+                                 int nb_outputs,
+                                 bool is_fp16_supported) override {
+    if (pos == 0) {
+      bool type_ok = (in_out[pos].type == nvinfer1::DataType::kFLOAT ||
+                      (is_fp16_supported &&
+                       in_out[pos].type == nvinfer1::DataType::kHALF));
+      return type_ok;
+    }
+    if (pos == 1) {
+      bool type_ok = (in_out[pos].type == nvinfer1::DataType::kINT32);
+      return type_ok;
+    }
+    if (pos == 2) {
+      bool type_match = (in_out[0].type == in_out[pos].type);
+      bool format_match = (in_out[0].format == in_out[pos].format);
+      return type_match && format_match;
+    }
+  }
+};
+
 GenericPlugin::GenericPlugin(const std::string& op_name,
                              const std::string& attrs_map_info,
                              const std::vector<std::string>& inputs_type_info,
@@ -285,6 +311,7 @@ GenericPlugin::GenericPlugin(const std::string& op_name,
   special_op_config_["pd_op.argsort"] = std::make_unique<ArgsortOpConfig>();
   special_op_config_["pd_op.scatter"] = std::make_unique<ScatterOpConfig>();
   special_op_config_["pd_op.solve"] = std::make_unique<SolveOpConfig>();
+  special_op_config_["pd_op.pad3d"] = std::make_unique<Pad3dOpConfig>();
 }
 
 GenericPlugin::GenericPlugin(void const* serial_data, size_t serial_length) {
@@ -466,7 +493,7 @@ int GenericPlugin::initialize() TRT_NOEXCEPT {
                             op_name_.c_str()));
 
   phi::DeviceContextPool& pool = phi::DeviceContextPool::Instance();
-  phi::GPUPlace place(phi::backends::gpu::GetCurrentDeviceId());
+  GPUPlace place(phi::backends::gpu::GetCurrentDeviceId());
   auto* dev_ctx = static_cast<phi::GPUContext*>(pool.Get(place));
 
   std::vector<phi::DataType> precision_types{phi::DataType::FLOAT32,
@@ -546,7 +573,7 @@ int GenericPlugin::enqueue(const nvinfer1::PluginTensorDesc* input_desc,
                            void* const* outputs,
                            void* workspace,
                            cudaStream_t stream) TRT_NOEXCEPT {
-  phi::GPUPlace place(phi::backends::gpu::GetCurrentDeviceId());
+  GPUPlace place(phi::backends::gpu::GetCurrentDeviceId());
   phi::DeviceContextPool& pool = phi::DeviceContextPool::Instance();
   // TODO(inference): generic plugin do not support INT8 precision now.
   auto nvType2PhiType =
@@ -633,6 +660,10 @@ int GenericPlugin::enqueue(const nvinfer1::PluginTensorDesc* input_desc,
           phi::Attribute attr =
               phi::TensorRef(&((*dense_tensor_inputs_)[tensor_index]));
           phi_kernel_contexts_[data_type]->EmplaceBackAttr(attr);
+        } else if (operand_type.isa<paddle::dialect::DenseTensorType>()) {
+          phi::Attribute attr =
+              phi::TensorRef(&((*dense_tensor_inputs_)[tensor_index]));
+          phi_kernel_contexts_[data_type]->EmplaceBackAttr(attr);
         } else {
           PADDLE_THROW(common::errors::Unimplemented(
               " [%s] only support dense tensor ", tensor_attr_type));
@@ -673,8 +704,14 @@ int GenericPlugin::enqueue(const nvinfer1::PluginTensorDesc* input_desc,
       phi_kernel_contexts_[data_type]->EmplaceBackAttr(
           attrs_map_[t].dyn_cast<::pir::FloatAttribute>().data());
     } else if (attr_type_name == "pir::DoubleAttribute") {
-      phi_kernel_contexts_[data_type]->EmplaceBackAttr(
-          attrs_map_[t].dyn_cast<::pir::DoubleAttribute>().data());
+      if (attrs_map_[t].type_id() == ::pir::FloatAttribute::type_id()) {
+        const auto val = attrs_map_[t].dyn_cast<::pir::FloatAttribute>().data();
+        phi_kernel_contexts_[data_type]->EmplaceBackAttr(
+            static_cast<double>(val));
+      } else {
+        phi_kernel_contexts_[data_type]->EmplaceBackAttr(
+            attrs_map_[t].dyn_cast<::pir::DoubleAttribute>().data());
+      }
     } else if (attr_type_name == "pir::BoolAttribute") {
       phi_kernel_contexts_[data_type]->EmplaceBackAttr(
           attrs_map_[t].dyn_cast<::pir::BoolAttribute>().data());
@@ -829,7 +866,9 @@ int GenericPlugin::enqueue(const nvinfer1::PluginTensorDesc* input_desc,
         &((*dense_tensor_outputs_)[i]));
   }
   VLOG(8) << "EmplaceBackBackOutput done";
-  CHECK_EQ(phi_kernel_contexts_[data_type]->InputsSize(), getNbInputs());
+
+  CHECK_EQ(phi_kernel_contexts_[data_type]->InputsSize(),
+           getNbInputs() - tensor_attr_count);
   CHECK_EQ(phi_kernel_contexts_[data_type]->OutputsSize(), getNbOutputs());
   (*phi_kernels_[data_type])(phi_kernel_contexts_[data_type].get());
 

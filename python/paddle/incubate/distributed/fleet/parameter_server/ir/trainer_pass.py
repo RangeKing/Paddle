@@ -909,9 +909,9 @@ def find_heter_ops(program, default_device="cpu"):
 
             # for cpu-op block append
             if len(current_default_block_ops) > 1:
-                default_ops[default_device][
-                    block_index
-                ] = current_default_block_ops
+                default_ops[default_device][block_index] = (
+                    current_default_block_ops
+                )
                 program_block_ops.append(current_default_block_ops)
                 current_default_block_ops = []
                 block_index += 1
@@ -1552,9 +1552,9 @@ def union_forward_gradient_op(program_block_ops_list):
     '''
 
     union_program_block_ops_list = []
-    assert (
-        block_length % 2 != 0
-    ), "the length of program_block_ops_list should be odd"
+    assert block_length % 2 != 0, (
+        "the length of program_block_ops_list should be odd"
+    )
     for i in range(0, block_length // 2):
         block_op_list = {"forward": program_block_ops_list[i]}
         block_op_list.update(
@@ -2016,7 +2016,7 @@ def block_append_op(program, origin_program, block, op):
         new_op_desc.copy_from(op_desc)
         new_op_desc._set_attr(op_role_attr_name, backward)
 
-        # set device gard
+        # set device grad
         if op.desc.has_attr(device_attr_name):
             op_device = op_desc.attr(device_attr_name)
             new_op_desc._set_attr(device_attr_name, op_device)

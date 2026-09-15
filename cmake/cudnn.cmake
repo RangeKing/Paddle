@@ -2,6 +2,8 @@ if(NOT WITH_GPU)
   return()
 endif()
 
+include(${PROJECT_SOURCE_DIR}/cmake/architecture.cmake)
+
 if(WIN32)
   set(CUDNN_ROOT ${CUDA_TOOLKIT_ROOT_DIR})
 else()
@@ -10,18 +12,21 @@ else()
       CACHE PATH "CUDNN ROOT")
 endif()
 
+paddle_normalize_target_arch(TARGET_ARCH)
+paddle_detect_cuda_target_dir(CUDA_TARGET_DIR)
+
 find_path(
   CUDNN_INCLUDE_DIR cudnn.h
-  PATHS ${CUDNN_ROOT} ${CUDNN_ROOT}/include $ENV{CUDNN_ROOT}
-        $ENV{CUDNN_ROOT}/include ${CUDA_TOOLKIT_INCLUDE}
+  PATHS ${CUDNN_ROOT}
+        ${CUDNN_ROOT}/include
+        ${CUDNN_ROOT}/include/${TARGET_ARCH}-linux-gnu
+        $ENV{CUDNN_ROOT}
+        $ENV{CUDNN_ROOT}/include
+        ${CUDA_TOOLKIT_INCLUDE}
+        ${CUDA_TOOLKIT_ROOT_DIR}/targets/${CUDA_TARGET_DIR}/include
   NO_DEFAULT_PATH)
 
 get_filename_component(__libpath_hist ${CUDA_CUDART_LIBRARY} PATH)
-
-set(TARGET_ARCH "x86_64")
-if(NOT ${CMAKE_SYSTEM_PROCESSOR})
-  set(TARGET_ARCH ${CMAKE_SYSTEM_PROCESSOR})
-endif()
 
 list(
   APPEND
@@ -38,11 +43,16 @@ list(
   $ENV{CUDNN_ROOT}/lib/x64
   /usr/lib
   ${CUDA_TOOLKIT_ROOT_DIR}
-  ${CUDA_TOOLKIT_ROOT_DIR}/lib/x64)
+  ${CUDA_TOOLKIT_ROOT_DIR}/lib/x64
+  ${CUDA_TOOLKIT_ROOT_DIR}/targets/${CUDA_TARGET_DIR}/lib64
+  ${CUDA_TOOLKIT_ROOT_DIR}/targets/${CUDA_TARGET_DIR}/lib)
 set(CUDNN_LIB_NAME "")
 
 if(LINUX)
   set(CUDNN_LIB_NAME "libcudnn.so")
+  if(${CUDA_VERSION} GREATER_EQUAL 12.6)
+    set(CUDNN_LIB_NAME "libcudnn.so.9")
+  endif()
 endif()
 
 if(WIN32)

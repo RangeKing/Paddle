@@ -39,9 +39,9 @@ PD_REGISTER_INFER_META_FN({api.kernel['func'][0]}, phi::{api.infer_meta['func']}
             if kernel_params == api.infer_meta['param']:
                 return '', '', register_code
 
-            assert len(api.infer_meta['param']) <= len(
-                kernel_params
-            ), f"{api.api} api: Parameters error. The params of infer_meta should be a subset of kernel params."
+            assert len(api.infer_meta['param']) <= len(kernel_params), (
+                f"{api.api} api: Parameters error. The params of infer_meta should be a subset of kernel params."
+            )
 
             tensor_type_map = {
                 'const Tensor&': 'const MetaTensor&',
@@ -79,7 +79,7 @@ PD_REGISTER_INFER_META_FN({api.kernel['func'][0]}, phi::{api.infer_meta['func']}
 void {wrapped_infermeta_name}({", ".join(args)});
 """
 
-            defind_code = f"""
+            defined_code = f"""
 void {wrapped_infermeta_name}({", ".join(args)}) {{
   {api.infer_meta['func']}({", ".join(invoke_param)});
 }}
@@ -89,7 +89,7 @@ void {wrapped_infermeta_name}({", ".join(args)}) {{
 PD_REGISTER_INFER_META_FN({api.kernel['func'][0]}, phi::{get_wrapped_infermeta_name(api.kernel['func'][0])});"""
 
             kernel_func_set.add(api.kernel['func'][0])
-            return declare_code, defind_code, register_code
+            return declare_code, defined_code, register_code
         else:
             return '', '', register_code
     else:
@@ -156,11 +156,11 @@ def generate_wrapped_infermeta_and_register(
         api_item = ForwardAPI(api)
         (
             declare_code,
-            defind_code,
+            defined_code,
             register_code,
         ) = gene_wrapped_infermeta_and_register(api_item)
         header_file.write(declare_code)
-        source_file.write(defind_code)
+        source_file.write(defined_code)
         if infermeta_register_code.find(register_code) == -1:
             infermeta_register_code = infermeta_register_code + register_code
 

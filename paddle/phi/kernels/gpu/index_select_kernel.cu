@@ -14,6 +14,7 @@
 
 #include "paddle/phi/kernels/index_select_kernel.h"
 
+#include "paddle/common/enforce.h"
 #include "paddle/phi/backends/gpu/gpu_info.h"
 #include "paddle/phi/backends/gpu/gpu_launch_config.h"
 #include "paddle/phi/backends/gpu/gpu_primitives.h"
@@ -23,17 +24,26 @@
 
 namespace phi {
 
-using phi::PADDLE_CUDA_NUM_THREADS;
-
 template <typename T, typename Context>
-void IndexSelectKernel(const Context& ctx,
+void IndexSelectKernel(const Context& dev_ctx,
                        const DenseTensor& x,
                        const DenseTensor& index,
                        int dim,
                        DenseTensor* output) {
   auto input_dim = x.dims();
-  auto output_dim = output->dims();
   dim = dim >= 0 ? dim : dim + input_dim.size();
+  if (input_dim[dim] == 0 && index.numel() > 0) {
+    PADDLE_THROW(common::errors::InvalidArgument(
+        "The dimension of Input(X) on the select axis in OP(index_select) "
+        "must be greater than 0 when Input(Index) is not empty."));
+  }
+
+  if (output && output->numel() == 0) {
+    dev_ctx.template Alloc<T>(output);
+    return;
+  }
+
+  auto output_dim = output->dims();
   auto stride_dim = common::stride(input_dim);
   int64_t stride = stride_dim[dim];
   int64_t size = output_dim[dim];
@@ -42,30 +52,29 @@ void IndexSelectKernel(const Context& ctx,
   const auto& index_type = index.dtype();
 
   bool index_type_match =
-      index_type == phi::DataType::INT64 || index_type == phi::DataType::INT32;
+      index_type == DataType::INT64 || index_type == DataType::INT32;
   PADDLE_ENFORCE_EQ(index_type_match,
                     true,
                     common::errors::InvalidArgument(
                         "Input(Index) holds the wrong type, it holds %s, but "
                         "desires to be %s or %s",
                         index_type,
-                        phi::DataType::INT32,
-                        phi::DataType::INT64));
+                        DataType::INT32,
+                        DataType::INT64));
 
   auto* in_data = x.data<T>();
-  T* out_data = ctx.template Alloc<T>(output);
+  T* out_data = dev_ctx.template Alloc<T>(output);
 
   int64_t numel = output->numel();
-  if (numel == 0) {
-    return;
-  }
-  auto stream = ctx.stream();
+  auto stream = dev_ctx.stream();
 
   unsigned int block_dim = PADDLE_CUDA_NUM_THREADS;
-  dim3 grid_dim = dim3((numel + block_dim - 1) / block_dim);
-  phi::backends::gpu::LimitGridDim(ctx, &grid_dim);
+  const uint64_t grid_x = (numel + block_dim - 1) / block_dim;
+  PADDLE_ENFORCE_LE_UINT32_MAX(grid_x, "grid.x");
+  dim3 grid_dim = dim3(static_cast<uint32_t>(grid_x));
+  backends::gpu::LimitGridDim(dev_ctx, &grid_dim);
 
-  if (index_type == phi::DataType::INT64) {
+  if (index_type == DataType::INT64) {
     const int64_t* index_data = index.data<int64_t>();
     index_select_cuda_kernel<T, int64_t><<<grid_dim, block_dim, 0, stream>>>(
         in_data, out_data, index_data, numel, stride, size, delta, dim_size);
@@ -84,9 +93,11 @@ PD_REGISTER_KERNEL(index_select,
                    phi::IndexSelectKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>,
+                   phi::float8_e4m3fn,
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::complex64,
+                   phi::complex128,
                    int,
-                   int64_t) {}
+                   int64_t,
+                   bool) {}

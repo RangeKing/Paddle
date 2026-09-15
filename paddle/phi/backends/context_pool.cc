@@ -16,15 +16,16 @@ limitations under the License. */
 
 #include "glog/logging.h"
 
+#include "paddle/common/flags.h"
 #include "paddle/phi/common/memory_utils.h"
 #include "paddle/phi/core/enforce.h"
 
+COMMON_DECLARE_bool(use_default_stream);
+
 namespace phi {
 
-#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
-bool allow_tf32_cublas = true;
-void SetAllowTF32Cublas(bool active) { allow_tf32_cublas = active; }
-bool AllowTF32Cublas() { return allow_tf32_cublas; }
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP) || \
+    defined(PADDLE_WITH_CUSTOM_DEVICE)
 bool allow_tf32_cudnn = true;
 void SetAllowTF32Cudnn(bool active) { allow_tf32_cudnn = active; }
 bool AllowTF32Cudnn() { return allow_tf32_cudnn; }
@@ -41,7 +42,7 @@ TEST_API DeviceContextPool& DeviceContextPool::Instance() {
 
 /*! \brief  Create should only called by Init function */
 TEST_API DeviceContextPool& DeviceContextPool::Init(
-    const std::vector<phi::Place>& places) {
+    const std::vector<Place>& places) {
   if (pool == nullptr) {
     pool = new DeviceContextPool(places);
   }
@@ -58,7 +59,7 @@ thread_local const std::map<Place,
                             std::shared_future<std::unique_ptr<DeviceContext>>>*
     DeviceContextPool::external_device_contexts_ = nullptr;
 
-TEST_API phi::DeviceContext* DeviceContextPool::Get(const phi::Place& place) {
+TEST_API DeviceContext* DeviceContextPool::Get(const Place& place) {
   VLOG(6) << "DeviceContextPool Get: " << place;
   const std::map<Place, std::shared_future<std::unique_ptr<DeviceContext>>>*
       ptr = nullptr;
@@ -103,12 +104,13 @@ TEST_API void DeviceContextPool::SetDeviceContexts(
   external_device_contexts_ = dev_ctxs;
 }
 
-DeviceContextPool::DeviceContextPool(const std::vector<phi::Place>& places) {
-  phi::memory_utils::EmplaceDeviceContexts(
+DeviceContextPool::DeviceContextPool(const std::vector<Place>& places) {
+  memory_utils::EmplaceDeviceContexts(
       &device_contexts_,
       places,
       /*disable_setting_default_stream_for_allocator=*/false,
-      /*stream_priority=*/0);
+      /*stream_priority=*/0,
+      FLAGS_use_default_stream);
 }
 
 }  // namespace phi

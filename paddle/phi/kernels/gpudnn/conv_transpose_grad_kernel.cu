@@ -19,14 +19,13 @@ limitations under the License. */
 #include "paddle/common/ddim.h"
 #include "paddle/phi/backends/context_pool.h"
 #include "paddle/phi/backends/dynload/cudnn.h"
-#include "paddle/phi/common/bfloat16.h"
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/cpu/conv_util.h"
 #include "paddle/phi/kernels/funcs/batch_norm_utils.h"
 #include "paddle/phi/kernels/funcs/math_function.h"
 #include "paddle/phi/kernels/funcs/padding.h"
 #include "paddle/phi/kernels/funcs/slice.h"
+#include "paddle/phi/kernels/gpudnn/conv_gpudnn.h"
 #include "paddle/phi/kernels/transpose_kernel.h"
 
 #ifdef PADDLE_WITH_HIP
@@ -34,15 +33,19 @@ limitations under the License. */
 #include "paddle/phi/kernels/gpudnn/conv_miopen_helper.h"
 #else
 #include "paddle/phi/backends/gpu/cuda/cudnn_helper.h"
+#include "paddle/phi/backends/gpu/cuda/cudnn_workspace_helper.h"
 #include "paddle/phi/kernels/gpudnn/conv_cudnn_v7.h"
 #endif
+#include "paddle/phi/kernels/full_kernel.h"
+
+#include "paddle/common/flags.h"
+
+COMMON_DECLARE_bool(use_accuracy_compatible_kernel);
 
 namespace phi {
 
-using GPUDNNDataLayout = phi::backends::gpu::DataLayout;
-
 template <typename T, typename Context>
-void ConvTransposeGradRawGPUDNNKernel(const Context& ctx,
+void ConvTransposeGradRawGPUDNNKernel(const Context& dev_ctx,
                                       const DenseTensor& x,
                                       const DenseTensor& filter,
                                       const DenseTensor& dout,
@@ -54,36 +57,51 @@ void ConvTransposeGradRawGPUDNNKernel(const Context& ctx,
                                       const std::string& data_format,
                                       DenseTensor* dx,
                                       DenseTensor* dfilter) {
+  // 0-size
+  if (x.numel() == 0) {
+    if (dx) dev_ctx.template Alloc<T>(dx);
+    if (dfilter) {
+      Full<T, Context>(dev_ctx, dfilter->dims(), 0, dfilter);
+    }
+    return;
+  }
+  if (filter.numel() == 0) {
+    if (dfilter) dev_ctx.template Alloc<T>(dfilter);
+    if (dx) {
+      Full<T, Context>(dev_ctx, dx->dims(), 0, dx);
+    }
+    return;
+  }
+
   const T* filter_data = filter.data<T>();
   std::vector<int> paddings_ = paddings;
   std::vector<int> dilations_ =
       dilations;  // cudnn v5 does not support dilations
-  const GPUDNNDataLayout data_layout =
-      (data_format != "NHWC" ? GPUDNNDataLayout::kNCHW
-                             : GPUDNNDataLayout::kNHWC);
+  const DataLayout data_layout =
+      (data_format != "NHWC" ? DataLayout::NCHW : DataLayout::NHWC);
 
   // if channel_last, transpose to channel_first
   DenseTensor x_transpose;
   DenseTensor dout_transpose;
-  std::vector<int> x_vec = common::vectorize<int>(x.dims());
-  std::vector<int> out_vec = common::vectorize<int>(dout.dims());
-  if (data_layout == GPUDNNDataLayout::kNHWC) {
+  std::vector<int> x_vec = vectorize<int>(x.dims());
+  std::vector<int> out_vec = vectorize<int>(dout.dims());
+  if (data_layout == DataLayout::NHWC) {
     if (strides.size() == 2U) {
       std::vector<int> axis = {0, 3, 1, 2};
       for (size_t i = 0; i < axis.size(); ++i) {
         x_vec[i] = x.dims()[axis[i]];
         out_vec[i] = dout.dims()[axis[i]];
       }
-      x_transpose = Transpose<T, Context>(ctx, x, axis);
-      dout_transpose = Transpose<T, Context>(ctx, dout, axis);
+      x_transpose = Transpose<T, Context>(dev_ctx, x, axis);
+      dout_transpose = Transpose<T, Context>(dev_ctx, dout, axis);
     } else if (strides.size() == 3U) {
       std::vector<int> axis = {0, 4, 1, 2, 3};
       for (size_t i = 0; i < axis.size(); ++i) {
         x_vec[i] = x.dims()[axis[i]];
         out_vec[i] = dout.dims()[axis[i]];
       }
-      x_transpose = Transpose<T, Context>(ctx, x, axis);
-      dout_transpose = Transpose<T, Context>(ctx, dout, axis);
+      x_transpose = Transpose<T, Context>(dev_ctx, x, axis);
+      dout_transpose = Transpose<T, Context>(dev_ctx, dout, axis);
     }
   } else {
     x_transpose = x;
@@ -96,7 +114,7 @@ void ConvTransposeGradRawGPUDNNKernel(const Context& ctx,
   DDim x_data_dims;
   x_data_dims = slice_ddim(x_dims, 2, x_dims.size());
   DDim filter_data_dims = slice_ddim(filter_dims, 2, filter_dims.size());
-  std::vector<int> ksize = common::vectorize<int>(filter_data_dims);
+  std::vector<int> ksize = vectorize<int>(filter_data_dims);
   UpdatePaddingAndDilation(
       &paddings_, &dilations_, padding_algorithm, x_data_dims, strides, ksize);
 
@@ -121,19 +139,19 @@ void ConvTransposeGradRawGPUDNNKernel(const Context& ctx,
       x_pad[2 * i + 4 + 1] = paddings_[2 * i + 1] - padding_common[i];
     }
 
-    transformed_dout.Resize(common::make_ddim(new_dout_shape_vec));
-    ctx.template Alloc<T>(&transformed_dout);
+    transformed_dout.Resize(new_dout_shape_vec);
+    dev_ctx.template Alloc<T>(&transformed_dout);
 
     const int rank = x_transpose.dims().size();
     T pad_value(0.0);
     switch (rank) {
       case 4: {
         funcs::PadFunction<Context, T, 4>(
-            ctx, x_pad, dout_transpose, pad_value, &transformed_dout);
+            dev_ctx, x_pad, dout_transpose, pad_value, &transformed_dout);
       } break;
       case 5: {
         funcs::PadFunction<Context, T, 5>(
-            ctx, x_pad, dout_transpose, pad_value, &transformed_dout);
+            dev_ctx, x_pad, dout_transpose, pad_value, &transformed_dout);
       } break;
       default:
         PADDLE_THROW(errors::InvalidArgument(
@@ -154,27 +172,33 @@ void ConvTransposeGradRawGPUDNNKernel(const Context& ctx,
 
   const T* x_data = x_transpose.data<T>();
   const T* dout_data = transformed_dout.data<T>();
-  out_vec = common::vectorize<int>(transformed_dout.dims());
+  out_vec = vectorize<int>(transformed_dout.dims());
 
   // ------------------- cudnn descriptors ---------------------
-  GPUDNNDataLayout layout;
+#ifndef PADDLE_WITH_HIP
+  CUDNN_ENFORCE_TENSOR_SIZE_SUPPORTED(transformed_dout);
+  CUDNN_ENFORCE_TENSOR_SIZE_SUPPORTED(filter);
+  CUDNN_ENFORCE_TENSOR_SIZE_SUPPORTED(x_transpose);
+#endif
+
+  DataLayout layout;
 
   if (strides.size() == 2U) {
-    layout = GPUDNNDataLayout::kNCHW;
+    layout = DataLayout::NCHW;
   } else {
-    layout = GPUDNNDataLayout::kNCDHW;
+    layout = DataLayout::NCDHW;
   }
 
   int iwo_groups = groups;
   int c_groups = 1;
-#if defined(PADDLE_WITH_HIP) || CUDNN_VERSION_MIN(7, 0, 1)
+#if defined(PADDLE_WITH_HIP) || defined(PADDLE_WITH_CUDA)
   iwo_groups = 1;
   c_groups = groups;
   groups = 1;
 #endif
 
   auto dtype = phi::backends::gpu::CudnnDataType<T>::type;
-  auto handle = ctx.cudnn_handle();
+  auto handle = dev_ctx.cudnn_handle();
 
   ConvArgs args1{handle,
                  &transformed_dout,
@@ -212,7 +236,7 @@ void ConvTransposeGradRawGPUDNNKernel(const Context& ctx,
   T* dfilter_data = nullptr;
 
   if (dx) {
-    dx_data = ctx.template Alloc<T>(dx);
+    dx_data = dev_ctx.template Alloc<T>(dx);
 
     args1.idesc.set(transformed_dout, iwo_groups);
     args1.wdesc.set(filter, layout_tensor, iwo_groups);
@@ -227,17 +251,17 @@ void ConvTransposeGradRawGPUDNNKernel(const Context& ctx,
     using search1 = SearchAlgorithm<miopenConvFwdAlgorithm_t>;
     workspace_size = std::max(workspace_size, search1::GetWorkspaceSize(args1));
     fwd_result.algo =
-        search1::Find<T>(args1, false, deterministic, workspace_size, ctx);
+        search1::Find<T>(args1, false, deterministic, workspace_size, dev_ctx);
 #else
     using search1 = SearchAlgorithm<ConvKind::kForward>;
-    fwd_result = search1::Find<T>(ctx, args1, false, deterministic, false);
+    fwd_result = search1::Find<T>(dev_ctx, args1, false, deterministic, false);
     workspace_size = std::max(
         workspace_size, search1::GetWorkspaceSize(args1, fwd_result.algo));
 #endif
   }
 
   if (dfilter) {
-    dfilter_data = ctx.template Alloc<T>(dfilter);
+    dfilter_data = dev_ctx.template Alloc<T>(dfilter);
 
     args2.idesc.set(transformed_dout, iwo_groups);
     args2.wdesc.set(*dfilter, layout_tensor, iwo_groups);
@@ -252,10 +276,11 @@ void ConvTransposeGradRawGPUDNNKernel(const Context& ctx,
     using search2 = SearchAlgorithm<miopenConvBwdWeightsAlgorithm_t>;
     workspace_size = std::max(workspace_size, search2::GetWorkspaceSize(args2));
     filter_result.algo =
-        search2::Find<T>(args2, false, deterministic, workspace_size, ctx);
+        search2::Find<T>(args2, false, deterministic, workspace_size, dev_ctx);
 #else
     using search2 = SearchAlgorithm<ConvKind::kBackwardFilter>;
-    filter_result = search2::Find<T>(ctx, args2, false, deterministic, false);
+    filter_result =
+        search2::Find<T>(dev_ctx, args2, false, deterministic, false);
     workspace_size = std::max(
         workspace_size, search2::GetWorkspaceSize(args2, filter_result.algo));
 #endif
@@ -263,13 +288,19 @@ void ConvTransposeGradRawGPUDNNKernel(const Context& ctx,
 
   // ------------------- cudnn conv backward data ---------------------
   // FIxME(typhoonzero): template type T may not be the same as cudnn call.
-  int x_offset = x.numel() / x.dims()[0] / groups;
-  int dout_offset =
+  int64_t x_offset_64 = x.numel() / x.dims()[0] / groups;
+  int64_t dout_offset_64 =
       transformed_dout.numel() / transformed_dout.dims()[0] / groups;
-  int filter_offset = filter.numel() / groups;
+  int64_t filter_offset_64 = filter.numel() / groups;
+  PADDLE_ENFORCE_LE_INT_MAX(x_offset_64, "x_offset");
+  PADDLE_ENFORCE_LE_INT_MAX(dout_offset_64, "dout_offset");
+  PADDLE_ENFORCE_LE_INT_MAX(filter_offset_64, "filter_offset");
+  int x_offset = static_cast<int>(x_offset_64);
+  int dout_offset = static_cast<int>(dout_offset_64);
+  int filter_offset = static_cast<int>(filter_offset_64);
   ScalingParamType<T> alpha = 1.0f;
   ScalingParamType<T> beta = 0.0f;
-  auto workspace_handle = ctx.cudnn_workspace_handle();
+  auto workspace_handle = dev_ctx.cudnn_workspace_handle();
   if (dx) {
 #ifdef PADDLE_WITH_HIP
     // Because beta is zero, it is unnecessary to reset dx.
@@ -293,7 +324,7 @@ void ConvTransposeGradRawGPUDNNKernel(const Context& ctx,
       workspace_handle.RunFunc(cudnn_func, workspace_size);
     }
 #else   // PADDLE_WITH_HIP
-    ConvRunner<T, ConvKind::kForward>::Apply(ctx,
+    ConvRunner<T, ConvKind::kForward>::Apply(dev_ctx,
                                              args1,
                                              fwd_result,
                                              dout_data,
@@ -308,18 +339,18 @@ void ConvTransposeGradRawGPUDNNKernel(const Context& ctx,
                                              false);
 #endif  // PADDLE_WITH_HIP
 
-    if (data_layout == GPUDNNDataLayout::kNHWC) {
+    if (data_layout == DataLayout::NHWC) {
       DenseTensor dx_transpose;
       DenseTensor dx_nchw;
       dx_nchw.ShareDataWith(*dx);
-      dx_nchw.Resize(common::make_ddim(x_vec));
+      dx_nchw.Resize(x_vec);
       if (strides.size() == 2U) {
         std::vector<int> axis = {0, 2, 3, 1};
-        dx_transpose = Transpose<T, Context>(ctx, dx_nchw, axis);
+        dx_transpose = Transpose<T, Context>(dev_ctx, dx_nchw, axis);
         *dx = dx_transpose;
       } else if (strides.size() == 3U) {
         std::vector<int> axis = {0, 2, 3, 4, 1};
-        dx_transpose = Transpose<T, Context>(ctx, dx_nchw, axis);
+        dx_transpose = Transpose<T, Context>(dev_ctx, dx_nchw, axis);
         *dx = dx_transpose;
       }
     }
@@ -350,7 +381,7 @@ void ConvTransposeGradRawGPUDNNKernel(const Context& ctx,
       workspace_handle.RunFunc(cudnn_func, workspace_size);
     }
 #else   // PADDLE_WITH_HIP
-    ConvRunner<T, ConvKind::kBackwardFilter>::Apply(ctx,
+    ConvRunner<T, ConvKind::kBackwardFilter>::Apply(dev_ctx,
                                                     args2,
                                                     filter_result,
                                                     x_data,
@@ -367,8 +398,55 @@ void ConvTransposeGradRawGPUDNNKernel(const Context& ctx,
   }
 }
 
+#ifdef PADDLE_WITH_CUDNN_FRONTEND
 template <typename T, typename Context>
-void Conv2dTransposeGradGPUDNNKernel(const Context& ctx,
+void ConvTransposeGradRawGPUDNNKernelV8(const Context& dev_ctx,
+                                        const DenseTensor& x,
+                                        const DenseTensor& filter,
+                                        const DenseTensor& dout,
+                                        const std::vector<int>& strides,
+                                        const std::vector<int>& paddings,
+                                        const std::string& padding_algorithm,
+                                        int groups,
+                                        const std::vector<int>& dilations,
+                                        const std::string& data_format,
+                                        DenseTensor* dx,
+                                        DenseTensor* dfilter) {
+  // compute dx (Input Gradient)
+  if (dx) {
+    ConvCudnnKernel<T, Context>(dev_ctx,
+                                dout,
+                                filter,
+                                strides,
+                                paddings,
+                                padding_algorithm,
+                                dilations,
+                                groups,
+                                data_format,
+                                dx);
+  }
+
+  // compute dfilter (Filter Gradient)
+  if (dfilter) {
+    DenseTensor* null_input_grad = nullptr;
+    ConvCudnnGradKernel<T, Context>(dev_ctx,
+                                    dout,
+                                    filter,
+                                    x,
+                                    strides,
+                                    paddings,
+                                    padding_algorithm,
+                                    dilations,
+                                    groups,
+                                    data_format,
+                                    null_input_grad,
+                                    dfilter);
+  }
+}
+#endif
+
+template <typename T, typename Context>
+void Conv2dTransposeGradGPUDNNKernel(const Context& dev_ctx,
                                      const DenseTensor& x,
                                      const DenseTensor& filter,
                                      const DenseTensor& dout,
@@ -382,7 +460,36 @@ void Conv2dTransposeGradGPUDNNKernel(const Context& ctx,
                                      const std::string& data_format,
                                      DenseTensor* dx,
                                      DenseTensor* dfilter) {
-  ConvTransposeGradRawGPUDNNKernel<T, Context>(ctx,
+#ifdef PADDLE_WITH_CUDNN_FRONTEND
+  if (dynload::IsCudnnFrontendEnabled() && FLAGS_use_accuracy_compatible_kernel)
+    ConvTransposeGradRawGPUDNNKernelV8<T, Context>(dev_ctx,
+                                                   x,
+                                                   filter,
+                                                   dout,
+                                                   strides,
+                                                   paddings_,
+                                                   padding_algorithm,
+                                                   groups,
+                                                   dilations_,
+                                                   data_format,
+                                                   dx,
+                                                   dfilter);
+  else
+    ConvTransposeGradRawGPUDNNKernel<T, Context>(dev_ctx,
+                                                 x,
+                                                 filter,
+                                                 dout,
+                                                 strides,
+                                                 paddings_,
+                                                 padding_algorithm,
+                                                 groups,
+                                                 dilations_,
+                                                 data_format,
+                                                 dx,
+                                                 dfilter);
+
+#else
+  ConvTransposeGradRawGPUDNNKernel<T, Context>(dev_ctx,
                                                x,
                                                filter,
                                                dout,
@@ -394,6 +501,7 @@ void Conv2dTransposeGradGPUDNNKernel(const Context& ctx,
                                                data_format,
                                                dx,
                                                dfilter);
+#endif
 }
 
 /*
@@ -405,7 +513,7 @@ void Conv2dTransposeGradGPUDNNKernel(const Context& ctx,
  */
 template <typename T, typename Context>
 void Conv2dTransposeDoubleGradGPUDNNKernel(
-    const Context& ctx,
+    const Context& dev_ctx,
     const DenseTensor& x,
     const DenseTensor& filter,
     const DenseTensor& dout,
@@ -423,15 +531,15 @@ void Conv2dTransposeDoubleGradGPUDNNKernel(
     DenseTensor* dfilter,
     DenseTensor* ddout) {
   if (dx) {
-    ctx.template Alloc<T>(dx);
+    dev_ctx.template Alloc<T>(dx);
   }
   if (dfilter) {
-    ctx.template Alloc<T>(dfilter);
+    dev_ctx.template Alloc<T>(dfilter);
   }
   if (ddout) {
-    ctx.template Alloc<T>(ddout);
+    dev_ctx.template Alloc<T>(ddout);
     funcs::SetConstant<Context, T> set_zero;
-    set_zero(ctx, ddout, static_cast<T>(0));
+    set_zero(dev_ctx, ddout, static_cast<T>(0));
   }
 
   const T* filter_ = filter.data<T>();
@@ -458,21 +566,22 @@ void Conv2dTransposeDoubleGradGPUDNNKernel(
   DenseTensor transformed_ddout_channel(dout.type());
 
   if (channel_last) {
-    ResizeToChannelFirst<Context, T>(ctx, &x, &transformed_x_channel);
-    TransToChannelFirst<Context, T>(ctx, &x, &transformed_x_channel);
+    ResizeToChannelFirst<Context, T>(dev_ctx, &x, &transformed_x_channel);
+    TransToChannelFirst<Context, T>(dev_ctx, &x, &transformed_x_channel);
 
-    ResizeToChannelFirst<Context, T>(ctx, &dout, &transformed_dout_channel);
-    TransToChannelFirst<Context, T>(ctx, &dout, &transformed_dout_channel);
+    ResizeToChannelFirst<Context, T>(dev_ctx, &dout, &transformed_dout_channel);
+    TransToChannelFirst<Context, T>(dev_ctx, &dout, &transformed_dout_channel);
 
-    ResizeToChannelFirst<Context, T>(ctx, &ddx, &transformed_ddx_channel);
-    TransToChannelFirst<Context, T>(ctx, &ddx, &transformed_ddx_channel);
+    ResizeToChannelFirst<Context, T>(dev_ctx, &ddx, &transformed_ddx_channel);
+    TransToChannelFirst<Context, T>(dev_ctx, &ddx, &transformed_ddx_channel);
 
     if (dx) {
-      ResizeToChannelFirst<Context, T>(ctx, dx, &transformed_dx_channel);
-      ctx.template Alloc<T>(&transformed_dx_channel);
+      ResizeToChannelFirst<Context, T>(dev_ctx, dx, &transformed_dx_channel);
+      dev_ctx.template Alloc<T>(&transformed_dx_channel);
     }
     if (ddout) {
-      ResizeToChannelFirst<Context, T>(ctx, ddout, &transformed_ddout_channel);
+      ResizeToChannelFirst<Context, T>(
+          dev_ctx, ddout, &transformed_ddout_channel);
     }
   } else {
     transformed_x_channel = x;
@@ -483,14 +592,13 @@ void Conv2dTransposeDoubleGradGPUDNNKernel(
       transformed_dx_channel = *dx;
     }
   }
-  std::vector<int> out_vec =
-      common::vectorize<int>(transformed_dout_channel.dims());
+  std::vector<int> out_vec = vectorize<int>(transformed_dout_channel.dims());
 
   auto x_dims = transformed_x_channel.dims();
   auto filter_dims = filter.dims();
   DDim x_data_dims = slice_ddim(x_dims, 2, x_dims.size());
   DDim filter_data_dims = slice_ddim(filter_dims, 2, filter_dims.size());
-  std::vector<int> ksize = common::vectorize<int>(filter_data_dims);
+  std::vector<int> ksize = vectorize<int>(filter_data_dims);
   UpdatePaddingAndDilation(
       &paddings_, &dilations_, padding_algorithm, x_data_dims, strides, ksize);
 
@@ -510,55 +618,76 @@ void Conv2dTransposeDoubleGradGPUDNNKernel(
     std::vector<int> new_input_shape_vec(data_dim + 2);
     std::vector<int> new_output_grad_shape_vec(data_dim + 2);
 
-    new_input_shape_vec[0] = transformed_x_channel.dims()[0];
-    new_input_shape_vec[1] = transformed_x_channel.dims()[1];
+    int64_t input_shape0 = transformed_x_channel.dims()[0];
+    int64_t input_shape1 = transformed_x_channel.dims()[1];
+    int64_t output_grad_shape0 = transformed_dout_channel.dims()[0];
+    int64_t output_grad_shape1 = transformed_dout_channel.dims()[1];
+    PADDLE_ENFORCE_LE_INT_MAX(input_shape0, "new_input_shape_vec[0]");
+    PADDLE_ENFORCE_LE_INT_MAX(input_shape1, "new_input_shape_vec[1]");
+    PADDLE_ENFORCE_LE_INT_MAX(output_grad_shape0,
+                              "new_output_grad_shape_vec[0]");
+    PADDLE_ENFORCE_LE_INT_MAX(output_grad_shape1,
+                              "new_output_grad_shape_vec[1]");
+    new_input_shape_vec[0] = static_cast<int>(input_shape0);
+    new_input_shape_vec[1] = static_cast<int>(input_shape1);
 
-    new_output_grad_shape_vec[0] = transformed_dout_channel.dims()[0];
-    new_output_grad_shape_vec[1] = transformed_dout_channel.dims()[1];
+    new_output_grad_shape_vec[0] = static_cast<int>(output_grad_shape0);
+    new_output_grad_shape_vec[1] = static_cast<int>(output_grad_shape1);
 
     for (size_t i = 0; i < data_dim; ++i) {
       padding_diff[i] = std::abs(paddings_[2 * i] - paddings_[2 * i + 1]);
       padding_common[i] = std::min(paddings_[2 * i], paddings_[2 * i + 1]);
-      new_input_shape_vec[i + 2] =
+      int64_t input_shape =
           transformed_x_channel.dims()[i + 2] + padding_diff[i];
-
-      new_output_grad_shape_vec[i + 2] =
+      int64_t output_grad_shape =
           transformed_dout_channel.dims()[i + 2] + padding_diff[i];
+      PADDLE_ENFORCE_LE_INT_MAX(input_shape, "new_input_shape_vec[i + 2]");
+      PADDLE_ENFORCE_LE_INT_MAX(output_grad_shape,
+                                "new_output_grad_shape_vec[i + 2]");
+      new_input_shape_vec[i + 2] = static_cast<int>(input_shape);
+
+      new_output_grad_shape_vec[i + 2] = static_cast<int>(output_grad_shape);
 
       input_pad[2 * i + 4] = paddings_[2 * i] - padding_common[i];
       input_pad[2 * i + 4 + 1] = paddings_[2 * i + 1] - padding_common[i];
     }
-    DDim new_input_shape(common::make_ddim(new_input_shape_vec));
+    DDim new_input_shape(make_ddim(new_input_shape_vec));
     transformed_x.Resize(new_input_shape);
     transformed_ddx.Resize(new_input_shape);
-    transformed_dout.Resize(common::make_ddim(new_output_grad_shape_vec));
+    transformed_dout.Resize(new_output_grad_shape_vec);
 
-    ctx.template Alloc<T>(&transformed_x);
-    ctx.template Alloc<T>(&transformed_ddx);
-    ctx.template Alloc<T>(&transformed_dout);
+    dev_ctx.template Alloc<T>(&transformed_x);
+    dev_ctx.template Alloc<T>(&transformed_ddx);
+    dev_ctx.template Alloc<T>(&transformed_dout);
 
     // pad for input
     const int rank = x.dims().size();
     T pad_value(0.0);
     switch (rank) {
       case 4: {
-        funcs::PadFunction<Context, T, 4>(
-            ctx, input_pad, transformed_x_channel, pad_value, &transformed_x);
-        funcs::PadFunction<Context, T, 4>(ctx,
+        funcs::PadFunction<Context, T, 4>(dev_ctx,
+                                          input_pad,
+                                          transformed_x_channel,
+                                          pad_value,
+                                          &transformed_x);
+        funcs::PadFunction<Context, T, 4>(dev_ctx,
                                           input_pad,
                                           transformed_dout_channel,
                                           pad_value,
                                           &transformed_dout);
-        funcs::PadFunction<Context, T, 4>(ctx,
+        funcs::PadFunction<Context, T, 4>(dev_ctx,
                                           input_pad,
                                           transformed_ddx_channel,
                                           pad_value,
                                           &transformed_ddx);
       } break;
       case 5: {
-        funcs::PadFunction<Context, T, 5>(
-            ctx, input_pad, transformed_x_channel, pad_value, &transformed_x);
-        funcs::PadFunction<Context, T, 5>(ctx,
+        funcs::PadFunction<Context, T, 5>(dev_ctx,
+                                          input_pad,
+                                          transformed_x_channel,
+                                          pad_value,
+                                          &transformed_x);
+        funcs::PadFunction<Context, T, 5>(dev_ctx,
                                           input_pad,
                                           transformed_ddx_channel,
                                           pad_value,
@@ -602,28 +731,27 @@ void Conv2dTransposeDoubleGradGPUDNNKernel(
   }
 
   if (!is_sys_pad) {
-    transformed_ddout_channel.Resize(common::make_ddim(transformed_out_vec));
-    ctx.template Alloc<T>(&transformed_ddout_channel);
+    transformed_ddout_channel.Resize(transformed_out_vec);
+    dev_ctx.template Alloc<T>(&transformed_ddout_channel);
   } else {
-    ctx.template Alloc<T>(ddout);
+    dev_ctx.template Alloc<T>(ddout);
     transformed_ddout_channel = *ddout;
-    transformed_ddout_channel.Resize(common::make_ddim(transformed_out_vec));
+    transformed_ddout_channel.Resize(transformed_out_vec);
   }
 
   const T* x_ = transformed_x.data<T>();
 
   int iwo_group = groups;
   int c_group = 1;
-#if defined(PADDLE_WITH_HIP) || CUDNN_VERSION_MIN(7, 0, 1)
+#if defined(PADDLE_WITH_HIP) || defined(PADDLE_WITH_CUDA)
   iwo_group = 1;
   c_group = groups;
   groups = 1;
 #endif
   auto dtype = phi::backends::gpu::CudnnDataType<T>::type;
 
-  auto handle = ctx.cudnn_handle();
-  auto layout =
-      phi::backends::gpu::GetCudnnTensorFormat(GPUDNNDataLayout::kNCHW);
+  auto handle = dev_ctx.cudnn_handle();
+  auto layout = phi::backends::gpu::GetCudnnTensorFormat(DataLayout::NCHW);
 
   ConvArgs args1{handle,
                  &transformed_ddout_channel,
@@ -634,7 +762,7 @@ void Conv2dTransposeDoubleGradGPUDNNKernel(
                  dilations_,
                  dtype,
                  groups,
-                 GPUDNNDataLayout::kNCHW};
+                 DataLayout::NCHW};
   ConvArgs args2{handle,
                  &transformed_ddout_channel,
                  &ddfilter,
@@ -644,7 +772,7 @@ void Conv2dTransposeDoubleGradGPUDNNKernel(
                  dilations_,
                  dtype,
                  groups,
-                 GPUDNNDataLayout::kNCHW};
+                 DataLayout::NCHW};
 
   ConvArgs args3{handle,
                  &transformed_dout,
@@ -655,7 +783,7 @@ void Conv2dTransposeDoubleGradGPUDNNKernel(
                  dilations_,
                  dtype,
                  groups,
-                 GPUDNNDataLayout::kNCHW};
+                 DataLayout::NCHW};
   ConvArgs args4{handle,
                  &transformed_dout,
                  &ddfilter,
@@ -665,7 +793,7 @@ void Conv2dTransposeDoubleGradGPUDNNKernel(
                  dilations_,
                  dtype,
                  groups,
-                 GPUDNNDataLayout::kNCHW};
+                 DataLayout::NCHW};
 #ifdef PADDLE_WITH_HIP
   SearchResult<miopenConvBwdDataAlgorithm_t> bwd_result1;
   SearchResult<miopenConvBwdDataAlgorithm_t> bwd_result2;
@@ -700,10 +828,10 @@ void Conv2dTransposeDoubleGradGPUDNNKernel(
     using search1 = SearchAlgorithm<miopenConvBwdDataAlgorithm_t>;
     workspace_size = search1::GetWorkspaceSize(args1);
     bwd_result1.algo =
-        search1::Find<T>(args1, false, deterministic, workspace_size, ctx);
+        search1::Find<T>(args1, false, deterministic, workspace_size, dev_ctx);
 #else
     using search1 = SearchAlgorithm<ConvKind::kBackwardData>;
-    bwd_result1 = search1::Find<T>(ctx, args1, false, deterministic, false);
+    bwd_result1 = search1::Find<T>(dev_ctx, args1, false, deterministic, false);
     workspace_size = search1::GetWorkspaceSize(args1, bwd_result1.algo);
 #endif
 
@@ -722,10 +850,10 @@ void Conv2dTransposeDoubleGradGPUDNNKernel(
     using search2 = SearchAlgorithm<miopenConvBwdDataAlgorithm_t>;
     workspace_size = std::max(workspace_size, search2::GetWorkspaceSize(args2));
     bwd_result2.algo =
-        search2::Find<T>(args2, false, deterministic, workspace_size, ctx);
+        search2::Find<T>(args2, false, deterministic, workspace_size, dev_ctx);
 #else
     using search2 = SearchAlgorithm<ConvKind::kBackwardData>;
-    bwd_result2 = search2::Find<T>(ctx, args2, false, deterministic, false);
+    bwd_result2 = search2::Find<T>(dev_ctx, args2, false, deterministic, false);
     workspace_size = std::max(
         workspace_size, search2::GetWorkspaceSize(args2, bwd_result2.algo));
 #endif
@@ -747,10 +875,11 @@ void Conv2dTransposeDoubleGradGPUDNNKernel(
     using search3 = SearchAlgorithm<miopenConvBwdWeightsAlgorithm_t>;
     workspace_size = std::max(workspace_size, search3::GetWorkspaceSize(args3));
     filter_result.algo =
-        search3::Find<T>(args3, false, deterministic, workspace_size, ctx);
+        search3::Find<T>(args3, false, deterministic, workspace_size, dev_ctx);
 #else
     using search3 = SearchAlgorithm<ConvKind::kBackwardFilter>;
-    filter_result = search3::Find<T>(ctx, args3, false, deterministic, false);
+    filter_result =
+        search3::Find<T>(dev_ctx, args3, false, deterministic, false);
     workspace_size = std::max(
         workspace_size, search3::GetWorkspaceSize(args3, filter_result.algo));
 #endif
@@ -773,32 +902,22 @@ void Conv2dTransposeDoubleGradGPUDNNKernel(
     using search4 = SearchAlgorithm<miopenConvFwdAlgorithm_t>;
     workspace_size = std::max(workspace_size, search4::GetWorkspaceSize(args4));
     fwd_result.algo =
-        search4::Find<T>(args4, false, deterministic, workspace_size, ctx);
+        search4::Find<T>(args4, false, deterministic, workspace_size, dev_ctx);
 #else
     using search4 = SearchAlgorithm<ConvKind::kForward>;
-    fwd_result = search4::Find<T>(ctx, args4, false, deterministic, false);
+    fwd_result = search4::Find<T>(dev_ctx, args4, false, deterministic, false);
     workspace_size = std::max(
         workspace_size, search4::GetWorkspaceSize(args4, fwd_result.algo));
 #endif
   }
 
   int i_n, i_c, i_d, i_h, i_w;
-  GetNCDHW(transformed_x.dims(),
-           GPUDNNDataLayout::kNCHW,
-           &i_n,
-           &i_c,
-           &i_d,
-           &i_h,
-           &i_w);
+  GetNCDHW(
+      transformed_x.dims(), DataLayout::NCHW, &i_n, &i_c, &i_d, &i_h, &i_w);
 
   int o_n, o_c, o_d, o_h, o_w;
-  GetNCDHW(transformed_dout.dims(),
-           GPUDNNDataLayout::kNCHW,
-           &o_n,
-           &o_c,
-           &o_d,
-           &o_h,
-           &o_w);
+  GetNCDHW(
+      transformed_dout.dims(), DataLayout::NCHW, &o_n, &o_c, &o_d, &o_h, &o_w);
 
   int group_offset_in =
       transformed_x.numel() / transformed_x.dims()[0] / groups;
@@ -809,7 +928,7 @@ void Conv2dTransposeDoubleGradGPUDNNKernel(
   ScalingParamType<T> alpha = 1.0f;
   ScalingParamType<T> beta = 0.0f;
 
-  auto workspace_handle = ctx.cudnn_workspace_handle();
+  auto workspace_handle = dev_ctx.cudnn_workspace_handle();
 
   if (ddout) {
     ddx_ = transformed_ddx.data<T>();
@@ -835,7 +954,7 @@ void Conv2dTransposeDoubleGradGPUDNNKernel(
           workspace_size);
     }
 #else   // PADDLE_WITH_HIP
-    ConvRunner<T, ConvKind::kBackwardData>::Apply(ctx,
+    ConvRunner<T, ConvKind::kBackwardData>::Apply(dev_ctx,
                                                   args1,
                                                   bwd_result1,
                                                   ddx_,
@@ -855,7 +974,7 @@ void Conv2dTransposeDoubleGradGPUDNNKernel(
       // MIOPEN ONLY support beta to be 0.0f
       DenseTensor conv_x_ddfilter(dout.type());
       conv_x_ddfilter.Resize(transformed_ddout_channel.dims());
-      T* conv_x_ddfilter_data = ctx.template Alloc<T>(&conv_x_ddfilter);
+      T* conv_x_ddfilter_data = dev_ctx.template Alloc<T>(&conv_x_ddfilter);
       workspace_handle.RunFunc(
           [&](void* workspace_ptr) {
             PADDLE_ENFORCE_GPU_SUCCESS(dynload::miopenConvolutionBackwardData(
@@ -888,7 +1007,7 @@ void Conv2dTransposeDoubleGradGPUDNNKernel(
           transformed_ddout_channel_ + i * group_offset_out));
     }
 #else   // PADDLE_WITH_HIP
-    ConvRunner<T, ConvKind::kBackwardData>::Apply(ctx,
+    ConvRunner<T, ConvKind::kBackwardData>::Apply(dev_ctx,
                                                   args2,
                                                   bwd_result2,
                                                   x_,
@@ -906,21 +1025,21 @@ void Conv2dTransposeDoubleGradGPUDNNKernel(
     if ((!is_sys_pad) && (!channel_last)) {
       if (strides.size() == 2U) {
         funcs::Slice<Context, T, 4>(
-            ctx, &transformed_ddout_channel, ddout, starts, ends, axes);
+            dev_ctx, &transformed_ddout_channel, ddout, starts, ends, axes);
       } else if (!is_sys_pad && strides.size() == 3U) {
         funcs::Slice<Context, T, 5>(
-            ctx, &transformed_ddout_channel, ddout, starts, ends, axes);
+            dev_ctx, &transformed_ddout_channel, ddout, starts, ends, axes);
       }
     } else if ((!is_sys_pad) && (channel_last)) {
       if (strides.size() == 2U) {
-        funcs::Slice<Context, T, 4>(ctx,
+        funcs::Slice<Context, T, 4>(dev_ctx,
                                     &transformed_ddout_channel,
                                     &transformed_ddout_channel,
                                     starts,
                                     ends,
                                     axes);
       } else if (!is_sys_pad && strides.size() == 3U) {
-        funcs::Slice<Context, T, 5>(ctx,
+        funcs::Slice<Context, T, 5>(dev_ctx,
                                     &transformed_ddout_channel,
                                     &transformed_ddout_channel,
                                     starts,
@@ -928,7 +1047,8 @@ void Conv2dTransposeDoubleGradGPUDNNKernel(
                                     axes);
       }
 
-      TransToChannelLast<Context, T>(ctx, &transformed_ddout_channel, ddout);
+      TransToChannelLast<Context, T>(
+          dev_ctx, &transformed_ddout_channel, ddout);
     }
   }
 
@@ -958,7 +1078,7 @@ void Conv2dTransposeDoubleGradGPUDNNKernel(
           workspace_size);
     }
 #else   // PADDLE_WITH_HIP
-    ConvRunner<T, ConvKind::kBackwardFilter>::Apply(ctx,
+    ConvRunner<T, ConvKind::kBackwardFilter>::Apply(dev_ctx,
                                                     args3,
                                                     filter_result,
                                                     ddx_,
@@ -998,7 +1118,7 @@ void Conv2dTransposeDoubleGradGPUDNNKernel(
           workspace_size);
     }
 #else   // PADDLE_WITH_HIP
-    ConvRunner<T, ConvKind::kForward>::Apply(ctx,
+    ConvRunner<T, ConvKind::kForward>::Apply(dev_ctx,
                                              args4,
                                              fwd_result,
                                              transformed_dout_channel_,
@@ -1014,13 +1134,13 @@ void Conv2dTransposeDoubleGradGPUDNNKernel(
 #endif  // PADDLE_WITH_HIP
 
     if (channel_last) {
-      TransToChannelLast<Context, T>(ctx, &transformed_dx_channel, dx);
+      TransToChannelLast<Context, T>(dev_ctx, &transformed_dx_channel, dx);
     }
   }
 }
 
 template <typename T, typename Context>
-void Conv3dTransposeGradGPUDNNKernel(const Context& ctx,
+void Conv3dTransposeGradGPUDNNKernel(const Context& dev_ctx,
                                      const DenseTensor& x,
                                      const DenseTensor& filter,
                                      const DenseTensor& dout,
@@ -1034,7 +1154,7 @@ void Conv3dTransposeGradGPUDNNKernel(const Context& ctx,
                                      const std::string& data_format,
                                      DenseTensor* dx,
                                      DenseTensor* dfilter) {
-  ConvTransposeGradRawGPUDNNKernel<T, Context>(ctx,
+  ConvTransposeGradRawGPUDNNKernel<T, Context>(dev_ctx,
                                                x,
                                                filter,
                                                dout,
@@ -1050,7 +1170,7 @@ void Conv3dTransposeGradGPUDNNKernel(const Context& ctx,
 
 }  // namespace phi
 
-using float16 = phi::dtype::float16;
+using float16 = phi::float16;
 
 #ifdef PADDLE_WITH_HIP
 // MIOPEN do not support double
@@ -1081,7 +1201,7 @@ PD_REGISTER_KERNEL(conv2d_transpose_grad,
                    float,
                    double,
                    float16,
-                   phi::dtype::bfloat16) {}
+                   phi::bfloat16) {}
 PD_REGISTER_KERNEL(conv2d_transpose_double_grad,
                    GPUDNN,
                    ALL_LAYOUT,
@@ -1089,7 +1209,7 @@ PD_REGISTER_KERNEL(conv2d_transpose_double_grad,
                    float,
                    double,
                    float16,
-                   phi::dtype::bfloat16) {}
+                   phi::bfloat16) {}
 PD_REGISTER_KERNEL(conv3d_transpose_grad,
                    GPUDNN,
                    ALL_LAYOUT,
@@ -1097,7 +1217,7 @@ PD_REGISTER_KERNEL(conv3d_transpose_grad,
                    float,
                    double,
                    float16,
-                   phi::dtype::bfloat16) {}
+                   phi::bfloat16) {}
 #else
 PD_REGISTER_KERNEL(conv2d_transpose_grad,
                    GPUDNN,

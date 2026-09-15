@@ -19,6 +19,7 @@ limitations under the License. */
 #include <hiprand_kernel.h>
 #endif
 
+#include "paddle/common/enforce.h"
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/backends/gpu/gpu_launch_config.h"
 #include "paddle/phi/common/amp_type_traits.h"
@@ -145,7 +146,7 @@ __global__ void BinomialSampling(const T* n,
                                  const int N,
                                  unsigned int seed,
                                  unsigned int offset) {
-  using MT = typename phi::dtype::MPTypeTrait<T>::Type;
+  using MT = typename MPTypeTrait<T>::Type;
   CUDA_KERNEL_LOOP_TYPE(idx, N, int64_t) {
     MT nt = static_cast<MT>(n[idx]);
     MT pt = static_cast<MT>(p[idx]);
@@ -173,22 +174,27 @@ __global__ void BinomialSampling(const T* n,
 }
 
 template <typename T, typename Context>
-void BinomialKernel(const Context& ctx,
+void BinomialKernel(const Context& dev_ctx,
                     const DenseTensor& count,
                     const DenseTensor& prob,
                     DenseTensor* out) {
   const T* count_data = count.data<T>();
   const T* prob_data = prob.data<T>();
-  int64_t* out_data = ctx.template Alloc<int64_t>(out);
-  const int size = count.numel();
+  int64_t* out_data = dev_ctx.template Alloc<int64_t>(out);
+  // TODO(large-tensor): downstream functors may still use int; guard until
+  // upgraded.
+  int64_t size = count.numel();
+
   const int kMaxBlockDim = 256;
 
-  int block_size = std::min(kMaxBlockDim, ctx.GetMaxThreadsPerBlock());
+  int block_size = std::min(kMaxBlockDim, dev_ctx.GetMaxThreadsPerBlock());
   dim3 dim_block(block_size);
-  dim3 dim_grid((size + block_size - 1) / block_size);
-  phi::backends::gpu::LimitGridDim(ctx, &dim_grid);
+  int64_t grid_64 = (size + block_size - 1) / block_size;
+  PADDLE_ENFORCE_LE_UINT32_MAX(grid_64, "binomial grid.x");
+  dim3 dim_grid(static_cast<uint32_t>(grid_64));
+  backends::gpu::LimitGridDim(dev_ctx, &dim_grid);
 
-  auto gen_cuda = ctx.GetGenerator();
+  auto gen_cuda = dev_ctx.GetGenerator();
   auto seed_offset = gen_cuda->IncrementOffset(20);
   uint64_t seed = seed_offset.first;
   uint64_t offset = seed_offset.second;
@@ -204,7 +210,7 @@ PD_REGISTER_KERNEL(binomial,
                    phi::BinomialKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {
+                   phi::float16,
+                   phi::bfloat16) {
   kernel->OutputAt(0).SetDataType(phi::DataType::INT64);
 }

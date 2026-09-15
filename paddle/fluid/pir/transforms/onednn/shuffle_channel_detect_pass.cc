@@ -22,7 +22,7 @@
 #include "paddle/pir/include/pass/pass.h"
 #include "paddle/pir/include/pass/pass_registry.h"
 
-namespace {
+namespace pir {
 class ShuffleChannelDetectPattern : public paddle::drr::DrrPatternBase {
  private:
   std::string fused_name_;
@@ -62,10 +62,9 @@ class ShuffleChannelDetectPattern : public paddle::drr::DrrPatternBase {
             {&pat.Tensor("out")});
 
     pat.AddConstraint([&](const paddle::drr::MatchContext &match_ctx) {
-      auto x_shape = pir::GetShapeFromValue(match_ctx.Tensor("x"));
+      auto x_shape = GetShapeFromValue(match_ctx.Tensor("x"));
       auto shape_0 = match_ctx.Attr<std::vector<int64_t>>("int_array_0");
-      auto trans_shape =
-          pir::GetShapeFromValue(match_ctx.Tensor("transpose_out"));
+      auto trans_shape = GetShapeFromValue(match_ctx.Tensor("transpose_out"));
       auto shape_1 = match_ctx.Attr<std::vector<int64_t>>("int_array_1");
       auto perm = match_ctx.Attr<std::vector<int>>("perm");
       // Currently only support 4D shuffle_channel
@@ -77,15 +76,15 @@ class ShuffleChannelDetectPattern : public paddle::drr::DrrPatternBase {
 
       int64_t unk_dim = -1;
       bool unk_flag = false;
-      bool all_postive = std::all_of(
+      bool all_positive = std::all_of(
           x_shape.cbegin(), x_shape.cend(), [](int64_t i) { return i > 0; });
       // There couldn't be more than 1 unknown dim in "shape" attr of reshape.
-      // Besides, when unknown dim is not on idx_0(BS) & not all postive dim in
+      // Besides, when unknown dim is not on idx_0(BS) & not all positive dim in
       // input shape, there is no enough info to calculate full dims of reshape
       for (size_t i = 0; i < shape_0.size(); i++) {
         if (!unk_flag) {
           if (shape_0[i] == unk_dim) {
-            if (i != 0 && !all_postive) return false;
+            if (i != 0 && !all_positive) return false;
             unk_flag = true;
           }
         } else {
@@ -93,13 +92,13 @@ class ShuffleChannelDetectPattern : public paddle::drr::DrrPatternBase {
         }
       }
       unk_flag = false;
-      all_postive = std::all_of(trans_shape.cbegin(),
-                                trans_shape.cend(),
-                                [](int64_t i) { return i > 0; });
+      all_positive = std::all_of(trans_shape.cbegin(),
+                                 trans_shape.cend(),
+                                 [](int64_t i) { return i > 0; });
       for (size_t j = 0; j < shape_1.size(); j++) {
         if (!unk_flag) {
           if (shape_1[j] == unk_dim) {
-            if (j != 0 && !all_postive) return false;
+            if (j != 0 && !all_positive) return false;
             unk_flag = true;
           }
         } else {
@@ -111,9 +110,8 @@ class ShuffleChannelDetectPattern : public paddle::drr::DrrPatternBase {
     });
 
     pat.AddConstraint([&](const paddle::drr::MatchContext &match_ctx) {
-      auto x_shape = pir::GetShapeFromValue(match_ctx.Tensor("x"));
-      auto trans_shape =
-          pir::GetShapeFromValue(match_ctx.Tensor("transpose_out"));
+      auto x_shape = GetShapeFromValue(match_ctx.Tensor("x"));
+      auto trans_shape = GetShapeFromValue(match_ctx.Tensor("transpose_out"));
       auto shape_0 = match_ctx.Attr<std::vector<int64_t>>("int_array_0");
       auto shape_1 = match_ctx.Attr<std::vector<int64_t>>("int_array_1");
       auto perm = match_ctx.Attr<std::vector<int>>("perm");
@@ -164,9 +162,9 @@ class ShuffleChannelDetectPattern : public paddle::drr::DrrPatternBase {
 
     const auto &group_attr =
         res.ComputeAttr([=](const paddle::drr::MatchContext &match_ctx) -> int {
-          auto x_shape = pir::GetShapeFromValue(match_ctx.Tensor("x"));
+          auto x_shape = GetShapeFromValue(match_ctx.Tensor("x"));
           auto trans_shape =
-              pir::GetShapeFromValue(match_ctx.Tensor("transpose_out"));
+              GetShapeFromValue(match_ctx.Tensor("transpose_out"));
           auto shape_0 = match_ctx.Attr<std::vector<int64_t>>("int_array_0");
           auto shape_1 = match_ctx.Attr<std::vector<int64_t>>("int_array_1");
           auto perm = match_ctx.Attr<std::vector<int>>("perm");
@@ -218,22 +216,18 @@ class ShuffleChannelDetectPattern : public paddle::drr::DrrPatternBase {
   }
 };
 
-class ShuffleChannelDetectPass : public pir::PatternRewritePass {
+class ShuffleChannelDetectPass : public PatternRewritePass {
  public:
   ShuffleChannelDetectPass()
-      : pir::PatternRewritePass("shuffle_channel_detect_pass", 2) {}
+      : PatternRewritePass("shuffle_channel_detect_pass", 2) {}
 
-  pir::RewritePatternSet InitializePatterns(pir::IrContext *context) override {
-    pir::RewritePatternSet ps(context);
+  RewritePatternSet InitializePatterns(IrContext *context) override {
+    RewritePatternSet ps(context);
     ps.Add(paddle::drr::Create<ShuffleChannelDetectPattern>(
         context, paddle::onednn::dialect::ShuffleChannelOp::name(), 1));
     return ps;
   }
 };
-
-}  // namespace
-
-namespace pir {
 
 std::unique_ptr<Pass> CreateShuffleChannelDetectPass() {
   // pd_op.reshape + pd_op.transpose + pd_op.reshape ->
@@ -242,4 +236,4 @@ std::unique_ptr<Pass> CreateShuffleChannelDetectPass() {
 }
 }  // namespace pir
 
-REGISTER_IR_PASS(shuffle_channel_detect_pass, ShuffleChannelDetectPass);
+REGISTER_IR_PASS(shuffle_channel_detect_pass, pir::ShuffleChannelDetectPass);

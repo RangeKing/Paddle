@@ -23,10 +23,10 @@ namespace phi {
 template <typename T>
 struct CudaI0GradFunctor {
   __device__ __forceinline__ T operator()(const T _x, const T _out_grad) const {
-    using MT = typename phi::dtype::MPTypeTrait<T>::Type;
+    using MT = typename MPTypeTrait<T>::Type;
     const MT mp_x = static_cast<MT>(_x);
     const MT mp_out_grad = static_cast<MT>(_out_grad);
-    // get ouput of i1
+    // get output of i1
     MT x = std::abs(mp_x);
     if (x <= MT{8.0}) {
       auto coeff_pair_A = ChebyshevCoefficientsI1e_A<MT>();
@@ -56,7 +56,7 @@ struct CudaI0eGradFunctor {
   __device__ __forceinline__ T operator()(const T _x,
                                           const T _out,
                                           const T _out_grad) const {
-    using MT = typename phi::dtype::MPTypeTrait<T>::Type;
+    using MT = typename MPTypeTrait<T>::Type;
     const MT mp_x = static_cast<MT>(_x);
     const MT mp_out = static_cast<MT>(_out);
     const MT mp_out_grad = static_cast<MT>(_out_grad);
@@ -92,7 +92,7 @@ struct CudaI1GradFunctor {
   __device__ __forceinline__ T operator()(const T _x,
                                           const T _out,
                                           const T _out_grad) const {
-    using MT = typename phi::dtype::MPTypeTrait<T>::Type;
+    using MT = typename MPTypeTrait<T>::Type;
     const MT mp_x = static_cast<MT>(_x);
     const MT mp_out = static_cast<MT>(_out);
     const MT mp_out_grad = static_cast<MT>(_out_grad);
@@ -129,7 +129,7 @@ struct CudaI1eGradFunctor {
   __device__ __forceinline__ T operator()(const T _x,
                                           const T _out,
                                           const T _out_grad) const {
-    using MT = typename phi::dtype::MPTypeTrait<T>::Type;
+    using MT = typename MPTypeTrait<T>::Type;
     const MT mp_x = static_cast<MT>(_x);
     const MT mp_out = static_cast<MT>(_out);
     const MT mp_out_grad = static_cast<MT>(_out_grad);

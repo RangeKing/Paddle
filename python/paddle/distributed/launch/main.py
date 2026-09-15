@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import paddle
 from paddle.distributed.launch.context import Context
+from paddle.distributed.utils import launch_utils
 
 ctx = None
 
@@ -391,8 +392,8 @@ def launch() -> None:
         if nnodes > 1:
             from paddle.distributed.launch.utils.etcd_client import ETCDClient
 
-            assert "etcd://" in ctx.args.master
-            master_ip, port = ctx.args.master.strip("etcd://").split(':')
+            assert ctx.args.master.startswith("etcd://")
+            master_ip, port = ctx.args.master.removeprefix("etcd://").split(':')
             client = ETCDClient(host=master_ip, port=port)
             client.delete("best_cfg")
             client.delete_prefix("auto_tuner")
@@ -1227,7 +1228,7 @@ def launch() -> None:
             auto_tuner.add_cfg(cur_cfg)
 
             # per task launch interval
-            self_pid = str(os.getpid())
+            self_pid = os.getpid()
             if paddle.device.is_compiled_with_custom_device('npu'):
                 processes = os.popen(
                     "fuser -v /dev/davinci* |awk '{for(i=1;i<=NF;i++) print $i;}'"
@@ -1240,10 +1241,8 @@ def launch() -> None:
                 processes = os.popen(
                     "fuser -v /dev/nvidia* |awk '{for(i=1;i<=NF;i++) print $i;}'"
                 ).readlines()
-            for process in processes:
-                pid = str(process.strip())
-                if pid != self_pid:
-                    os.system("kill -9 " + pid)
+            pids_to_kill = launch_utils.filter_pids(processes, self_pid)
+            launch_utils.terminate_processes(pids_to_kill)
             time.sleep(3)
             end_time = time.time()
 

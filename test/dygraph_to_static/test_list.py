@@ -18,9 +18,6 @@ import unittest
 import numpy as np
 from dygraph_to_static_utils import (
     Dy2StTestBase,
-    IrMode,
-    ToStaticMode,
-    disable_test_case,
     test_ast_only,
 )
 
@@ -208,11 +205,11 @@ def test_list_pop_in_while_loop(x, iter_num):
 
 class TestListWithoutControlFlowConfig(Dy2StTestBase):
     def setUp(self):
-        self.place = (
-            base.CUDAPlace(0)
-            if base.is_compiled_with_cuda()
-            else base.CPUPlace()
-        )
+        self.place = base.CPUPlace()
+        if base.is_compiled_with_cuda():
+            self.place = base.CUDAPlace(0)
+        if base.is_compiled_with_xpu():
+            self.place = base.XPUPlace(0)
 
         self.init_data()
         self.init_dygraph_func()
@@ -296,7 +293,6 @@ class TestListInWhileLoop(TestListWithoutControlFlowConfig):
                 res = self.dygraph_func(self.input, self.iter_num)
             return self.result_to_numpy(res)
 
-    @disable_test_case((ToStaticMode.AST, IrMode.PT))
     def test_transformed_static_result(self):
         self.compare_transformed_static_result()
 

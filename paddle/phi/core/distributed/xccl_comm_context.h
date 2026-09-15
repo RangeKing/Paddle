@@ -13,9 +13,11 @@
 // limitations under the License.
 #pragma once
 
+#ifdef PADDLE_WITH_CUSTOM_DEVICE
 #include "paddle/common/macros.h"
 #include "paddle/phi/core/distributed/comm_context.h"
 
+#include "paddle/phi/backends/custom/custom_context.h"
 #include "paddle/phi/backends/device_manager.h"
 
 namespace phi {
@@ -24,7 +26,7 @@ namespace distributed {
 
 class XCCLCommContext final : public CommContext {
  public:
-  XCCLCommContext(const phi::Place& place,
+  XCCLCommContext(const Place& place,
                   int rank,
                   int size,
                   const ccl::CCLRootId& xccl_id);
@@ -35,43 +37,50 @@ class XCCLCommContext final : public CommContext {
   ccl::CCLComm GetXcclComm() const { return xccl_comm_; }
 
   std::shared_ptr<phi::stream::Stream> GetStream() const { return stream_; }
+  phi::stream::stream_t stream() const { return stream_->raw_stream(); }
 
   std::string GetDeviceType() const { return place_.GetDeviceType(); }
 
-  void Broadcast(phi::DenseTensor* out_tensor,
-                 const phi::DenseTensor& in_tensor,
+  phi::CustomContext* GetDevContext() { return dev_ctx_.get(); }
+
+  void SetDevContext(std::unique_ptr<phi::CustomContext>&& dev_ctx) {
+    dev_ctx_ = std::move(dev_ctx);
+  }
+
+  void Broadcast(DenseTensor* out_tensor,
+                 const DenseTensor& in_tensor,
                  int root,
-                 const phi::stream::Stream& stream) const;
+                 const phi::stream::stream_t& stream) const;
 
-  void Send(const phi::DenseTensor& in_tensor,
+  void Send(const DenseTensor& in_tensor,
             const int64_t& count,
             const int& peer,
-            const phi::stream::Stream& stream) const;
+            const phi::stream::stream_t& stream) const;
 
-  void Recv(phi::DenseTensor* out_tensor,
+  void Recv(DenseTensor* out_tensor,
             const int64_t& count,
             const int& peer,
-            const phi::stream::Stream& stream) const;
+            const phi::stream::stream_t& stream) const;
 
-  void ReduceScatter(phi::DenseTensor* out_tensor,
-                     const phi::DenseTensor& in_tensor,
+  void ReduceScatter(DenseTensor* out_tensor,
+                     const DenseTensor& in_tensor,
                      phi::ccl::CCLReduceOp reduce_type,
-                     const phi::stream::Stream& stream) const;
+                     const phi::stream::stream_t& stream) const;
 
-  void AllGather(phi::DenseTensor* out_tensor,
-                 const phi::DenseTensor& in_tensor,
-                 const phi::stream::Stream& stream) const;
+  void AllGather(DenseTensor* out_tensor,
+                 const DenseTensor& in_tensor,
+                 const phi::stream::stream_t& stream) const;
 
-  void AllReduce(phi::DenseTensor* out_tensor,
-                 const phi::DenseTensor& in_tensor,
+  void AllReduce(DenseTensor* out_tensor,
+                 const DenseTensor& in_tensor,
                  phi::ccl::CCLReduceOp reduce_type,
-                 const phi::stream::Stream& stream) const;
+                 const phi::stream::stream_t stream) const;
 
-  void Reduce(phi::DenseTensor* out_tensor,
-              const phi::DenseTensor& in_tensor,
+  void Reduce(DenseTensor* out_tensor,
+              const DenseTensor& in_tensor,
               phi::ccl::CCLReduceOp reduce_type,
               int root,
-              const phi::stream::Stream& stream) const;
+              const phi::stream::stream_t& stream) const;
 
   void GroupStart() const;
 
@@ -80,10 +89,12 @@ class XCCLCommContext final : public CommContext {
  private:
   DISABLE_COPY_AND_ASSIGN(XCCLCommContext);
 
-  phi::Place place_;
+  Place place_;
   ccl::CCLComm xccl_comm_;
   std::shared_ptr<phi::stream::Stream> stream_;
+  std::unique_ptr<phi::CustomContext> dev_ctx_;
 };
 
 }  // namespace distributed
 }  // namespace phi
+#endif

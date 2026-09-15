@@ -23,6 +23,7 @@ import numpy as np
 import paddle
 from paddle.base import framework
 from paddle.distribution.transformed_distribution import TransformedDistribution
+from paddle.utils.decorator_utils import param_one_alias
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -53,7 +54,7 @@ class Gumbel(TransformedDistribution):
         scale(int|float|tensor): The std of gumbel distribution.The data type is int, float, tensor.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.distribution.gumbel import Gumbel
@@ -61,11 +62,11 @@ class Gumbel(TransformedDistribution):
             >>> # Gumbel distributed with loc=0, scale=1
             >>> dist = Gumbel(paddle.full([1], 0.0), paddle.full([1], 1.0))
 
-            >>> # doctest: +SKIP
+            >>> # doctest: +SKIP("The sample results is randomized.")
             >>> print(dist.sample([2]))
             Tensor(shape=[2, 1], dtype=float32, place=Place(cpu), stop_gradient=True,
             [[0.40484068],
-            [3.19400501]])
+             [3.19400501]])
 
             >>> print(dist.rsample([2]))
             Tensor(shape=[2, 1], dtype=float32, place=Place(cpu), stop_gradient=True,
@@ -250,6 +251,7 @@ class Gumbel(TransformedDistribution):
         """
         return paddle.log(self.scale) + 1 + np.euler_gamma
 
+    @param_one_alias(["shape", "sample_shape"])
     def sample(self, shape: Sequence[int] = []) -> Tensor:
         """Sample from ``Gumbel``.
 
@@ -263,6 +265,7 @@ class Gumbel(TransformedDistribution):
         with paddle.no_grad():
             return self.rsample(shape)
 
+    @param_one_alias(["shape", "sample_shape"])
     def rsample(self, shape: Sequence[int] = []) -> Tensor:
         """reparameterized sample
         Args:

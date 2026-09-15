@@ -25,4 +25,6 @@ PD_REGISTER_KERNEL(prod_grad,
                    float,
                    double,
                    int,
-                   int64_t) {}
+                   int64_t,
+                   phi::complex64,
+                   phi::complex128) {}

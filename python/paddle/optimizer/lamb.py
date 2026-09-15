@@ -24,8 +24,7 @@ from ..base.framework import Variable
 from .optimizer import Optimizer
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-    from typing import Callable
+    from collections.abc import Callable, Sequence
 
     from typing_extensions import NotRequired
 
@@ -103,7 +102,7 @@ class Lamb(Optimizer):
         name(str|None, optional): For detailed information, please refer to
             :ref:`api_guide_Name` . Usually name is no need to set and None by default.
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 

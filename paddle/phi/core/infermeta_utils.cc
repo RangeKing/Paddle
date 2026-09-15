@@ -33,7 +33,7 @@ void InferMetaContext::EmplaceBackAttr(Attribute attr) {
 }
 
 void InferMetaContext::EmplaceBackInputs(
-    paddle::small_vector<MetaTensor, phi::kInputSmallVectorSize> inputs) {
+    paddle::small_vector<MetaTensor, kInputSmallVectorSize> inputs) {
   int index = static_cast<int>(inputs_.size());
   input_range_.emplace_back(std::pair<int, int>(index, index + inputs.size()));
   inputs_.insert(inputs_.end(),
@@ -41,7 +41,7 @@ void InferMetaContext::EmplaceBackInputs(
                  std::make_move_iterator(inputs.end()));
 }
 void InferMetaContext::EmplaceBackOutputs(
-    paddle::small_vector<MetaTensor, phi::kOutputSmallVectorSize> outputs) {
+    paddle::small_vector<MetaTensor, kOutputSmallVectorSize> outputs) {
   int index = static_cast<int>(outputs_.size());
   output_range_.emplace_back(
       std::pair<int, int>(index, index + outputs.size()));
@@ -137,27 +137,36 @@ const Attribute& InferMetaContext::AttrAt(size_t idx) const {
   return attrs_.at(idx);
 }
 
-template const bool& InferMetaContext::AttrAt(size_t idx) const;
-template const int& InferMetaContext::AttrAt(size_t idx) const;
-template const int64_t& InferMetaContext::AttrAt(size_t idx) const;
-template const float& InferMetaContext::AttrAt(size_t idx) const;
-template const double& InferMetaContext::AttrAt(size_t idx) const;
-template const std::string& InferMetaContext::AttrAt(size_t idx) const;
-template const std::vector<bool>& InferMetaContext::AttrAt(size_t idx) const;
-template const std::vector<int>& InferMetaContext::AttrAt(size_t idx) const;
-template const std::vector<int64_t>& InferMetaContext::AttrAt(size_t idx) const;
-template const std::vector<float>& InferMetaContext::AttrAt(size_t idx) const;
-template const std::vector<double>& InferMetaContext::AttrAt(size_t idx) const;
-template const std::vector<std::string>& InferMetaContext::AttrAt(
+template PADDLE_API const bool& InferMetaContext::AttrAt(size_t idx) const;
+template PADDLE_API const int& InferMetaContext::AttrAt(size_t idx) const;
+template PADDLE_API const int64_t& InferMetaContext::AttrAt(size_t idx) const;
+template PADDLE_API const float& InferMetaContext::AttrAt(size_t idx) const;
+template PADDLE_API const double& InferMetaContext::AttrAt(size_t idx) const;
+template PADDLE_API const std::string& InferMetaContext::AttrAt(
     size_t idx) const;
-template const Scalar& InferMetaContext::AttrAt(size_t idx) const;
-template const std::vector<Scalar>& InferMetaContext::AttrAt(size_t idx) const;
-template const IntArray& InferMetaContext::AttrAt(size_t idx) const;
-template TEST_API const DataType& InferMetaContext::AttrAt(size_t idx) const;
-template const DataLayout& InferMetaContext::AttrAt(size_t idx) const;
-template const Place& InferMetaContext::AttrAt(size_t idx) const;
-template const TensorRef& InferMetaContext::AttrAt(size_t idx) const;
-template const std::vector<TensorRef>& InferMetaContext::AttrAt(
+template PADDLE_API const std::vector<bool>& InferMetaContext::AttrAt(
+    size_t idx) const;
+template PADDLE_API const std::vector<int>& InferMetaContext::AttrAt(
+    size_t idx) const;
+template PADDLE_API const std::vector<int64_t>& InferMetaContext::AttrAt(
+    size_t idx) const;
+template PADDLE_API const std::vector<float>& InferMetaContext::AttrAt(
+    size_t idx) const;
+template PADDLE_API const std::vector<double>& InferMetaContext::AttrAt(
+    size_t idx) const;
+template PADDLE_API const std::vector<std::string>& InferMetaContext::AttrAt(
+    size_t idx) const;
+template PADDLE_API const Scalar& InferMetaContext::AttrAt(size_t idx) const;
+template PADDLE_API const std::vector<Scalar>& InferMetaContext::AttrAt(
+    size_t idx) const;
+template PADDLE_API const IntArray& InferMetaContext::AttrAt(size_t idx) const;
+template PADDLE_API TEST_API const DataType& InferMetaContext::AttrAt(
+    size_t idx) const;
+template PADDLE_API const DataLayout& InferMetaContext::AttrAt(
+    size_t idx) const;
+template PADDLE_API const Place& InferMetaContext::AttrAt(size_t idx) const;
+template PADDLE_API const TensorRef& InferMetaContext::AttrAt(size_t idx) const;
+template PADDLE_API const std::vector<TensorRef>& InferMetaContext::AttrAt(
     size_t idx) const;
 
 MetaFnFactory& MetaFnFactory::Instance() {

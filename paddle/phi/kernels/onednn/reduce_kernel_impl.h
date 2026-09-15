@@ -23,11 +23,11 @@ inline std::vector<int64_t> CalculateReducedDims(
     const std::vector<int64_t>& dims,  // NOLINT
     bool reduce_all,
     bool keep_dim) {
-  if (keep_dim) return common::vectorize(output->dims());
+  if (keep_dim) return vectorize(output->dims());
 
   if (reduce_all) return std::vector<int64_t>(input->dims().size(), 1);
 
-  std::vector<int64_t> output_dims(common::vectorize(input->dims()));
+  std::vector<int64_t> output_dims(vectorize(input->dims()));
   for (size_t i = 0; i < dims.size(); ++i) {
     // handle negative dims, f.e. "-1" means rightmost dimension
     int index = (dims[i] >= 0) ? dims[i] : input->dims().size() + dims[i];
@@ -47,7 +47,7 @@ void ReduceKernel(const Context& dev_ctx,
                   dnnl::algorithm reduction_type) {
   reduce_all = recompute_reduce_all(x, dims, reduce_all);
   const auto& onednn_engine = dev_ctx.GetEngine();
-  auto x_tz = common::vectorize(x.dims());
+  auto x_tz = vectorize(x.dims());
   auto out_tz =
       CalculateReducedDims(&x, out, dims.GetData(), reduce_all, keep_dim);
 
@@ -64,11 +64,11 @@ void ReduceKernel(const Context& dev_ctx,
         x_tz, x.dtype(), x_type, onednn_engine);
 
     auto reorder_src_memory_p = reorder_handler.AcquireSrcMemory(
-        x.mem_desc(), funcs::to_void_cast(x.data<T>()));
+        phi::funcs::GetOneDNNMemDesc(x), funcs::to_void_cast(x.data<T>()));
 
     // reuse mem desc since it is a simple copy
-    auto reorder_dst_memory_p =
-        reorder_handler.AcquireDstMemory(out, x.mem_desc(), dev_ctx.GetPlace());
+    auto reorder_dst_memory_p = reorder_handler.AcquireDstMemory(
+        out, phi::funcs::GetOneDNNMemDesc(x), dev_ctx.GetPlace());
 
     auto reorder_p = reorder_handler.AcquireReorder(reorder_src_memory_p,
                                                     reorder_dst_memory_p);
@@ -77,9 +77,10 @@ void ReduceKernel(const Context& dev_ctx,
     astream.wait();
 
     const auto reshape_dims = out->dims().size() != 0
-                                  ? common::vectorize<int64_t>(out->dims())
+                                  ? vectorize<int64_t>(out->dims())
                                   : std::vector<int64_t>{1};
-    out->set_mem_desc(reorder_dst_memory_p->get_desc().reshape(reshape_dims));
+    phi::funcs::SetOneDNNMemDesc(
+        out, reorder_dst_memory_p->get_desc().reshape(reshape_dims));
   } else {
     funcs::ReductionOneDNNHandler<T> handler(reduction_type,
                                              0.0f,
@@ -102,9 +103,10 @@ void ReduceKernel(const Context& dev_ctx,
     astream.wait();
 
     const auto reshape_dims = out->dims().size() != 0
-                                  ? common::vectorize<int64_t>(out->dims())
+                                  ? vectorize<int64_t>(out->dims())
                                   : std::vector<int64_t>{1};
-    out->set_mem_desc(dst_memory_p->get_desc().reshape(reshape_dims));
+    phi::funcs::SetOneDNNMemDesc(
+        out, dst_memory_p->get_desc().reshape(reshape_dims));
   }
 }
 
@@ -124,7 +126,7 @@ void ReduceGradKernel(const Context& dev_ctx,
   const auto& onednn_engine = dev_ctx.GetEngine();
   auto out_grad_tz = CalculateReducedDims(
       x_grad, &out_grad, dims.GetData(), reduce_all, keep_dim);
-  auto x_grad_tz = common::vectorize(x_grad->dims());
+  auto x_grad_tz = vectorize(x_grad->dims());
 
   funcs::BroadcastDataOneDNNHandler<T> handler(binary_type,
                                                onednn_engine,
@@ -152,7 +154,7 @@ void ReduceGradKernel(const Context& dev_ctx,
   binary_prim->execute(astream, args);
   astream.wait();
 
-  x_grad->set_mem_desc(dst_memory_p->get_desc());
+  phi::funcs::SetOneDNNMemDesc(x_grad, dst_memory_p->get_desc());
 }
 
 }  // namespace phi

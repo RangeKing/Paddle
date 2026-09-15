@@ -19,7 +19,7 @@
 namespace phi {
 
 inline void GetDims(
-    const phi::DDim& dim, int axis, int* m, int* t, int* n, bool asvector) {
+    const DDim& dim, int axis, int* m, int* t, int* n, bool asvector) {
   *m = 1;
   *n = 1;
   *t = dim[axis];
@@ -39,7 +39,7 @@ void PNormGradKernel(const Context& dev_ctx,
                      const DenseTensor& x,
                      const DenseTensor& out,
                      const DenseTensor& out_grad,
-                     float porder,
+                     double porder,
                      int axis,
                      float epsilon,
                      bool keepdim,
@@ -47,14 +47,15 @@ void PNormGradKernel(const Context& dev_ctx,
                      DenseTensor* x_grad) {
   using XPUType = typename XPUTypeTrait<T>::Type;
   dev_ctx.template Alloc<T>(x_grad);
+  if (x.numel() == 0) return;
   auto xdim = x.dims();
   axis = axis < 0 ? xdim.size() + axis : axis;
   int m, t, n;
   GetDims(xdim, axis, &m, &t, &n, asvector);
 
-  std::vector<int> r_dim;
-  std::vector<int> x_dim;
-  std::vector<int> y_dim;
+  std::vector<int64_t> r_dim;
+  std::vector<int64_t> x_dim;
+  std::vector<int64_t> y_dim;
 
   x_dim.push_back(m);
   x_dim.push_back(t);
@@ -134,13 +135,15 @@ void PNormGradKernel(const Context& dev_ctx,
     PADDLE_ENFORCE_XDNN_SUCCESS(r, "abs");
 
     DenseTensor porder_tensor;
-    phi::DDim pdim = common::make_ddim({1});
+    DDim pdim = make_ddim({1});
     porder_tensor.Resize(pdim);
     dev_ctx.template Alloc<float>(&porder_tensor);
-    r = xpu::constant(
-        dev_ctx.x_context(), porder_tensor.data<float>(), 1, porder - 1.0f);
+    r = xpu::constant(dev_ctx.x_context(),
+                      porder_tensor.data<float>(),
+                      1,
+                      static_cast<float>(porder - 1.0));
     PADDLE_ENFORCE_XDNN_SUCCESS(r, "constant");
-    std::vector<int> p_dim(1, 1);
+    std::vector<int64_t> p_dim(1, 1);
 
     XPUType* x_pow = RAII_GUARD.alloc_l3_or_gm<XPUType>(m * t * n);
     PADDLE_ENFORCE_XDNN_NOT_NULL(x_pow);
@@ -165,10 +168,27 @@ void PNormGradKernel(const Context& dev_ctx,
     PADDLE_ENFORCE_XDNN_SUCCESS(r, "broadcast_pow");
     dev_ctx.Wait();
 
+    // Add epsilon to the denominator to avoid 0 / 0 for zero-norm inputs.
+    // Keep this consistent with the CPU p_norm_grad implementation.
+    XPUType* safe_y_pow = RAII_GUARD.alloc_l3_or_gm<XPUType>(m * n);
+    PADDLE_ENFORCE_XDNN_NOT_NULL(safe_y_pow);
+    r = xpu::constant(dev_ctx.x_context(),
+                      porder_tensor.data<float>(),
+                      1,
+                      static_cast<float>(epsilon));
+    PADDLE_ENFORCE_XDNN_SUCCESS(r, "constant");
+    r = xpu::broadcast_add(dev_ctx.x_context(),
+                           y_pow,
+                           porder_tensor.data<float>(),
+                           safe_y_pow,
+                           y_dim,
+                           p_dim);
+    PADDLE_ENFORCE_XDNN_SUCCESS(r, "broadcast_add");
+
     XPUType* dx_t = x_abs;
 
     r = xpu::broadcast_div(
-        dev_ctx.x_context(), x_pow, y_pow, dx_t, x_dim, y_dim);
+        dev_ctx.x_context(), x_pow, safe_y_pow, dx_t, x_dim, y_dim);
     PADDLE_ENFORCE_XDNN_SUCCESS(r, "broadcast_div");
 
     XPUType* x_sign = x_pow;

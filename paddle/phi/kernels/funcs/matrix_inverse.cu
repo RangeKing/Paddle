@@ -27,14 +27,25 @@ void MatrixInverseFunctor<Context, T>::operator()(const Context& dev_ctx,
 #ifndef PADDLE_WITH_HIP
   const auto& mat_dims = a.dims();
   const int rank = mat_dims.size();
+  if (mat_dims[rank - 1] > std::numeric_limits<int>::max()) {
+    PADDLE_THROW(common::errors::InvalidArgument(
+        "Matrix dimension n is too large: %d, must be <= INT_MAX.",
+        mat_dims[rank - 1]));
+  }
   int n = mat_dims[rank - 1];
-  int batch_size = rank > 2 ? a.numel() / (n * n) : 1;
+  int64_t computed_batch_size = rank > 2 ? a.numel() / (n * n) : 1;
+  if (computed_batch_size > 65536) {
+    PADDLE_THROW(common::errors::Unimplemented(
+        "cublasMatInv does not support batch_size > 65536. Got %ld.",
+        computed_batch_size));
+  }
+  int batch_size = static_cast<int>(computed_batch_size);
 
   phi::Allocator::AllocationPtr tmp_gpu_mat_data;
   const T* gpu_mat = a.data<T>();
   if (n >= 32) {
     // Copy all elements of input matrix A to a temporary memory space to
-    // avoid being overriden by getrf.
+    // avoid being overridden by getrf.
     tmp_gpu_mat_data = phi::memory_utils::Alloc(
         dev_ctx.GetPlace(),
         a.numel() * sizeof(T),
@@ -56,15 +67,17 @@ void MatrixInverseFunctor<Context, T>::operator()(const Context& dev_ctx,
 
   // Copy the addresses of A and A_inv from host to device,
   // and allocate device memory for info and pivots.
-  int num_ints = n < 32 ? batch_size : batch_size * (n + 1);
-  size_t total_bytes = cpu_ptrs.size() * sizeof(T*) + num_ints * sizeof(int);
+  int64_t num_ints =
+      n < 32 ? batch_size : static_cast<int64_t>(batch_size) * (n + 1);
+  size_t total_bytes = cpu_ptrs.size() * sizeof(T*) +
+                       static_cast<size_t>(num_ints) * sizeof(int);
   phi::Allocator::AllocationPtr tmp_gpu_ptrs_data = phi::memory_utils::Alloc(
       dev_ctx.GetPlace(),
       total_bytes,
       phi::Stream(reinterpret_cast<phi::StreamId>(dev_ctx.stream())));
   memory_utils::Copy(dev_ctx.GetPlace(),
                      tmp_gpu_ptrs_data->ptr(),
-                     phi::CPUPlace(),
+                     CPUPlace(),
                      static_cast<void*>(cpu_ptrs.data()),
                      cpu_ptrs.size() * sizeof(T*),
                      dev_ctx.stream());
@@ -73,7 +86,7 @@ void MatrixInverseFunctor<Context, T>::operator()(const Context& dev_ctx,
   int* gpu_info_ptr =
       reinterpret_cast<int*>(gpu_inv_pivot_info + cpu_ptrs.size());
 
-  auto blas = phi::funcs::GetBlas<Context, T>(dev_ctx);
+  auto blas = funcs::GetBlas<Context, T>(dev_ctx);
   std::vector<int> info;  // only for singular checking
   info.resize(batch_size);
   // This functions in cuBLAS is intended to be used for matrices of small
@@ -107,7 +120,7 @@ void MatrixInverseFunctor<Context, T>::operator()(const Context& dev_ctx,
                       gpu_info_ptr,
                       batch_size);
   }
-  memory_utils::Copy(phi::CPUPlace(),
+  memory_utils::Copy(CPUPlace(),
                      info.data(),
                      dev_ctx.GetPlace(),
                      gpu_info_ptr,
@@ -131,8 +144,8 @@ void MatrixInverseFunctor<Context, T>::operator()(const Context& dev_ctx,
 
 template class MatrixInverseFunctor<GPUContext, float>;
 template class MatrixInverseFunctor<GPUContext, double>;
-template class MatrixInverseFunctor<GPUContext, phi::dtype::complex<float>>;
-template class MatrixInverseFunctor<GPUContext, phi::dtype::complex<double>>;
+template class MatrixInverseFunctor<GPUContext, phi::complex64>;
+template class MatrixInverseFunctor<GPUContext, phi::complex128>;
 
 }  // namespace funcs
 }  // namespace phi

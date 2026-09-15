@@ -22,23 +22,258 @@
 #include <limits>
 #include <vector>
 
-#include "paddle/phi/common/bfloat16.h"
-#include "paddle/phi/common/complex.h"
+#include "paddle/phi/common/amp_type_traits.h"
 #include "paddle/phi/kernels/funcs/math_function.h"
 
 namespace phi {
 namespace funcs {
 
 namespace detail {
+inline void check_blas_int64(int64_t value, const char *name) {
+  PADDLE_ENFORCE_GE(
+      value,
+      0,
+      common::errors::InvalidArgument("BLAS parameter %s must be non-negative, "
+                                      "but received %ld.",
+                                      name,
+                                      value));
+}
+
+inline int to_blas_int(int64_t value, const char *name) {
+  check_blas_int64(value, name);
+  PADDLE_ENFORCE_LE_INT_MAX(value, name);
+  return static_cast<int>(value);
+}
+
+template <typename T>
+static void axpy_fallback(
+    int64_t n, const T alpha, const T *x, int64_t incx, T *y, int64_t incy) {
+  using MT = typename phi::dtype::MPTypeTrait<T>::Type;
+  const MT mp_alpha = static_cast<MT>(alpha);
+  for (int64_t i = 0; i < n; ++i) {
+    const int64_t x_index = i * incx;
+    const int64_t y_index = i * incy;
+    y[y_index] = static_cast<T>(static_cast<MT>(y[y_index]) +
+                                mp_alpha * static_cast<MT>(x[x_index]));
+  }
+}
+
+inline bool level1_blas_compatible(int64_t n, int64_t incx, int64_t incy) {
+  constexpr auto kIntMin = std::numeric_limits<int>::lowest();
+  constexpr auto kIntMax = std::numeric_limits<int>::max();
+  return n >= 0 && n <= kIntMax && incx >= kIntMin && incx <= kIntMax &&
+         incy >= kIntMin && incy <= kIntMax;
+}
+
+template <typename T, typename BlasAxpy>
+static void axpy_with_blas(int64_t n,
+                           const T alpha,
+                           const T *x,
+                           int64_t incx,
+                           T *y,
+                           int64_t incy,
+                           BlasAxpy blas_axpy) {
+  if (n <= 0) {
+    return;
+  }
+  if (n == 1) {
+    incx = 1;
+    incy = 1;
+  }
+  if (level1_blas_compatible(n, incx, incy)) {
+    blas_axpy(static_cast<int>(n),
+              alpha,
+              x,
+              static_cast<int>(incx),
+              y,
+              static_cast<int>(incy));
+    return;
+  }
+  axpy_fallback(n, alpha, x, incx, y, incy);
+}
+
 template <typename T>
 static void axpy(
-    int n, const T alpha, const T *x, const int incx, T *y, const int incy) {
-  // Y = Y + alpha * X
-  while (n-- > 0) {
-    *y += alpha * *x;
-    y = y + incy;
-    x = x + incx;
+    int64_t n, const T alpha, const T *x, int64_t incx, T *y, int64_t incy) {
+  if (n == 1) {
+    incx = 1;
+    incy = 1;
   }
+  axpy_fallback(n, alpha, x, incx, y, incy);
+}
+
+static void axpy(int64_t n,
+                 const float alpha,
+                 const float *x,
+                 int64_t incx,
+                 float *y,
+                 int64_t incy) {
+  axpy_with_blas(
+      n,
+      alpha,
+      x,
+      incx,
+      y,
+      incy,
+      [](int n, float alpha, const float *x, int incx, float *y, int incy) {
+#if defined(PADDLE_WITH_MKLML) || defined(PADDLE_WITH_HML)
+        phi::dynload::cblas_saxpy(n, alpha, x, incx, y, incy);
+#else
+        cblas_saxpy(n, alpha, x, incx, y, incy);
+#endif
+      });
+}
+
+static void axpy(int64_t n,
+                 const double alpha,
+                 const double *x,
+                 int64_t incx,
+                 double *y,
+                 int64_t incy) {
+  axpy_with_blas(
+      n,
+      alpha,
+      x,
+      incx,
+      y,
+      incy,
+      [](int n, double alpha, const double *x, int incx, double *y, int incy) {
+#if defined(PADDLE_WITH_MKLML) || defined(PADDLE_WITH_HML)
+        phi::dynload::cblas_daxpy(n, alpha, x, incx, y, incy);
+#else
+        cblas_daxpy(n, alpha, x, incx, y, incy);
+#endif
+      });
+}
+
+static void axpy(int64_t n,
+                 const phi::complex64 alpha,
+                 const phi::complex64 *x,
+                 int64_t incx,
+                 phi::complex64 *y,
+                 int64_t incy) {
+  axpy_with_blas(n,
+                 alpha,
+                 x,
+                 incx,
+                 y,
+                 incy,
+                 [](int n,
+                    phi::complex64 alpha,
+                    const phi::complex64 *x,
+                    int incx,
+                    phi::complex64 *y,
+                    int incy) {
+#if defined(PADDLE_WITH_MKLML) || defined(PADDLE_WITH_HML)
+                   phi::dynload::cblas_caxpy(n, &alpha, x, incx, y, incy);
+#else
+        cblas_caxpy(n, &alpha, x, incx, y, incy);
+#endif
+                 });
+}
+
+static void axpy(int64_t n,
+                 const phi::complex128 alpha,
+                 const phi::complex128 *x,
+                 int64_t incx,
+                 phi::complex128 *y,
+                 int64_t incy) {
+  axpy_with_blas(n,
+                 alpha,
+                 x,
+                 incx,
+                 y,
+                 incy,
+                 [](int n,
+                    phi::complex128 alpha,
+                    const phi::complex128 *x,
+                    int incx,
+                    phi::complex128 *y,
+                    int incy) {
+#if defined(PADDLE_WITH_MKLML) || defined(PADDLE_WITH_HML)
+                   phi::dynload::cblas_zaxpy(n, &alpha, x, incx, y, incy);
+#else
+        cblas_zaxpy(n, &alpha, x, incx, y, incy);
+#endif
+                 });
+}
+
+template <typename T>
+static T dot_fallback(
+    int64_t n, const T *x, int64_t incx, const T *y, int64_t incy) {
+  using MT = typename phi::dtype::MPTypeTrait<T>::Type;
+  MT sum = static_cast<MT>(0);
+  for (int64_t i = 0; i < n; ++i) {
+    sum += static_cast<MT>(x[i * incx]) * static_cast<MT>(y[i * incy]);
+  }
+  return static_cast<T>(sum);
+}
+
+template <typename T, typename BlasDot>
+static T dot_with_blas(int64_t n,
+                       const T *x,
+                       int64_t incx,
+                       const T *y,
+                       int64_t incy,
+                       BlasDot blas_dot) {
+  if (n <= 0) {
+    return static_cast<T>(0);
+  }
+  if (n == 1) {
+    incx = 1;
+    incy = 1;
+  }
+  if (level1_blas_compatible(n, incx, incy)) {
+    return blas_dot(static_cast<int>(n),
+                    x,
+                    static_cast<int>(incx),
+                    y,
+                    static_cast<int>(incy));
+  }
+  return dot_fallback(n, x, incx, y, incy);
+}
+
+template <typename T>
+static T dot(int64_t n, const T *x, int64_t incx, const T *y, int64_t incy) {
+  if (n == 1) {
+    incx = 1;
+    incy = 1;
+  }
+  return dot_fallback(n, x, incx, y, incy);
+}
+
+static float dot(
+    int64_t n, const float *x, int64_t incx, const float *y, int64_t incy) {
+  return dot_with_blas(
+      n,
+      x,
+      incx,
+      y,
+      incy,
+      [](int n, const float *x, int incx, const float *y, int incy) {
+#if defined(PADDLE_WITH_MKLML) || defined(PADDLE_WITH_HML)
+        return phi::dynload::cblas_sdot(n, x, incx, y, incy);
+#else
+        return cblas_sdot(n, x, incx, y, incy);
+#endif
+      });
+}
+
+static double dot(
+    int64_t n, const double *x, int64_t incx, const double *y, int64_t incy) {
+  return dot_with_blas(
+      n,
+      x,
+      incx,
+      y,
+      incy,
+      [](int n, const double *x, int incx, const double *y, int incy) {
+#if defined(PADDLE_WITH_MKLML) || defined(PADDLE_WITH_HML)
+        return phi::dynload::cblas_ddot(n, x, incx, y, incy);
+#else
+        return cblas_ddot(n, x, incx, y, incy);
+#endif
+      });
 }
 }  // namespace detail
 
@@ -46,65 +281,21 @@ template <typename T>
 struct CBlas;
 
 template <>
-struct CBlas<int8_t> {
-  template <typename... ARGS>
-  static void VCOPY(ARGS... args) {
-    PADDLE_THROW(common::errors::Unimplemented(
-        "Blas VCOPY do not supported on CPU, please check your code"));
-  }
-};
+struct CBlas<int8_t> {};
 
 template <>
-struct CBlas<int16_t> {
-  template <typename... ARGS>
-  static void VCOPY(ARGS... args) {
-    PADDLE_THROW(common::errors::Unimplemented(
-        "Blas VCOPY do not supported on CPU, please check your code"));
-  }
-};
+struct CBlas<int16_t> {};
 
 template <>
-struct CBlas<phi::dtype::bfloat16> {
+struct CBlas<phi::bfloat16> {
   template <typename... ARGS>
   static void AXPY(ARGS... args) {
     detail::axpy(args...);
   }
 
   template <typename... ARGS>
-  static void VCOPY(ARGS... args UNUSED) {
-    PADDLE_THROW(common::errors::Unimplemented(
-        "Blas VCOPY do not supported on CPU with bfloat16,"
-        " please check your code"));
-  }
-
-  template <typename... ARGS>
-  static void VADD(int n,
-                   const phi::dtype::bfloat16 *x,
-                   const phi::dtype::bfloat16 *y,
-                   phi::dtype::bfloat16 *z) {
-    for (int i = 0; i < n; ++i) {
-      z[i] = x[i] + y[i];
-    }
-  }
-
-  template <typename... ARGS>
-  static void VMUL(int n,
-                   const phi::dtype::bfloat16 *x,
-                   const phi::dtype::bfloat16 *y,
-                   phi::dtype::bfloat16 *z) {
-    for (int i = 0; i < n; ++i) {
-      z[i] = x[i] * y[i];
-    }
-  }
-
-  template <typename... ARGS>
-  static void VSUB(int n,
-                   const phi::dtype::bfloat16 *x,
-                   const phi::dtype::bfloat16 *y,
-                   phi::dtype::bfloat16 *z) {
-    for (int i = 0; i < n; ++i) {
-      z[i] = x[i] - y[i];
-    }
+  static phi::bfloat16 DOT(ARGS... args) {
+    return detail::dot(args...);
   }
 };
 
@@ -145,12 +336,7 @@ struct CBlas<float> {
 
   template <typename... ARGS>
   static void AXPY(ARGS... args) {
-    phi::dynload::cblas_saxpy(args...);
-  }
-
-  template <typename... ARGS>
-  static void VCOPY(ARGS... args) {
-    phi::dynload::cblas_scopy(args...);
+    detail::axpy(args...);
   }
 
   template <typename... ARGS>
@@ -160,74 +346,13 @@ struct CBlas<float> {
 
   template <typename... ARGS>
   static float DOT(ARGS... args) {
-    return phi::dynload::cblas_sdot(args...);
-  }
-
-  template <typename... ARGS>
-  static void SCAL(ARGS... args) {
-    phi::dynload::cblas_sscal(args...);
-  }
-
-  template <typename... ARGS>
-  static float ASUM(ARGS... args) {
-    return phi::dynload::cblas_sasum(args...);
+    return detail::dot(args...);
   }
 
   template <typename... ARGS>
   static void GEMM_BATCH(ARGS... args) {
     phi::dynload::cblas_sgemm_batch(args...);
   }
-
-  template <typename... ARGS>
-  static void VADD(ARGS... args) {
-    phi::dynload::vsAdd(args...);
-  }
-
-  template <typename... ARGS>
-  static void VSUB(ARGS... args) {
-    phi::dynload::vsSub(args...);
-  }
-
-  template <typename... ARGS>
-  static void VMUL(ARGS... args) {
-    phi::dynload::vsMul(args...);
-  }
-
-  template <typename... ARGS>
-  static void VDIV(ARGS... args) {
-    phi::dynload::vsDiv(args...);
-  }
-
-  template <typename... ARGS>
-  static void VEXP(ARGS... args) {
-    phi::dynload::vsExp(args...);
-  }
-
-  template <typename... ARGS>
-  static void VSQUARE(ARGS... args) {
-    phi::dynload::vsSqr(args...);
-  }
-
-  template <typename... ARGS>
-  static void VPOW(ARGS... args) {
-    phi::dynload::vsPowx(args...);
-  }
-
-  template <typename... ARGS>
-  static void VINV(ARGS... args) {
-    phi::dynload::vsInv(args...);
-  }
-
-  template <typename... ARGS>
-  static void VMERF(ARGS... args) {
-    phi::dynload::vmsErf(args...);
-  }
-#if !defined(_WIN32)
-  template <typename... ARGS>
-  static void CSRMM(ARGS... args) {
-    phi::dynload::mkl_scsrmm(args...);
-  }
-#endif
 
   template <typename... ARGS>
   static void TRSM(ARGS... args) {
@@ -271,12 +396,7 @@ struct CBlas<double> {
 
   template <typename... ARGS>
   static void AXPY(ARGS... args) {
-    phi::dynload::cblas_daxpy(args...);
-  }
-
-  template <typename... ARGS>
-  static void VCOPY(ARGS... args) {
-    phi::dynload::cblas_dcopy(args...);
+    detail::axpy(args...);
   }
 
   template <typename... ARGS>
@@ -286,17 +406,7 @@ struct CBlas<double> {
 
   template <typename... ARGS>
   static double DOT(ARGS... args) {
-    return phi::dynload::cblas_ddot(args...);
-  }
-
-  template <typename... ARGS>
-  static void SCAL(ARGS... args) {
-    phi::dynload::cblas_dscal(args...);
-  }
-
-  template <typename... ARGS>
-  static double ASUM(ARGS... args) {
-    return phi::dynload::cblas_dasum(args...);
+    return detail::dot(args...);
   }
 
   template <typename... ARGS>
@@ -305,141 +415,21 @@ struct CBlas<double> {
   }
 
   template <typename... ARGS>
-  static void VADD(ARGS... args) {
-    phi::dynload::vdAdd(args...);
-  }
-
-  template <typename... ARGS>
-  static void VSUB(ARGS... args) {
-    phi::dynload::vdSub(args...);
-  }
-
-  template <typename... ARGS>
-  static void VMUL(ARGS... args) {
-    phi::dynload::vdMul(args...);
-  }
-
-  template <typename... ARGS>
-  static void VDIV(ARGS... args) {
-    phi::dynload::vdDiv(args...);
-  }
-
-  template <typename... ARGS>
-  static void VEXP(ARGS... args) {
-    phi::dynload::vdExp(args...);
-  }
-
-  template <typename... ARGS>
-  static void VSQUARE(ARGS... args) {
-    phi::dynload::vdSqr(args...);
-  }
-
-  template <typename... ARGS>
-  static void VPOW(ARGS... args) {
-    phi::dynload::vdPowx(args...);
-  }
-
-  template <typename... ARGS>
-  static void VINV(ARGS... args) {
-    phi::dynload::vdInv(args...);
-  }
-
-  template <typename... ARGS>
-  static void VMERF(ARGS... args) {
-    phi::dynload::vmdErf(args...);
-  }
-#if !defined(_WIN32)
-  template <typename... ARGS>
-  static void CSRMM(ARGS... args) {
-    phi::dynload::mkl_dcsrmm(args...);
-  }
-#endif
-
-  template <typename... ARGS>
   static void TRSM(ARGS... args) {
     phi::dynload::cblas_dtrsm(args...);
   }
 };
 
 template <>
-struct CBlas<phi::dtype::complex<float>> {
+struct CBlas<phi::complex64> {
   template <typename... ARGS>
-  static void AXPY(int n,
-                   const phi::dtype::complex<float> alpha,
-                   const phi::dtype::complex<float> *X,
-                   const int incX,
-                   phi::dtype::complex<float> *Y,
-                   const int incY) {
-    phi::dynload::cblas_caxpy(n, &alpha, X, incX, Y, incY);
-  }
-
-  template <typename... ARGS>
-  static void VCOPY(ARGS... args) {
-    phi::dynload::cblas_ccopy(args...);
-  }
-
-  // the libmklml_intel.so paddle used has no vcAdd, vcSub,
-  // vcMul, vcDiv apis before rebuild from source
-  // so replace with the raw operator methods
-  /*
-  template <typename... ARGS>
-  static void VADD(ARGS... args) {
-    phi::dynload::vcAdd(args...);
-  }
-
-  template <typename... ARGS>
-  static void VSUB(ARGS... args) {
-    phi::dynload::vcSub(args...);
-  }
-
-  template <typename... ARGS>
-  static void VMUL(ARGS... args) {
-    phi::dynload::vcMul(args...);
-  }
-
-  template <typename... ARGS>
-  static void VDIV(ARGS... args) {
-    phi::dynload::vcDiv(args...);
-  }
-  */
-
-  template <typename... ARGS>
-  static void VADD(int n,
-                   const phi::dtype::complex<float> *a,
-                   const phi::dtype::complex<float> *b,
-                   phi::dtype::complex<float> *y) {
-    for (int i = 0; i < n; ++i) {
-      y[i] = a[i] + b[i];
-    }
-  }
-
-  template <typename... ARGS>
-  static void VSUB(int n,
-                   const phi::dtype::complex<float> *a,
-                   const phi::dtype::complex<float> *b,
-                   phi::dtype::complex<float> *y) {
-    for (int i = 0; i < n; ++i) {
-      y[i] = a[i] - b[i];
-    }
-  }
-
-  template <typename... ARGS>
-  static void VMUL(int n,
-                   const phi::dtype::complex<float> *a,
-                   const phi::dtype::complex<float> *b,
-                   phi::dtype::complex<float> *y) {
-    for (int i = 0; i < n; ++i) {
-      y[i] = a[i] * b[i];
-    }
-  }
-  template <typename... ARGS>
-  static void VDIV(int n,
-                   const phi::dtype::complex<float> *a,
-                   const phi::dtype::complex<float> *b,
-                   phi::dtype::complex<float> *y) {
-    for (int i = 0; i < n; ++i) {
-      y[i] = a[i] / b[i];
-    }
+  static void AXPY(int64_t n,
+                   const phi::complex64 alpha,
+                   const phi::complex64 *X,
+                   int64_t incX,
+                   phi::complex64 *Y,
+                   int64_t incY) {
+    detail::axpy(n, alpha, X, incX, Y, incY);
   }
 
   template <typename... ARGS>
@@ -447,13 +437,13 @@ struct CBlas<phi::dtype::complex<float>> {
                    CBLAS_TRANSPOSE trans,
                    int M,
                    int N,
-                   phi::dtype::complex<float> alpha,
-                   const phi::dtype::complex<float> *A,
+                   phi::complex64 alpha,
+                   const phi::complex64 *A,
                    int lda,
-                   const phi::dtype::complex<float> *X,
+                   const phi::complex64 *X,
                    int incx,
-                   phi::dtype::complex<float> beta,
-                   phi::dtype::complex<float> *Y,
+                   phi::complex64 beta,
+                   phi::complex64 *Y,
                    int incy) {
     const void *a_ = (const void *)(A);
     const void *x_ = (const void *)(X);
@@ -469,13 +459,13 @@ struct CBlas<phi::dtype::complex<float>> {
                    int M,
                    int N,
                    int K,
-                   phi::dtype::complex<float> alpha,
-                   const phi::dtype::complex<float> *A,
+                   phi::complex64 alpha,
+                   const phi::complex64 *A,
                    int lda,
-                   const phi::dtype::complex<float> *B,
+                   const phi::complex64 *B,
                    int ldb,
-                   phi::dtype::complex<float> beta,
-                   phi::dtype::complex<float> *C,
+                   phi::complex64 beta,
+                   phi::complex64 *C,
                    int ldc) {
     const void *a_ = (const void *)(A);
     const void *b_ = (const void *)(B);
@@ -503,10 +493,10 @@ struct CBlas<phi::dtype::complex<float>> {
                    CBLAS_DIAG diag,
                    int M,
                    int N,
-                   phi::dtype::complex<float> alpha,
-                   const phi::dtype::complex<float> *A,
+                   phi::complex64 alpha,
+                   const phi::complex64 *A,
                    int lda,
-                   phi::dtype::complex<float> *B,
+                   phi::complex64 *B,
                    int ldb) {
     const void *a_ = (const void *)(A);
     void *b_ = static_cast<void *>(B);
@@ -521,13 +511,13 @@ struct CBlas<phi::dtype::complex<float>> {
                          int *M,
                          int *N,
                          int *K,
-                         phi::dtype::complex<float> *alpha,
-                         const phi::dtype::complex<float> **A,
+                         phi::complex64 *alpha,
+                         const phi::complex64 **A,
                          const int *lda,
-                         const phi::dtype::complex<float> **B,
+                         const phi::complex64 **B,
                          const int *ldb,
-                         phi::dtype::complex<float> *beta,
-                         phi::dtype::complex<float> **C,
+                         phi::complex64 *beta,
+                         phi::complex64 **C,
                          const int *ldc,
                          int group_count,
                          int *group_size) {
@@ -560,84 +550,15 @@ struct CBlas<phi::dtype::complex<float>> {
 };
 
 template <>
-struct CBlas<phi::dtype::complex<double>> {
+struct CBlas<phi::complex128> {
   template <typename... ARGS>
-  static void AXPY(int n,
-                   const phi::dtype::complex<double> alpha,
-                   const phi::dtype::complex<double> *X,
-                   const int incX,
-                   phi::dtype::complex<double> *Y,
-                   const int incY) {
-    phi::dynload::cblas_zaxpy(n, &alpha, X, incX, Y, incY);
-  }
-
-  template <typename... ARGS>
-  static void VCOPY(ARGS... args) {
-    phi::dynload::cblas_zcopy(args...);
-  }
-
-  // the libmklml_intel.so paddle used has no vzAdd, vzSub,
-  // vzMul, vzDiv apis before rebuild from source
-  // so replace with the raw operator methods
-  /*
-  template <typename... ARGS>
-  static void VADD(ARGS... args) {
-    phi::dynload::vzAdd(args...);
-  }
-
-  template <typename... ARGS>
-  static void VSUB(ARGS... args) {
-    phi::dynload::vzSub(args...);
-  }
-
-  template <typename... ARGS>
-  static void VMUL(ARGS... args) {
-    phi::dynload::vzMul(args...);
-  }
-
-  template <typename... ARGS>
-  static void VDIV(ARGS... args) {
-    phi::dynload::vzDiv(args...);
-  }
-  */
-
-  template <typename... ARGS>
-  static void VADD(int n,
-                   const phi::dtype::complex<double> *a,
-                   const phi::dtype::complex<double> *b,
-                   phi::dtype::complex<double> *y) {
-    for (int i = 0; i < n; ++i) {
-      y[i] = a[i] + b[i];
-    }
-  }
-
-  template <typename... ARGS>
-  static void VSUB(int n,
-                   const phi::dtype::complex<double> *a,
-                   const phi::dtype::complex<double> *b,
-                   phi::dtype::complex<double> *y) {
-    for (int i = 0; i < n; ++i) {
-      y[i] = a[i] - b[i];
-    }
-  }
-
-  template <typename... ARGS>
-  static void VMUL(int n,
-                   const phi::dtype::complex<double> *a,
-                   const phi::dtype::complex<double> *b,
-                   phi::dtype::complex<double> *y) {
-    for (int i = 0; i < n; ++i) {
-      y[i] = a[i] * b[i];
-    }
-  }
-  template <typename... ARGS>
-  static void VDIV(int n,
-                   const phi::dtype::complex<double> *a,
-                   const phi::dtype::complex<double> *b,
-                   phi::dtype::complex<double> *y) {
-    for (int i = 0; i < n; ++i) {
-      y[i] = a[i] / b[i];
-    }
+  static void AXPY(int64_t n,
+                   const phi::complex128 alpha,
+                   const phi::complex128 *X,
+                   int64_t incX,
+                   phi::complex128 *Y,
+                   int64_t incY) {
+    detail::axpy(n, alpha, X, incX, Y, incY);
   }
 
   template <typename... ARGS>
@@ -645,13 +566,13 @@ struct CBlas<phi::dtype::complex<double>> {
                    CBLAS_TRANSPOSE trans,
                    int M,
                    int N,
-                   phi::dtype::complex<double> alpha,
-                   const phi::dtype::complex<double> *A,
+                   phi::complex128 alpha,
+                   const phi::complex128 *A,
                    int lda,
-                   const phi::dtype::complex<double> *X,
+                   const phi::complex128 *X,
                    int incx,
-                   phi::dtype::complex<double> beta,
-                   phi::dtype::complex<double> *Y,
+                   phi::complex128 beta,
+                   phi::complex128 *Y,
                    int incy) {
     const void *a_ = (const void *)(A);
     const void *x_ = (const void *)(X);
@@ -667,13 +588,13 @@ struct CBlas<phi::dtype::complex<double>> {
                    int M,
                    int N,
                    int K,
-                   phi::dtype::complex<double> alpha,
-                   const phi::dtype::complex<double> *A,
+                   phi::complex128 alpha,
+                   const phi::complex128 *A,
                    int lda,
-                   const phi::dtype::complex<double> *B,
+                   const phi::complex128 *B,
                    int ldb,
-                   phi::dtype::complex<double> beta,
-                   phi::dtype::complex<double> *C,
+                   phi::complex128 beta,
+                   phi::complex128 *C,
                    int ldc) {
     const void *a_ = (const void *)(A);
     const void *b_ = (const void *)(B);
@@ -701,10 +622,10 @@ struct CBlas<phi::dtype::complex<double>> {
                    CBLAS_DIAG diag,
                    int M,
                    int N,
-                   phi::dtype::complex<double> alpha,
-                   const phi::dtype::complex<double> *A,
+                   phi::complex128 alpha,
+                   const phi::complex128 *A,
                    int lda,
-                   phi::dtype::complex<double> *B,
+                   phi::complex128 *B,
                    int ldb) {
     const void *a_ = (const void *)(A);
     void *b_ = static_cast<void *>(B);
@@ -719,13 +640,338 @@ struct CBlas<phi::dtype::complex<double>> {
                          int *M,
                          int *N,
                          int *K,
-                         phi::dtype::complex<double> *alpha,
-                         const phi::dtype::complex<double> **A,
+                         phi::complex128 *alpha,
+                         const phi::complex128 **A,
                          const int *lda,
-                         const phi::dtype::complex<double> **B,
+                         const phi::complex128 **B,
                          const int *ldb,
-                         phi::dtype::complex<double> *beta,
-                         phi::dtype::complex<double> **C,
+                         phi::complex128 *beta,
+                         phi::complex128 **C,
+                         const int *ldc,
+                         int group_count,
+                         int *group_size) {
+    const void **A_void = (const void **)(&(*A));
+    const void **B_void = (const void **)(&(*B));
+    void **C_void = reinterpret_cast<void **>(C);
+
+    phi::dynload::cblas_zgemm_batch(layout,
+                                    trans_a,
+                                    trans_b,
+                                    M,
+                                    N,
+                                    K,
+                                    alpha,
+                                    A_void,
+                                    lda,
+                                    B_void,
+                                    ldb,
+                                    beta,
+                                    C_void,
+                                    ldc,
+                                    group_count,
+                                    group_size);
+  }
+
+  template <typename... ARGS>
+  static void GEMM_EX(ARGS... args) {
+    phi::dynload::cblas_zgemm_batch(args...);
+  }
+};
+
+#elif defined(PADDLE_WITH_HML)
+template <>
+struct CBlas<float> {
+  template <typename... ARGS>
+  static void GEMM(ARGS... args) {
+    phi::dynload::cblas_sgemm(args...);
+  }
+
+  template <typename... ARGS>
+  static void AXPY(ARGS... args) {
+    detail::axpy(args...);
+  }
+
+  template <typename... ARGS>
+  static void GEMV(ARGS... args) {
+    phi::dynload::cblas_sgemv(args...);
+  }
+
+  template <typename... ARGS>
+  static float DOT(ARGS... args) {
+    return detail::dot(args...);
+  }
+
+  template <typename... ARGS>
+  static void TRSM(ARGS... args) {
+    phi::dynload::cblas_strsm(args...);
+  }
+
+  template <typename... ARGS>
+  static void GEMM_BATCH(ARGS... args) {
+    phi::dynload::cblas_sgemm_batch(args...);
+  }
+};
+
+template <>
+struct CBlas<double> {
+  template <typename... ARGS>
+  static void GEMM(ARGS... args) {
+    phi::dynload::cblas_dgemm(args...);
+  }
+
+  template <typename... ARGS>
+  static void AXPY(ARGS... args) {
+    detail::axpy(args...);
+  }
+
+  template <typename... ARGS>
+  static void GEMV(ARGS... args) {
+    phi::dynload::cblas_dgemv(args...);
+  }
+
+  template <typename... ARGS>
+  static double DOT(ARGS... args) {
+    return detail::dot(args...);
+  }
+
+  template <typename... ARGS>
+  static void GEMM_BATCH(ARGS... args) {
+    phi::dynload::cblas_dgemm_batch(args...);
+  }
+
+  template <typename... ARGS>
+  static void TRSM(ARGS... args) {
+    phi::dynload::cblas_dtrsm(args...);
+  }
+};
+
+template <>
+struct CBlas<phi::complex64> {
+  template <typename... ARGS>
+  static void AXPY(int64_t n,
+                   const phi::complex64 alpha,
+                   const phi::complex64 *X,
+                   int64_t incX,
+                   phi::complex64 *Y,
+                   int64_t incY) {
+    detail::axpy(n, alpha, X, incX, Y, incY);
+  }
+
+  template <typename... ARGS>
+  static void GEMV(CBLAS_LAYOUT layout,
+                   CBLAS_TRANSPOSE trans,
+                   int M,
+                   int N,
+                   phi::complex64 alpha,
+                   const phi::complex64 *A,
+                   int lda,
+                   const phi::complex64 *X,
+                   int incx,
+                   phi::complex64 beta,
+                   phi::complex64 *Y,
+                   int incy) {
+    const void *a_ = (const void *)(A);
+    const void *x_ = (const void *)(X);
+    void *y_ = static_cast<void *>(Y);
+    phi::dynload::cblas_cgemv(
+        layout, trans, M, N, &alpha, a_, lda, x_, incx, &beta, y_, incy);
+  }
+
+  template <typename... ARGS>
+  static void GEMM(CBLAS_LAYOUT layout,
+                   CBLAS_TRANSPOSE trans_a,
+                   CBLAS_TRANSPOSE trans_b,
+                   int M,
+                   int N,
+                   int K,
+                   phi::complex64 alpha,
+                   const phi::complex64 *A,
+                   int lda,
+                   const phi::complex64 *B,
+                   int ldb,
+                   phi::complex64 beta,
+                   phi::complex64 *C,
+                   int ldc) {
+    const void *a_ = (const void *)(A);
+    const void *b_ = (const void *)(B);
+    void *c_ = static_cast<void *>(C);
+    phi::dynload::cblas_cgemm(layout,
+                              trans_a,
+                              trans_b,
+                              M,
+                              N,
+                              K,
+                              &alpha,
+                              a_,
+                              lda,
+                              b_,
+                              ldb,
+                              &beta,
+                              c_,
+                              ldc);
+  }
+
+  static void TRSM(CBLAS_LAYOUT layout,
+                   CBLAS_SIDE side,
+                   CBLAS_UPLO uplo,
+                   CBLAS_TRANSPOSE trans_a,
+                   CBLAS_DIAG diag,
+                   int M,
+                   int N,
+                   phi::complex64 alpha,
+                   const phi::complex64 *A,
+                   int lda,
+                   phi::complex64 *B,
+                   int ldb) {
+    const void *a_ = (const void *)(A);
+    void *b_ = static_cast<void *>(B);
+    phi::dynload::cblas_ctrsm(
+        layout, side, uplo, trans_a, diag, M, N, &alpha, a_, lda, b_, ldb);
+  }
+
+  template <typename... ARGS>
+  static void GEMM_BATCH(CBLAS_LAYOUT layout,
+                         CBLAS_TRANSPOSE *trans_a,
+                         CBLAS_TRANSPOSE *trans_b,
+                         int *M,
+                         int *N,
+                         int *K,
+                         phi::complex64 *alpha,
+                         const phi::complex64 **A,
+                         const int *lda,
+                         const phi::complex64 **B,
+                         const int *ldb,
+                         phi::complex64 *beta,
+                         phi::complex64 **C,
+                         const int *ldc,
+                         int group_count,
+                         int *group_size) {
+    const void **A_void = (const void **)(&(*A));
+    const void **B_void = (const void **)(&(*B));
+    void **C_void = reinterpret_cast<void **>(C);
+
+    phi::dynload::cblas_cgemm_batch(layout,
+                                    trans_a,
+                                    trans_b,
+                                    M,
+                                    N,
+                                    K,
+                                    alpha,
+                                    A_void,
+                                    lda,
+                                    B_void,
+                                    ldb,
+                                    beta,
+                                    C_void,
+                                    ldc,
+                                    group_count,
+                                    group_size);
+  }
+
+  template <typename... ARGS>
+  static void GEMM_EX(ARGS... args) {
+    phi::dynload::cblas_cgemm_batch(args...);
+  }
+};
+
+template <>
+struct CBlas<phi::complex128> {
+  template <typename... ARGS>
+  static void AXPY(int64_t n,
+                   const phi::complex128 alpha,
+                   const phi::complex128 *X,
+                   int64_t incX,
+                   phi::complex128 *Y,
+                   int64_t incY) {
+    detail::axpy(n, alpha, X, incX, Y, incY);
+  }
+
+  template <typename... ARGS>
+  static void GEMV(CBLAS_LAYOUT layout,
+                   CBLAS_TRANSPOSE trans,
+                   int M,
+                   int N,
+                   phi::complex128 alpha,
+                   const phi::complex128 *A,
+                   int lda,
+                   const phi::complex128 *X,
+                   int incx,
+                   phi::complex128 beta,
+                   phi::complex128 *Y,
+                   int incy) {
+    const void *a_ = (const void *)(A);
+    const void *x_ = (const void *)(X);
+    void *y_ = static_cast<void *>(Y);
+    phi::dynload::cblas_zgemv(
+        layout, trans, M, N, &alpha, a_, lda, x_, incx, &beta, y_, incy);
+  }
+
+  template <typename... ARGS>
+  static void GEMM(CBLAS_LAYOUT layout,
+                   CBLAS_TRANSPOSE trans_a,
+                   CBLAS_TRANSPOSE trans_b,
+                   int M,
+                   int N,
+                   int K,
+                   phi::complex128 alpha,
+                   const phi::complex128 *A,
+                   int lda,
+                   const phi::complex128 *B,
+                   int ldb,
+                   phi::complex128 beta,
+                   phi::complex128 *C,
+                   int ldc) {
+    const void *a_ = (const void *)(A);
+    const void *b_ = (const void *)(B);
+    void *c_ = static_cast<void *>(C);
+    phi::dynload::cblas_zgemm(layout,
+                              trans_a,
+                              trans_b,
+                              M,
+                              N,
+                              K,
+                              &alpha,
+                              a_,
+                              lda,
+                              b_,
+                              ldb,
+                              &beta,
+                              c_,
+                              ldc);
+  }
+
+  static void TRSM(CBLAS_LAYOUT layout,
+                   CBLAS_SIDE side,
+                   CBLAS_UPLO uplo,
+                   CBLAS_TRANSPOSE trans_a,
+                   CBLAS_DIAG diag,
+                   int M,
+                   int N,
+                   phi::complex128 alpha,
+                   const phi::complex128 *A,
+                   int lda,
+                   phi::complex128 *B,
+                   int ldb) {
+    const void *a_ = (const void *)(A);
+    void *b_ = static_cast<void *>(B);
+    phi::dynload::cblas_ztrsm(
+        layout, side, uplo, trans_a, diag, M, N, &alpha, a_, lda, b_, ldb);
+  }
+
+  template <typename... ARGS>
+  static void GEMM_BATCH(CBLAS_LAYOUT layout,
+                         CBLAS_TRANSPOSE *trans_a,
+                         CBLAS_TRANSPOSE *trans_b,
+                         int *M,
+                         int *N,
+                         int *K,
+                         phi::complex128 *alpha,
+                         const phi::complex128 **A,
+                         const int *lda,
+                         const phi::complex128 **B,
+                         const int *ldb,
+                         phi::complex128 *beta,
+                         phi::complex128 **C,
                          const int *ldc,
                          int group_count,
                          int *group_size) {
@@ -768,17 +1014,17 @@ struct CBlas<float> {
 
   template <typename... ARGS>
   static void AXPY(ARGS... args) {
-    cblas_saxpy(args...);
-  }
-
-  template <typename... ARGS>
-  static void VCOPY(ARGS... args) {
-    cblas_scopy(args...);
+    detail::axpy(args...);
   }
 
   template <typename... ARGS>
   static void GEMV(ARGS... args) {
     cblas_sgemv(args...);
+  }
+
+  template <typename... ARGS>
+  static float DOT(ARGS... args) {
+    return detail::dot(args...);
   }
 
   template <typename... ARGS>
@@ -796,17 +1042,17 @@ struct CBlas<double> {
 
   template <typename... ARGS>
   static void AXPY(ARGS... args) {
-    cblas_daxpy(args...);
-  }
-
-  template <typename... ARGS>
-  static void VCOPY(ARGS... args) {
-    cblas_dcopy(args...);
+    detail::axpy(args...);
   }
 
   template <typename... ARGS>
   static void GEMV(ARGS... args) {
     cblas_dgemv(args...);
+  }
+
+  template <typename... ARGS>
+  static double DOT(ARGS... args) {
+    return detail::dot(args...);
   }
 
   template <typename... ARGS>
@@ -816,20 +1062,15 @@ struct CBlas<double> {
 };
 
 template <>
-struct CBlas<phi::dtype::complex<float>> {
+struct CBlas<phi::complex64> {
   template <typename... ARGS>
-  static void VCOPY(ARGS... args) {
-    cblas_ccopy(args...);
-  }
-
-  template <typename... ARGS>
-  static void AXPY(int n,
-                   const phi::dtype::complex<float> alpha,
-                   const phi::dtype::complex<float> *X,
-                   const int incX,
-                   phi::dtype::complex<float> *Y,
-                   const int incY) {
-    cblas_caxpy(n, &alpha, X, incX, Y, incY);
+  static void AXPY(int64_t n,
+                   const phi::complex64 alpha,
+                   const phi::complex64 *X,
+                   int64_t incX,
+                   phi::complex64 *Y,
+                   int64_t incY) {
+    detail::axpy(n, alpha, X, incX, Y, incY);
   }
 
   template <typename... ARGS>
@@ -837,13 +1078,13 @@ struct CBlas<phi::dtype::complex<float>> {
                    const CBLAS_TRANSPOSE TransA,
                    const int M,
                    const int N,
-                   const phi::dtype::complex<float> alpha,
-                   const phi::dtype::complex<float> *A,
+                   const phi::complex64 alpha,
+                   const phi::complex64 *A,
                    const int lda,
-                   const phi::dtype::complex<float> *X,
+                   const phi::complex64 *X,
                    const int incX,
-                   const phi::dtype::complex<float> beta,
-                   phi::dtype::complex<float> *Y,
+                   const phi::complex64 beta,
+                   phi::complex64 *Y,
                    const int incY) {
     cblas_cgemv(layout, TransA, M, N, &alpha, A, lda, X, incX, &beta, Y, incY);
   }
@@ -855,13 +1096,13 @@ struct CBlas<phi::dtype::complex<float>> {
                    const int M,
                    const int N,
                    const int K,
-                   const phi::dtype::complex<float> alpha,
-                   const phi::dtype::complex<float> *A,
+                   const phi::complex64 alpha,
+                   const phi::complex64 *A,
                    const int lda,
-                   const phi::dtype::complex<float> *B,
+                   const phi::complex64 *B,
                    const int ldb,
-                   const phi::dtype::complex<float> beta,
-                   phi::dtype::complex<float> *C,
+                   const phi::complex64 beta,
+                   phi::complex64 *C,
                    const int ldc) {
     cblas_cgemm(
         layout, TransA, TransB, M, N, K, &alpha, A, lda, B, ldb, &beta, C, ldc);
@@ -874,30 +1115,25 @@ struct CBlas<phi::dtype::complex<float>> {
                    const CBLAS_DIAG diag,
                    const int M,
                    const int N,
-                   const phi::dtype::complex<float> alpha,
-                   const phi::dtype::complex<float> *A,
+                   const phi::complex64 alpha,
+                   const phi::complex64 *A,
                    const int lda,
-                   phi::dtype::complex<float> *B,
+                   phi::complex64 *B,
                    const int ldb) {
     cblas_ctrsm(layout, side, uplo, transA, diag, M, N, &alpha, A, lda, B, ldb);
   }
 };
 
 template <>
-struct CBlas<phi::dtype::complex<double>> {
+struct CBlas<phi::complex128> {
   template <typename... ARGS>
-  static void VCOPY(ARGS... args) {
-    cblas_zcopy(args...);
-  }
-
-  template <typename... ARGS>
-  static void AXPY(int n,
-                   const phi::dtype::complex<double> alpha,
-                   const phi::dtype::complex<double> *X,
-                   const int incX,
-                   phi::dtype::complex<double> *Y,
-                   const int incY) {
-    cblas_zaxpy(n, &alpha, X, incX, Y, incY);
+  static void AXPY(int64_t n,
+                   const phi::complex128 alpha,
+                   const phi::complex128 *X,
+                   int64_t incX,
+                   phi::complex128 *Y,
+                   int64_t incY) {
+    detail::axpy(n, alpha, X, incX, Y, incY);
   }
 
   template <typename... ARGS>
@@ -905,13 +1141,13 @@ struct CBlas<phi::dtype::complex<double>> {
                    const CBLAS_TRANSPOSE TransA,
                    const int M,
                    const int N,
-                   const phi::dtype::complex<double> alpha,
-                   const phi::dtype::complex<double> *A,
+                   const phi::complex128 alpha,
+                   const phi::complex128 *A,
                    const int lda,
-                   const phi::dtype::complex<double> *X,
+                   const phi::complex128 *X,
                    const int incX,
-                   const phi::dtype::complex<double> beta,
-                   phi::dtype::complex<double> *Y,
+                   const phi::complex128 beta,
+                   phi::complex128 *Y,
                    const int incY) {
     cblas_zgemv(layout, TransA, M, N, &alpha, A, lda, X, incX, &beta, Y, incY);
   }
@@ -923,13 +1159,13 @@ struct CBlas<phi::dtype::complex<double>> {
                    const int M,
                    const int N,
                    const int K,
-                   const phi::dtype::complex<double> alpha,
-                   const phi::dtype::complex<double> *A,
+                   const phi::complex128 alpha,
+                   const phi::complex128 *A,
                    const int lda,
-                   const phi::dtype::complex<double> *B,
+                   const phi::complex128 *B,
                    const int ldb,
-                   const phi::dtype::complex<double> beta,
-                   phi::dtype::complex<double> *C,
+                   const phi::complex128 beta,
+                   phi::complex128 *C,
                    const int ldc) {
     cblas_zgemm(
         layout, TransA, TransB, M, N, K, &alpha, A, lda, B, ldb, &beta, C, ldc);
@@ -942,10 +1178,10 @@ struct CBlas<phi::dtype::complex<double>> {
                    const CBLAS_DIAG diag,
                    const int M,
                    const int N,
-                   const phi::dtype::complex<double> alpha,
-                   const phi::dtype::complex<double> *A,
+                   const phi::complex128 alpha,
+                   const phi::complex128 *A,
                    const int lda,
-                   phi::dtype::complex<double> *B,
+                   phi::complex128 *B,
                    const int ldb) {
     cblas_ztrsm(layout, side, uplo, transA, diag, M, N, &alpha, A, lda, B, ldb);
   }
@@ -954,7 +1190,17 @@ struct CBlas<phi::dtype::complex<double>> {
 #endif
 
 template <>
-struct CBlas<phi::dtype::float16> {
+struct CBlas<phi::float16> {
+  template <typename... ARGS>
+  static void AXPY(ARGS... args) {
+    detail::axpy(args...);
+  }
+
+  template <typename... ARGS>
+  static phi::float16 DOT(ARGS... args) {
+    return detail::dot(args...);
+  }
+
   static void GEMM(...) {
     PADDLE_THROW(common::errors::Unimplemented(
         "float16 GEMM not supported on CPU, please check your code"));
@@ -964,35 +1210,13 @@ struct CBlas<phi::dtype::float16> {
     PADDLE_THROW(common::errors::Unimplemented(
         "float16 SMM_GEMM not supported on CPU, please check your code"));
   }
-  static void VMUL(...) {
-    PADDLE_THROW(common::errors::Unimplemented(
-        "float16 VMUL not supported on CPU, please check your code"));
-  }
-  static void VEXP(...) {
-    PADDLE_THROW(common::errors::Unimplemented(
-        "float16 VEXP not supported on CPU, please check your code"));
-  }
-  static void VSQUARE(...) {
-    PADDLE_THROW(common::errors::Unimplemented(
-        "float16 VSQUARE not supported on CPU, please check your code"));
-  }
-  static void VPOW(...) {
-    PADDLE_THROW(common::errors::Unimplemented(
-        "float16 VPOW not supported on CPU, please check your code"));
-  }
-  static void DOT(...) {
-    PADDLE_THROW(common::errors::Unimplemented(
-        "float16 DOT not supported on CPU, please check your code"));
-  };
-  static void SCAL(...) {
-    PADDLE_THROW(common::errors::Unimplemented(
-        "float16 SCAL not supported on CPU, please check your code"));
-  };
-  static void ASUM(...) {
-    PADDLE_THROW(common::errors::Unimplemented(
-        "float16 ASUM not supported on CPU, please check your code"));
-  };
 #ifdef PADDLE_WITH_MKLML
+  static void GEMM_BATCH(...) {
+    PADDLE_THROW(common::errors::Unimplemented(
+        "float16 GEMM_BATCH not supported on CPU, please check your code"));
+  }
+#endif
+#ifdef PADDLE_WITH_HML
   static void GEMM_BATCH(...) {
     PADDLE_THROW(common::errors::Unimplemented(
         "float16 GEMM_BATCH not supported on CPU, please check your code"));
@@ -1003,73 +1227,110 @@ struct CBlas<phi::dtype::float16> {
 #ifdef PADDLE_WITH_MKLML
 template <>
 template <typename T>
-T *Blas<phi::CPUContext>::GEMM_ALLOC(const CBLAS_IDENTIFIER id,
-                                     const int M,
-                                     const int N,
-                                     const int K) const {
+T *Blas<CPUContext>::GEMM_ALLOC(const CBLAS_IDENTIFIER id,
+                                const int M,
+                                const int N,
+                                const int K) const {
   return CBlas<T>::GEMM_ALLOC(id, M, N, K);
 }
 
 template <>
 template <typename T>
-void Blas<phi::CPUContext>::GEMM_PACK(const CBLAS_IDENTIFIER id,
-                                      const CBLAS_TRANSPOSE trans,
-                                      int M,
-                                      int N,
-                                      int K,
-                                      const T alpha,
-                                      const T *src,
-                                      const int ld,
-                                      T *dst) const {
+void Blas<CPUContext>::GEMM_PACK(const CBLAS_IDENTIFIER id,
+                                 const CBLAS_TRANSPOSE trans,
+                                 int M,
+                                 int N,
+                                 int K,
+                                 const T alpha,
+                                 const T *src,
+                                 const int ld,
+                                 T *dst) const {
   CBlas<T>::GEMM_PACK(CblasRowMajor, id, trans, M, N, K, alpha, src, ld, dst);
 }
 
 template <>
 template <typename T>
-void Blas<phi::CPUContext>::GEMM_COMPUTE(int transA,
-                                         int transB,
-                                         int M,
-                                         int N,
-                                         int K,
-                                         const T *A,
-                                         const int lda,
-                                         const T *B,
-                                         const int ldb,
-                                         T beta,
-                                         T *C,
-                                         const int ldc) const {
+void Blas<CPUContext>::GEMM_COMPUTE(int transA,
+                                    int transB,
+                                    int M,
+                                    int N,
+                                    int K,
+                                    const T *A,
+                                    const int lda,
+                                    const T *B,
+                                    const int ldb,
+                                    T beta,
+                                    T *C,
+                                    const int ldc) const {
   CBlas<T>::GEMM_COMPUTE(
       CblasRowMajor, transA, transB, M, N, K, A, lda, B, ldb, beta, C, ldc);
 }
 
 template <>
 template <typename T>
-void Blas<phi::CPUContext>::GEMM_FREE(T *data) const {
+void Blas<CPUContext>::GEMM_FREE(T *data) const {
   CBlas<T>::GEMM_FREE(data);
 }
 #endif
 
 template <>
 template <typename T>
-void Blas<phi::CPUContext>::GEMM(CBLAS_TRANSPOSE transA,
-                                 CBLAS_TRANSPOSE transB,
-                                 int M,
-                                 int N,
-                                 int K,
-                                 T alpha,
-                                 const T *A,
-                                 const T *B,
-                                 T beta,
-                                 T *C) const {
-  int lda = (transA == CblasNoTrans) ? K : M;
-  int ldb = (transB == CblasNoTrans) ? N : K;
-  int ldc = N;
+void Blas<CPUContext>::GEMM(CBLAS_TRANSPOSE transA,
+                            CBLAS_TRANSPOSE transB,
+                            int64_t M,
+                            int64_t N,
+                            int64_t K,
+                            T alpha,
+                            const T *A,
+                            const T *B,
+                            T beta,
+                            T *C) const {
+  const int m = detail::to_blas_int(M, "GEMM M");
+  const int n = detail::to_blas_int(N, "GEMM N");
+  const int k = detail::to_blas_int(K, "GEMM K");
+  const int lda = (transA == CblasNoTrans) ? k : m;
+  const int ldb = (transB == CblasNoTrans) ? n : k;
+  const int ldc = n;
   CBlas<T>::GEMM(CblasRowMajor,
                  transA,
                  transB,
-                 M,
-                 N,
-                 K,
+                 m,
+                 n,
+                 k,
+                 alpha,
+                 A,
+                 lda,
+                 B,
+                 ldb,
+                 beta,
+                 C,
+                 ldc);
+}
+
+template <>
+template <typename T, typename U>
+void Blas<CPUContext>::GEMM(CBLAS_TRANSPOSE transA,
+                            CBLAS_TRANSPOSE transB,
+                            int64_t M,
+                            int64_t N,
+                            int64_t K,
+                            U alpha,
+                            const T *A,
+                            const T *B,
+                            U beta,
+                            T *C) const {
+  const int m = detail::to_blas_int(M, "GEMM M");
+  const int n = detail::to_blas_int(N, "GEMM N");
+  const int k = detail::to_blas_int(K, "GEMM K");
+  const int lda = (transA == CblasNoTrans) ? k : m;
+  const int ldb = (transB == CblasNoTrans) ? n : k;
+  const int ldc = n;
+  CBlas<T>::GEMM(CblasRowMajor,
+                 transA,
+                 transB,
+                 m,
+                 n,
+                 k,
                  alpha,
                  A,
                  lda,
@@ -1082,74 +1343,86 @@ void Blas<phi::CPUContext>::GEMM(CBLAS_TRANSPOSE transA,
 
 template <>
 template <typename T>
-void Blas<phi::CPUContext>::GEMM(bool transA,
-                                 bool transB,
-                                 int M,
-                                 int N,
-                                 int K,
-                                 T alpha,
-                                 const T *A,
-                                 int lda,
-                                 const T *B,
-                                 int ldb,
-                                 T beta,
-                                 T *C,
-                                 int ldc) const {
+void Blas<CPUContext>::GEMM(bool transA,
+                            bool transB,
+                            int64_t M,
+                            int64_t N,
+                            int64_t K,
+                            T alpha,
+                            const T *A,
+                            int64_t lda,
+                            const T *B,
+                            int64_t ldb,
+                            T beta,
+                            T *C,
+                            int64_t ldc) const {
+  const int m = detail::to_blas_int(M, "GEMM M");
+  const int n = detail::to_blas_int(N, "GEMM N");
+  const int k = detail::to_blas_int(K, "GEMM K");
+  const int lda_int = detail::to_blas_int(lda, "GEMM lda");
+  const int ldb_int = detail::to_blas_int(ldb, "GEMM ldb");
+  const int ldc_int = detail::to_blas_int(ldc, "GEMM ldc");
   CBlas<T>::GEMM(CblasRowMajor,
                  transA == false ? CblasNoTrans : CblasTrans,
                  transB == false ? CblasNoTrans : CblasTrans,
-                 M,
-                 N,
-                 K,
+                 m,
+                 n,
+                 k,
                  alpha,
                  A,
-                 lda,
+                 lda_int,
                  B,
-                 ldb,
+                 ldb_int,
                  beta,
                  C,
-                 ldc);
+                 ldc_int);
 }
 
 template <>
 template <typename T>
-void Blas<phi::CPUContext>::GEMM(CBLAS_TRANSPOSE transA,
-                                 CBLAS_TRANSPOSE transB,
-                                 int M,
-                                 int N,
-                                 int K,
-                                 T alpha,
-                                 const T *A,
-                                 int lda,
-                                 const T *B,
-                                 int ldb,
-                                 T beta,
-                                 T *C,
-                                 int ldc) const {
+void Blas<CPUContext>::GEMM(CBLAS_TRANSPOSE transA,
+                            CBLAS_TRANSPOSE transB,
+                            int64_t M,
+                            int64_t N,
+                            int64_t K,
+                            T alpha,
+                            const T *A,
+                            int64_t lda,
+                            const T *B,
+                            int64_t ldb,
+                            T beta,
+                            T *C,
+                            int64_t ldc) const {
+  const int m = detail::to_blas_int(M, "GEMM M");
+  const int n = detail::to_blas_int(N, "GEMM N");
+  const int k = detail::to_blas_int(K, "GEMM K");
+  const int lda_int = detail::to_blas_int(lda, "GEMM lda");
+  const int ldb_int = detail::to_blas_int(ldb, "GEMM ldb");
+  const int ldc_int = detail::to_blas_int(ldc, "GEMM ldc");
   CBlas<T>::GEMM(CblasRowMajor,
                  transA,
                  transB,
-                 M,
-                 N,
-                 K,
+                 m,
+                 n,
+                 k,
                  alpha,
                  A,
-                 lda,
+                 lda_int,
                  B,
-                 ldb,
+                 ldb_int,
                  beta,
                  C,
-                 ldc);
+                 ldc_int);
 }
 
 template <typename DeviceContext>
 template <typename T>
-void Blas<DeviceContext>::MatMul(const phi::DenseTensor &mat_a,
+void Blas<DeviceContext>::MatMul(const DenseTensor &mat_a,
                                  bool trans_a,
-                                 const phi::DenseTensor &mat_b,
+                                 const DenseTensor &mat_b,
                                  bool trans_b,
                                  T alpha,
-                                 phi::DenseTensor *mat_out,
+                                 DenseTensor *mat_out,
                                  T beta) const {
   const auto &dim_a = mat_a.dims();
   const auto &dim_b = mat_b.dims();
@@ -1171,9 +1444,13 @@ void Blas<DeviceContext>::MatMul(const phi::DenseTensor &mat_a,
                                       "should be same, please check your "
                                       "code."));
 
-  int M = dim_out[0];
-  int N = dim_out[1];
-  int K = !trans_a ? dim_a[1] : dim_a[0];
+  const int64_t K_64 = !trans_a ? dim_a[1] : dim_a[0];
+  PADDLE_ENFORCE_LE_INT_MAX(dim_out[0], "dim_out[0]");
+  PADDLE_ENFORCE_LE_INT_MAX(dim_out[1], "dim_out[1]");
+  PADDLE_ENFORCE_LE_INT_MAX(K_64, "cblas GEMM K");
+  int M = static_cast<int>(dim_out[0]);
+  int N = static_cast<int>(dim_out[1]);
+  int K = static_cast<int>(K_64);
 
   CBLAS_TRANSPOSE transA = !trans_a ? CblasNoTrans : CblasTrans;
   CBLAS_TRANSPOSE transB = !trans_b ? CblasNoTrans : CblasTrans;
@@ -1192,189 +1469,163 @@ void Blas<DeviceContext>::MatMul(const phi::DenseTensor &mat_a,
 
 template <>
 template <typename T>
-void Blas<phi::CPUContext>::AXPY(int n, T alpha, const T *x, T *y) const {
+void Blas<CPUContext>::AXPY(int64_t n, T alpha, const T *x, T *y) const {
   CBlas<T>::AXPY(n, alpha, x, 1, y, 1);
 }
 
 template <>
 template <typename T>
-void Blas<phi::CPUContext>::VCOPY(int n, const T *x, T *y) const {
-  CBlas<T>::VCOPY(n, x, 1, y, 1);
+T Blas<CPUContext>::DOT(
+    int64_t n, const T *x, int64_t incx, const T *y, int64_t incy) const {
+  return detail::dot(n, x, incx, y, incy);
 }
 
 template <>
 template <typename T>
-void Blas<phi::CPUContext>::VADD(int n, const T *x, const T *y, T *z) const {
-#ifdef PADDLE_WITH_MKLML
-  CBlas<T>::VADD(n, x, y, z);
-#else
-  if (x == z) {
-    this->template AXPY<T>(n, (T)(1.), y, z);
-  } else {
-    this->template VCOPY<T>(n, y, z);
-    this->template AXPY<T>(n, (T)(1.), x, z);
-  }
-#endif
-}
-
-template <>
-template <typename T>
-void Blas<phi::CPUContext>::VSUB(int n, const T *x, const T *y, T *z) const {
-#ifdef PADDLE_WITH_MKLML
-  CBlas<T>::VSUB(n, x, y, z);
-#else
-  // try to find if openblas support vsub
-  for (int i = 0; i < n; ++i) {
-    z[i] = x[i] - y[i];
-  }
-#endif
-}
-
-template <>
-template <typename T>
-void Blas<phi::CPUContext>::VMUL(int n, const T *x, const T *y, T *z) const {
-#ifdef PADDLE_WITH_MKLML
-  CBlas<T>::VMUL(n, x, y, z);
-#else
-  // try to find if openblas support vmul
-  for (int i = 0; i < n; ++i) {
-    z[i] = x[i] * y[i];
-  }
-#endif
-}
-
-template <>
-template <typename T>
-void Blas<phi::CPUContext>::VDIV(int n, const T *x, const T *y, T *z) const {
-#ifdef PADDLE_WITH_MKLML
-  CBlas<T>::VDIV(n, x, y, z);
-#else
-  // try to find if openblas support vdiv
-  for (int i = 0; i < n; ++i) {
-    z[i] = x[i] / y[i];
-  }
-#endif
-}
-
-template <>
-template <typename T>
-void Blas<phi::CPUContext>::VEXP(int n, const T *x, T *y) const {
-#ifdef PADDLE_WITH_MKLML
-  CBlas<T>::VEXP(n, x, y);
-#else
-  // try to find if openblas support vexp
-  for (int i = 0; i < n; ++i) {
-    y[i] = std::exp(x[i]);
-  }
-#endif
-}
-
-template <>
-template <typename T>
-void Blas<phi::CPUContext>::VSQUARE(int n, const T *x, T *y) const {
-#ifdef PADDLE_WITH_MKLML
-  CBlas<T>::VSQUARE(n, x, y);
-#else
-  for (int i = 0; i < n; ++i) {
-    y[i] = x[i] * x[i];
-  }
-#endif
-}
-
-template <>
-template <typename T>
-void Blas<phi::CPUContext>::VPOW(int n, const T *x, T a, T *y) const {
-#ifdef PADDLE_WITH_MKLML
-  CBlas<T>::VPOW(n, x, a, y);
-#else
-  for (int i = 0; i < n; ++i) {
-    y[i] = std::pow(x[i], a);
-  }
-#endif
-}
-
-template <>
-template <typename T>
-T Blas<phi::CPUContext>::DOT(int n, const T *x, const T *y) const {
-#ifdef PADDLE_WITH_MKLML
-  return CBlas<T>::DOT(n, x, 1, y, 1);
-#else
-  // try to find if openblas support cblas_dot
-  T sum = 0;
-  for (int i = 0; i < n; ++i) {
-    sum += x[i] * y[i];
-  }
-  return sum;
-#endif
-}
-
-template <>
-template <typename T>
-void Blas<phi::CPUContext>::SCAL(int n, const T a, T *x) const {
-#ifdef PADDLE_WITH_MKLML
-  CBlas<T>::SCAL(n, a, x, 1);
-#else
-  // try to find if openblas support cblas_scal
-  for (int i = 0; i < n; ++i) {
-    x[i] = a * x[i];
-  }
-#endif
-}
-
-template <>
-template <typename T>
-T Blas<phi::CPUContext>::ASUM(int n, T *x, int inc) const {
-  auto sum = static_cast<T>(0.0);
-#ifdef PADDLE_WITH_MKLML
-  sum = CBlas<T>::ASUM(n, x, inc);
-#else
-  // TODO(jczaja): check if openblas does provide cblas_sasum/cblas_dasum
-  for (int c = 0; c < n; ++c) {
-    sum += x[c];
-  }
-#endif
-  return sum;
-}
-
-template <>
-template <typename T>
-void Blas<phi::CPUContext>::GEMV(bool trans_a,
-                                 int M,
-                                 int N,
-                                 T alpha,
-                                 const T *A,
-                                 const T *B,
-                                 T beta,
-                                 T *C) const {
+void Blas<CPUContext>::GEMV(bool trans_a,
+                            int64_t M,
+                            int64_t N,
+                            T alpha,
+                            const T *A,
+                            const T *B,
+                            T beta,
+                            T *C) const {
+  const int m = detail::to_blas_int(M, "GEMV M");
+  const int n = detail::to_blas_int(N, "GEMV N");
   CBLAS_TRANSPOSE transA = !trans_a ? CblasNoTrans : CblasTrans;
-  CBlas<T>::GEMV(CblasRowMajor, transA, M, N, alpha, A, N, B, 1, beta, C, 1);
+  CBlas<T>::GEMV(CblasRowMajor, transA, m, n, alpha, A, n, B, 1, beta, C, 1);
 }
 
 template <>
 template <typename T>
-void Blas<phi::CPUContext>::BatchedGEMM(CBLAS_TRANSPOSE transA,
-                                        CBLAS_TRANSPOSE transB,
-                                        int M,
-                                        int N,
-                                        int K,
-                                        T alpha,
-                                        const T *A,
-                                        const T *B,
-                                        T beta,
-                                        T *C,
-                                        int batchCount,
-                                        int64_t strideA,
-                                        int64_t strideB) const {
+void Blas<CPUContext>::BatchedGEMM(CBLAS_TRANSPOSE transA,
+                                   CBLAS_TRANSPOSE transB,
+                                   int64_t M,
+                                   int64_t N,
+                                   int64_t K,
+                                   T alpha,
+                                   const T *A,
+                                   const T *B,
+                                   T beta,
+                                   T *C,
+                                   int64_t batchCount,
+                                   int64_t strideA,
+                                   int64_t strideB) const {
   PADDLE_ENFORCE_NOT_NULL(
       A, common::errors::InvalidArgument("Pointer A should not be null."));
   PADDLE_ENFORCE_NOT_NULL(
       B, common::errors::InvalidArgument("Pointer B should not be null."));
   PADDLE_ENFORCE_NOT_NULL(
       C, common::errors::InvalidArgument("Pointer C should not be null."));
-#ifdef PADDLE_WITH_MKLML
-  int lda = (transA == CblasNoTrans) ? K : M;
-  int ldb = (transB == CblasNoTrans) ? N : K;
-  int ldc = N;
+
+  if (M > std::numeric_limits<int>::max() ||
+      N > std::numeric_limits<int>::max() ||
+      K > std::numeric_limits<int>::max() ||
+      batchCount > std::numeric_limits<int>::max()) {
+    PADDLE_THROW(common::errors::Unimplemented(
+        "CPU BatchedGEMM only supports M, N, K and batchCount not larger "
+        "than INT_MAX. Expected M <= %d, N <= %d, K <= %d and "
+        "batchCount <= %d, but received M = %ld, N = %ld, K = %ld, "
+        "batchCount = %ld.",
+        std::numeric_limits<int>::max(),
+        std::numeric_limits<int>::max(),
+        std::numeric_limits<int>::max(),
+        std::numeric_limits<int>::max(),
+        M,
+        N,
+        K,
+        batchCount));
+  }
+
+#if defined(PADDLE_WITH_MKLML) || defined(PADDLE_WITH_HML)
+  int M_int = static_cast<int>(M);
+  int N_int = static_cast<int>(N);
+  int K_int = static_cast<int>(K);
+  int batch_count_int = static_cast<int>(batchCount);
+  int lda = (transA == CblasNoTrans) ? K_int : M_int;
+  int ldb = (transB == CblasNoTrans) ? N_int : K_int;
+  int ldc = N_int;
+  auto a_array = std::vector<const T *>(batchCount);
+  auto b_array = std::vector<const T *>(batchCount);
+  auto c_array = std::vector<T *>(batchCount);
+  for (int k = 0; k < batchCount; ++k) {
+    a_array[k] = &A[k * strideA];
+    b_array[k] = &B[k * strideB];
+    c_array[k] = &C[k * M * N];
+  }
+  CBlas<T>::GEMM_BATCH(CblasRowMajor,
+                       &transA,
+                       &transB,
+                       &M_int,
+                       &N_int,
+                       &K_int,
+                       &alpha,
+                       a_array.data(),
+                       &lda,
+                       b_array.data(),
+                       &ldb,
+                       &beta,
+                       c_array.data(),
+                       &ldc,
+                       1 /* group_count */,
+                       &batch_count_int);
+#else
+  for (int64_t k = 0; k < batchCount; ++k) {
+    auto *Ak = &A[k * strideA];
+    auto *Bk = &B[k * strideB];
+    auto *Ck = &C[k * M * N];
+    this->template GEMM<T>(transA,
+                           transB,
+                           static_cast<int>(M),
+                           static_cast<int>(N),
+                           static_cast<int>(K),
+                           alpha,
+                           Ak,
+                           Bk,
+                           beta,
+                           Ck);
+  }
+#endif
+}
+
+template <>
+template <typename T, typename U>
+void Blas<CPUContext>::BatchedGEMM(CBLAS_TRANSPOSE transA,
+                                   CBLAS_TRANSPOSE transB,
+                                   int64_t M,
+                                   int64_t N,
+                                   int64_t K,
+                                   U alpha,
+                                   const T *A,
+                                   const T *B,
+                                   U beta,
+                                   T *C,
+                                   int64_t batchCount,
+                                   int64_t strideA,
+                                   int64_t strideB) const {
+  PADDLE_ENFORCE_NOT_NULL(
+      A, common::errors::InvalidArgument("Pointer A should not be null."));
+  PADDLE_ENFORCE_NOT_NULL(
+      B, common::errors::InvalidArgument("Pointer B should not be null."));
+  PADDLE_ENFORCE_NOT_NULL(
+      C, common::errors::InvalidArgument("Pointer C should not be null."));
+  if (M > std::numeric_limits<int>::max() ||
+      N > std::numeric_limits<int>::max() ||
+      K > std::numeric_limits<int>::max() ||
+      batchCount > std::numeric_limits<int>::max()) {
+    PADDLE_THROW(common::errors::Unimplemented(
+        "CPU BatchedGEMM does not support M, N, K or batchCount larger than "
+        "INT_MAX."));
+  }
+
+#if defined(PADDLE_WITH_MKLML) || defined(PADDLE_WITH_HML)
+  int M_int = static_cast<int>(M);
+  int N_int = static_cast<int>(N);
+  int K_int = static_cast<int>(K);
+  int batch_count_int = static_cast<int>(batchCount);
+  int lda = (transA == CblasNoTrans) ? K_int : M_int;
+  int ldb = (transB == CblasNoTrans) ? N_int : K_int;
+  int ldc = N_int;
   auto a_array = std::vector<const T *>(batchCount);
   auto b_array = std::vector<const T *>(batchCount);
   auto c_array = std::vector<T *>(batchCount);
@@ -1387,9 +1638,9 @@ void Blas<phi::CPUContext>::BatchedGEMM(CBLAS_TRANSPOSE transA,
   CBlas<T>::GEMM_BATCH(CblasRowMajor,
                        &transA,
                        &transB,
-                       &M,
-                       &N,
-                       &K,
+                       &M_int,
+                       &N_int,
+                       &K_int,
                        &alpha,
                        a_array.data(),
                        &lda,
@@ -1399,31 +1650,40 @@ void Blas<phi::CPUContext>::BatchedGEMM(CBLAS_TRANSPOSE transA,
                        c_array.data(),
                        &ldc,
                        1 /* group_count */,
-                       &batchCount);
+                       &batch_count_int);
 #else
-  for (int k = 0; k < batchCount; ++k) {
+  for (int64_t k = 0; k < batchCount; ++k) {
     auto *Ak = &A[k * strideA];
     auto *Bk = &B[k * strideB];
     auto *Ck = &C[k * M * N];
-    this->template GEMM<T>(transA, transB, M, N, K, alpha, Ak, Bk, beta, Ck);
+    this->template GEMM<T>(transA,
+                           transB,
+                           static_cast<int>(M),
+                           static_cast<int>(N),
+                           static_cast<int>(K),
+                           alpha,
+                           Ak,
+                           Bk,
+                           beta,
+                           Ck);
   }
 #endif
 }
 
 template <>
 template <typename T>
-void Blas<phi::CPUContext>::BatchedGEMM(CBLAS_TRANSPOSE transA,
-                                        CBLAS_TRANSPOSE transB,
-                                        int M,
-                                        int N,
-                                        int K,
-                                        T alpha,
-                                        const T **A,
-                                        const T **B,
-                                        T beta,
-                                        T **C,
-                                        int batchCount) const {
-#ifdef PADDLE_WITH_MKLML
+void Blas<CPUContext>::BatchedGEMM(CBLAS_TRANSPOSE transA,
+                                   CBLAS_TRANSPOSE transB,
+                                   int M,
+                                   int N,
+                                   int K,
+                                   T alpha,
+                                   const T **A,
+                                   const T **B,
+                                   T beta,
+                                   T **C,
+                                   int batchCount) const {
+#if defined(PADDLE_WITH_MKLML) || defined(PADDLE_WITH_HML)
   const int lda = (std::max)((transA == CblasNoTrans) ? K : M, 1);
   const int ldb = (std::max)((transB == CblasNoTrans) ? N : K, 1);
   const int ldc = (std::max)(N, 1);
@@ -1455,22 +1715,22 @@ void Blas<phi::CPUContext>::BatchedGEMM(CBLAS_TRANSPOSE transA,
     !defined(PADDLE_WITH_HIP)  // @{ Group Blas MKLML: BatchedGEMMWithHead
 template <>
 template <typename T>
-void Blas<phi::CPUContext>::BatchedGEMMWithHead(CBLAS_TRANSPOSE transA,
-                                                CBLAS_TRANSPOSE transB,
-                                                int W1,
-                                                int H1,
-                                                int W2,
-                                                int H2,
-                                                T alpha,
-                                                const T *A,
-                                                const T *B,
-                                                T beta,
-                                                T *C,
-                                                int batchCount,
-                                                int64_t strideA,
-                                                int64_t strideB,
-                                                int64_t head_number,
-                                                bool split_b_vertical) const {
+void Blas<CPUContext>::BatchedGEMMWithHead(CBLAS_TRANSPOSE transA,
+                                           CBLAS_TRANSPOSE transB,
+                                           int W1,
+                                           int H1,
+                                           int W2,
+                                           int H2,
+                                           T alpha,
+                                           const T *A,
+                                           const T *B,
+                                           T beta,
+                                           T *C,
+                                           int batchCount,
+                                           int64_t strideA,
+                                           int64_t strideB,
+                                           int64_t head_number,
+                                           bool split_b_vertical) const {
   int lda = (transA == CblasNoTrans) ? W1 : H1;
   int ldb = (transB == CblasNoTrans) ? W2 : H2;
   auto a_array = std::vector<const T *>(batchCount);
@@ -1561,6 +1821,116 @@ void Blas<phi::CPUContext>::BatchedGEMMWithHead(CBLAS_TRANSPOSE transA,
 }
 #endif  // @} End Group Blas MKLML: BatchedGEMMWithHead
 
+#if defined(PADDLE_WITH_HML) && !defined(PADDLE_WITH_CUDA) && \
+    !defined(PADDLE_WITH_HIP)  // @{ Group Blas HML: BatchedGEMMWithHead
+template <>
+template <typename T>
+void Blas<CPUContext>::BatchedGEMMWithHead(CBLAS_TRANSPOSE transA,
+                                           CBLAS_TRANSPOSE transB,
+                                           int W1,
+                                           int H1,
+                                           int W2,
+                                           int H2,
+                                           T alpha,
+                                           const T *A,
+                                           const T *B,
+                                           T beta,
+                                           T *C,
+                                           int batchCount,
+                                           int64_t strideA,
+                                           int64_t strideB,
+                                           int64_t head_number,
+                                           bool split_b_vertical) const {
+  int lda = (transA == CblasNoTrans) ? W1 : H1;
+  int ldb = (transB == CblasNoTrans) ? W2 : H2;
+  auto a_array = std::vector<const T *>(batchCount);
+  auto b_array = std::vector<const T *>(batchCount);
+  auto c_array = std::vector<T *>(batchCount);
+
+  if (split_b_vertical) {
+    int ldc = W2;
+    int sub_width = W2 / head_number;
+
+    for (int i = 0; i < head_number; i++) {
+      int sub_matA_offset = (transA == CblasNoTrans)
+                                ? i * (W1 / head_number)
+                                : i * (W1 / head_number) * H1;
+      int sub_matB_offset = (transB == CblasNoTrans)
+                                ? i * (W2 / head_number)
+                                : i * (W2 / head_number) * H2;
+      int sub_matC_offset = i * W2 / head_number;
+      for (int k = 0; k < batchCount; ++k) {
+        a_array[k] = &A[k * strideA] + sub_matA_offset;
+        b_array[k] = &B[k * strideB] + sub_matB_offset;
+        c_array[k] = &C[k * H1 * W2] + sub_matC_offset;
+      }
+
+      CBlas<T>::GEMM_BATCH(CblasRowMajor,
+                           &transA,
+                           &transB,
+                           &H1,
+                           &sub_width,
+                           &H2,
+                           &alpha,
+                           a_array.data(),
+                           &lda,
+                           b_array.data(),
+                           &ldb,
+                           &beta,
+                           c_array.data(),
+                           &ldc,
+                           1 /* group_count */,
+                           &batchCount);
+    }
+
+  } else {
+    PADDLE_ENFORCE_EQ(
+        W1,
+        H2,
+        common::errors::InvalidArgument(
+            "The first matrix width should be same as second matrix height,"
+            "but received first matrix width %d"
+            ", second matrix height %d",
+            W1,
+            H2));
+    int ldc = W2 * head_number;
+    int sub_width = W1 / head_number;
+
+    for (int i = 0; i < head_number; i++) {
+      int sub_matA_offset = (transA == CblasNoTrans)
+                                ? i * (W1 / head_number)
+                                : i * (W1 / head_number) * H1;
+      int sub_matB_offset = (transB == CblasNoTrans)
+                                ? i * (W1 / head_number) * W2
+                                : i * (W1 / head_number);
+      int sub_matC_offset = i * W2;
+      for (int k = 0; k < batchCount; ++k) {
+        a_array[k] = &A[k * strideA] + sub_matA_offset;
+        b_array[k] = &B[k * strideB] + sub_matB_offset;
+        c_array[k] = &C[k * H1 * head_number * W2] + sub_matC_offset;
+      }
+
+      CBlas<T>::GEMM_BATCH(CblasRowMajor,
+                           &transA,
+                           &transB,
+                           &H1,
+                           &W2,
+                           &sub_width,
+                           &alpha,
+                           a_array.data(),
+                           &lda,
+                           b_array.data(),
+                           &ldb,
+                           &beta,
+                           c_array.data(),
+                           &ldc,
+                           1 /* group_count */,
+                           &batchCount);
+    }
+  }
+}
+#endif  // @{ Group Blas HML: BatchedGEMMWithHead
+
 template <typename DeviceContext>
 template <typename T>
 void Blas<DeviceContext>::MatMul(
@@ -1583,7 +1953,7 @@ void Blas<DeviceContext>::MatMul(
 
 template <>
 template <typename T>
-void Blas<phi::CPUContext>::MatMul(
+void Blas<CPUContext>::MatMul(
     const int M, const int N, const int K, const T *A, const T *B, T *C) const {
 #ifdef PADDLE_WITH_LIBXSMM
   // Refer to https://github.com/hfp/libxsmm/blob/master/README.md
@@ -1621,12 +1991,12 @@ void Blas<phi::CPUContext>::MatMul(
 
 template <typename DeviceContext>
 template <typename T>
-void Blas<DeviceContext>::MatMul(const phi::DenseTensor &mat_a,
+void Blas<DeviceContext>::MatMul(const DenseTensor &mat_a,
                                  const MatDescriptor &dim_a,
-                                 const phi::DenseTensor &mat_b,
+                                 const DenseTensor &mat_b,
                                  const MatDescriptor &dim_b,
                                  T alpha,
-                                 phi::DenseTensor *mat_out,
+                                 DenseTensor *mat_out,
                                  T beta) const {
   MatMul(mat_a.data<T>(),
          dim_a,
@@ -1719,20 +2089,20 @@ void Blas<DeviceContext>::MatMul(const T *mat_a,
  */
 template <typename DeviceContext>
 template <typename T>
-void Blas<DeviceContext>::MatMulWithHead(const phi::DenseTensor &mat_a,
+void Blas<DeviceContext>::MatMulWithHead(const DenseTensor &mat_a,
                                          const MatDescriptor &dim_a,
-                                         const phi::DenseTensor &mat_b,
+                                         const DenseTensor &mat_b,
                                          const MatDescriptor &dim_b,
                                          T alpha,
                                          int head_number,
-                                         phi::DenseTensor *mat_out,
+                                         DenseTensor *mat_out,
                                          T beta,
                                          bool mat_b_split_vertical) const {
   PADDLE_ENFORCE_EQ(
       dim_a.width_ % head_number,
       0,
       common::errors::InvalidArgument(
-          "The first input width must be some times the head number"
+          "The first input width must be some times the head number, "
           "but received first input width %d"
           ",  head_number %d",
           dim_a.width_,
@@ -1768,7 +2138,7 @@ void Blas<DeviceContext>::MatMulWithHead(const phi::DenseTensor &mat_a,
         dim_a.width_ % head_number,
         0,
         common::errors::InvalidArgument(
-            "The second input width should be some times the head number"
+            "The second input width should be some times the head number, "
             "but received second input width %d"
             ",  head_number %d",
             dim_b.width_,
@@ -1860,81 +2230,198 @@ void Blas<DeviceContext>::MatMulWithHead(const phi::DenseTensor &mat_a,
 }
 #endif  // @} End Group Blas MKLML: MatMulWithHead
 
+#if defined(PADDLE_WITH_HML) && !defined(PADDLE_WITH_CUDA) && \
+    !defined(PADDLE_WITH_HIP)
+// @{ Group Blas HML: MatMulWithHead
+/*
+ * Multiple two matrixes with multiple heads
+ *
+ * A new parameter, i.e head_number is added compared to normal MatMul.
+ * The head_number describes the number of heads a matrix is vertically
+ * split.
+ *
+ * When user calls this API, the multiplication of two big matrixes is split
+ * into multiplication of several (head_number_) small matrixes. e.g. if Mat A
+ * is [3, 24] and Mat B is [24, 4], when multiple A and B with head_number as
+ * 4, Mat A will be split as 4 matrix of [3, 6] and Mat B will be
+ * (horizontally) split as 4 matrix of [6, 4]. The result of final matrix
+ * will be 4 matrix of [3, 4], i.e. [3, 16].
+ * Another example is A is [3, 8], B is [2, 16], head_number is 4. In this
+ * case, A will be split as [3, 2], B will be (vertically) split as
+ * [2, 4]. The final result will be 4 matrix of 4 matrix of [3,4], i.e. [3, 16]
+ */
 template <typename DeviceContext>
 template <typename T>
-void Blas<DeviceContext>::VINV(int n, const T *a, T *y) const {
-#ifdef PADDLE_WITH_MKLML
-  CBlas<T>::VINV(n, a, y);
-#else
-  for (int i = 0; i < n; ++i) {
-    y[i] = 1.0 / a[i];
+void Blas<DeviceContext>::MatMulWithHead(const DenseTensor &mat_a,
+                                         const MatDescriptor &dim_a,
+                                         const DenseTensor &mat_b,
+                                         const MatDescriptor &dim_b,
+                                         T alpha,
+                                         int head_number,
+                                         DenseTensor *mat_out,
+                                         T beta,
+                                         bool mat_b_split_vertical) const {
+  PADDLE_ENFORCE_EQ(
+      dim_a.width_ % head_number,
+      0,
+      common::errors::InvalidArgument(
+          "The first input width must be some times the head number, "
+          "but received first input width %d"
+          ",  head_number %d",
+          dim_a.width_,
+          head_number));
+  PADDLE_ENFORCE_GE(head_number,
+                    1,
+                    common::errors::InvalidArgument(
+                        "The head number should be greater equal 1,"
+                        "but received head number %d",
+                        head_number));
+  PADDLE_ENFORCE_LE(
+      head_number,
+      dim_a.width_,
+      common::errors::InvalidArgument(
+          "The head number should be less equal first input width,"
+          "but received first input width %d"
+          ",  head_number %d",
+          dim_a.width_,
+          head_number));
+  CBLAS_TRANSPOSE transA = !dim_a.trans_ ? CblasNoTrans : CblasTrans;
+  CBLAS_TRANSPOSE transB = !dim_b.trans_ ? CblasNoTrans : CblasTrans;
+
+  if (mat_b_split_vertical) {
+    PADDLE_ENFORCE_EQ(
+        dim_b.height_,
+        dim_a.width_ / head_number,
+        common::errors::InvalidArgument(
+            "The second input height should be equal than first input width,"
+            "but received second input height %d, first input width %d",
+            dim_b.height_,
+            dim_a.width_ / head_number));
+    PADDLE_ENFORCE_EQ(
+        dim_a.width_ % head_number,
+        0,
+        common::errors::InvalidArgument(
+            "The second input width should be some times the head number, "
+            "but received second input width %d"
+            ",  head_number %d",
+            dim_b.width_,
+            head_number));
   }
-#endif
-}
 
-template <>
-template <typename T>
-void Blas<phi::CPUContext>::VMERF(int n, const T *a, T *y, int64_t mode) const {
-#ifdef PADDLE_WITH_MKLML
-  CBlas<T>::VMERF(n, a, y, mode);
-#else
-  for (int i = 0; i < n; ++i) {
-    y[i] = std::erf(a[i]);
+  if (dim_a.batch_size_ == 0 && dim_b.batch_size_ == 0) {
+    int lda = !dim_a.trans_ ? dim_a.width_ : dim_a.height_;
+    int ldb = !dim_b.trans_ ? dim_b.width_ : dim_b.height_;
+    int sub_matA_offset;
+    int sub_matB_offset;
+    int sub_matC_offset;
+    int sub_mat_M = dim_a.height_;
+    int sub_mat_N;
+    int sub_mat_K;
+    int ldc;
+
+    for (int i = 0; i < head_number; i++) {
+      sub_matA_offset = dim_a.trans_
+                            ? i * (dim_a.width_ / head_number) * dim_a.height_
+                            : i * (dim_a.width_ / head_number);
+      if (mat_b_split_vertical) {
+        sub_matB_offset = dim_b.trans_
+                              ? i * (dim_b.width_ / head_number) * dim_b.height_
+                              : i * (dim_b.width_ / head_number);
+        sub_matC_offset = i * dim_b.width_ / head_number;
+
+        sub_mat_N = dim_b.width_ / head_number;
+        sub_mat_K = dim_b.height_;
+
+        ldc = dim_b.width_;
+      } else {
+        sub_matB_offset =
+            dim_b.trans_ ? i * (dim_b.height_ / head_number)
+                         : i * (dim_b.height_ / head_number) * dim_b.width_;
+        sub_matC_offset = i * dim_b.width_;
+
+        sub_mat_N = dim_b.width_;
+        sub_mat_K = dim_a.width_ / head_number;
+
+        ldc = head_number * dim_b.width_;
+      }
+
+      this->template GEMM<T>(transA,
+                             transB,
+                             sub_mat_M,
+                             sub_mat_N,
+                             sub_mat_K,
+                             alpha,
+                             mat_a.data<T>() + sub_matA_offset,
+                             lda,
+                             mat_b.data<T>() + sub_matB_offset,
+                             ldb,
+                             beta,
+                             mat_out->data<T>() + sub_matC_offset,
+                             ldc);
+    }
+  } else {
+    PADDLE_ENFORCE_EQ(
+        (dim_a.batch_size_ == dim_b.batch_size_ || dim_a.batch_size_ == 0 ||
+         dim_b.batch_size_ == 0),
+        true,
+        common::errors::InvalidArgument(
+            "The first input batch size should be equal to second input,"
+            "either two input batch size is 0, but received first input batch "
+            "size"
+            " %d, second input batch size %d",
+            dim_a.batch_size_,
+            dim_b.batch_size_));
+
+    this->template BatchedGEMMWithHead<T>(
+        transA,
+        transB,
+        dim_a.width_,
+        dim_a.height_,
+        dim_b.width_,
+        dim_b.height_,
+        alpha,
+        mat_a.data<T>(),
+        mat_b.data<T>(),
+        beta,
+        mat_out->data<T>(),
+        dim_a.batch_size_ == 0 ? dim_b.batch_size_ : dim_a.batch_size_,
+        dim_a.stride_,
+        dim_b.stride_,
+        head_number,
+        mat_b_split_vertical);
   }
-#endif
 }
-
-#ifdef PADDLE_WITH_MKLML
-template <>
-template <typename T>
-void Blas<phi::CPUContext>::CSRMM(const char *transa,
-                                  const int *m,
-                                  const int *n,
-                                  const int *k,
-                                  const T *alpha,
-                                  const char *matdescra,
-                                  const T *val,
-                                  const int *indx,
-                                  const int *pntrb,
-                                  const int *pntre,
-                                  const T *b,
-                                  const int *ldb,
-                                  const T *beta,
-                                  T *c,
-                                  const int *ldc) const {
-  CBlas<T>::CSRMM(transa,
-                  m,
-                  n,
-                  k,
-                  alpha,
-                  matdescra,
-                  val,
-                  indx,
-                  pntrb,
-                  pntre,
-                  b,
-                  ldb,
-                  beta,
-                  c,
-                  ldc);
-}
-#endif
+#endif  // @} End Group Blas HML: MatMulWithHead
 
 template <>
 template <typename T>
-void Blas<phi::CPUContext>::TRSM(CBLAS_SIDE side,
-                                 CBLAS_UPLO uplo,
-                                 CBLAS_TRANSPOSE transA,
-                                 CBLAS_DIAG diag,
-                                 int M,
-                                 int N,
-                                 T alpha,
-                                 const T *A,
-                                 int lda,
-                                 T *B,
-                                 int ldb) const {
-  CBlas<T>::TRSM(
-      CblasRowMajor, side, uplo, transA, diag, M, N, alpha, A, lda, B, ldb);
+void Blas<CPUContext>::TRSM(CBLAS_SIDE side,
+                            CBLAS_UPLO uplo,
+                            CBLAS_TRANSPOSE transA,
+                            CBLAS_DIAG diag,
+                            int64_t M,
+                            int64_t N,
+                            T alpha,
+                            const T *A,
+                            int64_t lda,
+                            T *B,
+                            int64_t ldb) const {
+  const int m = detail::to_blas_int(M, "TRSM M");
+  const int n = detail::to_blas_int(N, "TRSM N");
+  const int lda_int = detail::to_blas_int(lda, "TRSM lda");
+  const int ldb_int = detail::to_blas_int(ldb, "TRSM ldb");
+  CBlas<T>::TRSM(CblasRowMajor,
+                 side,
+                 uplo,
+                 transA,
+                 diag,
+                 m,
+                 n,
+                 alpha,
+                 A,
+                 lda_int,
+                 B,
+                 ldb_int);
 }
 
 }  // namespace funcs

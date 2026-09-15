@@ -312,7 +312,7 @@ class ApplyRotaryPosEmbPattern(BasePattern):
         cos = paddle.randn(self.shape_configs.cos_shape)
         sin = paddle.randn(self.shape_configs.sin_shape)
         position_ids = paddle.randint(
-            low=1, shape=self.shape_configs.input_shape
+            low=1, size=self.shape_configs.input_shape
         )
         # program construction
         with paddle.static.program_guard(main_program, start_program):
@@ -432,7 +432,7 @@ class QKVRopePattern(BasePattern):
         cos_cached = paddle.randn(self.shape_configs.cos_shape)
         sin_cached = paddle.randn(self.shape_configs.sin_shape)
         position_ids = paddle.randint(
-            low=1, shape=self.shape_configs.input_shape
+            low=1, size=self.shape_configs.input_shape
         )
         # program construction
         with paddle.static.program_guard(main_program, start_program):
@@ -553,17 +553,16 @@ class ScaleDotProductPattern(BasePattern):
         value_states,
         attention_mask,
     ):
-
         bsz, q_len, num_heads, head_dim = query_states.shape
         _, kv_seq_len, _, _ = value_states.shape
 
         #  [ bz, seqlen, nhead, head_dim] -> [bs, nhead, seq_len, head_dim]
         query_states = paddle.transpose(query_states, [0, 2, 1, 3])
-        # merge with the next tranpose
+        # merge with the next transpose
         key_states = paddle.transpose(key_states, [0, 2, 1, 3])
         value_states = paddle.transpose(value_states, [0, 2, 1, 3])
 
-        # matmul and devide by sqrt(head_dim)
+        # matmul and divide by sqrt(head_dim)
         attn_weights = paddle.matmul(
             query_states / math.sqrt(head_dim),
             key_states.transpose([0, 1, 3, 2]),
@@ -607,7 +606,7 @@ class AttentionPattern(BasePattern):
         cos_cached = paddle.randn(self.shape_configs.cos_shape)
         sin_cached = paddle.randn(self.shape_configs.sin_shape)
         position_ids = paddle.randint(
-            low=1, shape=self.shape_configs.input_shape
+            low=1, size=self.shape_configs.input_shape
         )
         attention_mask = paddle.randn(self.shape_configs.attention_mask_shape)
         # program construction
@@ -757,7 +756,7 @@ class MLP3Pattern(BasePattern):
     def apply(hidden_states, gate_weight, up_weight, down_weight):
         gate = paddle.matmul(hidden_states, gate_weight)
         up = paddle.matmul(hidden_states, up_weight)
-        tmp = paddle.incubate.nn.functional.swiglu(gate, up)
+        tmp = paddle.nn.functional.swiglu(gate, up)
         out = paddle.matmul(tmp, down_weight)
         return out
 
@@ -784,7 +783,7 @@ class DecoderLayerPattern(BasePattern):
         cos_cached = paddle.randn(self.shape_configs.cos_shape)
         sin_cached = paddle.randn(self.shape_configs.sin_shape)
         position_ids = paddle.randint(
-            low=1, shape=self.shape_configs.input_shape
+            low=1, size=self.shape_configs.input_shape
         )
         attention_mask = paddle.randn(self.shape_configs.attention_mask_shape)
         # program construction
@@ -864,13 +863,13 @@ class DecoderLayerPattern(BasePattern):
         down_linear_dist_infos = MpDistInfos("row")
         # # # build ops dist infos # # #
         ops_dist_infos = {
-            (21,): qkv_linear_dist_infos,
             (22,): qkv_linear_dist_infos,
             (23,): qkv_linear_dist_infos,
-            (88,): out_linear_dist_infos,
-            (97,): up_linear_dist_infos,
-            (98,): up_linear_dist_infos,
-            (100,): down_linear_dist_infos,
+            (24,): qkv_linear_dist_infos,
+            (89,): out_linear_dist_infos,
+            (99,): up_linear_dist_infos,
+            (100,): up_linear_dist_infos,
+            (102,): down_linear_dist_infos,
         }
         self.ops_dist_infos = ops_dist_infos
 
@@ -1263,7 +1262,6 @@ class MLP2Pattern(BasePattern):
 
 
 def match_pattern(pattern, program):
-
     def _compare_op_node(src, tgt):
         """Compare whether two op nodes are equivalent."""
         if src.name() != tgt.name():

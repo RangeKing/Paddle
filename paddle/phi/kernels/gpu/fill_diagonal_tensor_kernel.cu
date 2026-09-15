@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <vector>
 
+#include "paddle/phi/backends/gpu/cuda/cuda_graph_with_memory_pool.h"
 #include "paddle/phi/common/memory_utils.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/core/tensor_utils.h"
@@ -43,7 +44,7 @@ __global__ void fill_diagonal_tensor_kernel(int64_t size,
 }
 
 template <typename T, typename Context>
-void FillDiagonalTensorKernel(const Context &ctx,
+void FillDiagonalTensorKernel(const Context &dev_ctx,
                               const DenseTensor &x,
                               const DenseTensor &y,
                               int64_t offset,
@@ -51,9 +52,9 @@ void FillDiagonalTensorKernel(const Context &ctx,
                               int dim2,
                               DenseTensor *out) {
   const int64_t kMaxBlockDim = 512;
-  phi::Copy(ctx, x, ctx.GetPlace(), false, out);
+  Copy(dev_ctx, x, dev_ctx.GetPlace(), false, out);
 
-  T *out_data = ctx.template Alloc<T>(out);
+  T *out_data = dev_ctx.template Alloc<T>(out);
   const T *fill_data = y.data<T>();
 
   auto out_dims = out->dims();
@@ -87,15 +88,17 @@ void FillDiagonalTensorKernel(const Context &ctx,
 
   auto size = out->numel();
 
-  auto stream = ctx.stream();
+  auto stream = dev_ctx.stream();
   DenseTensor tensor_tmp;
-  tensor_tmp.Resize(common::make_ddim({2 + fill_dims[0]}));
-  int64_t *memory_block_cu = ctx.template Alloc<int64_t>(&tensor_tmp);
-  const auto gpu_place = ctx.GetPlace();
+  tensor_tmp.Resize({2 + fill_dims[0]});
+  int64_t *memory_block_cu = dev_ctx.template Alloc<int64_t>(&tensor_tmp);
+  const auto gpu_place = dev_ctx.GetPlace();
+  auto *stable_mb = backends::gpu::RestoreHostMemIfCapturingCUDAGraph(
+      memory_block.data(), memory_block.size());
   memory_utils::Copy(gpu_place,
                      memory_block_cu,
                      CPUPlace(),
-                     memory_block.data(),
+                     stable_mb,
                      sizeof(int64_t) * (2 + fill_dims[0]),
                      stream);
 
@@ -127,8 +130,8 @@ PD_REGISTER_KERNEL(fill_diagonal_tensor,
                    int16_t,
                    int8_t,
                    uint8_t,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>,
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::complex64,
+                   phi::complex128,
                    bool) {}

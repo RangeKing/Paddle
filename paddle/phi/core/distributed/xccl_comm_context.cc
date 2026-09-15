@@ -50,7 +50,7 @@ XCCLCommContext::~XCCLCommContext() {
   g_xccl_comm_contexts.remove(this);
 }
 
-XCCLCommContext::XCCLCommContext(const phi::Place& place,
+XCCLCommContext::XCCLCommContext(const Place& place,
                                  int rank,
                                  int size,
                                  const ccl::CCLRootId& xccl_id)
@@ -67,16 +67,16 @@ XCCLCommContext::XCCLCommContext(const phi::Place& place,
   g_xccl_comm_contexts.push_back(this);
 }
 
-void XCCLCommContext::Broadcast(phi::DenseTensor* out_tensor,
-                                const phi::DenseTensor& in_tensor,
+void XCCLCommContext::Broadcast(DenseTensor* out_tensor,
+                                const DenseTensor& in_tensor,
                                 int root,
-                                const phi::stream::Stream& stream) const {
+                                const phi::stream::stream_t& stream) const {
   CommStaticCheck::SameShape(*out_tensor,
                              in_tensor,
                              /*dst_rank*/ rank_,
                              /*cur_rank*/ rank_,
                              size_,
-                             phi::AllocationType::CUSTOM);
+                             AllocationType::CUSTOM);
   if (rank_ == root) {
     phi::DeviceManager::CCLBroadcast(place_.GetDeviceType(),
                                      const_cast<void*>(in_tensor.data()),
@@ -96,16 +96,15 @@ void XCCLCommContext::Broadcast(phi::DenseTensor* out_tensor,
   }
 }
 
-void XCCLCommContext::AllGather(phi::DenseTensor* out_tensor,
-                                const phi::DenseTensor& in_tensor,
-                                const phi::stream::Stream& stream) const {
-  phi::distributed::CommStaticCheck::GatherLikeShape(
-      *out_tensor,
-      in_tensor,
-      /*dst_rank*/ rank_,
-      /*cur_rank*/ rank_,
-      size_,
-      phi::AllocationType::CUSTOM);
+void XCCLCommContext::AllGather(DenseTensor* out_tensor,
+                                const DenseTensor& in_tensor,
+                                const phi::stream::stream_t& stream) const {
+  phi::distributed::CommStaticCheck::GatherLikeShape(*out_tensor,
+                                                     in_tensor,
+                                                     /*dst_rank*/ rank_,
+                                                     /*cur_rank*/ rank_,
+                                                     size_,
+                                                     AllocationType::CUSTOM);
   phi::DeviceManager::CCLAllGather(place_.GetDeviceType(),
                                    const_cast<void*>(in_tensor.data()),
                                    out_tensor->data(),
@@ -114,17 +113,16 @@ void XCCLCommContext::AllGather(phi::DenseTensor* out_tensor,
                                    xccl_comm_,
                                    stream);
 }
-void XCCLCommContext::ReduceScatter(phi::DenseTensor* out_tensor,
-                                    const phi::DenseTensor& in_tensor,
+void XCCLCommContext::ReduceScatter(DenseTensor* out_tensor,
+                                    const DenseTensor& in_tensor,
                                     phi::ccl::CCLReduceOp reduce_type,
-                                    const phi::stream::Stream& stream) const {
-  phi::distributed::CommStaticCheck::ScatterLikeShape(
-      *out_tensor,
-      in_tensor,
-      /*dst_rank*/ rank_,
-      /*cur_rank*/ rank_,
-      size_,
-      phi::AllocationType::CUSTOM);
+                                    const phi::stream::stream_t& stream) const {
+  phi::distributed::CommStaticCheck::ScatterLikeShape(*out_tensor,
+                                                      in_tensor,
+                                                      /*dst_rank*/ rank_,
+                                                      /*cur_rank*/ rank_,
+                                                      size_,
+                                                      AllocationType::CUSTOM);
   phi::DeviceManager::CCLReduceScatter(place_.GetDeviceType(),
                                        const_cast<void*>(in_tensor.data()),
                                        out_tensor->data(),
@@ -135,12 +133,12 @@ void XCCLCommContext::ReduceScatter(phi::DenseTensor* out_tensor,
                                        stream);
 }
 
-void XCCLCommContext::Send(const phi::DenseTensor& in_tensor,
+void XCCLCommContext::Send(const DenseTensor& in_tensor,
                            const int64_t& count,
                            const int& peer,
-                           const phi::stream::Stream& stream) const {
+                           const phi::stream::stream_t& stream) const {
   phi::distributed::CommStaticCheck::CheckShape(
-      in_tensor, rank_, size_, phi::AllocationType::CUSTOM);
+      in_tensor, rank_, size_, AllocationType::CUSTOM);
   phi::DeviceManager::CCLSend(place_.GetDeviceType(),
                               const_cast<void*>(in_tensor.data()),
                               count,
@@ -152,12 +150,12 @@ void XCCLCommContext::Send(const phi::DenseTensor& in_tensor,
           << common::product(in_tensor.dims()) << " to " << peer;
 }
 
-void XCCLCommContext::Recv(phi::DenseTensor* out_tensor,
+void XCCLCommContext::Recv(DenseTensor* out_tensor,
                            const int64_t& count,
                            const int& peer,
-                           const phi::stream::Stream& stream) const {
+                           const phi::stream::stream_t& stream) const {
   phi::distributed::CommStaticCheck::CheckShape(
-      *out_tensor, rank_, size_, phi::AllocationType::CUSTOM);
+      *out_tensor, rank_, size_, AllocationType::CUSTOM);
   phi::DeviceManager::CCLRecv(place_.GetDeviceType(),
                               out_tensor->data(),
                               count,
@@ -169,16 +167,16 @@ void XCCLCommContext::Recv(phi::DenseTensor* out_tensor,
           << common::product(out_tensor->dims()) << " from " << peer;
 }
 
-void XCCLCommContext::AllReduce(phi::DenseTensor* out_tensor,
-                                const phi::DenseTensor& in_tensor,
+void XCCLCommContext::AllReduce(DenseTensor* out_tensor,
+                                const DenseTensor& in_tensor,
                                 phi::ccl::CCLReduceOp reduce_type,
-                                const phi::stream::Stream& stream) const {
+                                const phi::stream::stream_t stream) const {
   phi::distributed::CommStaticCheck::SameShape(*out_tensor,
                                                in_tensor,
                                                /*dst_rank*/ rank_,
                                                /*cur_rank*/ rank_,
                                                size_,
-                                               phi::AllocationType::CUSTOM);
+                                               AllocationType::CUSTOM);
   phi::DeviceManager::CCLAllReduce(place_.GetDeviceType(),
                                    const_cast<void*>(in_tensor.data()),
                                    out_tensor->data(),
@@ -189,17 +187,17 @@ void XCCLCommContext::AllReduce(phi::DenseTensor* out_tensor,
                                    stream);
 }
 
-void XCCLCommContext::Reduce(phi::DenseTensor* out_tensor,
-                             const phi::DenseTensor& in_tensor,
+void XCCLCommContext::Reduce(DenseTensor* out_tensor,
+                             const DenseTensor& in_tensor,
                              phi::ccl::CCLReduceOp reduce_type,
                              int root,
-                             const phi::stream::Stream& stream) const {
+                             const phi::stream::stream_t& stream) const {
   phi::distributed::CommStaticCheck::SameShape(*out_tensor,
                                                in_tensor,
                                                /*dst_rank*/ root,
                                                /*cur_rank*/ rank_,
                                                size_,
-                                               phi::AllocationType::CUSTOM);
+                                               AllocationType::CUSTOM);
   phi::DeviceManager::CCLReduce(place_.GetDeviceType(),
                                 const_cast<void*>(in_tensor.data()),
                                 out_tensor->data(),

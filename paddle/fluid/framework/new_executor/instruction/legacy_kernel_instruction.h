@@ -15,6 +15,7 @@
 #pragma once
 
 #include "paddle/fluid/framework/new_executor/instruction/instruction_base.h"
+#include "paddle/fluid/framework/new_executor/new_executor_defs.h"
 
 namespace pir {
 class Operation;
@@ -28,8 +29,8 @@ class ValueExecutionInfo;
 class LegacyKernelInstruction : public InstructionBase {
  public:
   LegacyKernelInstruction(size_t id,
-                          const phi::Place& place,
-                          ::pir::Operation* op,
+                          const Place& place,
+                          pir::Operation* op,
                           const ValueExecutionInfo* value_exec_info);
 
   ~LegacyKernelInstruction();
@@ -47,7 +48,7 @@ class LegacyKernelInstruction : public InstructionBase {
 
   const std::string& Name() const override { return legacy_op_name_; }
 
-  ::pir::Operation* Operation() const override { return op_; }
+  pir::Operation* Operation() const override { return op_; }
 
  private:
   std::string legacy_op_name_;
@@ -63,7 +64,7 @@ class LegacyKernelInstruction : public InstructionBase {
 
   phi::Kernel* phi_kernel_{nullptr};  // not owned
 
-  ::pir::Operation* op_{nullptr};  // not owned
+  pir::Operation* op_{nullptr};  // not owned
 
   const ValueExecutionInfo* value_exec_info_;  // not owned
 };

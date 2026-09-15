@@ -12,11 +12,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License. */
 
-#include "paddle/phi/common/bfloat16.h"
-#include "paddle/phi/common/complex.h"
-#include "paddle/phi/common/float16.h"
-#include "paddle/phi/common/float8_e4m3fn.h"
-#include "paddle/phi/common/float8_e5m2.h"
 #include "paddle/phi/common/memory_utils.h"
 #include "paddle/phi/core/compat/convert_utils.h"
 #include "paddle/phi/core/dense_tensor.h"
@@ -26,11 +21,11 @@ namespace phi {
 /*   From phi::DenseTensor     */
 /* --------------------------- */
 DenseTensor::DenseTensor() {
-  meta_.dtype = phi::DataType::FLOAT32;
+  meta_.dtype = DataType::FLOAT32;
   meta_.offset = 0;
 }
 
-DenseTensor::DenseTensor(phi::DataType dtype) {
+DenseTensor::DenseTensor(DataType dtype) {
   meta_.dtype = dtype;
   meta_.offset = 0;
 }
@@ -66,7 +61,7 @@ const Place& DenseTensor::place() const {
   return holder_->place();
 }
 
-phi::DataType DenseTensor::type() const { return meta_.dtype; }
+DataType DenseTensor::type() const { return meta_.dtype; }
 
 void DenseTensor::set_layout(const DataLayout layout) {
   if (meta_.strides.size() == -1) {
@@ -77,6 +72,14 @@ void DenseTensor::set_layout(const DataLayout layout) {
 
 // Note: When you reset holder, you need to ensure the offset is correct
 void DenseTensor::ResetHolder(const std::shared_ptr<phi::Allocation>& holder) {
+  // Handle the empty tensor
+  if (numel() == 0) {
+    // Empty tensor does not need to check the holder size
+    holder_ = holder;
+    meta_.offset = 0;  // Ensure the offset is reset
+    return;
+  }
+
   if (holder_ && meta_.is_contiguous()) {
     PADDLE_ENFORCE_LE(
         numel() * static_cast<int64_t>(SizeOf(dtype())) +
@@ -89,15 +92,15 @@ void DenseTensor::ResetHolder(const std::shared_ptr<phi::Allocation>& holder) {
 }
 
 void DenseTensor::ResetHolderWithType(
-    const std::shared_ptr<phi::Allocation>& holder, phi::DataType type) {
+    const std::shared_ptr<phi::Allocation>& holder, DataType type) {
   set_type(type);
   ResetHolder(holder);
 }
 
-void DenseTensor::set_type(phi::DataType type) { meta_.dtype = type; }
+void DenseTensor::set_type(DataType type) { meta_.dtype = type; }
 
 void* DenseTensor::mutable_data(const Place& place,
-                                phi::DataType type,
+                                DataType type,
                                 size_t requested_size) {
   set_type(type);
   PADDLE_ENFORCE_GE(
@@ -105,9 +108,8 @@ void* DenseTensor::mutable_data(const Place& place,
       0,
       common::errors::PreconditionNotMet(
           "The Tensor's element number must be equal or greater than zero. "
-          "The Tensor's shape is [",
-          dims(),
-          "] now"));
+          "The Tensor's shape is %s now.",
+          dims()));
   size_t size = numel() * SizeOf(dtype());
   if (requested_size && (requested_size > size)) {
     size = requested_size;
@@ -129,7 +131,7 @@ void* DenseTensor::mutable_data(const Place& place, size_t requested_size) {
 }
 
 void* DenseTensor::mutable_data(const Place& place,
-                                phi::DataType type,
+                                DataType type,
                                 const phi::Stream& stream) {
   set_type(type);
   PADDLE_ENFORCE_GE(
@@ -137,15 +139,14 @@ void* DenseTensor::mutable_data(const Place& place,
       0,
       common::errors::PreconditionNotMet(
           "The Tensor's element number must be equal or greater than zero. "
-          "The Tensor's shape is [",
-          dims(),
-          "] now"));
+          "The Tensor's shape is %s now.",
+          dims()));
   size_t size = numel() * SizeOf(dtype());
 
   /* some versions of paddle::variant don't have operator!= */
   if (holder_ == nullptr || !(holder_->place() == place) ||
       holder_->size() < size + meta_.offset ||
-      !(place.GetType() == phi::AllocationType::GPU &&
+      !(place.GetType() == AllocationType::GPU &&
         memory_utils::InSameStream(holder_, stream))) {
     holder_.reset();
     holder_ = memory_utils::AllocShared(place, size, stream);
@@ -197,11 +198,11 @@ void DenseTensor::ShareBufferWith(const DenseTensor& tensor, bool only_buffer) {
   }
 }
 
-#define LEGACY_DATA_MEMBER_FUNC_INSTANTIATION(dtype)                     \
-  template TEST_API dtype* DenseTensor::mutable_data(                    \
-      const DDim& dims, const Place& place, size_t requested_size);      \
-  template TEST_API dtype* DenseTensor::mutable_data(const Place& place, \
-                                                     size_t requested_size);
+#define LEGACY_DATA_MEMBER_FUNC_INSTANTIATION(dtype)                       \
+  template PADDLE_API dtype* DenseTensor::mutable_data(                    \
+      const DDim& dims, const Place& place, size_t requested_size);        \
+  template PADDLE_API dtype* DenseTensor::mutable_data(const Place& place, \
+                                                       size_t requested_size);
 
 LEGACY_DATA_MEMBER_FUNC_INSTANTIATION(bool)
 LEGACY_DATA_MEMBER_FUNC_INSTANTIATION(int8_t)
@@ -296,29 +297,53 @@ DenseTensor& DenseTensor::Resize(const DDim& dims) {
   return *this;
 }
 
+DenseTensor& DenseTensor::Resize(const std::initializer_list<int64_t> dims) {
+  return Resize(make_ddim(dims));
+}
+
+DenseTensor& DenseTensor::Resize(const std::vector<int64_t>& dims) {
+  return Resize(make_ddim(dims));
+}
+
+DenseTensor& DenseTensor::Resize(const std::vector<int>& dims) {
+  return Resize(make_ddim(dims));
+}
+
 DenseTensor DenseTensor::Slice(int64_t begin_idx, int64_t end_idx) const {
   check_memory_size();
   PADDLE_ENFORCE_GE(
       begin_idx,
       0,
       common::errors::OutOfRange("The start row index must be greater than 0."
-                                 "But received the start index is d%.",
+                                 "But received the start index is %d.",
                                  begin_idx));
   PADDLE_ENFORCE_LE(
       end_idx,
       meta_.dims[0],
       common::errors::OutOfRange("The end row index is out of bound."));
-  PADDLE_ENFORCE_LT(
+  PADDLE_ENFORCE_LE(
       begin_idx,
       end_idx,
       common::errors::InvalidArgument(
-          "The start row index must be less than the end row index."
+          "The start row index must be equal or less than the end row index."
           "But received the start index = %d, the end index = %d.",
           begin_idx,
           end_idx));
 
   if (meta_.dims[0] == 1) {
     return *this;
+  } else if (begin_idx == end_idx) {
+    DenseTensor dst;
+    // create an holder
+    dst.holder_ =
+        std::make_shared<phi::Allocation>(nullptr, 0, holder_->place());
+    dst.set_layout(meta_.layout);
+    dst.meta_.dtype = meta_.dtype;
+    DDim dst_dims = meta_.dims;
+    dst_dims[0] = end_idx - begin_idx;
+    dst.Resize(dst_dims);
+    dst.meta_.offset = 0;
+    return dst;
   } else {
     size_t base = numel() / meta_.dims[0];
     DenseTensor dst;
@@ -384,33 +409,6 @@ std::vector<DenseTensor> DenseTensor::Chunk(int64_t chunks,
   int64_t split_size = (numel_size + chunks - 1) / chunks;
   return Split(split_size, axis);
 }
-
-#ifdef PADDLE_WITH_DNNL
-const dnnl::memory::desc& DenseTensor::mem_desc() const {
-  if (storage_properties_ == nullptr) {
-    static dnnl::memory::desc undef_desc = dnnl::memory::desc();
-    return undef_desc;
-  }
-  return this->storage_properties<OneDNNStorageProperties>().mem_desc;
-}
-
-void DenseTensor::set_mem_desc(const dnnl::memory::desc& mem_desc) {
-  if (storage_properties_ == nullptr) {
-    storage_properties_ = std::make_unique<OneDNNStorageProperties>();
-    static_cast<OneDNNStorageProperties*>(storage_properties_.get())->mem_desc =
-        mem_desc;
-    meta_.layout = DataLayout::ONEDNN;
-  } else if (OneDNNStorageProperties::classof(storage_properties_.get())) {
-    static_cast<OneDNNStorageProperties*>(storage_properties_.get())->mem_desc =
-        mem_desc;
-    meta_.layout = DataLayout::ONEDNN;
-  } else {
-    PADDLE_THROW(common::errors::InvalidArgument(
-        "The actual type of storage_properties is inconsistent with the type "
-        "of the template parameter passed in."));
-  }
-}
-#endif
 
 // NOTE: For historical reasons, this interface has a special behavior,
 // sharing other tensor members except lod

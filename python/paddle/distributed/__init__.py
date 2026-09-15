@@ -17,8 +17,11 @@ import atexit  # noqa: F401
 from .value_patch import monkey_patch_value_in_dist
 
 monkey_patch_value_in_dist()
-from paddle.base.core import Placement, ReduceType
-from paddle.distributed.fleet.base.topology import ParallelMode
+from paddle.base.core import Placement, ProcessGroup, ReduceType
+from paddle.distributed.fleet.base.topology import (
+    ParallelMode,
+    create_nccl_config,
+)
 from paddle.distributed.fleet.dataset import InMemoryDataset, QueueDataset
 
 from . import (
@@ -35,6 +38,7 @@ from .auto_parallel.api import (
     ShardingStage3,
     Strategy,
     dtensor_from_fn,
+    enable_auto_dp,  # noqa: F401
     in_auto_parallel_align_mode,  # noqa: F401
     reshard,
     shard_dataloader,
@@ -47,10 +51,15 @@ from .auto_parallel.api import (
 )
 from .auto_parallel.high_level_api import to_distributed
 from .auto_parallel.interface import get_mesh, set_mesh
+from .auto_parallel.intermediate.context_parallel import (
+    ContextParallel,
+    PrepareContextParallel,
+)
 from .auto_parallel.intermediate.parallelize import parallelize
 from .auto_parallel.intermediate.pipeline_parallel import SplitPoint
 from .auto_parallel.intermediate.tensor_parallel import (
     ColWiseParallel,
+    ConvParallel,
     PrepareLayerInput,
     PrepareLayerOutput,
     RowWiseParallel,
@@ -59,17 +68,19 @@ from .auto_parallel.intermediate.tensor_parallel import (
     SequenceParallelEnable,
     SequenceParallelEnd,
 )
+from .auto_parallel.local_layer import LocalLayer
+from .auto_parallel.local_map import local_map
 from .auto_parallel.placement_type import (
     Partial,
     Replicate,
     Shard,
 )
 from .auto_parallel.process_mesh import ProcessMesh
-from .checkpoint.load_state_dict import load_state_dict
-from .checkpoint.save_state_dict import save_state_dict
 from .collective import (
     is_available,
     new_group,
+    restart_process_group,
+    shutdown_process_group,
     split,
 )
 from .communication import (  # noqa: F401
@@ -92,20 +103,38 @@ from .communication import (  # noqa: F401
     is_initialized,
     isend,
     recv,
+    recv_object_list,
     reduce,
     reduce_scatter,
     scatter,
     scatter_object_list,
     send,
+    send_object_list,
     stream,
     wait,
+    zero_sm,
 )
+
+# Import the namespace class directly from the submodule so it does not
+# shadow ``communication.group`` (the submodule) inside the package.
+from .communication.group import _DistGroupNamespace as group
 from .entry_attr import (
     CountFilterEntry,
     ProbabilityEntry,
     ShowClickEntry,
 )
-from .fleet import BoxPSDataset  # noqa: F401
+from .flex_checkpoint.dcp.load_state_dict import (
+    load_merged_state_dict,
+    load_state_dict,
+)
+from .flex_checkpoint.dcp.load_transform import LoadTransform
+from .flex_checkpoint.dcp.save_state_dict import save_state_dict
+from .flex_checkpoint.dcp.sharded_weight import (
+    ShardedStateDict,
+    ShardedWeight,
+    build_sharded_state_dict,
+    shard_weight,
+)
 from .launch.main import launch
 from .parallel import (  # noqa: F401
     DataParallel,
@@ -113,6 +142,7 @@ from .parallel import (  # noqa: F401
     get_rank,
     get_world_size,
     init_parallel_env,
+    init_process_group,
 )
 from .parallel_with_gloo import (
     gloo_barrier,
@@ -136,7 +166,12 @@ __all__ = [
     "broadcast_object_list",
     "ParallelEnv",
     "new_group",
+    "shutdown_process_group",
+    "restart_process_group",
     "init_parallel_env",
+    "init_process_group",
+    "group",
+    "ProcessGroup",
     "gloo_init_parallel_env",
     "gloo_barrier",
     "gloo_release",
@@ -165,6 +200,8 @@ __all__ = [
     "destroy_process_group",
     "isend",
     "irecv",
+    "send_object_list",
+    "recv_object_list",
     "reduce_scatter",
     "is_available",
     "get_backend",
@@ -182,6 +219,8 @@ __all__ = [
     "Partial",
     "save_state_dict",
     "load_state_dict",
+    "load_merged_state_dict",
+    "LoadTransform",
     "shard_optimizer",
     "shard_scaler",
     "ShardingStage1",
@@ -190,6 +229,8 @@ __all__ = [
     "to_static",
     "Strategy",
     "DistModel",
+    "LocalLayer",
+    "local_map",
     "unshard_dtensor",
     "parallelize",
     "SequenceParallelEnd",
@@ -204,4 +245,12 @@ __all__ = [
     "set_mesh",
     "get_mesh",
     "to_distributed",
+    "ConvParallel",
+    "ContextParallel",
+    "PrepareContextParallel",
+    "create_nccl_config",
+    "ShardedWeight",
+    "ShardedStateDict",
+    "shard_weight",
+    "build_sharded_state_dict",
 ]

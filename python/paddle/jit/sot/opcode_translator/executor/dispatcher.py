@@ -18,14 +18,16 @@ import copy
 import inspect
 import operator
 from functools import cached_property, reduce
-from typing import TYPE_CHECKING, Any, Callable, Dict, Tuple, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from ...utils import InnerError, NameGenerator, hashable
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     T = TypeVar("T")
-    Args = Tuple[T, ...]
-    Kwargs = Dict[str, T]
+    Args = tuple[T, ...]
+    Kwargs = dict[str, T]
 
 
 def format_type(type_: type[Any] | tuple[type[Any], ...]) -> str:
@@ -105,7 +107,6 @@ class Parameter:
         return convert_annotation_to_type(self.annotation)
 
     def match_arg(self, arg: Any) -> bool:
-        # TODO: support VAR_KEYWORD
         if self.kind == inspect.Parameter.VAR_POSITIONAL:
             is_tuple = isinstance(arg, tuple)
             return is_tuple and all(isinstance(a, self.type) for a in arg)
@@ -201,9 +202,7 @@ class Dispatcher:
 
     Examples:
 
-        >>> def builtin_add(a: int, b: int) -> int:
-        ...     ...
-        ...
+        >>> def builtin_add(a: int, b: int) -> int: ...
         >>> Dispatcher.register(builtin_add, ("int", "int"), lambda a, b: a + b)
         >>> handler = Dispatcher.dispatch(builtin_add, 1, 2)
         >>> handler(1, 2)
@@ -251,13 +250,10 @@ class Dispatcher:
             fn: The function to be registered.
 
         Examples:
-            >>> def builtin_add(a: int, b: int) -> int:
-            ...     ...
-            ...
+            >>> def builtin_add(a: int, b: int) -> int: ...
             >>> @Dispatcher.register_decorator(builtin_add)
             ... def builtin_add_dispatcher(a: int, b: int) -> int:
             ...     return a + b
-            ...
             >>> handler = Dispatcher.dispatch(builtin_add, 1, 2)
             >>> handler(1, 2)
             3

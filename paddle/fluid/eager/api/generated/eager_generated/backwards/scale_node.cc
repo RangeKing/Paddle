@@ -122,7 +122,7 @@ void ScaleAPI(const paddle::Tensor& x,
       PADDLE_THROW(common::errors::Fatal(
           "Cannot convert device_context to phi::CPUContext."
           "This indicates backend mismatch."
-          "Pleas double check your expected place"));
+          "Please double check your expected place"));
     }
     ScaleDeviceDispatch<phi::CPUContext>(*dense_tensor.get(),
                                          *dev_ctx,
@@ -139,7 +139,7 @@ void ScaleAPI(const paddle::Tensor& x,
       PADDLE_THROW(common::errors::Fatal(
           "Cannot convert device_context to CUDADeviceContext."
           "This indicates backend mismatch."
-          "Pleas double check your expected place"));
+          "Please double check your expected place"));
     }
     ScaleDeviceDispatch<phi::GPUContext>(*dense_tensor.get(),
                                          *dev_ctx,
@@ -177,12 +177,11 @@ GradNodeScale::operator()(
   PADDLE_ENFORCE(
       ((grads.size() == 1) && (grads[0].size() == 1)),
       common::errors::Fatal(
-          "ScaleGradNode takes exactly 1 grad tensor."
-          "However received: %d",
+          "ScaleGradNode takes exactly 1 grad tensor. However received: %d. "
           "This indicates an issue with Eager Dygraph Backward logic",
           grads.size()));
   paddle::small_vector<std::vector<paddle::Tensor>, kSlotSmallVectorSize> outs;
-  // 2. Create needed out parttern
+  // 2. Create needed out pattern
   paddle::Tensor out;
   // Apply Gradient Hooks
   if (GradientHooksRegistered()) {

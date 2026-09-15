@@ -16,7 +16,6 @@
 
 #include "paddle/phi/backends/onednn/onednn_context.h"
 #include "paddle/phi/backends/onednn/onednn_reuse.h"
-#include "paddle/phi/common/bfloat16.h"
 #include "paddle/phi/common/place.h"
 #include "paddle/phi/core/kernel_registry.h"
 
@@ -44,7 +43,7 @@ void SoftmaxGradKernel(const Context& dev_ctx,
                           {DNNL_ARG_DIFF_SRC, *diff_src_memory_p}});
   astream.wait();
 
-  x_grad->set_mem_desc(diff_src_memory_p->get_desc());
+  phi::funcs::SetOneDNNMemDesc(x_grad, diff_src_memory_p->get_desc());
 }
 
 }  // namespace phi

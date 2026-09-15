@@ -14,6 +14,7 @@ limitations under the License. */
 
 #include "paddle/phi/kernels/reduce_mean_kernel.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/onednn/reduce_kernel_impl.h"
 
 namespace phi {
@@ -24,6 +25,11 @@ void MeanRawKernel(const Context& dev_ctx,
                    bool keep_dim,
                    bool reduce_all,
                    DenseTensor* out) {
+  if (x.numel() == 0) {
+    Full<T, Context>(dev_ctx, out->dims(), NAN, out);
+    return;
+  }
+
   reduce_all = recompute_reduce_all(x, dims, reduce_all);
   ReduceKernel<T, Context>(dev_ctx,
                            x,
@@ -36,5 +42,4 @@ void MeanRawKernel(const Context& dev_ctx,
 }  // namespace phi
 
 PD_REGISTER_KERNEL(
-    mean_raw, OneDNN, ONEDNN, phi::MeanRawKernel, float, phi::dtype::bfloat16) {
-}
+    mean_raw, OneDNN, ONEDNN, phi::MeanRawKernel, float, phi::bfloat16) {}

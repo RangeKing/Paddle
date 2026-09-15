@@ -311,9 +311,9 @@ class PassDesc:
 
     class OpHelper:
         def _to_readable_code(self, skip_op_callstack=True):
-            assert isinstance(
-                skip_op_callstack, bool
-            ), f"skip_op_callstack parameter's type is error, expect bool, received {type(skip_op_callstack)}"
+            assert isinstance(skip_op_callstack, bool), (
+                f"skip_op_callstack parameter's type is error, expect bool, received {type(skip_op_callstack)}"
+            )
             outputs_str = "{"
             outputs_str += ", ".join(
                 [f"{k}={v}" for k, v in self._outputs.items()]
@@ -446,18 +446,20 @@ def RegisterPass(function=None, input_specs={}):
         callables: Callable pair(s).
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.incubate.passes.ir import RegisterPass
 
             >>> @RegisterPass
             >>> def multi_add_to_addn():
-            ...    def pattern(x, y, z):
-            ...        return paddle.add(paddle.add(x, y), z)
-            ...    def replace(x, y, z):
-            ...        return paddle.add_n([x, y, z])
-            ...    return pattern, replace
+            ...     def pattern(x, y, z):
+            ...         return paddle.add(paddle.add(x, y), z)
+            ...
+            ...     def replace(x, y, z):
+            ...         return paddle.add_n([x, y, z])
+            ...
+            ...     return pattern, replace
     """
 
     def _is_pass_pair(check_pair):

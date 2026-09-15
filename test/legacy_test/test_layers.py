@@ -11,11 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 import contextlib
 import inspect
 import sys
 import unittest
+
+from op_test import get_device_place, is_custom_device
 
 sys.path.append("../../legacy_test")
 import numpy as np
@@ -42,8 +43,8 @@ class LayerTest(unittest.TestCase):
         if force_to_use_cpu:
             return core.CPUPlace()
         else:
-            if core.is_compiled_with_cuda():
-                return core.CUDAPlace(0)
+            if core.is_compiled_with_cuda() or is_custom_device():
+                return get_device_place()
             return core.CPUPlace()
 
     @contextlib.contextmanager
@@ -237,7 +238,7 @@ class TestLayer(LayerTest):
             self.assertRaises(TypeError, test_type)
 
     def test_SyncBatchNorm(self):
-        if core.is_compiled_with_cuda():
+        if core.is_compiled_with_cuda() or is_custom_device():
             with self.static_graph():
                 t = paddle.static.data(
                     name='t', shape=[-1, 3, 5, 5], dtype='float32'
@@ -1086,7 +1087,7 @@ class TestBook(LayerTest):
         # TODO(minqiyang): dygraph do not support lod now
         with self.static_graph():
             input_length = paddle.static.data(
-                name='logits_length', shape=[11], dtype='int64'
+                name='logits_length', shape=[12], dtype='int64'
             )
             label_length = paddle.static.data(
                 name='labels_length', shape=[12], dtype='int64'
@@ -1095,7 +1096,7 @@ class TestBook(LayerTest):
                 name='label', shape=[12, 1], dtype='int32'
             )
             predict = paddle.static.data(
-                name='predict', shape=[4, 4, 8], dtype='float32'
+                name='predict', shape=[4, 12, 8], dtype='float32'
             )
             output = paddle.nn.functional.ctc_loss(
                 log_probs=predict,

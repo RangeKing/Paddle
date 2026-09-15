@@ -245,8 +245,8 @@ void RemovePaddingRecoverPaddingPass::ApplyImpl(ir::Graph* graph) const {
     // create variable in scope
     scope->Var(remove_padding_out_name);
     auto* remove_padding_out_tensor =
-        scope->FindVar(remove_padding_out_name)->GetMutable<phi::DenseTensor>();
-    remove_padding_out_tensor->mutable_data<float>(phi::GPUPlace());
+        scope->FindVar(remove_padding_out_name)->GetMutable<DenseTensor>();
+    remove_padding_out_tensor->mutable_data<float>(GPUPlace());
 
     // rename
     op_node->Op()->RenameInput(input_node->Name(),
@@ -315,9 +315,8 @@ void RemovePaddingRecoverPaddingPass::ApplyImpl(ir::Graph* graph) const {
     // create variable in scope
     scope->Var(recover_padding_input_name);
     auto* recover_padding_input_tensor =
-        scope->FindVar(recover_padding_input_name)
-            ->GetMutable<phi::DenseTensor>();
-    recover_padding_input_tensor->mutable_data<float>(phi::GPUPlace());
+        scope->FindVar(recover_padding_input_name)->GetMutable<DenseTensor>();
+    recover_padding_input_tensor->mutable_data<float>(GPUPlace());
 
     // rename
     op_node->Op()->RenameOutput(out_node->Name(), recover_padding_input_name);

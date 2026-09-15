@@ -25,7 +25,7 @@ limitations under the License. */
 #include "paddle/phi/kernels/funcs/batch_norm_utils.h"
 #include "paddle/phi/kernels/gpudnn/conv_cudnn_frontend.h"
 
-PHI_DECLARE_bool(cudnn_deterministic);
+COMMON_DECLARE_bool(cudnn_deterministic);
 COMMON_DECLARE_bool(cudnn_exhaustive_search);
 
 namespace phi {
@@ -34,7 +34,7 @@ namespace fusion {
 using helper = phi::CudnnFrontendConvHelper;
 
 template <typename T>
-using CudnnDataType = phi::backends::gpu::CudnnDataType<T>;
+using CudnnDataType = backends::gpu::CudnnDataType<T>;
 
 template <typename T, typename Context>
 void FusedScaleBiasAddReluKernel(const Context& dev_ctx,
@@ -42,8 +42,8 @@ void FusedScaleBiasAddReluKernel(const Context& dev_ctx,
                                  const DenseTensor& scale1,
                                  const DenseTensor& bias1,
                                  const DenseTensor& x2,
-                                 const paddle::optional<DenseTensor>& scale2,
-                                 const paddle::optional<DenseTensor>& bias2,
+                                 const optional<DenseTensor>& scale2,
+                                 const optional<DenseTensor>& bias2,
                                  bool fuse_dual,
                                  bool exhaustive_search,
                                  DenseTensor* out) {
@@ -75,12 +75,11 @@ void FusedScaleBiasAddReluKernel(const Context& dev_ctx,
   auto workspace_handle = dev_ctx.cudnn_workspace_handle();
   // create tensor descriptors
   cudnnTensorFormat_t layout_format = CUDNN_TENSOR_NHWC;
-  auto tensor_format = phi::backends::gpu::ToCudnnDataType(x1.dtype());
+  auto tensor_format = backends::gpu::ToCudnnDataType(x1.dtype());
   auto tensor_format_math = CUDNN_DATA_FLOAT;
   auto compute_dtype = CUDNN_DATA_FLOAT;
 
-  auto dim_x = phi::backends::gpu::TransformDimOrder(
-      common::vectorize<int64_t>(x1.dims()));
+  auto dim_x = backends::gpu::TransformDimOrder(vectorize<int64_t>(x1.dims()));
   std::vector<int64_t> dim_c(dim_x.size(), 1);
   dim_c[1] = dim_x[1];  //  [1, C, 1, 1]
 
@@ -243,4 +242,4 @@ PD_REGISTER_KERNEL(fused_scale_bias_add_relu,
                    GPU,
                    ALL_LAYOUT,
                    phi::fusion::FusedScaleBiasAddReluKernel,
-                   phi::dtype::float16) {}
+                   phi::float16) {}

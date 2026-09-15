@@ -91,6 +91,7 @@ USE_PIR_PASS(cpu_bfloat16_placement_pass);
 USE_PIR_PASS(cpu_bfloat16_type_placement_pass);
 USE_PIR_PASS(cpu_bfloat16_pass);
 USE_PIR_PASS(cpu_bf16_quantize_squash_pass);
+USE_PIR_PASS(cpu_special_ops_bf16_pass);
 #endif
 
 #ifdef PADDLE_WITH_XPU
@@ -98,7 +99,7 @@ USE_PIR_PASS(add_activation_xpu_fuse_pass);
 USE_PIR_PASS(add_layernorm_xpu_fuse_pass);
 USE_PIR_PASS(rms_norm_xpu_fuse_pass);
 USE_PIR_PASS(elementwise_mul_add_xpu_fuse_pass);
-USE_PIR_PASS(conv2d_bn_xpu_fuse_pass);
+USE_PIR_PASS(conv2d_xpu_fuse_pass);
 USE_PIR_PASS(conv2d_add_xpu_fuse_pass);
 USE_PIR_PASS(fc_xpu_fuse_pass);
 #endif
@@ -109,5 +110,6 @@ USE_PIR_PASS(convert_MEA_to_FA);
 
 #ifdef PADDLE_WITH_TENSORRT
 USE_PIR_PASS(trt_op_marker_pass);
+USE_PIR_PASS(trt_delete_weight_dequant_linear_op_pass);
 USE_PIR_PASS(trt_sub_graph_extract_pass);
 #endif

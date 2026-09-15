@@ -81,7 +81,9 @@ extern void *rocblas_dso_handle;
   __macro(rocblas_set_stream);             \
   __macro(rocblas_get_stream);             \
   __macro(rocblas_set_pointer_mode);       \
-  __macro(rocblas_get_pointer_mode);
+  __macro(rocblas_get_pointer_mode);       \
+  __macro(rocblas_cgeam);                  \
+  __macro(rocblas_zgeam);
 
 ROCBLAS_BLAS_ROUTINE_EACH(DECLARE_DYNAMIC_LOAD_ROCBLAS_WRAP)
 
@@ -108,6 +110,13 @@ ROCBLAS_BLAS_ROUTINE_EACH_R2(DECLARE_DYNAMIC_LOAD_ROCBLAS_WRAP)
 
 ROCBLAS_BLAS_ROUTINE_EACH_R4(DECLARE_DYNAMIC_LOAD_ROCBLAS_WRAP)
 
+#if HIP_VERSION >= 30000000
+#define ROCBLAS_BLAS_ROUTINE_EACH_R5(__macro) \
+  __macro(rocblas_strsm_batched);             \
+  __macro(rocblas_dtrsm_batched);
+
+ROCBLAS_BLAS_ROUTINE_EACH_R5(DECLARE_DYNAMIC_LOAD_ROCBLAS_WRAP)
+#endif
 #undef DECLARE_DYNAMIC_LOAD_ROCBLAS_WRAP
 }  // namespace dynload
 }  // namespace phi

@@ -19,6 +19,12 @@ limitations under the License. */
 #include "paddle/phi/api/lib/data_transform.h"
 #include "paddle/phi/backends/context_pool.h"
 #include "paddle/phi/backends/gpu/gpu_context.h"
+#ifdef PADDLE_WITH_DNNL
+#include "paddle/phi/backends/onednn/onednn_context.h"
+#endif
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
+#include "paddle/phi/backends/gpu/cuda/cuda_graph_with_memory_pool.h"
+#endif
 #include "paddle/phi/common/data_type.h"
 #include "paddle/phi/common/memory_utils.h"
 #include "paddle/phi/core/compat/convert_utils.h"
@@ -32,6 +38,10 @@ void Copy(const Context& dev_ctx,
           Place dst_place,
           bool blocking,
           DenseTensor* dst) {
+  VLOG(5) << "TensorCopy: "
+          << "src Tensor(" << &src << ")"
+          << " is_contiguous: " << src.meta().is_contiguous() << " dims "
+          << src.dims() << " from " << src.place() << " to " << dst_place;
   if (!src.meta().is_contiguous()) {
     DenseTensor src_copy = paddle::experimental::Trans2Contiguous(src);
     Copy(dev_ctx, src_copy, dst_place, blocking, dst);
@@ -43,19 +53,16 @@ void Copy(const Context& dev_ctx,
 
   if (&src == dst) {
     if (src_place.GetType() == dst_place.GetType()) {
-      VLOG(6) << "Skip copy the same data(" << src_ptr << ") from " << src_place
+      VLOG(7) << "Skip copy the same data(" << src_ptr << ") from " << src_place
               << " to " << dst_place;
     } else {
-      VLOG(6) << "Src and dst are the same Tensor, in-place copy data("
+      VLOG(7) << "Src and dst are the same Tensor, in-place copy data("
               << src_ptr << ") from " << src_place << " to " << dst_place;
       const DenseTensor src_copy = src;
       Copy(dev_ctx, src_copy, dst_place, blocking, dst);
     }
     return;
   }
-
-  VLOG(3) << "TensorCopy " << src.dims() << " from " << src.place() << " to "
-          << dst_place;
 
   dst->Resize(src.dims());
 
@@ -72,8 +79,10 @@ void Copy(const Context& dev_ctx,
         dst, src.dtype(), 0, dst_place.GetType() == AllocationType::GPUPINNED);
 #endif
 #ifdef PADDLE_WITH_XPU
-  } else if (dst_place.GetType() == AllocationType::XPU) {
-    dst_ptr = dev_ctx.Alloc(dst, src.dtype());
+  } else if (dst_place.GetType() == AllocationType::XPU ||
+             dst_place.GetType() == AllocationType::XPUPINNED) {
+    dst_ptr = dev_ctx.Alloc(
+        dst, src.dtype(), 0, dst_place.GetType() == AllocationType::XPUPINNED);
 #endif
 #ifdef PADDLE_WITH_CUSTOM_DEVICE
   } else if (dst_place.GetType() == AllocationType::CUSTOM) {
@@ -100,7 +109,7 @@ void Copy(const Context& dev_ctx,
             << dst_place;
     return;
   }
-  VLOG(4) << "src:" << src_ptr << ", dst:" << dst_ptr;
+  VLOG(7) << "TensorCopy: src:" << src_ptr << ", dst:" << dst_ptr;
   PADDLE_ENFORCE_EQ(dst->layout(),
                     src.layout(),
                     common::errors::PreconditionNotMet(
@@ -162,13 +171,21 @@ void Copy(const Context& dev_ctx,
     auto stream =
         blocking ? nullptr
                  : reinterpret_cast<const phi::GPUContext&>(dev_ctx).stream();
+    // During CUDA Graph capturing, the host pointer may be freed or modified
+    // after the graph is captured but before replay. Restore the host memory
+    // into a stable buffer whose lifetime is tied to the graph.
+    const void* stable_src_ptr =
+        backends::gpu::RestoreHostMemIfCapturingCUDAGraph(
+            const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(src_ptr)),
+            size);
     memory_utils::Copy(
-        dst_gpu_place, dst_ptr, src_cpu_place, src_ptr, size, stream);
+        dst_gpu_place, dst_ptr, src_cpu_place, stable_src_ptr, size, stream);
   } else if (src_place.GetType() == AllocationType::GPU &&  // NOLINT
              dst_place.GetType() == AllocationType::GPU) {
     auto src_gpu_place = src_place;
     auto dst_gpu_place = dst_place;
     auto ctx_place = dev_ctx.GetPlace();
+
     PADDLE_ENFORCE_EQ(
         ctx_place.GetType() == AllocationType::GPU,
         true,
@@ -178,18 +195,19 @@ void Copy(const Context& dev_ctx,
     auto stream =
         blocking ? nullptr
                  : reinterpret_cast<const phi::GPUContext&>(dev_ctx).stream();
-    if (src_place.GetType() == dst_place.GetType()) {
+    if (src_place.GetDeviceId() == dst_place.GetDeviceId()) {
       memory_utils::Copy(
           dst_gpu_place, dst_ptr, src_gpu_place, src_ptr, size, stream);
     } else {
-      if (ctx_place.GetType() == src_place.GetType()) {
+      if (ctx_place.GetDeviceId() == src_place.GetDeviceId()) {
         memory_utils::Copy(
             dst_gpu_place, dst_ptr, src_gpu_place, src_ptr, size, stream);
         phi::DeviceContextPool::Instance().Get(src.place())->Wait();
-      } else if (ctx_place.GetType() == dst_place.GetType()) {
+      } else if (ctx_place.GetDeviceId() == dst_place.GetDeviceId()) {
         phi::DeviceContextPool::Instance().Get(src.place())->Wait();
         memory_utils::Copy(
             dst_gpu_place, dst_ptr, src_gpu_place, src_ptr, size, stream);
+        phi::DeviceContextPool::Instance().Get(dst_place)->Wait();
       } else {
         PADDLE_THROW(errors::Unavailable(
             "Context place dose not match the source and destination place."));
@@ -221,6 +239,11 @@ void Copy(const Context& dev_ctx,
         dst_cuda_pinned_place, dst_ptr, src_gpu_place, src_ptr, size, stream);
 #endif
 #ifdef PADDLE_WITH_XPU
+  } else if ((src_place.GetType() == AllocationType::CPU ||
+              src_place.GetType() == AllocationType::XPUPINNED) &&  // NOLINT
+             (dst_place.GetType() == AllocationType::CPU ||
+              dst_place.GetType() == AllocationType::XPUPINNED)) {
+    memory_utils::Copy(dst_place, dst_ptr, src_place, src_ptr, size);
   } else if (src_place.GetType() == AllocationType::XPU &&  // NOLINT
              dst_place.GetType() == AllocationType::CPU) {
     memory_utils::Copy(dst_place, dst_ptr, src_place, src_ptr, size);
@@ -235,6 +258,14 @@ void Copy(const Context& dev_ctx,
       return;
     }
     memory_utils::Copy(dst_place, dst_ptr, src_place, src_ptr, size);
+  } else if ((src_place.GetType() == AllocationType::XPU &&
+              dst_place.GetType() == AllocationType::XPUPINNED) ||
+             (src_place.GetType() == AllocationType::XPUPINNED &&
+              dst_place.GetType() == AllocationType::XPU)) {
+    auto stream =
+        blocking ? nullptr
+                 : reinterpret_cast<const phi::XPUContext&>(dev_ctx).stream();
+    memory_utils::Copy(dst_place, dst_ptr, src_place, src_ptr, size, stream);
 #endif
 #ifdef PADDLE_WITH_CUSTOM_DEVICE
   } else if (src_place.GetType() == AllocationType::CUSTOM &&  // NOLINT
@@ -338,71 +369,71 @@ void Copy(const Context& dev_ctx UNUSED,
   PADDLE_THROW(errors::Unimplemented("Copy for TensorArray is unimplemented."));
 }
 
-template void Copy(const CPUContext& dev_ctx,
-                   const DenseTensor& src,
-                   Place dst_place,
-                   bool blocking,
-                   DenseTensor* dst);
+template void PADDLE_API Copy(const CPUContext& dev_ctx,
+                              const DenseTensor& src,
+                              Place dst_place,
+                              bool blocking,
+                              DenseTensor* dst);
 
-template void Copy(const DeviceContext& dev_ctx,
-                   const DenseTensor& src,
-                   Place dst_place,
-                   bool blocking,
-                   DenseTensor* dst);
+template void PADDLE_API Copy(const DeviceContext& dev_ctx,
+                              const DenseTensor& src,
+                              Place dst_place,
+                              bool blocking,
+                              DenseTensor* dst);
 
-template void Copy(const CPUContext& dev_ctx,
-                   const SelectedRows& src,
-                   Place dst_place,
-                   bool blocking,
-                   SelectedRows* dst);
-template void Copy(const DeviceContext& dev_ctx,
-                   const SelectedRows& src,
-                   Place dst_place,
-                   bool blocking,
-                   SelectedRows* dst);
+template void PADDLE_API Copy(const CPUContext& dev_ctx,
+                              const SelectedRows& src,
+                              Place dst_place,
+                              bool blocking,
+                              SelectedRows* dst);
+template void PADDLE_API Copy(const DeviceContext& dev_ctx,
+                              const SelectedRows& src,
+                              Place dst_place,
+                              bool blocking,
+                              SelectedRows* dst);
 
-template void Copy(const CPUContext& dev_ctx,
-                   const SparseCooTensor& src,
-                   Place dst_place,
-                   bool blocking,
-                   SparseCooTensor* dst);
+template void PADDLE_API Copy(const CPUContext& dev_ctx,
+                              const SparseCooTensor& src,
+                              Place dst_place,
+                              bool blocking,
+                              SparseCooTensor* dst);
 
-template void Copy(const DeviceContext& dev_ctx,
-                   const SparseCooTensor& src,
-                   Place dst_place,
-                   bool blocking,
-                   SparseCooTensor* dst);
+template void PADDLE_API Copy(const DeviceContext& dev_ctx,
+                              const SparseCooTensor& src,
+                              Place dst_place,
+                              bool blocking,
+                              SparseCooTensor* dst);
 
-template void Copy(const CPUContext& dev_ctx,
-                   const SparseCsrTensor& src,
-                   Place dst_place,
-                   bool blocking,
-                   SparseCsrTensor* dst);
+template void PADDLE_API Copy(const CPUContext& dev_ctx,
+                              const SparseCsrTensor& src,
+                              Place dst_place,
+                              bool blocking,
+                              SparseCsrTensor* dst);
 
-template void Copy(const DeviceContext& dev_ctx,
-                   const SparseCsrTensor& src,
-                   Place dst_place,
-                   bool blocking,
-                   SparseCsrTensor* dst);
+template void PADDLE_API Copy(const DeviceContext& dev_ctx,
+                              const SparseCsrTensor& src,
+                              Place dst_place,
+                              bool blocking,
+                              SparseCsrTensor* dst);
 
-template void Copy(const CPUContext& dev_ctx,
-                   const TensorArray& src,
-                   Place dst_place,
-                   bool blocking,
-                   TensorArray* dst);
+template void PADDLE_API Copy(const CPUContext& dev_ctx,
+                              const TensorArray& src,
+                              Place dst_place,
+                              bool blocking,
+                              TensorArray* dst);
 
-template void Copy(const DeviceContext& dev_ctx,
-                   const TensorArray& src,
-                   Place dst_place,
-                   bool blocking,
-                   TensorArray* dst);
+template void PADDLE_API Copy(const DeviceContext& dev_ctx,
+                              const TensorArray& src,
+                              Place dst_place,
+                              bool blocking,
+                              TensorArray* dst);
 
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
-template void Copy(const GPUContext& dev_ctx,
-                   const DenseTensor& src,
-                   Place dst_place,
-                   bool blocking,
-                   DenseTensor* dst);
+template PADDLE_API void Copy(const GPUContext& dev_ctx,
+                              const DenseTensor& src,
+                              Place dst_place,
+                              bool blocking,
+                              DenseTensor* dst);
 template void Copy(const GPUContext& dev_ctx,
                    const SelectedRows& src,
                    Place dst_place,
@@ -467,7 +498,7 @@ template void Copy(const OneDNNContext& dev_ctx,
 template <typename T>
 void TensorFromVector(const std::vector<T>& src,
                       const phi::DeviceContext& ctx,
-                      phi::DenseTensor* dst) {
+                      DenseTensor* dst) {
   auto dst_place = ctx.GetPlace();
   auto src_ptr = static_cast<const void*>(src.data());
   phi::CPUPlace src_place;
@@ -481,10 +512,14 @@ void TensorFromVector(const std::vector<T>& src,
   }
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
   else if (dst_place.GetType() == AllocationType::GPU) {  // NOLINT
+    const void* stable_src_ptr =
+        backends::gpu::RestoreHostMemIfCapturingCUDAGraph(
+            const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(src_ptr)),
+            size);
     memory_utils::Copy(dst_place,
                        dst_ptr,
                        src_place,
-                       src_ptr,
+                       stable_src_ptr,
                        size,
                        reinterpret_cast<const phi::GPUContext&>(ctx).stream());
   }
@@ -514,7 +549,7 @@ void TensorFromVector(const std::vector<T>& src,
 template <>
 void TensorFromVector(const std::vector<bool>& src,
                       const phi::DeviceContext& ctx,
-                      phi::DenseTensor* dst) {
+                      DenseTensor* dst) {
   // vector<bool> has no data() member, use array instead.
   // See details:
   // https://stackoverflow.com/questions/46115669/why-does-stdvectorbool-have-no-data/46115714
@@ -535,10 +570,14 @@ void TensorFromVector(const std::vector<bool>& src,
   }
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
   else if (dst_place.GetType() == AllocationType::GPU) {  // NOLINT
+    const void* stable_src_ptr =
+        backends::gpu::RestoreHostMemIfCapturingCUDAGraph(
+            const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(src_ptr)),
+            size);
     memory_utils::Copy(dst_place,
                        dst_ptr,
                        src_place,
-                       src_ptr,
+                       stable_src_ptr,
                        size,
                        reinterpret_cast<const phi::GPUContext&>(ctx).stream());
   }
@@ -563,57 +602,57 @@ void TensorFromVector(const std::vector<bool>& src,
 
 template void TensorFromVector<int8_t>(const std::vector<int8_t>& src,
                                        const phi::DeviceContext& ctx,
-                                       phi::DenseTensor* dst);
+                                       DenseTensor* dst);
 
 template void TensorFromVector<uint8_t>(const std::vector<uint8_t>& src,
                                         const phi::DeviceContext& ctx,
-                                        phi::DenseTensor* dst);
+                                        DenseTensor* dst);
 
 template void TensorFromVector<int16_t>(const std::vector<int16_t>& src,
                                         const phi::DeviceContext& ctx,
-                                        phi::DenseTensor* dst);
+                                        DenseTensor* dst);
 
 template void TensorFromVector<int>(const std::vector<int>& src,
                                     const phi::DeviceContext& ctx,
-                                    phi::DenseTensor* dst);
+                                    DenseTensor* dst);
 
 template void TensorFromVector<int64_t>(const std::vector<int64_t>& src,
                                         const phi::DeviceContext& ctx,
-                                        phi::DenseTensor* dst);
+                                        DenseTensor* dst);
 
 template void TensorFromVector<float>(const std::vector<float>& src,
                                       const phi::DeviceContext& ctx,
-                                      phi::DenseTensor* dst);
+                                      DenseTensor* dst);
 
 template void TensorFromVector<double>(const std::vector<double>& src,
                                        const phi::DeviceContext& ctx,
-                                       phi::DenseTensor* dst);
+                                       DenseTensor* dst);
 
 template void TensorFromVector<phi::dtype::bfloat16>(
     const std::vector<phi::dtype::bfloat16>& src,
     const phi::DeviceContext& ctx,
-    phi::DenseTensor* dst);
+    DenseTensor* dst);
 
 template void TensorFromVector<phi::dtype::float16>(
     const std::vector<phi::dtype::float16>& src,
     const phi::DeviceContext& ctx,
-    phi::DenseTensor* dst);
+    DenseTensor* dst);
 
 template void TensorFromVector<phi::dtype::complex<float>>(
     const std::vector<phi::dtype::complex<float>>& src,
     const phi::DeviceContext& ctx,
-    phi::DenseTensor* dst);
+    DenseTensor* dst);
 
 template void TensorFromVector<phi::dtype::complex<double>>(
     const std::vector<phi::dtype::complex<double>>& src,
     const phi::DeviceContext& ctx,
-    phi::DenseTensor* dst);
+    DenseTensor* dst);
 
 template <typename T>
 void TensorFromArray(const T* src,
                      const size_t& array_size,
                      const phi::DeviceContext& ctx,
-                     phi::DenseTensor* dst) {
+                     DenseTensor* dst) {
   auto dst_place = ctx.GetPlace();
   auto src_ptr = static_cast<const void*>(src);
   phi::CPUPlace src_place;
@@ -627,10 +666,14 @@ void TensorFromArray(const T* src,
   }
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
   else if (dst_place.GetType() == AllocationType::GPU) {  // NOLINT
+    const void* stable_src_ptr =
+        backends::gpu::RestoreHostMemIfCapturingCUDAGraph(
+            const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(src_ptr)),
+            size);
     memory_utils::Copy(dst_place,
                        dst_ptr,
                        src_place,
-                       src_ptr,
+                       stable_src_ptr,
                        size,
                        reinterpret_cast<const phi::GPUContext&>(ctx).stream());
   }
@@ -660,59 +703,59 @@ void TensorFromArray(const T* src,
 template void TensorFromArray<bool>(const bool* src,
                                     const size_t& array_size,
                                     const phi::DeviceContext& ctx,
-                                    phi::DenseTensor* dst);
+                                    DenseTensor* dst);
 
 template void TensorFromArray<int16_t>(const int16_t* src,
                                        const size_t& array_size,
                                        const phi::DeviceContext& ctx,
-                                       phi::DenseTensor* dst);
+                                       DenseTensor* dst);
 
 template void TensorFromArray<int>(const int* src,
                                    const size_t& array_size,
                                    const phi::DeviceContext& ctx,
-                                   phi::DenseTensor* dst);
+                                   DenseTensor* dst);
 
 template void TensorFromArray<int64_t>(const int64_t* src,
                                        const size_t& array_size,
                                        const phi::DeviceContext& ctx,
-                                       phi::DenseTensor* dst);
+                                       DenseTensor* dst);
 
 template void TensorFromArray<float>(const float* src,
                                      const size_t& array_size,
                                      const phi::DeviceContext& ctx,
-                                     phi::DenseTensor* dst);
+                                     DenseTensor* dst);
 
 template void TensorFromArray<double>(const double* src,
                                       const size_t& array_size,
                                       const phi::DeviceContext& ctx,
-                                      phi::DenseTensor* dst);
+                                      DenseTensor* dst);
 
 template void TensorFromArray<phi::dtype::bfloat16>(
     const phi::dtype::bfloat16* src,
     const size_t& array_size,
     const phi::DeviceContext& ctx,
-    phi::DenseTensor* dst);
+    DenseTensor* dst);
 
 template void TensorFromArray<phi::dtype::float16>(
     const phi::dtype::float16* src,
     const size_t& array_size,
     const phi::DeviceContext& ctx,
-    phi::DenseTensor* dst);
+    DenseTensor* dst);
 
 template void TensorFromArray<phi::dtype::complex<float>>(
     const phi::dtype::complex<float>* src,
     const size_t& array_size,
     const phi::DeviceContext& ctx,
-    phi::DenseTensor* dst);
+    DenseTensor* dst);
 
 template void TensorFromArray<phi::dtype::complex<double>>(
     const phi::dtype::complex<double>* src,
     const size_t& array_size,
     const phi::DeviceContext& ctx,
-    phi::DenseTensor* dst);
+    DenseTensor* dst);
 
 template <typename T>
-void TensorToVector(const phi::DenseTensor& src,
+void TensorToVector(const DenseTensor& src,
                     const phi::DeviceContext& ctx,
                     std::vector<T>* dst) {
   auto src_ptr = static_cast<const void*>(src.data<T>());
@@ -752,7 +795,7 @@ void TensorToVector(const phi::DenseTensor& src,
 }
 
 template <>
-void TensorToVector(const phi::DenseTensor& src,
+void TensorToVector(const DenseTensor& src,
                     const phi::DeviceContext& ctx,
                     std::vector<bool>* dst) {
   auto src_ptr = static_cast<const void*>(src.data<bool>());
@@ -787,50 +830,50 @@ void TensorToVector(const phi::DenseTensor& src,
     memory_utils::Copy(dst_place, dst_ptr, src.place(), src_ptr, size, nullptr);
   }
 #endif
-  for (unsigned int i = 0; i < src.numel(); i++) {
+  for (int64_t i = 0; i < src.numel(); i++) {
     (*dst)[i] = static_cast<bool>(array[i]);
   }
   delete[] array;
 }
 
-template void TensorToVector(const phi::DenseTensor& src,
+template void TensorToVector(const DenseTensor& src,
                              const phi::DeviceContext& ctx,
                              std::vector<int16_t>* dst);
 
-template void TensorToVector(const phi::DenseTensor& src,
+template void TensorToVector(const DenseTensor& src,
                              const phi::DeviceContext& ctx,
                              std::vector<int>* dst);
 
-template void TensorToVector(const phi::DenseTensor& src,
+template void TensorToVector(const DenseTensor& src,
                              const phi::DeviceContext& ctx,
                              std::vector<int64_t>* dst);
 
-template void TensorToVector(const phi::DenseTensor& src,
+template void TensorToVector(const DenseTensor& src,
                              const phi::DeviceContext& ctx,
                              std::vector<float>* dst);
 
-template void TensorToVector(const phi::DenseTensor& src,
+template void TensorToVector(const DenseTensor& src,
                              const phi::DeviceContext& ctx,
                              std::vector<double>* dst);
 
-template void TensorToVector(const phi::DenseTensor& src,
+template void TensorToVector(const DenseTensor& src,
                              const phi::DeviceContext& ctx,
                              std::vector<phi::dtype::bfloat16>* dst);
 
-template void TensorToVector(const phi::DenseTensor& src,
+template void TensorToVector(const DenseTensor& src,
                              const phi::DeviceContext& ctx,
                              std::vector<phi::dtype::float16>* dst);
 
-template void TensorToVector(const phi::DenseTensor& src,
+template void TensorToVector(const DenseTensor& src,
                              const phi::DeviceContext& ctx,
                              std::vector<phi::dtype::complex<float>>* dst);
 
-template void TensorToVector(const phi::DenseTensor& src,
+template void TensorToVector(const DenseTensor& src,
                              const phi::DeviceContext& ctx,
                              std::vector<phi::dtype::complex<double>>* dst);
 
 template <typename T>
-void TensorToVector(const phi::DenseTensor& src, std::vector<T>* dst) {
+void TensorToVector(const DenseTensor& src, std::vector<T>* dst) {
   auto src_ptr = static_cast<const void*>(src.data<T>());
   auto size = src.numel() * sizeof(T);
 
@@ -849,7 +892,7 @@ void TensorToVector(const phi::DenseTensor& src, std::vector<T>* dst) {
 }
 
 template <>
-void TensorToVector(const phi::DenseTensor& src, std::vector<bool>* dst) {
+void TensorToVector(const DenseTensor& src, std::vector<bool>* dst) {
   auto src_ptr = static_cast<const void*>(src.data<bool>());
   auto size = src.numel() * sizeof(bool);
 
@@ -868,65 +911,59 @@ void TensorToVector(const phi::DenseTensor& src, std::vector<bool>* dst) {
 
   memory_utils::Copy(dst_place, dst_ptr, src.place(), src_ptr, size);
 
-  for (unsigned int i = 0; i < src.numel(); i++) {
+  for (int64_t i = 0; i < src.numel(); i++) {
     (*dst)[i] = static_cast<bool>(array[i]);
   }
   delete[] array;
 }
 
-template void TensorToVector(const phi::DenseTensor& src,
-                             std::vector<int16_t>* dst);
+template void TensorToVector(const DenseTensor& src, std::vector<int16_t>* dst);
 
-template void TensorToVector(const phi::DenseTensor& src,
-                             std::vector<int>* dst);
+template void TensorToVector(const DenseTensor& src, std::vector<int>* dst);
 
-template void TensorToVector(const phi::DenseTensor& src,
-                             std::vector<int64_t>* dst);
+template void TensorToVector(const DenseTensor& src, std::vector<int64_t>* dst);
 
-template void TensorToVector(const phi::DenseTensor& src,
-                             std::vector<float>* dst);
+template void TensorToVector(const DenseTensor& src, std::vector<float>* dst);
 
-template void TensorToVector(const phi::DenseTensor& src,
-                             std::vector<double>* dst);
+template void TensorToVector(const DenseTensor& src, std::vector<double>* dst);
 
-template void TensorToVector(const phi::DenseTensor& src,
+template void TensorToVector(const DenseTensor& src,
                              std::vector<phi::dtype::bfloat16>* dst);
 
-template void TensorToVector(const phi::DenseTensor& src,
+template void TensorToVector(const DenseTensor& src,
                              std::vector<phi::dtype::float16>* dst);
 
-template void TensorToVector(const phi::DenseTensor& src,
+template void TensorToVector(const DenseTensor& src,
                              std::vector<phi::dtype::complex<float>>* dst);
 
-template void TensorToVector(const phi::DenseTensor& src,
+template void TensorToVector(const DenseTensor& src,
                              std::vector<phi::dtype::complex<double>>* dst);
 
-phi::DenseTensor ReshapeToMatrix(const phi::DenseTensor& src,
-                                 int num_col_dims) {
+DenseTensor ReshapeToMatrix(const DenseTensor& src, int num_col_dims) {
   int rank = src.dims().size();
   PADDLE_ENFORCE_GE(
       rank,
       2,
       common::errors::InvalidArgument(
           "'ReshapeToMatrix()' is only used for flatten high rank "
-          "tensors to matrixs. The dimensions of phi::DenseTensor must be "
+          "tensors to matrixs. The dimensions of DenseTensor must be "
           "greater or equal than 2. "
-          "But received dimensions of phi::DenseTensor is %d",
+          "But received dimensions of DenseTensor is %d",
           rank));
   if (rank == 2) {
     return src;
   }
-  phi::DenseTensor res;
+  DenseTensor res;
   res.ShareDataWith(src);
   res.Resize(common::flatten_to_2d(src.dims(), num_col_dims));
   return res;
 }
 
 template <typename T>
-T GetValue(const phi::DenseTensor* x) {
+T GetValue(const DenseTensor* x) {
   T value = static_cast<T>(0);
   if (x->place().GetType() != AllocationType::CPU) {
-    phi::DenseTensor cpu_x{};
+    DenseTensor cpu_x{};
     phi::DeviceContextPool& pool = phi::DeviceContextPool::Instance();
     phi::DeviceContext* dev_ctx = pool.Get(x->place());
     phi::Copy(*dev_ctx, *x, phi::CPUPlace(), true, &cpu_x);
@@ -937,32 +974,32 @@ T GetValue(const phi::DenseTensor* x) {
   return value;
 }
 
-template bool GetValue(const phi::DenseTensor* x);
+template bool GetValue(const DenseTensor* x);
 
-template int16_t GetValue(const phi::DenseTensor* x);
+template int16_t GetValue(const DenseTensor* x);
 
-template int GetValue(const phi::DenseTensor* x);
+template int GetValue(const DenseTensor* x);
 
-template int64_t GetValue(const phi::DenseTensor* x);
+template int64_t GetValue(const DenseTensor* x);
 
-template float GetValue(const phi::DenseTensor* x);
+template float GetValue(const DenseTensor* x);
 
-template double GetValue(const phi::DenseTensor* x);
+template double GetValue(const DenseTensor* x);
 
-template phi::dtype::bfloat16 GetValue(const phi::DenseTensor* x);
+template phi::dtype::bfloat16 GetValue(const DenseTensor* x);
 
-template phi::dtype::float16 GetValue(const phi::DenseTensor* x);
+template phi::dtype::float16 GetValue(const DenseTensor* x);
 
-template phi::dtype::complex<float> GetValue(const phi::DenseTensor* x);
+template phi::dtype::complex<float> GetValue(const DenseTensor* x);
 
-template phi::dtype::complex<double> GetValue(const phi::DenseTensor* x);
+template phi::dtype::complex<double> GetValue(const DenseTensor* x);
 
 template <typename T>
-std::vector<T> GetVectorFromTensor(const phi::DenseTensor* x) {
+std::vector<T> GetVectorFromTensor(const DenseTensor* x) {
   std::vector<T> vec_new_data;
-  if (phi::TransToProtoVarType(x->dtype()) == ProtoDataType::INT32) {
+  if (x->dtype() == DataType::INT32) {
     auto* data = x->data<int>();
-    phi::DenseTensor cpu_attr_tensor;
+    DenseTensor cpu_attr_tensor;
     if (x->place().GetType() != phi::AllocationType::CPU) {
       phi::DeviceContextPool& pool = phi::DeviceContextPool::Instance();
       auto dev_ctx = pool.Get(x->place());
@@ -970,9 +1007,9 @@ std::vector<T> GetVectorFromTensor(const phi::DenseTensor* x) {
       data = cpu_attr_tensor.data<int>();
     }
     vec_new_data = std::vector<T>(data, data + x->numel());
-  } else if (phi::TransToProtoVarType(x->dtype()) == ProtoDataType::INT64) {
+  } else if (x->dtype() == DataType::INT64) {
     auto* data = x->data<int64_t>();
-    phi::DenseTensor cpu_attr_tensor;
+    DenseTensor cpu_attr_tensor;
     if (x->place().GetType() != phi::AllocationType::CPU) {
       phi::DeviceContextPool& pool = phi::DeviceContextPool::Instance();
       auto dev_ctx = pool.Get(x->place());
@@ -984,21 +1021,21 @@ std::vector<T> GetVectorFromTensor(const phi::DenseTensor* x) {
   } else {
     PADDLE_THROW(common::errors::InvalidArgument(
         "The dtype of Tensor must be int32 or int64, but received: %s",
-        phi::TransToProtoVarType(x->dtype())));
+        x->dtype()));
   }
   return vec_new_data;
 }
 
-template std::vector<int32_t> GetVectorFromTensor(const phi::DenseTensor* x);
+template std::vector<int32_t> GetVectorFromTensor(const DenseTensor* x);
 
-template std::vector<int64_t> GetVectorFromTensor(const phi::DenseTensor* x);
+template std::vector<int64_t> GetVectorFromTensor(const DenseTensor* x);
 
 namespace {
 
 template <typename T>
-std::vector<T> _GetVectorFromTensor(const phi::DenseTensor* x) {
+std::vector<T> _GetVectorFromTensor(const DenseTensor* x) {
   auto* data = x->data<T>();
-  phi::DenseTensor cpu_attr_tensor;
+  DenseTensor cpu_attr_tensor;
   if (x->place().GetType() != phi::AllocationType::CPU) {
     phi::DeviceContextPool& pool = phi::DeviceContextPool::Instance();
     auto dev_ctx = pool.Get(x->place());
@@ -1011,21 +1048,19 @@ std::vector<T> _GetVectorFromTensor(const phi::DenseTensor* x) {
 }  // namespace
 
 template <>
-std::vector<float> GetVectorFromTensor<float>(const phi::DenseTensor* x) {
-  if (phi::TransToProtoVarType(x->dtype()) != ProtoDataType::FP32) {
+std::vector<float> GetVectorFromTensor<float>(const DenseTensor* x) {
+  if (x->dtype() != DataType::FLOAT32) {
     PADDLE_THROW(common::errors::InvalidArgument(
-        "The dtype of Tensor must be float32, but received: %s",
-        phi::TransToProtoVarType(x->dtype())));
+        "The dtype of Tensor must be float32, but received: %s", x->dtype()));
   }
   return _GetVectorFromTensor<float>(x);
 }
 
 template <>
-std::vector<double> GetVectorFromTensor<double>(const phi::DenseTensor* x) {
-  if (phi::TransToProtoVarType(x->dtype()) != ProtoDataType::FP64) {
+std::vector<double> GetVectorFromTensor<double>(const DenseTensor* x) {
+  if (x->dtype() != DataType::FLOAT64) {
     PADDLE_THROW(common::errors::InvalidArgument(
-        "The dtype of Tensor must be float64, but received: %s",
-        phi::TransToProtoVarType(x->dtype())));
+        "The dtype of Tensor must be float64, but received: %s", x->dtype()));
   }
   return _GetVectorFromTensor<double>(x);
 }

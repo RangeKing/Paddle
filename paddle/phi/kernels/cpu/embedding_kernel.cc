@@ -43,6 +43,11 @@ struct EmbeddingCPUFunctor {
 
     int64_t row_number = weight_.dims()[0];
     int64_t row_width = weight_.dims()[1];
+    if (ids_numel > 0 && row_number == 0) {
+      PADDLE_THROW(common::errors::InvalidArgument(
+          "The first dimension of Input(Weight) in OP(embedding) must be "
+          "greater than 0 when Input(Ids) is not empty."));
+    }
 
     auto* table = weight_.data<T>();
 
@@ -50,12 +55,12 @@ struct EmbeddingCPUFunctor {
     auto* output = out_->data<T>();
 
     for (int64_t i = 0; i < ids_numel; ++i) {
-      if (padding_idx_ == kNoPadding && ids[i] != padding_idx_) {
+      if (padding_idx_ == kNoPadding || ids[i] != padding_idx_) {
         PADDLE_ENFORCE_LT(
             ids[i],
             row_number,
             common::errors::InvalidArgument(
-                "Variable value (input) of OP(fluid.layers.embedding) "
+                "Variable value (input) of OP(embedding) "
                 "expected >= 0 and < %ld, but got %ld. Please check input "
                 "value.",
                 row_number,
@@ -64,7 +69,7 @@ struct EmbeddingCPUFunctor {
             ids[i],
             0,
             common::errors::InvalidArgument(
-                "Variable value (input) of OP(fluid.layers.embedding) "
+                "Variable value (input) of OP(embedding) "
                 "expected >= 0 and < %ld, but got %ld. Please check input "
                 "value.",
                 row_number,
@@ -96,16 +101,17 @@ struct EmbeddingCPUFunctor {
 };
 
 template <typename T, typename Context>
-void EmbeddingKernel(const Context& ctx,
+void EmbeddingKernel(const Context& dev_ctx,
                      const DenseTensor& input,
                      const DenseTensor& weight,
                      int64_t padding_idx,
                      DenseTensor* out) {
-  EmbeddingCPUFunctor<T, Context> functor(ctx, input, weight, padding_idx, out);
+  EmbeddingCPUFunctor<T, Context> functor(
+      dev_ctx, input, weight, padding_idx, out);
 
-  if (input.dtype() == phi::DataType::INT32) {
+  if (input.dtype() == DataType::INT32) {
     functor.template apply<int>();
-  } else if (input.dtype() == phi::DataType::INT64) {
+  } else if (input.dtype() == DataType::INT64) {
     functor.template apply<int64_t>();
   } else {
     PADDLE_THROW(common::errors::Unimplemented(
@@ -123,7 +129,7 @@ PD_REGISTER_KERNEL(embedding,
                    float,
                    double,
                    int8_t,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::complex64,
+                   phi::complex128) {}

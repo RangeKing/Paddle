@@ -11,11 +11,12 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#include "paddle/phi/kernels/cast_kernel.h"
 #include "paddle/phi/kernels/impl/margin_cross_entropy.cu.h"
 
 namespace phi {
 
-template <typename T, typename IndexT>
+template <typename T, typename MT, typename IndexT>
 __global__ void AddMarginToPositiveLogitsKernel(T* logit,
                                                 const IndexT* label,
                                                 const float margin1,
@@ -26,11 +27,10 @@ __global__ void AddMarginToPositiveLogitsKernel(T* logit,
                                                 const int64_t N,
                                                 const int64_t D,
                                                 const int* class_interval_ptr) {
-  using MPType = typename phi::dtype::MPTypeTrait<T>::Type;
-  int start_index = class_interval_ptr[rank];
-  int end_index = class_interval_ptr[rank + 1];
+  int64_t start_index = class_interval_ptr[rank];
+  int64_t end_index = class_interval_ptr[rank + 1];
   int num_classes = class_interval_ptr[nranks];
-  CUDA_KERNEL_LOOP(i, N) {
+  CUDA_KERNEL_LOOP_TYPE(i, N, int64_t) {
     auto real_label = label[i];
     PADDLE_ENFORCE((real_label < num_classes) && (real_label >= 0),
                    "The index is out of bounds, "
@@ -42,53 +42,47 @@ __global__ void AddMarginToPositiveLogitsKernel(T* logit,
 
     if (real_label >= start_index && real_label < end_index) {
       int64_t offset = i * D + real_label - start_index;
-      if (fabs(margin1 - 1.0) > 1e-8 || fabs(margin2) > 1e-8) {
-        MPType x = static_cast<MPType>(logit[offset]);
-        MPType theta = acos(x);
-        if (fabs(margin1 - 1.0) > 1e-8) {
-          theta *= static_cast<MPType>(margin1);
-        }
-        if (fabs(margin2) > 1e-8) {
-          theta += static_cast<MPType>(margin2);
-        }
-        logit[offset] = static_cast<T>(cos(theta));
-      }
-      if (fabs(margin3) > 1e-8) {
-        MPType y = static_cast<MPType>(logit[offset]);
-        y -= static_cast<MPType>(margin3);
-        logit[offset] = static_cast<T>(y);
-      }
+      MT x = static_cast<MT>(logit[offset]);
+      MT theta = acos(x);
+      theta *= static_cast<MT>(margin1);
+      theta += static_cast<MT>(margin2);
+      MT y = cos(theta) - static_cast<MT>(margin3);
+      logit[offset] = static_cast<T>(y);
     }
   }
 }
 
-template <typename T>
+template <typename T, typename MT>
 __global__ void ScaleLogitKernel(T* logits,
                                  const float scale,
                                  const int64_t N,
                                  const int64_t D) {
-  CUDA_KERNEL_LOOP(i, N * D) { logits[i] *= static_cast<T>(scale); }
+  CUDA_KERNEL_LOOP_TYPE(i, N * D, int64_t) {
+    logits[i] = static_cast<MT>(logits[i]) * (scale);
+  }
 }
 
-template <typename T>
+template <typename T, typename MT>
 __global__ void LogitsMinusMaxKernel(T* logits,
                                      const T* logits_max_per_row,
                                      const int64_t N,
                                      const int64_t D) {
-  CUDA_KERNEL_LOOP(i, N * D) {
+  CUDA_KERNEL_LOOP_TYPE(i, N * D, int64_t) {
     auto row = i / D;
-    logits[i] -= logits_max_per_row[row];
+    logits[i] =
+        static_cast<MT>(logits[i]) - static_cast<MT>(logits_max_per_row[row]);
   }
 }
 
-template <typename T>
+template <typename T, typename MT>
 __global__ void LogitsMinusLogSumKernel(T* logits,
                                         const T* logits_sum_per_row,
                                         const int64_t N,
                                         const int64_t D) {
-  CUDA_KERNEL_LOOP(i, N * D) {
+  CUDA_KERNEL_LOOP_TYPE(i, N * D, int64_t) {
     auto row = i / D;
-    logits[i] -= phi::kps::details::Log(logits_sum_per_row[row]);
+    logits[i] = static_cast<MT>(logits[i]) -
+                static_cast<MT>(kps::details::Log(logits_sum_per_row[row]));
   }
 }
 
@@ -102,15 +96,15 @@ __global__ void HardLabelSoftmaxWithCrossEntropyKernel(
     const int64_t D,
     const int* class_interval_ptr) {
   int start_index = class_interval_ptr[rank];
-  CUDA_KERNEL_LOOP(i, N * D) {
+  CUDA_KERNEL_LOOP_TYPE(i, N * D, int64_t) {
     auto row = i / D;
     auto col = i % D;
     if ((col + start_index) == labels[row]) {
       auto softmax = log_softmax[i];
       loss[row] = -softmax;
-      log_softmax[i] = phi::kps::details::Exp(softmax);
+      log_softmax[i] = kps::details::Exp(softmax);
     } else {
-      log_softmax[i] = phi::kps::details::Exp(log_softmax[i]);
+      log_softmax[i] = kps::details::Exp(log_softmax[i]);
     }
   }
 }
@@ -130,41 +124,23 @@ void MarginCrossEntropyKernel(const Context& dev_ctx,
                               DenseTensor* softmax,
                               DenseTensor* loss) {
   const auto& place = dev_ctx.GetPlace();  // old code
+  using MT = typename MPTypeTrait<T>::Type;
 
 #if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL)
-  const auto& comm_context_manager =
-      phi::distributed::CommContextManager::GetInstance();
-  phi::distributed::NCCLCommContext* comm_ctx = nullptr;
-  distributed::ProcessGroup* pg = nullptr;
+  distributed::NCCLCommContext* comm_ctx = nullptr;
   gpuStream_t stream;
   if (nranks > 1) {
-    auto map = distributed::ProcessGroupMapFromGid::getInstance();
-    if (map->has(ring_id)) {
-      // Use ProcessGroup
-      pg = map->get(ring_id);
-    } else {
-      PADDLE_ENFORCE_EQ(comm_context_manager.Has(std::to_string(ring_id)),
-                        true,
-                        common::errors::InvalidArgument(
-                            "You choose to use new communication library by "
-                            "setting environment "
-                            "variable FLAGS_dynamic_static_unified_comm True. "
-                            "But ring_id(%d) is "
-                            "not found in comm_context_manager.",
-                            std::to_string(ring_id)));
-      comm_ctx = static_cast<phi::distributed::NCCLCommContext*>(
-          comm_context_manager.Get(std::to_string(ring_id)));
-      PADDLE_ENFORCE_NE(comm_ctx,
-                        nullptr,
-                        common::errors::Unavailable(
-                            "NCCLCommContext is nullptr, collective op should "
-                            "has ring_id attr."));
+    comm_ctx =
+        static_cast<distributed::NCCLCommContext*>(dev_ctx.GetCommContext());
+    PADDLE_ENFORCE_NE(comm_ctx,
+                      nullptr,
+                      common::errors::Unavailable(
+                          "NCCLCommContext is nullptr, collective op should "
+                          "has ring_id attr."));
 
-      // use global calculate stream
-      stream = static_cast<GPUContext*>(
-                   phi::DeviceContextPool::Instance().Get(place))
-                   ->stream();
-    }
+    // use global calculate stream
+    stream = static_cast<GPUContext*>(DeviceContextPool::Instance().Get(place))
+                 ->stream();
   }
 #endif
 
@@ -176,8 +152,8 @@ void MarginCrossEntropyKernel(const Context& dev_ctx,
   const auto& labels_dims = labels.dims();
 
   const int axis = logits_dims.size() - 1;
-  const int N = phi::funcs::SizeToAxis(axis, logits_dims);
-  const int D = phi::funcs::SizeFromAxis(axis, logits_dims);
+  const int64_t N = funcs::SizeToAxis(axis, logits_dims);
+  const int64_t D = funcs::SizeFromAxis(axis, logits_dims);
 
   int blocks = NumBlocks(N);
   int threads = kNumCUDAThreads;
@@ -185,7 +161,7 @@ void MarginCrossEntropyKernel(const Context& dev_ctx,
 
   // copy logits to softmax variable since we can't modify logits,
   // and it also be used when calculate grad
-  phi::Copy<Context>(dev_ctx, logits, dev_ctx.GetPlace(), true, softmax);
+  Copy<Context>(dev_ctx, logits, dev_ctx.GetPlace(), true, softmax);
 
   DenseTensor softmax_2d;
   softmax_2d.ShareDataWith(*softmax).Resize({N, D});
@@ -206,9 +182,9 @@ void MarginCrossEntropyKernel(const Context& dev_ctx,
   // theta = acos(x_i)
   // (cos(m1 * theta + m2) - m3)
   // save match_logits, used for gradient computation.
-  if (label_type == phi::DataType::INT32) {
+  if (label_type == DataType::INT32) {
     typedef int32_t LabelT;
-    AddMarginToPositiveLogitsKernel<T>
+    AddMarginToPositiveLogitsKernel<T, MT>
         <<<NumBlocks(N), threads, 0, dev_ctx.stream()>>>(
             logits_ptr,
             labels.data<LabelT>(),
@@ -220,9 +196,9 @@ void MarginCrossEntropyKernel(const Context& dev_ctx,
             N,
             D,
             class_interval.data<int>());
-  } else if (label_type == phi::DataType::INT64) {
+  } else if (label_type == DataType::INT64) {
     typedef int64_t LabelT;
-    AddMarginToPositiveLogitsKernel<T>
+    AddMarginToPositiveLogitsKernel<T, MT>
         <<<NumBlocks(N), threads, 0, dev_ctx.stream()>>>(
             logits_ptr,
             labels.data<LabelT>(),
@@ -242,7 +218,7 @@ void MarginCrossEntropyKernel(const Context& dev_ctx,
   }
 
   // scale by s
-  ScaleLogitKernel<T><<<NumBlocks(N * D), threads, 0, dev_ctx.stream()>>>(
+  ScaleLogitKernel<T, MT><<<NumBlocks(N * D), threads, 0, dev_ctx.stream()>>>(
       logits_ptr, scale, N, D);
 
   // step 2, obtain logit_max
@@ -251,68 +227,44 @@ void MarginCrossEntropyKernel(const Context& dev_ctx,
   dev_ctx.template Alloc<T>(&logits_max);
   T* logits_max_buff = dev_ctx.template Alloc<T>(&logits_max);
 
-  phi::funcs::
-      ReduceKernel<T, T, phi::kps::MaxFunctor, phi::kps::IdentityFunctor<T>>(
-          static_cast<const phi::GPUContext&>(dev_ctx),
-          softmax_2d,
-          &logits_max,
-          phi::kps::IdentityFunctor<T>(),
-          {1});
+  funcs::ReduceKernel<T, T, kps::MaxFunctor, kps::IdentityFunctor<T>>(
+      static_cast<const GPUContext&>(dev_ctx),
+      softmax_2d,
+      &logits_max,
+      kps::IdentityFunctor<T>(),
+      {1});
 
 #if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL)
   if (nranks > 1) {
-    if (pg) {
-      std::vector<phi::DenseTensor> in_tensor;
-      std::vector<phi::DenseTensor> out_tensor;
-      in_tensor.push_back(logits_max);
-      out_tensor.push_back(logits_max);
-
-      distributed::AllreduceOptions opts;
-      opts.reduce_op = distributed::ReduceOp::MAX;
-      auto task = pg->AllReduce(in_tensor, out_tensor, opts);
-      task->Wait();
-    } else {
-      comm_ctx->AllReduce(&logits_max, logits_max, ncclMax, stream);
-    }
+    comm_ctx->AllReduce(&logits_max, logits_max, ncclMax, stream);
   }
 #endif
 
   // step 3, logit - logit_max
-  LogitsMinusMaxKernel<T><<<NumBlocks(N * D), threads, 0, dev_ctx.stream()>>>(
-      logits_ptr, logits_max_buff, N, D);
+  LogitsMinusMaxKernel<T, MT>
+      <<<NumBlocks(N * D), threads, 0, dev_ctx.stream()>>>(
+          logits_ptr, logits_max_buff, N, D);
 
   // step 4, sum(exp(logit - logit_max))
   DenseTensor sum_exp_logits;
   sum_exp_logits.Resize({N, 1});
   dev_ctx.template Alloc<T>(&sum_exp_logits);
   T* sum_exp_logits_buff = dev_ctx.template Alloc<T>(&sum_exp_logits);
-  phi::funcs::ReduceKernel<T, T, phi::kps::AddFunctor, phi::kps::ExpFunctor<T>>(
-      static_cast<const phi::GPUContext&>(dev_ctx),
+  funcs::ReduceKernel<T, T, kps::AddFunctor, kps::ExpFunctor<T>>(
+      static_cast<const GPUContext&>(dev_ctx),
       softmax_2d,
       &sum_exp_logits,
-      phi::kps::ExpFunctor<T>(),
+      kps::ExpFunctor<T>(),
       {1});
 
 #if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL)
   if (nranks > 1) {
-    if (pg) {
-      std::vector<phi::DenseTensor> in_tensor;
-      std::vector<phi::DenseTensor> out_tensor;
-      in_tensor.push_back(sum_exp_logits);
-      out_tensor.push_back(sum_exp_logits);
-
-      distributed::AllreduceOptions opts;
-      opts.reduce_op = distributed::ReduceOp::SUM;
-      auto task = pg->AllReduce(in_tensor, out_tensor, opts);
-      task->Wait();
-    } else {
-      comm_ctx->AllReduce(&sum_exp_logits, sum_exp_logits, ncclSum, stream);
-    }
+    comm_ctx->AllReduce(&sum_exp_logits, sum_exp_logits, ncclSum, stream);
   }
 #endif
 
   // step 5, (logit - logit_max) - log(sum(exp(logit - logit_max)))
-  LogitsMinusLogSumKernel<T>
+  LogitsMinusLogSumKernel<T, MT>
       <<<NumBlocks(N * D), threads, 0, dev_ctx.stream()>>>(
           logits_ptr, sum_exp_logits_buff, N, D);
 
@@ -320,9 +272,9 @@ void MarginCrossEntropyKernel(const Context& dev_ctx,
   // logit_max))))
   // loss = -((logit_i - logit_max) - log(sum(exp(logit - logit_max))))
 
-  phi::funcs::SetConstant<Context, T> functor;
+  funcs::SetConstant<Context, T> functor;
   functor(dev_ctx, loss, static_cast<T>(0.0));
-  if (label_type == phi::DataType::INT32) {
+  if (label_type == DataType::INT32) {
     typedef int32_t LabelT;
     HardLabelSoftmaxWithCrossEntropyKernel<T, LabelT>
         <<<blocks, threads, 0, dev_ctx.stream()>>>(loss_ptr,
@@ -332,7 +284,7 @@ void MarginCrossEntropyKernel(const Context& dev_ctx,
                                                    N,
                                                    D,
                                                    class_interval.data<int>());
-  } else if (label_type == phi::DataType::INT64) {
+  } else if (label_type == DataType::INT64) {
     typedef int64_t LabelT;
     HardLabelSoftmaxWithCrossEntropyKernel<T, LabelT>
         <<<blocks, threads, 0, dev_ctx.stream()>>>(loss_ptr,
@@ -346,19 +298,7 @@ void MarginCrossEntropyKernel(const Context& dev_ctx,
 
 #if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL)
   if (nranks > 1) {
-    if (pg) {
-      std::vector<phi::DenseTensor> in_tensor;
-      std::vector<phi::DenseTensor> out_tensor;
-      in_tensor.push_back(*loss);
-      out_tensor.push_back(*loss);
-
-      distributed::AllreduceOptions opts;
-      opts.reduce_op = distributed::ReduceOp::SUM;
-      auto task = pg->AllReduce(in_tensor, out_tensor, opts);
-      task->Wait();
-    } else {
-      comm_ctx->AllReduce(loss, *loss, ncclSum, stream);
-    }
+    comm_ctx->AllReduce(loss, *loss, ncclSum, stream);
   }
 #endif
 }
@@ -371,5 +311,5 @@ PD_REGISTER_KERNEL(margin_cross_entropy,
                    phi::MarginCrossEntropyKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}

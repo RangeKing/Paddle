@@ -26,9 +26,9 @@ std::vector<int> GetAxis(const DataLayout& from, const DataLayout& to) {
       to,
       common::errors::InvalidArgument(
           "Layout transform should transform between different layout."));
-  if (from == DataLayout::kNCHW && to == DataLayout::kNHWC) {
+  if (from == DataLayout::NCHW && to == DataLayout::NHWC) {
     return {0, 2, 3, 1};
-  } else if (from == DataLayout::kNHWC && to == DataLayout::kNCHW) {
+  } else if (from == DataLayout::NHWC && to == DataLayout::NCHW) {
     return {0, 3, 1, 2};
   } else {
     PADDLE_THROW(
@@ -52,9 +52,9 @@ void CastDataLayout::apply() {
 
 void TransDataLayout(const phi::KernelKey& kernel_type_for_var,
                      const phi::KernelKey& expected_kernel_type,
-                     const phi::DenseTensor& in,
-                     phi::DenseTensor* out,
-                     const phi::Place& place) {
+                     const DenseTensor& in,
+                     DenseTensor* out,
+                     const Place& place) {
   PADDLE_ENFORCE(
       backends_are_same_class(kernel_type_for_var.backend(),
                               expected_kernel_type.backend()),
@@ -70,9 +70,9 @@ void TransDataLayout(const phi::KernelKey& kernel_type_for_var,
 
 void TransDataLayout(DataLayout from_layout,
                      DataLayout to_layout,
-                     phi::Place place,
-                     const phi::DenseTensor& in,
-                     phi::DenseTensor* out) {
+                     Place place,
+                     const DenseTensor& in,
+                     DenseTensor* out) {
   PADDLE_ENFORCE_EQ(
       arity(in.dims()),
       4,

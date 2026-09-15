@@ -27,6 +27,7 @@ attr_types_map = {
     # special types
     'IntArray': 'const IntArray&',
     'Scalar': 'const Scalar&',
+    'ScalarType': 'const Scalar&',
     'Scalar(bool)': 'const Scalar&',
     'Scalar(int)': 'const Scalar&',
     'Scalar(int64_t)': 'const Scalar&',
@@ -56,6 +57,7 @@ opmaker_attr_types_map = {
     # special types
     'IntArray': 'std::vector<int64_t>',
     'Scalar': 'float',
+    'ScalarType': 'Scalar',
     'Scalar(bool)': 'bool',
     'Scalar(int)': 'int',
     'Scalar(int64_t)': 'int64_t',
@@ -111,7 +113,7 @@ dense_input_types_map = {
 
 dense_optional_input_types_map = {
     'Tensor': 'paddle::optional<const phi::DenseTensor&>',
-    'Tensor[]': 'paddle::optional<const std::vector<phi::DenseTensor>&>',
+    'Tensor[]': 'paddle::optional<const std::vector<DenseTensor>&>',
 }
 
 dense_output_types_map = {

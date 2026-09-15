@@ -15,9 +15,9 @@ limitations under the License. */
 
 namespace paddle::framework {
 
-void TransDataDevice(const phi::DenseTensor &in,
-                     const phi::Place &dst_place,
-                     phi::DenseTensor *out) {
+void TransDataDevice(const DenseTensor &in,
+                     const Place &dst_place,
+                     DenseTensor *out) {
   VLOG(3) << "DeviceTransform in, src_place " << in.place()
           << " dst_place: " << dst_place;
 
@@ -41,7 +41,7 @@ void TransDataDevice(const phi::DenseTensor &in,
   }
 
   // FIXME(zcd): TransDataDevice is used to transform data from GPU to CPU and
-  // the enforced checkings have been done in GetDeviceContext, so the
+  // the enforced checks have been done in GetDeviceContext, so the
   // `dev_ctx->Wait()` is necessary. But `dev_ctx->Wait()` will make the program
   // slow, especially when the number of elements is little, for example,
   // the elements of learning rate are one and it's CPU side.

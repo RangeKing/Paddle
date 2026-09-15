@@ -42,39 +42,98 @@ import glob
 import math
 import os
 import re
+import warnings
+from collections import OrderedDict
 from functools import partial
 
 import paddle
 import paddle.distributed as dist
 from paddle import framework, nn
 from paddle.device.cuda.cuda_graphed_layer import CUDAGraphedLayer
+from paddle.distributed.fleet.meta_optimizers.dygraph_optimizer.hybrid_parallel_optimizer import (
+    SHARED_WEIGHT_SYNC_PREFIX,
+)
 from paddle.distributed.fleet.utils.log_util import layer_to_str, logger
+from paddle.framework import core
 from paddle.incubate.distributed.fleet import recompute_hybrid
+
+from ..pp_utils.forward_backward_overlap_utils import (
+    ScheduleChunk,
+)
+from .spec_utils import LayerSpec, build_spec_layer
 
 __all__ = []
 
 
 class LayerDesc:
-    def __init__(self, layer_func, *inputs, **kwargs):
-        self.layer_func = layer_func
-        self.inputs = inputs
+    def __init__(self, layer_func_or_spec, *inputs, **kwargs):
         self.kwargs = kwargs
+        self.using_layer_spec = False
 
-        if not issubclass(layer_func, nn.Layer):
-            raise TypeError(
-                "The input(layer_func) should be a derived class of Layer."
+        if isinstance(layer_func_or_spec, LayerSpec):
+            self.using_layer_spec = True
+            self.layer_spec = layer_func_or_spec
+        else:
+            self.inputs = inputs
+            self.layer_func = layer_func_or_spec
+            if not issubclass(layer_func_or_spec, nn.Layer):
+                raise TypeError(
+                    "The input(layer_func) should be a derived class of Layer."
+                )
+
+    def build_layer(self, **extra_kwargs):
+        if self.using_layer_spec:
+            all_extra_kwargs = {
+                **self.layer_spec.extra_kwargs,
+                **self.kwargs,
+                **extra_kwargs,
+            }
+            self.layer_spec.extra_kwargs = all_extra_kwargs
+            return build_spec_layer(self.layer_spec)
+        else:
+            return self.layer_func(
+                *self.inputs, **{**self.kwargs, **extra_kwargs}
             )
 
-    def build_layer(self):
-        return self.layer_func(*self.inputs, **self.kwargs)
-
     def __repr__(self):
-        return layer_to_str(
-            self.layer_func.__name__, *self.inputs, **self.kwargs
-        )
+        if self.using_layer_spec:
+            return layer_to_str(repr(self.layer_spec), **self.kwargs)
+        else:
+            return layer_to_str(
+                self.layer_func.__name__, *self.inputs, **self.kwargs
+            )
 
 
 class SharedLayerDesc(LayerDesc):
+    def __init__(
+        self,
+        key,
+        layer_func,  # May be layer_func or layer_spec
+        forward_func=None,
+        shared_weight_attr='weight',
+        shared_submodule_weight_only=False,
+        *inputs,
+        **kwargs,
+    ):
+        super().__init__(layer_func, *inputs, **kwargs)
+        self.layer_name = key
+        self.forward_func = forward_func
+        self.shared_submodule_weight_only = shared_submodule_weight_only
+        assert isinstance(shared_weight_attr, (str, list))
+        if isinstance(shared_weight_attr, list):
+            for weight_attr in shared_weight_attr:
+                assert isinstance(weight_attr, str)
+        if isinstance(shared_weight_attr, str):
+            shared_weight_attr = [shared_weight_attr]
+        self.shared_weight_attr = shared_weight_attr
+
+
+# TODO: PaddleFleet LayerSpec Support dualpipev
+class LocalSharedLayerDesc(LayerDesc):
+    """
+    Used for dualpipev, some layers can be shared locally
+    """
+
     def __init__(
         self,
         key,
@@ -87,6 +146,12 @@ class SharedLayerDesc(LayerDesc):
         super().__init__(layer_func, *inputs, **kwargs)
         self.layer_name = key
         self.forward_func = forward_func
+        assert isinstance(shared_weight_attr, (str, list))
+        if isinstance(shared_weight_attr, list):
+            for weight_attr in shared_weight_attr:
+                assert isinstance(weight_attr, str)
+        if isinstance(shared_weight_attr, str):
+            shared_weight_attr = [shared_weight_attr]
         self.shared_weight_attr = shared_weight_attr
 
 
@@ -105,9 +170,9 @@ class SegmentLayers:
         self.num_virtual_pipeline_stage = num_virtual_pipeline_stage
         if self.num_virtual_pipeline_stage is not None:
             self.total_parts = num_parts * self.num_virtual_pipeline_stage
-        assert (
-            self.num_items >= self.num_parts
-        ), "layer number should be greater than number of segments"
+        assert self.num_items >= self.num_parts, (
+            "layer number should be greater than number of segments"
+        )
 
     def do_segment(self):
         if isinstance(self.method, list):
@@ -119,9 +184,9 @@ class SegmentLayers:
                 for part in seg_method:
                     assert isinstance(part, int), "part should be int"
                     assert part >= 0, f"part[{part}] should be greater than 0"
-                    assert (
-                        part <= self.num_items
-                    ), f"part[{part}] should be less than num_items[{self.num_items}]"
+                    assert part <= self.num_items, (
+                        f"part[{part}] should be less than num_items[{self.num_items}]"
+                    )
 
             check_sanity()
 
@@ -152,9 +217,9 @@ class SegmentLayers:
                 else self.total_parts
             )
 
-            assert (
-                sum(weights) % actual_num_parts == 0
-            ), f"number of layers ({sum(weights)}) should be divided by part number({actual_num_parts})"
+            assert sum(weights) % actual_num_parts == 0, (
+                f"number of layers ({sum(weights)}) should be divided by part number({actual_num_parts})"
+            )
             part_size = sum(weights) // actual_num_parts
             result = [0 for _ in range(actual_num_parts + 1)]
 
@@ -179,7 +244,13 @@ class SegmentLayers:
             if isinstance(layer, nn.Layer):
                 name = layer.__class__.__name__
             elif isinstance(layer, LayerDesc):
-                name = layer.layer_func.__name__
+                if layer.using_layer_spec:
+                    if not isinstance(layer.layer_spec.layer, tuple):
+                        name = layer.layer_spec.layer.__name__
+                    else:
+                        continue
+                else:
+                    name = layer.layer_func.__name__
             else:
                 try:
                     name = layer.__name__
@@ -189,9 +260,9 @@ class SegmentLayers:
             if regex.search(name):
                 weight_idxs.append(idx)
 
-        assert (
-            len(weight_idxs) > 0
-        ), "weight_idxs' length should be greater than 0"
+        assert len(weight_idxs) > 0, (
+            "weight_idxs' length should be greater than 0"
+        )
         return weight_idxs
 
     def uniform(self, num_items, num_parts):
@@ -268,7 +339,7 @@ class PipelineLayer(nn.Layer):
         num_virtual_pipeline_stages(int, optional): the num of virtual pipeline stages for interleave pp.
         use_cudagraph(bool, optional): enable CUDAGraphedLayer in pp layers.
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env:DISTRIBUTED)
             >>> import paddle.nn as nn
@@ -296,6 +367,7 @@ class PipelineLayer(nn.Layer):
             ...     def __init__(self, shape):
             ...         super().__init__()
             ...         self.shape = shape
+            ...
             ...     def forward(self, x):
             ...         return x.reshape(shape=self.shape)
 
@@ -303,33 +375,23 @@ class PipelineLayer(nn.Layer):
             ...     def __init__(self, num_classes=10, **kwargs):
             ...         self.num_classes = num_classes
             ...         decs = [
-            ...             LayerDesc(
-            ...                 nn.Conv2D, 1, 64, kernel_size=11, stride=4, padding=5),
+            ...             LayerDesc(nn.Conv2D, 1, 64, kernel_size=11, stride=4, padding=5),
             ...             LayerDesc(nn.ReLU),
-            ...             LayerDesc(
-            ...                 nn.MaxPool2D, kernel_size=2, stride=2),
-            ...             LayerDesc(
-            ...                 nn.Conv2D, 64, 192, kernel_size=5, padding=2),
+            ...             LayerDesc(nn.MaxPool2D, kernel_size=2, stride=2),
+            ...             LayerDesc(nn.Conv2D, 64, 192, kernel_size=5, padding=2),
             ...             F.relu,
-            ...             LayerDesc(
-            ...                 nn.MaxPool2D, kernel_size=2, stride=2),
-            ...             LayerDesc(
-            ...                 nn.Conv2D, 192, 384, kernel_size=3, padding=1),
+            ...             LayerDesc(nn.MaxPool2D, kernel_size=2, stride=2),
+            ...             LayerDesc(nn.Conv2D, 192, 384, kernel_size=3, padding=1),
             ...             F.relu,
-            ...             LayerDesc(
-            ...                 nn.Conv2D, 384, 256, kernel_size=3, padding=1),
+            ...             LayerDesc(nn.Conv2D, 384, 256, kernel_size=3, padding=1),
             ...             F.relu,
-            ...             LayerDesc(
-            ...                 nn.Conv2D, 256, 256, kernel_size=3, padding=1),
+            ...             LayerDesc(nn.Conv2D, 256, 256, kernel_size=3, padding=1),
             ...             F.relu,
-            ...             LayerDesc(
-            ...                 nn.MaxPool2D, kernel_size=2, stride=2),
-            ...             LayerDesc(
-            ...                 ReshapeHelp, shape=[-1, 256]),
+            ...             LayerDesc(nn.MaxPool2D, kernel_size=2, stride=2),
+            ...             LayerDesc(ReshapeHelp, shape=[-1, 256]),
             ...             LayerDesc(nn.Linear, 256, self.num_classes),  # classifier
             ...         ]
-            ...         super().__init__(
-            ...             layers=decs, loss_fn=nn.CrossEntropyLoss(), **kwargs)
+            ...         super().__init__(layers=decs, loss_fn=nn.CrossEntropyLoss(), **kwargs)
 
             >>> model = AlexNetPipeDesc(num_stages=pipeline_parallel_size, topology=hcg._topo)
 
@@ -346,38 +408,42 @@ class PipelineLayer(nn.Layer):
         recompute_ctx=None,
         num_virtual_pipeline_stages=None,
         use_cudagraph=False,
+        use_dualpipev=False,
     ):
         super().__init__()
         if num_stages is None and topology is None:
             raise ValueError("should provide num_stages or topology")
 
         if num_virtual_pipeline_stages:
-            assert isinstance(
-                num_virtual_pipeline_stages, int
-            ), "virtual_pipeline_stage should be None or an int"
+            assert isinstance(num_virtual_pipeline_stages, int), (
+                "virtual_pipeline_stage should be None or an int"
+            )
             if num_virtual_pipeline_stages > 1:
                 logger.info(
                     "set num_virtual_pipeline_stages > 1 means using interleave scheduler instead of 1f1b scheduler"
                 )
-                assert isinstance(
-                    seg_method, str
-                ), "seg_method should be a str for interleave scheduler"
-                assert seg_method.startswith(
-                    'layer:'
-                ), "seg_method should be start with layer: for interleave scheduler"
+                assert isinstance(seg_method, str), (
+                    "seg_method should be a str for interleave scheduler"
+                )
+                assert seg_method.startswith('layer:'), (
+                    "seg_method should be start with layer: for interleave scheduler"
+                )
 
         self._num_virtual_pipeline_stages = (
             1
             if num_virtual_pipeline_stages is None
             else num_virtual_pipeline_stages
         )
+        self._use_dualpipev = use_dualpipev
+        assert not (
+            self._use_dualpipev and self._num_virtual_pipeline_stages > 1
+        ), "dualpipev is not compatible with virtual pipeline"
 
         # lazy import
         import paddle.distributed as dist
         from paddle.distributed import fleet
 
         self.device_id = dist.ParallelEnv().device_id
-        self.layers = layers
         self._loss_fn = loss_fn if isinstance(loss_fn, list) else [loss_fn]
         self._topo = topology
         self._recompute_interval = recompute_interval
@@ -388,9 +454,9 @@ class PipelineLayer(nn.Layer):
         self._base_seed = 1234
 
         if recompute_interval > 0:
-            assert (
-                recompute_ctx is not None
-            ), "recompute_ctx must be not None for recompute."
+            assert recompute_ctx is not None, (
+                "recompute_ctx must be not None for recompute."
+            )
 
             offload = recompute_ctx.get('offload', False)
             partition = recompute_ctx.get('partition', False)
@@ -402,12 +468,16 @@ class PipelineLayer(nn.Layer):
         self.global_rank = dist.get_rank()
 
         if self._topo:
-            self._stage_id = self._topo.get_coord(self.global_rank).pipe
-            self._num_stages = self._topo.get_dim_size("pipe")
+            if hasattr(self._topo, "_parent_hcg"):
+                self._stage_id = self._topo._parent_hcg.stage_id
+                self._num_stages = self._topo._parent_hcg._pp_degree
+            else:
+                self._stage_id = self._topo.get_coord(self.global_rank).pipe
+                self._num_stages = self._topo.get_dim_size("pipe")
             if num_stages:
-                assert (
-                    self._num_stages == num_stages
-                ), f"num_stages should be equal to be {self._num_stages}"
+                assert self._num_stages == num_stages, (
+                    f"num_stages should be equal to be {self._num_stages}"
+                )
         else:
             # construct default topology
             if world_size % num_stages != 0:
@@ -427,12 +497,19 @@ class PipelineLayer(nn.Layer):
         )
 
         # initialize segment
-        self._layers_desc = list(self.layers)
+        self._layers_desc = list(layers)
         self._num_layers = len(self._layers_desc)
         self.shared_layers = paddle.nn.LayerDict()
-        self.shared_weight_attrs = {}
+        self.local_shared_layers = paddle.nn.LayerDict()
+        self.local_shared_weight_attrs = {}
 
-        if self._num_virtual_pipeline_stages > 1:
+        if self._use_dualpipev:
+            self._start_poss = []
+            self._end_poss = []
+            self._segment_network_for_dualpipev(seg_method)
+            self._model_chunks = []
+            self._build_chunked_layer()
+        elif self._num_virtual_pipeline_stages > 1:
             # interleaving pipeline segmentation
             self._start_poss = []
             self._end_poss = []
@@ -441,7 +518,7 @@ class PipelineLayer(nn.Layer):
             # while PipelineLayerChunk is a list of Layers relating with one model chunk.
             # Therefore, the _model_chunks is something like 'list of a list of layers'.
             self._model_chunks = []
-            self._build_layer_with_interleave()
+            self._build_chunked_layer()
         else:
             # 1f1b pipeline segmentation
             self._start_pos = 0
@@ -451,6 +528,7 @@ class PipelineLayer(nn.Layer):
             self.run_function = []
             self._build_layer()
 
+        self.comm_key_to_layer_name = {}
         self.shared_comm = self._construct_shared_comm()
         self._synchronize_shared_weights()
 
@@ -482,96 +560,308 @@ class PipelineLayer(nn.Layer):
     def _construct_shared_comm(self):
         shared_comm = {}
         if self._topo.get_dim("pipe") == 1:
-            return
+            return shared_comm
 
-        layers_desc = self._layers_desc
-        shared_layer_names = {
-            s.layer_name for s in layers_desc if isinstance(s, SharedLayerDesc)
-        }
-        for key in shared_layer_names:
-            shared_layers = []
-            for idx, layer in enumerate(layers_desc):
-                if (
-                    isinstance(layer, SharedLayerDesc)
-                    and layer.layer_name == key
-                ):
-                    shared_layers.append(idx)
+        # The first loop gets the pivot stage and all different shared_weight_attrs for one layer name.
+        # Maps stage idx to all shared attrs of each different layer names on that stage.
+        stage_idx_to_layer_name_to_attrs = {}
+        # Maps one layer name to all stage idx that contain that layer.
+        # Have to use OrderedDict here to keep the insertion order otherwise hang might be encountered.
+        layer_name_to_stage_idx = OrderedDict()
+        # Maps one layer name to the first stage idx (AKA the pivot) and the pivot attrs.
+        layer_name_to_pivot_stage_idx = {}
+        layer_name_to_pivot_attrs = {}
+        for idx, layer in enumerate(self._layers_desc):
+            # Get different shared attrs patterns for each layer name.
+            if isinstance(layer, SharedLayerDesc):
+                current_layer_idx_to_stage_idx = self.get_stage_from_index(idx)
+                all_stage_idx_contains_layer = layer_name_to_stage_idx.get(
+                    layer.layer_name, []
+                )
+                all_stage_idx_contains_layer.extend(
+                    [current_layer_idx_to_stage_idx]
+                )
+                # Have to keep the order here otherwise hang might be encountered.
+                layer_name_to_stage_idx[layer.layer_name] = sorted(
+                    set(all_stage_idx_contains_layer)
+                )
+                if layer.layer_name in layer_name_to_pivot_stage_idx:
+                    # We assume the first layer among all shared layers with the same layer name is the pivot,
+                    # which means the first layer shares the weight to others. All other shared layers should
+                    # share a subset of pivot layer's share attrs.
+                    pivot = layer_name_to_pivot_attrs[layer.layer_name]
+                    assert all(
+                        attr in pivot for attr in layer.shared_weight_attr
+                    ), (
+                        f"Current shared attrs ({layer.shared_weight_attr}) is not included by the shared attrs "
+                        f"({pivot}) of the first shared layer."
+                    )
+                else:
+                    # Record the pivot stage idx and the pivot attrs.
+                    layer_name_to_pivot_stage_idx[layer.layer_name] = (
+                        current_layer_idx_to_stage_idx
+                    )
+                    layer_name_to_pivot_attrs[layer.layer_name] = (
+                        layer.shared_weight_attr
+                    )
+                # Record the attrs for a specific layer on a specific stage.
+                layer_name_to_attrs_on_stage_idx = (
+                    stage_idx_to_layer_name_to_attrs.get(
+                        current_layer_idx_to_stage_idx, {}
+                    )
+                )
+                attrs_for_layer_name_on_stage_idx = (
+                    layer_name_to_attrs_on_stage_idx.get(layer.layer_name, [])
+                )
+                attrs_for_layer_name_on_stage_idx.extend(
+                    layer.shared_weight_attr
+                )
+                # Remove redundant attrs, each shared attr will share mem on the same stage idx.
+                # Have to keep the order here otherwise hang might be encountered.
+                layer_name_to_attrs_on_stage_idx[layer.layer_name] = sorted(
+                    set(attrs_for_layer_name_on_stage_idx)
+                )
+                stage_idx_to_layer_name_to_attrs[
+                    current_layer_idx_to_stage_idx
+                ] = layer_name_to_attrs_on_stage_idx
 
-            shared_stages = {
-                self.get_stage_from_index(idx) for idx in shared_layers
-            }
-            self._dp_degree = self._topo.get_dim('data')
-            self._mp_degree = self._topo.get_dim('model')
-            self._sharding_degree = self._topo.get_dim('sharding')
-
-            shared_ranks = []
-            for dp in range(self._dp_degree):
-                for sharding in range(self._sharding_degree):
-                    for mp in range(self._mp_degree):
-                        shared_ranks = []
-                        for s in sorted(shared_stages):
-                            shared_ranks.append(
-                                self._topo.get_rank_from_stage(
-                                    self.global_rank,
-                                    pipe=s,
-                                    data=dp,
-                                    sharding=sharding,
-                                    model=mp,
-                                )
+        # The second loop generates comm keys and assigns stages and attrs to the comm key.
+        # Record all unique comm keys, the comm key is generated from the layer name and the stage idx.
+        # Each comm key represents a comm group.
+        comm_keys = []
+        # Maps comm key to layer name.
+        comm_key_to_layer_name = {}
+        # Maps comm key to two stage idx using the comm key.
+        comm_key_to_stage_idx = {}
+        # Maps comm key to all shared attrs that will be communicated by the comm group indicated by the comm key.
+        comm_key_to_shared_attrs = {}
+        for layer_name in layer_name_to_stage_idx.keys():
+            all_stage_idx_contains_layer = layer_name_to_stage_idx[layer_name]
+            # For all stages contain a same layer name,
+            # generate a comm group between each stage and the pivot explicitly.
+            for stage_idx in all_stage_idx_contains_layer:
+                comm_key = f'LAYER_NAME:{layer_name},STAGE_IDX:{stage_idx}'
+                for idx, layer in enumerate(self._layers_desc):
+                    current_layer_idx_to_stage_idx = self.get_stage_from_index(
+                        idx
+                    )
+                    if not isinstance(layer, SharedLayerDesc):
+                        continue
+                    if (
+                        current_layer_idx_to_stage_idx
+                        == layer_name_to_pivot_stage_idx[layer_name]
+                    ):
+                        # Skip the pivot, the pivot stage will be added automatically when creating a new comm group.
+                        continue
+                    if (
+                        layer.layer_name == layer_name
+                        and current_layer_idx_to_stage_idx == stage_idx
+                    ):
+                        # Add comm key to comm_keys and add current stage idx to comm group.
+                        if comm_key not in comm_keys:
+                            comm_keys.append(comm_key)
+                            comm_key_to_layer_name[comm_key] = layer_name
+                            # The comm will only happen between pivot and current stage.
+                            comm_key_to_stage_idx[comm_key] = [
+                                layer_name_to_pivot_stage_idx[layer_name],
+                                current_layer_idx_to_stage_idx,
+                            ]
+                            comm_key_to_shared_attrs[comm_key] = (
+                                stage_idx_to_layer_name_to_attrs[stage_idx][
+                                    layer.layer_name
+                                ]
                             )
 
-                        group = paddle.distributed.new_group(ranks=shared_ranks)
-                        if self.global_rank in shared_ranks:
-                            assert key in self.shared_layers
-                            if key in self.shared_layers:
-                                shared_comm[key] = {
-                                    'ranks': shared_ranks,
-                                    'group': group,
-                                    'weight_attr': self.shared_weight_attrs[
-                                        key
-                                    ],
-                                    'layer': self.shared_layers[key],
+        if len(comm_keys) == 0:
+            warnings.warn(
+                "No shared comm will be constructed, "
+                "this may happen when all shared attrs are on a same stage."
+            )
+
+        from paddle.distributed import fleet
+        from paddle.distributed.fleet.base.topology import message2nccl_config
+
+        hybrid_configs = fleet.fleet._user_defined_strategy.hybrid_configs
+
+        # The third loop generates comm group for each comm key.
+        for comm_key in comm_keys:
+            shared_stages = comm_key_to_stage_idx[comm_key]
+            layer_name = comm_key_to_layer_name[comm_key]
+            shared_attrs = comm_key_to_shared_attrs[comm_key]
+            logger.info(
+                f'Constructing shared comm for {comm_key} among pp stages {shared_stages}, '
+                f'this shared comm will communicate attrs: {shared_attrs}.'
+            )
+
+            if hasattr(self._topo, "_parent_hcg"):
+                topo = self._topo._parent_hcg._moe_topo
+            else:
+                topo = self._topo
+            pp_comm_list = topo.get_comm_list("pipe")
+            for comm in pp_comm_list:
+                shared_ranks = [comm[s] for s in sorted(shared_stages)]
+
+                logger.info(f"Building comm group among {shared_ranks}.")
+                group = paddle.distributed.new_group(
+                    ranks=shared_ranks,
+                    nccl_config=message2nccl_config(
+                        hybrid_configs["pp_configs"].shared_nccl_config,
+                        "pp_shared",
+                    ),
+                )
+                if self.global_rank in shared_ranks:
+                    assert layer_name in self.shared_layers
+                    shared_comm[comm_key] = {
+                        "ranks": shared_ranks,
+                        "group": group,
+                        "weight_attr": shared_attrs,
+                        "layer": self.shared_layers[layer_name],
+                    }
+
+                    if (
+                        hybrid_configs["pp_configs"].sync_moment
+                        or hybrid_configs["pp_configs"].sync_param
+                    ):
+                        # Set color for shared parameters to facilitate synchronization of parameters
+                        # and optimizer states after each step
+                        for weight_attr in shared_attrs:
+                            shared_param = getattr(
+                                self.shared_layers[layer_name], weight_attr
+                            )
+                            hcg = fleet.get_hybrid_communicate_group()
+                            # shared_weight_name is set by the user, must be unique globally
+                            if isinstance(shared_param, paddle.Tensor):
+                                # Single Tensor shared attr (e.g. embedding/lm_head weight):
+                                # keep the original behavior.
+                                shared_param.color = {
+                                    "color": f"{SHARED_WEIGHT_SYNC_PREFIX}_{comm_key}",
+                                    "group": hcg.get_sharding_parallel_group(),
+                                    "shared_weight_name": weight_attr,
+                                    "broadcast_group": group,
                                 }
+                            else:
+                                # named_parameters() generator: (name, param) pairs,
+                                # e.g. transformer_layer_weights for mtp_shared_last_layer,
+                                # which may mix dense params and MoE expert params.
+                                for _, param in list(shared_param):
+                                    if getattr(param, 'is_moe_param', False):
+                                        # MoE expert shared parameter: it must already carry a
+                                        # color dict whose 'group' (moe_grad_group) is assigned
+                                        # by the MoE expert-parallel setup and MUST be preserved.
+                                        # Nothing in the shared-weight-sync path can safely infer
+                                        # this group, so require it up front and raise a clear
+                                        # configuration error when it is missing instead of
+                                        # failing later with an opaque KeyError/AttributeError.
+                                        moe_color = getattr(
+                                            param, "color", None
+                                        )
+                                        if (
+                                            not isinstance(moe_color, dict)
+                                            or "group" not in moe_color
+                                        ):
+                                            raise ValueError(
+                                                f"MoE shared parameter {param.name} must provide a "
+                                                f"color dict containing its MoE communication 'group' "
+                                                f"(moe_grad_group) before shared-weight sync, but got "
+                                                f"{moe_color!r}. Ensure the MoE expert-parallel setup "
+                                                f"assigns param.color with a valid 'group' first."
+                                            )
+                                        moe_color["color"] = (
+                                            f"{SHARED_WEIGHT_SYNC_PREFIX}_share_moe_experts_{comm_key}"
+                                        )
+                                        moe_color["shared_weight_name"] = (
+                                            weight_attr
+                                        )
+                                        moe_color["broadcast_group"] = group
+                                    else:
+                                        # Dense param inside the shared layer: no pre-existing
+                                        param.color = {
+                                            "color": f"{SHARED_WEIGHT_SYNC_PREFIX}_share_dense_{comm_key}",
+                                            "group": hcg.get_sharding_parallel_group(),
+                                            "shared_weight_name": weight_attr,
+                                            "broadcast_group": group,
+                                        }
         return shared_comm
 
     def _synchronize_shared_weights(self):
         for key, comm in self.shared_comm.items():
             with paddle.framework.no_grad():
-                paddle.distributed.broadcast(
-                    getattr(comm['layer'], comm['weight_attr']),
-                    src=min(comm['ranks']),
-                    group=comm['group'],
-                )
+                for weight_attr in comm['weight_attr']:
+                    obj = getattr(comm['layer'], weight_attr)
+                    if isinstance(obj, paddle.Tensor):
+                        paddle.distributed.broadcast(
+                            obj, src=min(comm['ranks']), group=comm['group']
+                        )
+                    else:
+                        # named_parameters() generator: (name, param) pairs
+                        for _, param in obj:
+                            paddle.distributed.broadcast(
+                                param,
+                                src=min(comm['ranks']),
+                                group=comm['group'],
+                            )
 
-            for param in comm['layer'].parameters():
-                if self.global_rank != min(comm['ranks']):
-                    param.is_firstly_shared = False
+            if self.global_rank != min(comm['ranks']):
+                for weight_attr in comm['weight_attr']:
+                    obj = getattr(comm['layer'], weight_attr)
+                    if isinstance(obj, paddle.Tensor):
+                        obj.is_firstly_shared = False
+                    else:
+                        for _, param in obj:
+                            param.is_firstly_shared = False
 
     def allreduce_shared_weight_gradients(self):
         for key, comm in self.shared_comm.items():
-            param = getattr(self.shared_layers[key], comm['weight_attr'])
-            # need use trace_op to allreduce weight
-            if framework.in_dynamic_mode():
-                with paddle.framework.no_grad():
-                    paddle.distributed.all_reduce(
-                        (
-                            param.grad
-                            if not hasattr(param, "main_grad")
-                            else param.main_grad
-                        ),
-                        group=comm['group'],
-                    )
-            else:
-                with paddle.framework.no_grad():
-                    framework._dygraph_tracer().trace_op(
-                        type="all_reduce",
-                        inputs={'x': param._grad_ivar()},
-                        outputs={'out': param._grad_ivar()},
-                        attrs={
-                            'ring_id': comm['group'].id,
-                            'reduce_type': dist.ReduceOp.SUM,
-                        },
-                    )
+            for weight_attr in comm['weight_attr']:
+                obj = getattr(comm['layer'], weight_attr)
+                if isinstance(obj, paddle.Tensor):
+                    params = [('', obj)]
+                else:
+                    params = list(obj)
+                for _, param in params:
+                    if framework.in_dynamic_mode():
+                        if hasattr(param, "main_grad"):
+                            if param.main_grad is None:
+                                warnings.warn(
+                                    f"The param {param.name} doesn't contain main grad, "
+                                    f"a zero tensor will be used for allreduce."
+                                )
+                                param.main_grad = core.eager.Tensor(
+                                    value=paddle.zeros_like(
+                                        param, dtype='float32'
+                                    ).value(),
+                                    place=param.place,
+                                    name="main_grad@" + param.name,
+                                )
+                            grad_var = param.main_grad
+                        else:
+                            if param.grad is None:
+                                warnings.warn(
+                                    f"The param {param.name} doesn't contain grad, "
+                                    f"a zero tensor will be used for allreduce."
+                                )
+                                param.grad = core.eager.Tensor(
+                                    value=paddle.zeros_like(param).value(),
+                                    place=param.place,
+                                    name="grad@" + param.name,
+                                )
+                            grad_var = param.grad
+                        with paddle.framework.no_grad():
+                            paddle.distributed.all_reduce(
+                                grad_var.contiguous(),
+                                group=comm['group'],
+                            )
+                    else:
+                        with paddle.framework.no_grad():
+                            framework._dygraph_tracer().trace_op(
+                                type="all_reduce",
+                                inputs={'x': param._grad_ivar()},
+                                outputs={'out': param._grad_ivar()},
+                                attrs={
+                                    'ring_id': comm['group'].id,
+                                    'reduce_type': dist.ReduceOp.SUM,
+                                },
+                            )
 
     def _segment_network_for_interleave(self, seg_method):
         logger.info("start segment network for interleave scheduler")
@@ -606,6 +896,40 @@ class PipelineLayer(nn.Layer):
 
         self._print_segmentation_for_debug()
 
+    def _segment_network_for_dualpipev(self, seg_method):
+        logger.info("start segment network for dualpipev")
+        # NOTE(zhangyuqin1998): Due to the V schedule, each device has two chunks.
+        assert len(self._layers_desc) >= self._num_stages * 2, (
+            f"In dualpipev, layer number must be at least twice "
+            f"of the stage number, but got layer number={len(self._layers_desc)} "
+            f"and stage number={self._num_stages}."
+        )
+        seg = SegmentLayers(
+            self._layers_desc,
+            num_parts=self._num_stages * 2,
+            method=seg_method,
+            num_virtual_pipeline_stage=1,
+        )
+        self.segment_parts = seg.do_segment()
+
+        logger.info(
+            f"segment with method: {seg_method}; result: "
+            + ", ".join(str(arg) for arg in self.segment_parts)
+        )
+        first_start_pos = self.segment_parts[self._stage_id]
+        first_end_pos = self.segment_parts[self._stage_id + 1]
+        second_start_pos = self.segment_parts[
+            self._num_stages * 2 - self._stage_id - 1
+        ]
+        second_end_pos = self.segment_parts[
+            self._num_stages * 2 - self._stage_id
+        ]
+
+        self._start_poss = [first_start_pos, second_start_pos]
+        self._end_poss = [first_end_pos, second_end_pos]
+
+        self._print_segmentation_for_debug()
+
     def _segment_network(self, seg_method):
         logger.info("start segment network..")
         seg = SegmentLayers(
@@ -624,9 +948,10 @@ class PipelineLayer(nn.Layer):
 
     def _print_segmentation_for_debug(self):
         # print information for debug
-        for stage in range(
-            self._num_stages * self._num_virtual_pipeline_stages
-        ):
+        virtual_degree = self._num_virtual_pipeline_stages
+        if self._use_dualpipev:
+            virtual_degree = 2
+        for stage in range(self._num_stages * virtual_degree):
             start = self.segment_parts[stage]
             end = self.segment_parts[stage + 1]
             logger.info(
@@ -658,7 +983,7 @@ class PipelineLayer(nn.Layer):
                     loss_fn_names.append(self._loss_fn[idx].__class__.__name__)
             logger.info(f"loss: {', '.join(loss_fn_names)}")
 
-    def _build_layer_with_interleave(self):
+    def _build_chunked_layer(self):
         from paddle.distributed.fleet.meta_parallel.parallel_layers.random import (
             get_rng_state_tracker,
         )
@@ -672,12 +997,19 @@ class PipelineLayer(nn.Layer):
             # Get a model chunk
             chunk = self._build_layer_impl(start, end)
             assert isinstance(chunk, PipelineLayerChunk)
+
             # Add the chunk to all chunks and add this chunk to the sublayer
             self._model_chunks.append(chunk)
             self.add_sublayer(str(start), chunk)
 
         paddle.set_rng_state(orig_rng_state)
         get_rng_state_tracker().set_states_tracker(orig_rng_tracker)
+
+        if self._use_dualpipev:
+            assert len(self._model_chunks) == 2, (
+                "Only support two model chunks when using dualpipev"
+            )
+        logger.info(f"model_chunks: {self._model_chunks}")
 
     def _build_layer(self):
         from paddle.distributed.fleet.meta_parallel.parallel_layers.random import (
@@ -694,9 +1026,53 @@ class PipelineLayer(nn.Layer):
         paddle.set_rng_state(orig_rng_state)
         get_rng_state_tracker().set_states_tracker(orig_rng_tracker)
 
+    def _alias_shared_layer(self, dest_layer, src_layer):
+        """Alias parameters of layer to share weights with src_layer.
+
+        Replaces all parameters in layer.transformer_layer with the corresponding
+        parameters from src_layer, matched by name and shape. This makes both layers
+        share the same parameter memory. Asserts that all parameters are successfully
+        aliased.
+
+        Args:
+            layer: Destination layer whose transformer_layer parameters will be replaced.
+            src_layer: Source layer providing the shared parameters.
+        """
+        source_params = dict(src_layer.named_parameters())
+
+        dest_module = dest_layer.transformer_layer
+        dest_named_params = list(dest_module.named_parameters())
+        aliased_count = 0
+        shape_mismatch_count = 0
+        missing_count = 0
+        for param_name, dest_param in dest_named_params:
+            source_param = source_params.get(param_name)
+            if source_param is None:
+                missing_count += 1
+                continue
+            if tuple(source_param.shape) != tuple(dest_param.shape):
+                shape_mismatch_count += 1
+                continue
+
+            name_parts = param_name.split(".")
+            parent_module = dest_module
+            for submodule_name in name_parts[:-1]:
+                parent_module = getattr(parent_module, submodule_name)
+            leaf_param_name = name_parts[-1]
+            if leaf_param_name in parent_module._parameters:
+                parent_module._parameters[leaf_param_name] = source_param
+            else:
+                setattr(parent_module, leaf_param_name, source_param)
+            aliased_count += 1
+
+        total_params = len(dest_named_params)
+        assert total_params == aliased_count, (
+            f"{dest_layer} can't be aliased to {src_layer}, miss parameters:{missing_count}, wrong shape parameters:{shape_mismatch_count}"
+        )
+
     def _build_layer_impl(self, start, end):
-        if self._num_virtual_pipeline_stages > 1:
-            # For interleave scheduler, all layers relating with one model chunk will be saved in PipelineLayerChunk
+        if self._num_virtual_pipeline_stages > 1 or self._use_dualpipev:
+            # For interleave or dualpipev scheduler, all layers relating with one model chunk will be saved in PipelineLayerChunk
             run_function = PipelineLayerChunk()
         else:
             # For 1f1b scheduler, just use run_function list
@@ -729,45 +1105,118 @@ class PipelineLayer(nn.Layer):
 
             if isinstance(layer, nn.Layer):
                 self.groupable_layers.append(layer)
-                if self._num_virtual_pipeline_stages == 1:
+                if (
+                    self._num_virtual_pipeline_stages == 1
+                    and not self._use_dualpipev
+                ):
                     # Only add sublayer for 1f1b scheduler,
                     # for interleave, PipelineLayerChunk will do this
                     self.add_sublayer(str(layer_index), layer)
             elif isinstance(layer, SharedLayerDesc):
+                assert not self._use_dualpipev, (
+                    "dualpipev scheduler does not support SharedLayerDesc yet"
+                )
                 flush_into_run_function()
-                if layer.layer_name not in self.shared_layers:
-                    self.shared_layers[layer.layer_name] = layer.build_layer()
-                    self.shared_weight_attrs[layer.layer_name] = (
+                if layer.shared_submodule_weight_only:
+                    instance = layer.build_layer()
+                    if layer.layer_name not in self.shared_layers:
+                        self.shared_layers[layer.layer_name] = instance
+                        for weight_attr in layer.shared_weight_attr:
+                            obj = getattr(instance, weight_attr)
+                            if isinstance(obj, paddle.Tensor):
+                                obj.is_firstly_shared = True
+                            else:
+                                for _, param in obj:
+                                    param.is_firstly_shared = True
+                    else:
+                        # when vpp is enabled, layer instance will be registered
+                        # by `run_function.append(instance)` as a sublayer of PipelineLayerChunk
+                        if self._num_virtual_pipeline_stages == 1:
+                            self.add_sublayer(str(layer_index), instance)
+                        self._alias_shared_layer(
+                            instance, self.shared_layers[layer.layer_name]
+                        )
+                    run_function.append(instance)
+                else:
+                    if layer.layer_name not in self.shared_layers:
+                        self.shared_layers[layer.layer_name] = (
+                            layer.build_layer()
+                        )
+                        for weight_attr in layer.shared_weight_attr:
+                            obj = getattr(
+                                self.shared_layers[layer.layer_name],
+                                weight_attr,
+                            )
+                            if isinstance(obj, paddle.Tensor):
+                                obj.is_firstly_shared = True
+                            else:
+                                for _, param in obj:
+                                    param.is_firstly_shared = True
+
+                    if layer.forward_func is None:
+                        run_function.append(
+                            self.shared_layers[layer.layer_name]
+                        )
+                    else:
+                        run_function.append(
+                            partial(
+                                layer.forward_func,
+                                self.shared_layers[layer.layer_name],
+                            )
+                        )
+                        # Note: the PipelineLayerChunk won't add the partial function to the sub layer,
+                        # will introduce error when calling chunk.parameters(). Have to manually add
+                        # this layer to the chunk's sub layer.
+                        if self._num_virtual_pipeline_stages > 1:
+                            run_function.add_sublayer(
+                                layer.layer_name,
+                                self.shared_layers[layer.layer_name],
+                            )
+            elif isinstance(layer, LocalSharedLayerDesc):
+                assert self._use_dualpipev, (
+                    "Only dualpipev is supported to use LocalSharedLayerDesc yet"
+                )
+                flush_into_run_function()
+
+                if layer.layer_name not in self.local_shared_layers:
+                    layer_impl = layer.build_layer()
+                    self.local_shared_layers[layer.layer_name] = layer_impl
+                    self.local_shared_weight_attrs[layer.layer_name] = (
                         layer.shared_weight_attr
                     )
-                    for param in self.shared_layers[
+                else:
+                    ref_layer_impl = self.local_shared_layers[layer.layer_name]
+                    weight_attrs = self.local_shared_weight_attrs[
                         layer.layer_name
-                    ].parameters():
-                        param.is_firstly_shared = True
+                    ]
+                    weight_params = []
+                    for attr in weight_attrs:
+                        assert hasattr(ref_layer_impl, attr), (
+                            f"The shared parameter {attr} is not in {layer.layer_name}."
+                        )
+                        param = getattr(ref_layer_impl, attr)
+                        weight_params.append(param)
+                    layer_impl = layer.build_layer(
+                        **dict(zip(weight_attrs, weight_params))
+                    )
 
                 if layer.forward_func is None:
-                    run_function.append(self.shared_layers[layer.layer_name])
-
+                    run_function.append(layer_impl)
                 else:
                     run_function.append(
                         partial(
                             layer.forward_func,
-                            self.shared_layers[layer.layer_name],
+                            layer_impl,
                         )
                     )
-                    # Note: the PipelineLayerChunk won't add the partial function to the sub layer,
-                    # will introduce error when calling chunk.parameters(). Have to manually add
-                    # this layer to the chunk's sub layer.
-                    if self._num_virtual_pipeline_stages > 1:
-                        run_function.add_sublayer(
-                            layer.layer_name,
-                            self.shared_layers[layer.layer_name],
-                        )
 
             elif isinstance(layer, LayerDesc):
                 model = layer.build_layer()
                 self.groupable_layers.append(model)
-                if self._num_virtual_pipeline_stages == 1:
+                if (
+                    self._num_virtual_pipeline_stages == 1
+                    and not self._use_dualpipev
+                ):
                     # Only add sublayer for 1f1b scheduler,
                     # for interleave, PipelineLayerChunk will do this
                     self.add_sublayer(str(layer_index), model)
@@ -777,6 +1226,29 @@ class PipelineLayer(nn.Layer):
 
         flush_into_run_function()
         return run_function
+
+    def build_schedule_nodes(self, start, end):
+        run_function = self.run_function
+
+        def check_overlap_schedule_mode():
+            overlap_schedule_mode = False
+            for layer in run_function[start:end]:
+                if hasattr(layer, "build_schedule_node"):
+                    overlap_schedule_mode = True
+                    break
+            for layer in run_function[start:end]:
+                assert not (
+                    overlap_schedule_mode
+                    and not hasattr(layer, "build_schedule_node")
+                )
+            return overlap_schedule_mode
+
+        assert check_overlap_schedule_mode()
+        nodes = []
+        for layer in run_function[start:end]:
+            nodes.append(layer.build_schedule_node())
+        schedule_chunk = ScheduleChunk(nodes=nodes)
+        return schedule_chunk
 
     def forward_function(self, start, end):
         run_function = self.run_function
@@ -790,11 +1262,11 @@ class PipelineLayer(nn.Layer):
 
         return execute_func
 
-    def forward(self, input, chunk_id=None):
+    def update_run_function(self, chunk_id):
         if chunk_id is not None:
             assert isinstance(chunk_id, int), "chunk_id should be an int"
             assert (
-                self._num_virtual_pipeline_stages > 1
+                self._num_virtual_pipeline_stages > 1 or self._use_dualpipev
             ), "chunk_id is only valid when using virtual pipeline stage"
             assert chunk_id < len(self._model_chunks), (
                 f"The virtual pipeline only has {len(self._model_chunks)} chunks, "
@@ -807,6 +1279,32 @@ class PipelineLayer(nn.Layer):
             # The only different is that, for 1f1b, self.run_function has already been inited during build_layer.
             # But for interleave, self.run_function will keep updating to the target functions at every run.
             self.run_function = model_chunk.get_run_function()
+
+    def get_schedule_chunk(self, chunk_id):
+        """
+        Get the schedule chunk for the specified chunk_id and build schedule nodes.
+
+        This method is used in pipeline parallel to retrieve the model chunk
+        (run_function) corresponding to the chunk_id and build schedule nodes for that chunk.
+
+        Args:
+            chunk_id (int): The ID of the virtual pipeline chunk to retrieve
+
+        Returns:
+            list: The built schedule nodes list
+
+        Raises:
+            AssertionError: If recompute_interval is not 0, as overlap schedule mode requires recompute_interval to be 0
+        """
+        self.update_run_function(chunk_id)
+
+        assert self._recompute_interval == 0, (
+            "overlap_schedule_mode requires recompute_interval==0."
+        )
+        return self.build_schedule_nodes(0, len(self.run_function))
+
+    def forward(self, input, chunk_id=None):
+        self.update_run_function(chunk_id)
 
         if self._recompute_interval == 0:
             input = self.forward_function(0, len(self.run_function))(input)

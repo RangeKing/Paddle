@@ -13,6 +13,8 @@
 // limitations under the License.
 
 #include <array>
+#include <cstdint>
+#include <limits>
 #include <set>
 
 #include "gtest/gtest.h"
@@ -76,6 +78,162 @@ TEST(math_function, gemm_notrans_cblas) {
   EXPECT_EQ(input3_ptr[6], 86);
   EXPECT_EQ(input3_ptr[7], 99);
 }
+
+TEST(math_function, gemm_gemv_int64_dimensions) {
+  auto* dev_ctx =
+      phi::DeviceContextPool::Instance().GetByPlace(phi::CPUPlace());
+  auto blas = GetBlas<float>(*dev_ctx);
+
+  const int64_t m = 2;
+  const int64_t n = 2;
+  const int64_t k = 3;
+  const std::array<float, 6> a = {1, 2, 3, 4, 5, 6};
+  const std::array<float, 6> b = {1, 2, 3, 4, 5, 6};
+  const std::array<float, 4> expected = {22, 28, 49, 64};
+
+  std::array<float, 4> enum_gemm_out{};
+  blas.GEMM(CblasNoTrans,
+            CblasNoTrans,
+            m,
+            n,
+            k,
+            1.0f,
+            a.data(),
+            k,
+            b.data(),
+            n,
+            0.0f,
+            enum_gemm_out.data(),
+            n);
+  EXPECT_EQ(enum_gemm_out, expected);
+
+  std::array<float, 4> bool_gemm_out{};
+  blas.GEMM(false,
+            false,
+            m,
+            n,
+            k,
+            1.0f,
+            a.data(),
+            k,
+            b.data(),
+            n,
+            0.0f,
+            bool_gemm_out.data(),
+            n);
+  EXPECT_EQ(bool_gemm_out, expected);
+
+  const std::array<float, 3> vector = {1, 1, 1};
+  const std::array<float, 2> expected_gemv = {6, 15};
+  std::array<float, 2> gemv_out{};
+  blas.GEMV(false, m, k, 1.0f, a.data(), vector.data(), 0.0f, gemv_out.data());
+  EXPECT_EQ(gemv_out, expected_gemv);
+}
+
+TEST(math_function, gemm_gemv_reject_unsupported_cpu_dimensions) {
+  auto* dev_ctx =
+      phi::DeviceContextPool::Instance().GetByPlace(phi::CPUPlace());
+  auto blas = GetBlas<float>(*dev_ctx);
+  float value = 1.0f;
+  const int64_t too_large =
+      static_cast<int64_t>(std::numeric_limits<int>::max()) + 1;
+
+  EXPECT_THROW(blas.GEMM(CblasNoTrans,
+                         CblasNoTrans,
+                         too_large,
+                         1,
+                         1,
+                         1.0f,
+                         &value,
+                         &value,
+                         0.0f,
+                         &value),
+               common::enforce::EnforceNotMet);
+  EXPECT_THROW(blas.GEMM(false,
+                         false,
+                         1,
+                         1,
+                         1,
+                         1.0f,
+                         &value,
+                         too_large,
+                         &value,
+                         1,
+                         0.0f,
+                         &value,
+                         1),
+               common::enforce::EnforceNotMet);
+  EXPECT_THROW(
+      blas.GEMV(false, too_large, 1, 1.0f, &value, &value, 0.0f, &value),
+      common::enforce::EnforceNotMet);
+}
+
+TEST(math_function, dot_with_blas_zero_length) {
+  bool called = false;
+  auto result = phi::funcs::detail::dot_with_blas<float>(
+      0,
+      nullptr,
+      1,
+      nullptr,
+      1,
+      [&](int, const float*, int, const float*, int) {
+        called = true;
+        return 1.0f;
+      });
+
+  EXPECT_FALSE(called);
+  EXPECT_FLOAT_EQ(result, 0.0f);
+}
+
+TEST(math_function, dot_with_blas_single_element) {
+  const std::array<float, 1> x = {3.0f};
+  const std::array<float, 1> y = {4.0f};
+  bool called = false;
+
+  auto result = phi::funcs::detail::dot_with_blas<float>(
+      1,
+      x.data(),
+      8,
+      y.data(),
+      9,
+      [&](int n, const float* px, int incx, const float* py, int incy) {
+        called = true;
+        EXPECT_EQ(n, 1);
+        EXPECT_EQ(incx, 1);
+        EXPECT_EQ(incy, 1);
+        return px[0] * py[0];
+      });
+
+  EXPECT_TRUE(called);
+  EXPECT_FLOAT_EQ(result, 12.0f);
+}
+
+TEST(math_function, dot_fallback_strided) {
+  const std::array<float, 5> x = {1.0f, 0.0f, 2.0f, 0.0f, 3.0f};
+  const std::array<float, 7> y = {4.0f, 0.0f, 0.0f, 5.0f, 0.0f, 0.0f, 6.0f};
+
+  auto result =
+      phi::funcs::detail::dot_fallback<float>(3, x.data(), 2, y.data(), 3);
+
+  EXPECT_FLOAT_EQ(result, 32.0f);
+}
+
+TEST(math_function, level1_blas_compatible_true) {
+  EXPECT_TRUE(phi::funcs::detail::level1_blas_compatible(0, 1, 1));
+  EXPECT_TRUE(phi::funcs::detail::level1_blas_compatible(
+      std::numeric_limits<int>::max(), std::numeric_limits<int>::min(), 0));
+}
+
+TEST(math_function, level1_blas_compatible_false) {
+  EXPECT_FALSE(phi::funcs::detail::level1_blas_compatible(-1, 1, 1));
+  EXPECT_FALSE(phi::funcs::detail::level1_blas_compatible(
+      static_cast<int64_t>(std::numeric_limits<int>::max()) + 1, 1, 1));
+  EXPECT_FALSE(phi::funcs::detail::level1_blas_compatible(
+      1, static_cast<int64_t>(std::numeric_limits<int>::min()) - 1, 1));
+  EXPECT_FALSE(phi::funcs::detail::level1_blas_compatible(
+      1, 1, static_cast<int64_t>(std::numeric_limits<int>::max()) + 1));
+}
+
 #ifdef PADDLE_WITH_LIBXSMM
 template <typename T>
 void MklSmmCompare(int m, int n, int k) {
@@ -231,12 +389,12 @@ TEST(math_function, zero) {
 }
 
 template <typename T>
-void GemvTest(int m, int n, bool trans) {
+void GemvTest(int64_t m, int64_t n, bool trans) {
   phi::DenseTensor mat_a;
   phi::DenseTensor vec_b;
   phi::DenseTensor vec_c;
-  int b_num = trans ? m : n;
-  int c_num = trans ? n : m;
+  int64_t b_num = trans ? m : n;
+  int64_t c_num = trans ? n : m;
 
   auto* dev_ctx =
       phi::DeviceContextPool::Instance().GetByPlace(phi::CPUPlace());
@@ -247,34 +405,27 @@ void GemvTest(int m, int n, bool trans) {
   T* data_b = dev_ctx->template Alloc<T>(&vec_b);
   vec_c.Resize({c_num});
   T* data_c = dev_ctx->template Alloc<T>(&vec_c);
-  for (int i = 0; i < mat_a.numel(); ++i) {
+  for (int64_t i = 0; i < mat_a.numel(); ++i) {
     data_a[i] = static_cast<T>(i);
   }
-  for (int i = 0; i < vec_b.numel(); ++i) {
+  for (int64_t i = 0; i < vec_b.numel(); ++i) {
     data_b[i] = static_cast<T>(i);
   }
 
-  GetBlas<T>(*dev_ctx).GEMV(trans,
-                            static_cast<int>(m),
-                            static_cast<int>(n),
-                            1.,
-                            data_a,
-                            data_b,
-                            0.,
-                            data_c);
+  GetBlas<T>(*dev_ctx).GEMV(trans, m, n, 1., data_a, data_b, 0., data_c);
 
   if (!trans) {
-    for (int i = 0; i < m; ++i) {
+    for (int64_t i = 0; i < m; ++i) {
       T sum = 0.0;
-      for (int j = 0; j < n; ++j) {
+      for (int64_t j = 0; j < n; ++j) {
         sum += data_a[i * n + j] * data_b[j];
       }
       ASSERT_FLOAT_EQ(data_c[i], sum);
     }
   } else {
-    for (int i = 0; i < n; ++i) {
+    for (int64_t i = 0; i < n; ++i) {
       T sum = 0.0;
-      for (int j = 0; j < m; ++j) {
+      for (int64_t j = 0; j < m; ++j) {
         sum += data_a[j * n + i] * data_b[j];
       }
       ASSERT_FLOAT_EQ(data_c[i], sum);

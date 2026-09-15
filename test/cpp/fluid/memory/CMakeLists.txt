@@ -15,6 +15,10 @@ cc_test(
   buffered_allocator_test
   SRCS buffered_allocator_test.cc
   DEPS phi common)
+cc_test(
+  memory_history_recorder_test
+  SRCS memory_history_recorder_test.cc
+  DEPS phi common)
 
 if(WITH_GPU)
   nv_test(
@@ -40,10 +44,17 @@ elseif(WITH_ROCM)
     SRCS best_fit_allocator_test.cc best_fit_allocator_test.cu
     DEPS phi common)
 else()
-  cc_test(
-    best_fit_allocator_test
-    SRCS best_fit_allocator_test.cc
-    DEPS phi common)
+  if(WIN32)
+    cc_test(
+      best_fit_allocator_test
+      SRCS best_fit_allocator_test.cc
+      DEPS type_info common)
+  else()
+    cc_test(
+      best_fit_allocator_test
+      SRCS best_fit_allocator_test.cc
+      DEPS phi common)
+  endif()
 endif()
 
 cc_test(
@@ -51,10 +62,28 @@ cc_test(
   SRCS test_aligned_allocator.cc
   DEPS phi common)
 
-cc_test(
-  retry_allocator_test
-  SRCS retry_allocator_test.cc
-  DEPS phi common)
+if(WITH_GPU)
+  if(WIN32)
+    message(STATUS "Skip allocator_visitor_test on Windows")
+  else()
+    nv_test(
+      allocator_visitor_test
+      SRCS allocator_visitor_test.cc
+      DEPS phi common)
+  endif()
+endif()
+
+if(WIN32)
+  cc_test(
+    retry_allocator_test
+    SRCS retry_allocator_test.cc
+    DEPS type_info common)
+else()
+  cc_test(
+    retry_allocator_test
+    SRCS retry_allocator_test.cc
+    DEPS phi common)
+endif()
 if(TEST retry_allocator_test)
   set_tests_properties(retry_allocator_test PROPERTIES LABELS
                                                        "RUN_TYPE=EXCLUSIVE")
@@ -65,6 +94,21 @@ cc_test(
   SRCS allocator_facade_abs_flags_test.cc
   DEPS phi common)
 
+if(WITH_GPU)
+  if(WIN32)
+    message(STATUS "Skip vmm_allocator_tail_test on Windows")
+  else()
+    nv_test(
+      vmm_allocator_tail_test
+      SRCS vmm_allocator_tail_test.cc
+      DEPS phi common)
+    nv_test(
+      cuda_virtual_mem_allocator_v2_test
+      SRCS cuda_virtual_mem_allocator_v2_test.cu
+      DEPS phi common)
+  endif()
+endif()
+
 cc_test(
   allocator_facade_frac_flags_test
   SRCS allocator_facade_frac_flags_test.cc
@@ -74,7 +118,7 @@ if(WITH_GPU)
   nv_test(
     malloc_test
     SRCS malloc_test.cu
-    DEPS device_context)
+    DEPS phi)
   nv_test(
     stream_safe_cuda_alloc_test
     SRCS stream_safe_cuda_alloc_test.cu
@@ -90,8 +134,10 @@ if(WITH_GPU)
   if(WITH_TESTING AND TEST stream_safe_cuda_alloc_test)
     set_tests_properties(
       stream_safe_cuda_alloc_test
-      PROPERTIES ENVIRONMENT "FLAGS_use_stream_safe_cuda_allocator=true; \
-        FLAGS_allocator_strategy=auto_growth")
+      PROPERTIES
+        ENVIRONMENT
+        "FLAGS_use_stream_safe_cuda_allocator=true;FLAGS_allocator_strategy=auto_growth;FLAGS_use_vmm_auto_growth_best_fit_allocator_v2=false"
+    )
   endif()
   if(WITH_TESTING AND TEST cuda_malloc_async_allocator_test)
     set_tests_properties(
@@ -104,7 +150,7 @@ if(WITH_ROCM)
   hip_test(
     malloc_test
     SRCS malloc_test.cu
-    DEPS device_context)
+    DEPS phi)
   hip_test(
     cuda_managed_memory_test
     SRCS cuda_managed_memory_test.cu
@@ -128,14 +174,23 @@ if(WITH_GPU AND WITH_TESTING)
     DEPS phi common)
   set_tests_properties(
     get_base_ptr_test
-    PROPERTIES ENVIRONMENT "FLAGS_allocator_strategy=auto_growth;
-                                    FLAGS_use_stream_safe_cuda_allocator=true;")
+    PROPERTIES
+      ENVIRONMENT
+      "FLAGS_allocator_strategy=auto_growth;FLAGS_use_stream_safe_cuda_allocator=true;FLAGS_use_vmm_auto_growth_best_fit_allocator_v2=false"
+  )
 endif()
 
-cc_test(
-  auto_growth_best_fit_allocator_facade_test
-  SRCS auto_growth_best_fit_allocator_facade_test.cc
-  DEPS phi common)
+if(WIN32)
+  cc_test(
+    auto_growth_best_fit_allocator_facade_test
+    SRCS auto_growth_best_fit_allocator_facade_test.cc
+    DEPS type_info common)
+else()
+  cc_test(
+    auto_growth_best_fit_allocator_facade_test
+    SRCS auto_growth_best_fit_allocator_facade_test.cc
+    DEPS phi common)
+endif()
 cc_test(
   auto_growth_best_fit_allocator_test
   SRCS auto_growth_best_fit_allocator_test.cc
@@ -152,3 +207,49 @@ cc_test(
   system_allocator_test
   SRCS system_allocator_test.cc
   DEPS phi common)
+
+if(WITH_GPU)
+  if(WIN32)
+    message(STATUS "Skip vmm_auto_growth_best_fit_allocator_test on Windows")
+  else()
+    nv_test(
+      vmm_auto_growth_best_fit_allocator_test
+      SRCS vmm_auto_growth_best_fit_allocator_test.cu
+      DEPS phi common)
+    nv_test(
+      vmm_auto_growth_best_fit_allocator_v2_test
+      SRCS vmm_auto_growth_best_fit_allocator_v2_test.cu
+      DEPS phi common)
+    nv_test(
+      vmm_auto_growth_best_fit_multi_pool_allocator_v2_test
+      SRCS vmm_auto_growth_best_fit_multi_pool_allocator_v2_test.cu
+      DEPS phi common)
+    if(WITH_TESTING AND TEST vmm_auto_growth_best_fit_allocator_test)
+      set_tests_properties(
+        vmm_auto_growth_best_fit_allocator_test
+        PROPERTIES ENVIRONMENT "FLAGS_use_virtual_memory_auto_growth=true")
+    endif()
+  endif()
+endif()
+
+if(WITH_GPU)
+  if(WIN32)
+    message(STATUS "Skip multi_scale_allocator_test on Windows")
+  else()
+    nv_test(
+      multi_scale_allocator_test
+      SRCS multi_scale_allocator_test.cc
+      DEPS phi common)
+  endif()
+endif()
+
+if(WITH_GPU)
+  if(WIN32)
+    message(STATUS "Skip memory_history_hook_test on Windows")
+  else()
+    nv_test(
+      memory_history_hook_test
+      SRCS memory_history_hook_test.cc
+      DEPS phi common)
+  endif()
+endif()

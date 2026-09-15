@@ -11,11 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 import os
 import unittest
 
 import numpy as np
+from op_test import get_device, get_device_place, is_custom_device
 from scipy.special import logit
 
 import paddle
@@ -27,14 +27,19 @@ class TestSigmoidCrossEntropyWithLogitsOpGradWithAutoGrad(unittest.TestCase):
         np.random.seed(2023)
         paddle.seed(2023)
         self.places = []
-        if (
-            os.environ.get('FLAGS_CI_both_cpu_and_gpu', 'False').lower()
-            in ['1', 'true', 'on']
-            or not base.core.is_compiled_with_cuda()
+        if os.environ.get('FLAGS_CI_both_cpu_and_gpu', 'False').lower() in [
+            '1',
+            'true',
+            'on',
+        ] or (
+            not (base.core.is_compiled_with_cuda() or is_custom_device())
+            and not base.core.is_compiled_with_xpu()
         ):
             self.places.append(base.CPUPlace())
-        if base.core.is_compiled_with_cuda():
-            self.places.append(base.CUDAPlace(0))
+        if base.core.is_compiled_with_cuda() or is_custom_device():
+            self.places.append(get_device_place())
+        if base.core.is_compiled_with_xpu():
+            self.places.append(base.XPUPlace(0))
         self.batch_size = 64
         self.num_classes = 20
 
@@ -85,7 +90,10 @@ class TestSigmoidCrossEntropyWithLogitsOpGradWithAutoGrad(unittest.TestCase):
             if idx == 0:
                 paddle.set_device('cpu')
             else:
-                paddle.set_device('gpu')
+                if base.core.is_compiled_with_cuda() or is_custom_device():
+                    paddle.set_device(get_device())
+                if base.core.is_compiled_with_xpu():
+                    paddle.set_device('xpu')
 
             ref = cal(fn_ref, p)
             actual = cal(fn_comp, p)

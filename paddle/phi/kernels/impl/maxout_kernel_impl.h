@@ -25,11 +25,15 @@ void MaxOutKernel(const Context& dev_ctx,
                   int groups,
                   int axis,
                   DenseTensor* out) {
+  if (out && out->numel() == 0) {
+    dev_ctx.template Alloc<T>(out);
+    return;
+  }
   if (axis < 0) {
     axis += x.dims().size();
   }
 
-  phi::funcs::MaxOutFunctor<Context, T> maxout_forward;
+  funcs::MaxOutFunctor<Context, T> maxout_forward;
   maxout_forward(dev_ctx, x, out, groups, axis);
 }
 

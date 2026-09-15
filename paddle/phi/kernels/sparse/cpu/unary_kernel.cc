@@ -30,12 +30,11 @@ void DivScalarCooKernel(const Context& dev_ctx,
                         SparseCooTensor* out) {
   EmptyLikeCooKernel<T, Context>(dev_ctx, x, out);
 
-  auto eigen_out =
-      phi::EigenVector<T>::Flatten(*(out->mutable_non_zero_elements()));
-  auto eigen_x = phi::EigenVector<T>::Flatten(x.non_zero_elements());
+  auto eigen_out = EigenVector<T>::Flatten(*(out->mutable_non_zero_elements()));
+  auto eigen_x = EigenVector<T>::Flatten(x.non_zero_elements());
   auto& dev = *dev_ctx.eigen_device();
 
-  phi::funcs::EigenDiv<std::decay_t<decltype(dev)>, T>::Eval(
+  funcs::EigenDiv<std::decay_t<decltype(dev)>, T>::Eval(
       dev, eigen_out, eigen_x, static_cast<T>(scalar));
 }
 
@@ -46,12 +45,11 @@ void DivScalarCsrKernel(const Context& dev_ctx,
                         SparseCsrTensor* out) {
   EmptyLikeCsrKernel<T, Context>(dev_ctx, x, out);
 
-  auto eigen_out =
-      phi::EigenVector<T>::Flatten(*(out->mutable_non_zero_elements()));
-  auto eigen_x = phi::EigenVector<T>::Flatten(x.non_zero_elements());
+  auto eigen_out = EigenVector<T>::Flatten(*(out->mutable_non_zero_elements()));
+  auto eigen_x = EigenVector<T>::Flatten(x.non_zero_elements());
   auto& dev = *dev_ctx.eigen_device();
 
-  phi::funcs::EigenDiv<std::decay_t<decltype(dev)>, T>::Eval(
+  funcs::EigenDiv<std::decay_t<decltype(dev)>, T>::Eval(
       dev, eigen_out, eigen_x, static_cast<T>(scalar));
 }
 
@@ -83,8 +81,8 @@ void DivScalarCsrKernel(const Context& dev_ctx,
                      phi::sparse::prefix##CooKernel,                   \
                      float,                                            \
                      double,                                           \
-                     phi::dtype::complex<float>,                       \
-                     phi::dtype::complex<double>) {                    \
+                     phi::complex64,                                   \
+                     phi::complex128) {                                \
     kernel->InputAt(0).SetDataLayout(phi::DataLayout::SPARSE_COO);     \
   }                                                                    \
                                                                        \
@@ -94,8 +92,8 @@ void DivScalarCsrKernel(const Context& dev_ctx,
                      phi::sparse::prefix##CsrKernel,                   \
                      float,                                            \
                      double,                                           \
-                     phi::dtype::complex<float>,                       \
-                     phi::dtype::complex<double>) {                    \
+                     phi::complex64,                                   \
+                     phi::complex128) {                                \
     kernel->InputAt(0).SetDataLayout(phi::DataLayout::SPARSE_CSR);     \
   }
 
@@ -169,7 +167,7 @@ PD_REGISTER_KERNEL(isnan_coo,
                    phi::sparse::IsnanCooKernel,
                    float,
                    double,
-                   phi::dtype::float16,
+                   phi::float16,
                    int,
                    int64_t) {
   kernel->InputAt(0).SetDataLayout(phi::DataLayout::SPARSE_COO);
@@ -181,7 +179,7 @@ PD_REGISTER_KERNEL(isnan_csr,
                    phi::sparse::IsnanCsrKernel,
                    float,
                    double,
-                   phi::dtype::float16,
+                   phi::float16,
                    int,
                    int64_t) {
   kernel->InputAt(0).SetDataLayout(phi::DataLayout::SPARSE_CSR);

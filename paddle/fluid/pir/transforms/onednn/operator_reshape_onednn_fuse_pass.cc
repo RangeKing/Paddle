@@ -21,7 +21,7 @@
 #include "paddle/pir/include/pass/pass.h"
 #include "paddle/pir/include/pass/pass_registry.h"
 
-namespace {
+namespace pir {
 class FusedTransposeReshapeFusePattern : public paddle::drr::DrrPatternBase {
  private:
   std::string fusable_ops_;
@@ -56,6 +56,7 @@ class FusedTransposeReshapeFusePattern : public paddle::drr::DrrPatternBase {
     op_attrs.emplace("output_data_type", pat.Attr("output_data_type"));
     op_attrs.emplace("data_format", pat.Attr("data_format"));
     op_attrs.emplace("mkldnn_data_type", pat.Attr("mkldnn_data_type"));
+    op_attrs.emplace("onednn_data_type", pat.Attr("onednn_data_type"));
 
     const auto &op = pat.Op(fusable_ops_, op_attrs);
 
@@ -129,6 +130,7 @@ class FusedTransposeReshapeFusePattern : public paddle::drr::DrrPatternBase {
     fused_op_attrs.emplace("output_data_type", pat.Attr("output_data_type"));
     fused_op_attrs.emplace("data_format", pat.Attr("data_format"));
     fused_op_attrs.emplace("mkldnn_data_type", pat.Attr("mkldnn_data_type"));
+    fused_op_attrs.emplace("onednn_data_type", pat.Attr("onednn_data_type"));
 
     const auto &fused_op = res.Op(fused_ops_name_, fused_op_attrs);
 
@@ -166,6 +168,7 @@ class FcReshapeFusePattern : public paddle::drr::DrrPatternBase {
     op_attrs.emplace("padding_weights", pat.Attr("padding_weights"));
     op_attrs.emplace("use_quantizer", pat.Attr("use_quantizer"));
     op_attrs.emplace("mkldnn_data_type", pat.Attr("mkldnn_data_type"));
+    op_attrs.emplace("onednn_data_type", pat.Attr("onednn_data_type"));
     op_attrs.emplace("scale_in", pat.Attr("scale_in"));
     op_attrs.emplace("scale_weights", pat.Attr("scale_weights"));
     op_attrs.emplace("scale_out", pat.Attr("scale_out"));
@@ -241,6 +244,7 @@ class FcReshapeFusePattern : public paddle::drr::DrrPatternBase {
     fused_op_attrs.emplace("padding_weights", pat.Attr("padding_weights"));
     fused_op_attrs.emplace("use_quantizer", pat.Attr("use_quantizer"));
     fused_op_attrs.emplace("mkldnn_data_type", pat.Attr("mkldnn_data_type"));
+    fused_op_attrs.emplace("onednn_data_type", pat.Attr("onednn_data_type"));
     fused_op_attrs.emplace("scale_in", pat.Attr("scale_in"));
     fused_op_attrs.emplace("scale_weights", pat.Attr("scale_weights"));
     fused_op_attrs.emplace("scale_out", pat.Attr("scale_out"));
@@ -339,6 +343,7 @@ class TransposeReshapeFusePattern : public paddle::drr::DrrPatternBase {
     fused_op_attrs.emplace("output_data_type", res.StrAttr(""));
     fused_op_attrs.emplace("data_format", res.StrAttr("AnyLayout"));
     fused_op_attrs.emplace("mkldnn_data_type", res.StrAttr("float32"));
+    fused_op_attrs.emplace("onednn_data_type", res.StrAttr(""));
 
     const auto &fused_op = res.Op(fused_ops_name_, fused_op_attrs);
 
@@ -346,13 +351,13 @@ class TransposeReshapeFusePattern : public paddle::drr::DrrPatternBase {
   }
 };
 
-class OperatorReshapePass : public pir::PatternRewritePass {
+class OperatorReshapePass : public PatternRewritePass {
  public:
   OperatorReshapePass()
-      : pir::PatternRewritePass("operator_reshape_onednn_fuse_pass", 2) {}
+      : PatternRewritePass("operator_reshape_onednn_fuse_pass", 2) {}
 
-  pir::RewritePatternSet InitializePatterns(pir::IrContext *context) override {
-    pir::RewritePatternSet ps(context);
+  RewritePatternSet InitializePatterns(IrContext *context) override {
+    RewritePatternSet ps(context);
     int benefit_idx = 1;
 
     ps.Add(paddle::drr::Create<FcReshapeFusePattern>(
@@ -377,14 +382,10 @@ class OperatorReshapePass : public pir::PatternRewritePass {
   }
 };
 
-}  // namespace
-
-namespace pir {
-
 std::unique_ptr<Pass> CreateOperatorReshapeOneDNNPass() {
   return std::make_unique<OperatorReshapePass>();
 }
 
 }  // namespace pir
 
-REGISTER_IR_PASS(operator_reshape_onednn_fuse_pass, OperatorReshapePass);
+REGISTER_IR_PASS(operator_reshape_onednn_fuse_pass, pir::OperatorReshapePass);

@@ -21,11 +21,14 @@ import functools
 import inspect
 import sys
 import warnings
-from typing import Callable, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 from typing_extensions import ParamSpec
 
 import paddle
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 _InputT = ParamSpec("_InputT")
 _RetT = TypeVar("_RetT")
@@ -91,9 +94,9 @@ def deprecated(
             msg += f" since {_since}"
         msg += ", and will be removed in future versions."
         if len(_update_to) > 0:
-            assert _update_to.startswith(
-                "paddle."
-            ), f'Argument update_to must start with "paddle.", your value is "{update_to}"'
+            assert _update_to.startswith("paddle."), (
+                f'Argument update_to must start with "paddle.", your value is "{update_to}"'
+            )
             msg += f' Please use "{_update_to}" instead.'
         if len(_reason) > 0:
             msg += f"\n    Reason: {_reason}"

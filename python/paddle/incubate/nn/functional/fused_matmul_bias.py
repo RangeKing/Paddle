@@ -20,6 +20,7 @@ from paddle import _C_ops, _legacy_C_ops
 from paddle.base.layer_helper import LayerHelper
 from paddle.framework import (
     in_dynamic_mode,
+    in_dynamic_or_pir_mode,
     in_pir_mode,
 )
 from paddle.tensor.linalg import matmul
@@ -54,7 +55,7 @@ def fused_matmul_bias(
         Tensor: the output Tensor.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +SKIP('fused_gemm_epilogue is only supported when CUDA version >= 11.6')
             >>> # doctest: +REQUIRES(env:GPU)
@@ -67,15 +68,11 @@ def fused_matmul_bias(
             >>> bias = paddle.randn([5])
             >>> out = fused_matmul_bias(x, y, bias)
             >>> print(out.shape)
-            [3, 5]
+            paddle.Size([3, 5])
     """
     if bias is None:
         return matmul(x, y, transpose_x, transpose_y, name)
-    if in_dynamic_mode():
-        return _legacy_C_ops.fused_gemm_epilogue(
-            x, y, bias, 'trans_x', transpose_x, 'trans_y', transpose_y
-        )
-    if in_pir_mode():
+    if in_dynamic_or_pir_mode():
         out, _ = _C_ops.fused_gemm_epilogue(
             x, y, bias, transpose_x, transpose_y, "none"
         )
@@ -115,7 +112,7 @@ def fused_linear(
         Tensor: the output Tensor.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +SKIP('fused_gemm_epilogue is only supported when CUDA version >= 11.6')
             >>> # doctest: +REQUIRES(env:GPU)
@@ -128,7 +125,7 @@ def fused_linear(
             >>> bias = paddle.randn([5])
             >>> out = fused_linear(x, weight, bias)
             >>> print(out.shape)
-            [3, 5]
+            paddle.Size([3, 5])
     """
     return fused_matmul_bias(x, weight, bias, False, transpose_weight, name)
 
@@ -158,12 +155,14 @@ def fused_linear_activation(
         Tensor: the output Tensor.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +SKIP('fused_gemm_epilogue is only supported when CUDA version >= 11.6')
             >>> # doctest: +REQUIRES(env:GPU)
             >>> import paddle
-            >>> from paddle.incubate.nn.functional import fused_linear_activation
+            >>> from paddle.incubate.nn.functional import (
+            ...     fused_linear_activation,
+            ... )
 
             >>> paddle.set_device('gpu')
             >>> x = paddle.randn([3, 4])
@@ -171,7 +170,7 @@ def fused_linear_activation(
             >>> bias = paddle.randn([5])
             >>> out = fused_linear_activation(x, weight, bias)
             >>> print(out.shape)
-            [3, 5]
+            paddle.Size([3, 5])
     """
     if activation is None:
         activation = "none"

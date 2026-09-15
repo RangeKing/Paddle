@@ -20,11 +20,10 @@ limitations under the License. */
 #include "paddle/phi/infermeta/spmd_rules/utils.h"
 
 namespace phi::distributed {
-using phi::distributed::auto_parallel::str_join;
 
 SpmdInfo NumelInferSpmd(const DistMetaTensor& x) {
   std::string alphabet = "abcdefghijklmnopqrstuvwxyz";
-  auto x_shape = common::vectorize(x.dims());
+  auto x_shape = vectorize(x.dims());
   int x_ndim = x_shape.size();
   auto x_dist_attr_src = x.dist_attr();
   std::vector<int64_t> x_dims_mapping = x_dist_attr_src.dims_mapping();
@@ -36,7 +35,7 @@ SpmdInfo NumelInferSpmd(const DistMetaTensor& x) {
                         x_ndim,
                         x_dims_mapping.size()));
   TensorDistAttr out_dist_attr = CopyTensorDistAttrForOutput(x_dist_attr_src);
-  out_dist_attr.set_dims_mapping({});
+  out_dist_attr.set_dims_mapping(std::vector<int64_t>{});
   std::vector<int64_t> partial_on_dims;
   const auto& dim_mapping = x_dims_mapping;
   for (int i = 0; i < x_ndim; ++i) {

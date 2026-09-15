@@ -11,13 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 import os
 import random
 import sys
 import unittest
 
 import numpy as np
+from op_test import get_device_place, is_custom_device
 from test_imperative_base import new_program_scope
 
 import paddle
@@ -156,7 +156,7 @@ class TestDygraphDeepCF(unittest.TestCase):
 
         self.batch_size = int(os.environ.get('BATCH_SIZE', 128))
         self.num_batches = int(os.environ.get('NUM_BATCHES', 5))
-        self.num_epoches = int(os.environ.get('NUM_EPOCHES', 1))
+        self.num_epochs = int(os.environ.get('NUM_EPOCHS', 1))
 
     def get_data(self):
         user_ids = []
@@ -273,11 +273,11 @@ class TestDygraphDeepCF(unittest.TestCase):
 
             exe = base.Executor(
                 base.CPUPlace()
-                if not core.is_compiled_with_cuda()
-                else base.CUDAPlace(0)
+                if not (core.is_compiled_with_cuda() or is_custom_device())
+                else get_device_place()
             )
             exe.run(startup)
-            for e in range(self.num_epoches):
+            for e in range(self.num_epochs):
                 sys.stderr.write(f'epoch {e}\n')
                 for slice in range(
                     0, self.batch_size * self.num_batches, self.batch_size
@@ -307,7 +307,7 @@ class TestDygraphDeepCF(unittest.TestCase):
 
             deepcf = DeepCF(num_users, num_items, matrix)
             adam = paddle.optimizer.Adam(0.01, parameters=deepcf.parameters())
-            for e in range(self.num_epoches):
+            for e in range(self.num_epochs):
                 sys.stderr.write(f'epoch {e}\n')
                 for slice in range(
                     0, self.batch_size * self.num_batches, self.batch_size
@@ -343,7 +343,7 @@ class TestDygraphDeepCF(unittest.TestCase):
             deepcf2 = DeepCF(num_users, num_items, matrix)
             adam2 = paddle.optimizer.Adam(0.01, parameters=deepcf2.parameters())
             base.set_flags({'FLAGS_sort_sum_gradient': True})
-            for e in range(self.num_epoches):
+            for e in range(self.num_epochs):
                 sys.stderr.write(f'epoch {e}\n')
                 for slice in range(
                     0, self.batch_size * self.num_batches, self.batch_size
@@ -379,7 +379,7 @@ class TestDygraphDeepCF(unittest.TestCase):
             deepcf = DeepCF(num_users, num_items, matrix)
             adam = paddle.optimizer.Adam(0.01, parameters=deepcf.parameters())
 
-            for e in range(self.num_epoches):
+            for e in range(self.num_epochs):
                 sys.stderr.write(f'epoch {e}\n')
                 for slice in range(
                     0, self.batch_size * self.num_batches, self.batch_size

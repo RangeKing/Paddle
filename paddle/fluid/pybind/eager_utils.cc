@@ -10,17 +10,13 @@ See the License for the specific language governing permissions and
 limitations under the License. */
 
 #include "paddle/fluid/pybind/eager_utils.h"
-#include <Python.h>
-#include "paddle/common/exception.h"
-#include "paddle/pir/include/core/value.h"
-// Avoid a problem with copysign defined in pyconfig.h on Windows.
-#ifdef copysign
-#undef copysign
-#endif
 
+#include <Python.h>
 #include <string>
 #include <vector>
 
+#include <variant>
+#include "paddle/common/exception.h"
 #include "paddle/common/flags.h"
 #include "paddle/fluid/eager/accumulation/accumulation_node.h"
 #include "paddle/fluid/eager/api/all.h"
@@ -31,13 +27,18 @@ limitations under the License. */
 #include "paddle/fluid/framework/scope.h"
 #include "paddle/fluid/framework/scope_guard.h"
 #include "paddle/fluid/jit/function.h"
+#include "paddle/fluid/pir/dialect/distributed/ir/dist_type.h"
 #include "paddle/fluid/pir/dialect/operator/ir/op_type.h"
+#include "paddle/fluid/pir/dialect/operator/ir/pd_api.h"
 #include "paddle/fluid/pir/dialect/operator/utils/utils.h"
+#include "paddle/fluid/pir/utils/general_functions.h"
 #include "paddle/fluid/pir/utils/name_analysis.h"
 #include "paddle/fluid/platform/enforce.h"
+#include "paddle/fluid/pybind/data_type_caster.h"
 #include "paddle/fluid/pybind/eager.h"
 #include "paddle/fluid/pybind/op_function_common.h"
 #include "paddle/fluid/pybind/pir.h"
+#include "paddle/fluid/pybind/size.h"
 #include "paddle/fluid/pybind/tensor_py.h"
 #include "paddle/phi/api/ext/op_meta_info.h"
 #include "paddle/phi/common/data_type.h"
@@ -48,9 +49,10 @@ limitations under the License. */
 #include "paddle/phi/core/memory/allocation/allocator.h"
 #include "paddle/phi/core/tensor_utils.h"
 #include "paddle/pir/include/core/attribute.h"
-
+#include "paddle/pir/include/core/value.h"
 COMMON_DECLARE_bool(check_nan_inf);
 COMMON_DECLARE_int32(check_nan_inf_level);
+COMMON_DECLARE_int32(call_stack_level);
 
 using egr::ConvertToDistTensor;
 
@@ -68,6 +70,7 @@ extern PyTypeObject* g_cudaplace_pytype;
 extern PyTypeObject* g_cpuplace_pytype;
 extern PyTypeObject* g_xpuplace_pytype;
 extern PyTypeObject* g_cudapinnedplace_pytype;
+extern PyTypeObject* g_xpupinnedplace_pytype;
 extern PyTypeObject* g_customplace_pytype;
 extern PyTypeObject* g_framework_tensor_pytype;
 extern PyTypeObject* g_framework_densetensorarray_pytype;
@@ -78,53 +81,133 @@ extern PyTypeObject* g_placement_shard_pytype;
 extern PyTypeObject* g_placement_replicated_pytype;
 extern PyTypeObject* g_placement_partial_pytype;
 
-int TensorDtype2NumpyDtype(phi::DataType dtype) {
+int TensorDtype2NumpyDtype(DataType dtype) {
   switch (dtype) {
-    case phi::DataType::BOOL:
+    case DataType::BOOL:
       return pybind11::detail::npy_api::NPY_BOOL_;
-    case phi::DataType::INT8:
+    case DataType::INT8:
       return pybind11::detail::npy_api::NPY_INT8_;
-    case phi::DataType::UINT8:
+    case DataType::UINT8:
       return pybind11::detail::npy_api::NPY_UINT8_;
-    case phi::DataType::INT16:
+    case DataType::UINT16:
+      return pybind11::detail::npy_api::NPY_UINT16_;
+    case DataType::UINT32:
+      return pybind11::detail::npy_api::NPY_UINT32_;
+    case DataType::UINT64:
+      return pybind11::detail::npy_api::NPY_UINT64_;
+    case DataType::INT16:
       return pybind11::detail::npy_api::NPY_INT16_;
-    case phi::DataType::INT32:
+    case DataType::INT32:
       return pybind11::detail::npy_api::NPY_INT32_;
-    case phi::DataType::INT64:
+    case DataType::INT64:
       return pybind11::detail::npy_api::NPY_INT64_;
-    case phi::DataType::BFLOAT16:
+    case DataType::BFLOAT16:
       return pybind11::detail::NPY_UINT16_;
-    case phi::DataType::FLOAT16:
+    case DataType::FLOAT16:
       return pybind11::detail::NPY_FLOAT16_;
-    case phi::DataType::FLOAT32:
+    case DataType::FLOAT32:
       return pybind11::detail::npy_api::NPY_FLOAT_;
-    case phi::DataType::FLOAT64:
+    case DataType::FLOAT64:
       return pybind11::detail::npy_api::NPY_DOUBLE_;
-    case phi::DataType::COMPLEX64:
+    case DataType::COMPLEX64:
       return pybind11::detail::NPY_COMPLEX64;
-    case phi::DataType::COMPLEX128:
+    case DataType::COMPLEX128:
       return pybind11::detail::NPY_COMPLEX128;
-    case phi::DataType::PSTRING:
+    case DataType::PSTRING:
       return pybind11::detail::npy_api::NPY_UNICODE_;
-    case phi::DataType::FLOAT8_E4M3FN:
+    case DataType::FLOAT8_E4M3FN:
       return pybind11::detail::npy_api::NPY_BYTE_;
-    case phi::DataType::FLOAT8_E5M2:
+    case DataType::FLOAT8_E5M2:
       return pybind11::detail::npy_api::NPY_BYTE_;
     default:
       PADDLE_THROW(common::errors::InvalidArgument(
-          "Unknow phi::DataType, the int value = %d.",
-          static_cast<int>(dtype)));
+          "Unknown DataType, the int value = %d.", static_cast<int>(dtype)));
       return 0;
+  }
+}
+
+DataType NumpyDtype2TensorDtype(const int& np_dtype) {
+  switch (np_dtype) {
+    case pybind11::detail::npy_api::NPY_BOOL_:
+      return DataType::BOOL;
+    case pybind11::detail::npy_api::NPY_INT8_:
+      return DataType::INT8;
+    case pybind11::detail::npy_api::NPY_UINT8_:
+      return DataType::UINT8;
+    case pybind11::detail::npy_api::NPY_INT16_:
+      return DataType::INT16;
+    case pybind11::detail::npy_api::NPY_INT32_:
+      return DataType::INT32;
+    case pybind11::detail::npy_api::NPY_INT64_:
+      return DataType::INT64;
+    case pybind11::detail::NPY_UINT16_:
+      return DataType::BFLOAT16;
+    case pybind11::detail::NPY_FLOAT16_:
+      return DataType::FLOAT16;
+    case pybind11::detail::npy_api::NPY_FLOAT_:
+      return DataType::FLOAT32;
+    case pybind11::detail::npy_api::NPY_DOUBLE_:
+      return DataType::FLOAT64;
+    case pybind11::detail::NPY_COMPLEX64:
+      return DataType::COMPLEX64;
+    case pybind11::detail::NPY_COMPLEX128:
+      return DataType::COMPLEX128;
+    case pybind11::detail::npy_api::NPY_UNICODE_:
+      return DataType::PSTRING;
+    default:
+      PADDLE_THROW(common::errors::InvalidArgument(
+          "Unknown numpy dtype, the int value = %d.", np_dtype));
+      return DataType::UNDEFINED;
+  }
+}
+
+DataType StrDtype2TensorDtype(const std::string& np_dtype) {
+  if (np_dtype == "bool") {
+    return DataType::BOOL;
+  } else if (np_dtype == "int8") {
+    return DataType::INT8;
+  } else if (np_dtype == "uint8") {
+    return DataType::UINT8;
+  } else if (np_dtype == "int16") {
+    return DataType::INT16;
+  } else if (np_dtype == "int32") {
+    return DataType::INT32;
+  } else if (np_dtype == "int64") {
+    return DataType::INT64;
+  } else if (np_dtype == "bfloat16") {
+    return DataType::BFLOAT16;
+  } else if (np_dtype == "float16") {
+    return DataType::FLOAT16;
+  } else if (np_dtype == "float32") {
+    return DataType::FLOAT32;
+  } else if (np_dtype == "float64") {
+    return DataType::FLOAT64;
+  } else if (np_dtype == "complex64") {
+    return DataType::COMPLEX64;
+  } else if (np_dtype == "complex128") {
+    return DataType::COMPLEX128;
+  } else if (np_dtype == "float8_e4m3fn") {
+    return DataType::FLOAT8_E4M3FN;
+  } else if (np_dtype == "float8_e5m2") {
+    return DataType::FLOAT8_E5M2;
+  } else if (np_dtype == "unicode") {
+    return DataType::PSTRING;
+  } else {
+    PADDLE_THROW(common::errors::InvalidArgument(
+        "Unknown numpy dtype, the value = %s.", np_dtype));
+    return DataType::UNDEFINED;
   }
 }
 
 bool PyObject_CheckStr(PyObject* obj) { return PyUnicode_Check(obj); }
 
 bool PyObject_CheckIRValue(PyObject* obj) {
+  if (obj == nullptr) return false;
   return PyObject_TypeCheck(obj, g_ir_value_pytype);
 }
 
 bool PyObject_CheckIRVectorOfValue(PyObject* obj) {
+  if (obj == nullptr) return false;
   if (PyList_Check(obj)) {
     Py_ssize_t len = PyList_Size(obj);
     PyObject* item = nullptr;
@@ -157,6 +240,40 @@ bool PyObject_CheckIRVectorOfValue(PyObject* obj) {
   } else {
     return false;
   }
+}
+
+bool PyObject_CheckIRVectorOfValueOrLong(PyObject* obj) {
+  if (obj == nullptr) return false;
+  if (!PyList_Check(obj) && !PyTuple_Check(obj)) {
+    return false;
+  }
+
+  Py_ssize_t len = PySequence_Size(obj);
+  if (len == 0) {
+    return false;
+  }
+
+  bool is_ir_value = false, is_long = false;
+
+  for (Py_ssize_t i = 0; i < len; ++i) {
+    PyObject* item = PySequence_GetItem(obj, i);  // Returns new reference
+    if (!item) {
+      return false;
+    }
+
+    if (PyObject_CheckIRValue(item)) {
+      is_ir_value = true;
+    } else if (PyObject_CheckLong(item)) {
+      is_long = true;
+    } else {
+      Py_DECREF(item);
+      return false;
+    }
+
+    Py_DECREF(item);  // Because PySequence_GetItem returns new reference
+  }
+
+  return is_ir_value && is_long;
 }
 
 bool CastPyArg2AttrBoolean(PyObject* obj, ssize_t arg_pos) {
@@ -235,7 +352,9 @@ double CastPyArg2AttrDouble(PyObject* obj, ssize_t arg_pos) {
 }
 
 std::string CastPyArg2AttrString(PyObject* obj, ssize_t arg_pos) {
-  if (PyObject_CheckStr(obj)) {
+  if (obj == Py_None) {
+    return "";
+  } else if (PyObject_CheckStr(obj)) {
     Py_ssize_t size = 0;
     const char* data = nullptr;
     data = PyUnicode_AsUTF8AndSize(obj, &size);
@@ -255,19 +374,37 @@ std::shared_ptr<imperative::VarBase> CastPyArg2VarBase(PyObject* obj,
   return py::cast<std::shared_ptr<imperative::VarBase>>(obj);
 }
 
+/**
+ * @brief Get the string representation of the current Python stack
+ *
+ * Use Python’s traceback module to obtain the current stack information and
+ * convert it into a string representation for return.
+ *
+ * @return String representation of the current Python stack
+ */
+std::string GetPythonStack() {
+  pybind11::gil_scoped_acquire gil;
+  PyObject* mod = PyImport_ImportModule("traceback");
+  PyObject* traceback_list = PyObject_CallMethod(mod, "format_stack", "");
+  std::string str = "";
+  for (Py_ssize_t i = 0; i < PyList_Size(traceback_list); i++) {
+    PyObject* line = PyList_GetItem(traceback_list, i);
+    str += py::str(PyUnicode_AsUTF8(line));
+  }
+  return str;
+}
 void SetPythonStack() {
   if (FLAGS_check_nan_inf && FLAGS_check_nan_inf_level == 0) {
     VLOG(4) << "this is SetPythonStack";
-    pybind11::gil_scoped_acquire gil;
-    PyObject* mod = PyImport_ImportModule("traceback");
-    PyObject* traceback_list = PyObject_CallMethod(mod, "format_stack", "");
-    std::string str = "";
-    for (Py_ssize_t i = 0; i < PyList_Size(traceback_list); i++) {
-      PyObject* line = PyList_GetItem(traceback_list, i);
-      str += py::str(PyUnicode_AsUTF8(line));
-    }
+    std::string str = GetPythonStack();
     std::string last = str + egr::Controller::Instance().GetPythonStack();
     egr::Controller::Instance().SetPythonStack(last);
+  }
+
+  if (FLAGS_call_stack_level == 3) {
+    VLOG(6) << "this is SetPythonStack";
+    std::string str = GetPythonStack();
+    egr::Controller::Instance().SetPythonStack(str);
   }
 }
 
@@ -284,9 +421,9 @@ std::shared_ptr<jit::Function> CastPyArg2JitFunction(PyObject* obj,
   }
 }
 
-std::vector<paddle::Tensor> CastPyArg2VectorOfTensor(
+std::vector<Tensor> CastPyArg2VectorOfTensor(
     PyObject* obj, ssize_t arg_pos, const phi::distributed::ProcessMesh* mesh) {
-  std::vector<paddle::Tensor> result;
+  std::vector<Tensor> result;
   const phi::distributed::ProcessMesh* local_mesh = mesh;
   int mesh_start_index = -1;
   if (PyList_Check(obj)) {
@@ -295,7 +432,7 @@ std::vector<paddle::Tensor> CastPyArg2VectorOfTensor(
     for (Py_ssize_t i = 0; i < len; i++) {
       item = PyList_GetItem(obj, i);
       if (PyObject_TypeCheck(item, p_tensor_type)) {
-        paddle::Tensor& tensor = reinterpret_cast<TensorObject*>(item)->tensor;
+        Tensor& tensor = reinterpret_cast<TensorObject*>(item)->tensor;
         if (local_mesh) {
           ConvertToDistTensor(&tensor, local_mesh);
         } else {
@@ -323,7 +460,7 @@ std::vector<paddle::Tensor> CastPyArg2VectorOfTensor(
     for (Py_ssize_t i = 0; i < mesh_start_index; i++) {
       item = PyList_GetItem(obj, i);
       if (PyObject_TypeCheck(item, p_tensor_type)) {
-        paddle::Tensor& tensor = reinterpret_cast<TensorObject*>(item)->tensor;
+        Tensor& tensor = reinterpret_cast<TensorObject*>(item)->tensor;
         ConvertToDistTensor(&tensor, local_mesh);
         result[i] = tensor;
       }
@@ -334,7 +471,7 @@ std::vector<paddle::Tensor> CastPyArg2VectorOfTensor(
     for (Py_ssize_t i = 0; i < len; i++) {
       item = PyTuple_GetItem(obj, i);
       if (PyObject_TypeCheck(item, p_tensor_type)) {
-        paddle::Tensor& tensor = reinterpret_cast<TensorObject*>(item)->tensor;
+        Tensor& tensor = reinterpret_cast<TensorObject*>(item)->tensor;
         if (local_mesh) {
           ConvertToDistTensor(&tensor, local_mesh);
         } else {
@@ -362,7 +499,7 @@ std::vector<paddle::Tensor> CastPyArg2VectorOfTensor(
     for (Py_ssize_t i = 0; i < mesh_start_index; i++) {
       item = PyTuple_GetItem(obj, i);
       if (PyObject_TypeCheck(item, p_tensor_type)) {
-        paddle::Tensor& tensor = reinterpret_cast<TensorObject*>(item)->tensor;
+        Tensor& tensor = reinterpret_cast<TensorObject*>(item)->tensor;
         ConvertToDistTensor(&tensor, local_mesh);
         result[i] = tensor;
       }
@@ -593,18 +730,20 @@ std::vector<std::vector<size_t>> CastPyArg2VectorOfVectorOfSize_t(
   return result;
 }
 
-phi::Place CastPyArg2Place(PyObject* obj, ssize_t arg_pos) {
-  phi::Place place;
+Place CastPyArg2Place(PyObject* obj, ssize_t arg_pos) {
+  Place place;
   if (PyObject_TypeCheck(obj, g_place_pytype)) {  // NOLINT
-    place = ::pybind11::handle(obj).cast<phi::Place>();
+    place = ::pybind11::handle(obj).cast<Place>();
   } else if (PyObject_TypeCheck(obj, g_cudaplace_pytype)) {
-    place = ::pybind11::handle(obj).cast<phi::GPUPlace>();
+    place = ::pybind11::handle(obj).cast<GPUPlace>();
   } else if (PyObject_TypeCheck(obj, g_cpuplace_pytype)) {
-    place = ::pybind11::handle(obj).cast<phi::CPUPlace>();
+    place = ::pybind11::handle(obj).cast<CPUPlace>();
   } else if (PyObject_TypeCheck(obj, g_xpuplace_pytype)) {
     place = ::pybind11::handle(obj).cast<phi::XPUPlace>();
   } else if (PyObject_TypeCheck(obj, g_cudapinnedplace_pytype)) {
     place = ::pybind11::handle(obj).cast<phi::GPUPinnedPlace>();
+  } else if (PyObject_TypeCheck(obj, g_xpupinnedplace_pytype)) {
+    place = ::pybind11::handle(obj).cast<phi::XPUPinnedPlace>();
   } else if (PyObject_TypeCheck(obj, g_customplace_pytype)) {
     place = ::pybind11::handle(obj).cast<phi::CustomPlace>();
   } else {
@@ -612,7 +751,7 @@ phi::Place CastPyArg2Place(PyObject* obj, ssize_t arg_pos) {
         "argument (position %d) must be "
         "one "
         "of(Place,CUDAPlace,CPUPlace,XPUPlace,CUDAPinnedPlace,"
-        "CustomPlace), "
+        "XPUPinnedPlace, CustomPlace), "
         "but got %s",
         arg_pos + 1,
         reinterpret_cast<PyTypeObject*>(obj->ob_type)->tp_name));
@@ -701,9 +840,9 @@ std::vector<phi::distributed::ProcessMesh> CastPyArg2VectorOfProcessMesh(
 #endif
 }
 
-phi::DenseTensor CastPyArg2FrameworkTensor(PyObject* obj, ssize_t arg_pos) {
+DenseTensor CastPyArg2FrameworkTensor(PyObject* obj, ssize_t arg_pos) {
   if (PyObject_TypeCheck(obj, g_framework_tensor_pytype)) {
-    return ::pybind11::handle(obj).cast<phi::DenseTensor>();
+    return ::pybind11::handle(obj).cast<DenseTensor>();
   } else {
     PADDLE_THROW(common::errors::InvalidType(
         "argument (position %d) must be "
@@ -713,16 +852,16 @@ phi::DenseTensor CastPyArg2FrameworkTensor(PyObject* obj, ssize_t arg_pos) {
   }
 }
 
-std::vector<phi::DenseTensor> CastPyArg2VectorOfTensorBase(PyObject* obj,
-                                                           ssize_t arg_pos) {
-  std::vector<phi::DenseTensor> result;
+std::vector<DenseTensor> CastPyArg2VectorOfTensorBase(PyObject* obj,
+                                                      ssize_t arg_pos) {
+  std::vector<DenseTensor> result;
   if (PyList_Check(obj)) {
     Py_ssize_t len = PyList_Size(obj);
     PyObject* item = nullptr;
     for (Py_ssize_t i = 0; i < len; i++) {
       item = PyList_GetItem(obj, i);
       if (PyObject_TypeCheck(item, g_framework_tensor_pytype)) {
-        result.emplace_back(::pybind11::handle(item).cast<phi::DenseTensor>());
+        result.emplace_back(::pybind11::handle(item).cast<DenseTensor>());
       } else {
         PADDLE_THROW(common::errors::InvalidType(
             "argument (position %d) must be "
@@ -738,7 +877,7 @@ std::vector<phi::DenseTensor> CastPyArg2VectorOfTensorBase(PyObject* obj,
     for (Py_ssize_t i = 0; i < len; i++) {
       item = PyTuple_GetItem(obj, i);
       if (PyObject_TypeCheck(item, g_framework_tensor_pytype)) {
-        result.emplace_back(::pybind11::handle(item).cast<phi::DenseTensor>());
+        result.emplace_back(::pybind11::handle(item).cast<DenseTensor>());
       } else {
         PADDLE_THROW(common::errors::InvalidType(
             "argument (position %d) must be "
@@ -757,7 +896,7 @@ std::vector<phi::DenseTensor> CastPyArg2VectorOfTensorBase(PyObject* obj,
   } else if (obj == Py_None) {
     return {};
   } else if (PyObject_TypeCheck(obj, g_framework_tensor_pytype)) {
-    return {::pybind11::handle(obj).cast<phi::DenseTensor>()};
+    return {::pybind11::handle(obj).cast<DenseTensor>()};
   } else {
     PADDLE_THROW(common::errors::InvalidType(
         "argument (position %d) must be "
@@ -778,7 +917,7 @@ Placements CastPyArg2VectorOfPlacement(PyObject* obj, ssize_t arg_pos) {
   auto check_and_emplace = [&](PyObject* item, ssize_t i) {
     if (PyObject_TypeCheck(item, g_placement_shard_pytype)) {  // NOLINT
       result.emplace_back(
-          std::make_shared<Shard>(::pybind11::handle(item).cast<Shard>()));
+          ::pybind11::handle(item).cast<std::shared_ptr<Shard>>());
     } else if (PyObject_TypeCheck(item, g_placement_replicated_pytype)) {
       result.emplace_back(std::make_shared<Replicate>(
           ::pybind11::handle(item).cast<Replicate>()));
@@ -827,26 +966,37 @@ paddle::framework::proto::VarType::Type CastPyArg2ProtoType(PyObject* obj,
   return dtype;
 }
 
-paddle::DataType CastPyArg2DataTypeDirectly(PyObject* obj,
-                                            const std::string& op_type,
-                                            ssize_t arg_pos) {
+DataType CastPyArg2DataTypeDirectly(PyObject* obj,
+                                    const std::string& op_type,
+                                    ssize_t arg_pos) {
   if (obj == Py_None) {
-    return phi::DataType::UNDEFINED;
+    return DataType::UNDEFINED;
   }
 
-  paddle::DataType dtype;
+  DataType dtype;
   if (PyObject_TypeCheck(obj, g_data_type_pytype)) {
-    dtype = ::pybind11::handle(obj).cast<paddle::DataType>();
+    dtype = ::pybind11::handle(obj).cast<DataType>();
   } else {
     PADDLE_THROW(common::errors::InvalidType(
         "%s: argument (position %d) must be "
-        "one of paddle::DataType, "
+        "one of DataType, "
         "but got %s",
         op_type,
         arg_pos + 1,
         reinterpret_cast<PyTypeObject*>(obj->ob_type)->tp_name));
   }
   return dtype;
+}
+
+DataType CastPyArg2DataTypeDirectly(PyObject* obj,
+                                    const std::string& op_type,
+                                    ssize_t arg_pos,
+                                    DataType default_value) {
+  if (obj == nullptr) {
+    return default_value;
+  } else {
+    return CastPyArg2DataTypeDirectly(obj, op_type, arg_pos);
+  }
 }
 
 phi::Vocab CastPyArg2Vocab(PyObject* obj, ssize_t arg_pos) {
@@ -903,7 +1053,7 @@ PyObject* ToPyObject(const std::string& value) {
   return PyUnicode_FromString(value.c_str());
 }
 
-PyObject* ToPyObject(const paddle::Tensor& value,
+PyObject* ToPyObject(const Tensor& value,
                      PyObject* args,
                      const std::map<ssize_t, ssize_t>& inplace_var_idx_map) {
   if (!inplace_var_idx_map.empty() && inplace_var_idx_map.count(0)) {
@@ -922,6 +1072,49 @@ PyObject* ToPyObject(PyObject* args, ssize_t arg_idx) {
   PyObject* obj = PyTuple_GET_ITEM(args, arg_idx);
   Py_INCREF(obj);
   return obj;
+}
+
+PyObject* ToPyObject(
+    const Tensor& value,
+    PyObject* args,
+    PyObject* kwargs,
+    const std::map<ssize_t, ssize_t>& inplace_var_idx_map,
+    const std::map<ssize_t, std::vector<std::string>>& inplace_var_name_map) {
+  if (!inplace_var_idx_map.empty() && inplace_var_idx_map.count(0)) {
+    return ToPyObject(
+        args, kwargs, inplace_var_idx_map.at(0), inplace_var_name_map.at(0));
+  } else {
+    return ToPyObject(value);
+  }
+}
+
+PyObject* ToPyObject(PyObject* args,
+                     PyObject* kwargs,
+                     ssize_t arg_idx,
+                     std::vector<std::string> arg_names) {
+  // For inplace op, directly return the input PyObject of the inplace tensor.
+  // Used for apis with single output
+  // [Parameter]
+  // args: Input PyObject.
+  // kwargs: Input PyObject (keyword arg).
+  // arg_idx: Index of inplace PyObject in input args. Used to find the input
+  // arg_names: Name list of inplace PyObject in input args. Used to find the
+  // input
+  if (PyTuple_Size(args) > arg_idx) {
+    // inplace PyObject in args
+    PyObject* obj = PyTuple_GET_ITEM(args, arg_idx);
+    Py_INCREF(obj);
+    return obj;
+  } else {
+    // inplace PyObject in kwargs
+    for (size_t i = 0; i < arg_names.size(); i++) {
+      PyObject* obj = PyDict_GetItemString(kwargs, arg_names[i].c_str());
+      if (obj) {
+        Py_INCREF(obj);
+        return obj;
+      }
+    }
+  }
 }
 
 PyObject* ToPyObject(const std::vector<bool>& value) {
@@ -994,7 +1187,7 @@ PyObject* ToPyObject(const std::vector<std::vector<size_t>>& value) {
   return result;
 }
 
-PyObject* ToPyObject(const std::vector<paddle::Tensor>& value,
+PyObject* ToPyObject(const std::vector<Tensor>& value,
                      bool return_py_none_if_not_initialize) {
   // NOTE(liuyuanle): I encountered a bug(access violation) in windows. ref to
   // https://stackoverflow.com/questions/55598839/how-to-fix-access-violation-error-when-returning-pyobject-from-c-function-usin
@@ -1003,14 +1196,14 @@ PyObject* ToPyObject(const std::vector<paddle::Tensor>& value,
   PyGILState_Release(gstate);
 
   for (size_t i = 0; i < value.size(); i++) {
-    if (!value[i].initialized() && return_py_none_if_not_initialize) {
+    if (!value[i].has_allocation() && return_py_none_if_not_initialize) {
       Py_INCREF(Py_None);
       PyList_SET_ITEM(result, static_cast<Py_ssize_t>(i), Py_None);
     } else {
       PyObject* obj = p_tensor_type->tp_alloc(p_tensor_type, 0);
       if (obj) {
         auto v = reinterpret_cast<TensorObject*>(obj);
-        new (&(v->tensor)) paddle::Tensor();
+        new (&(v->tensor)) Tensor();
         v->tensor = value[i];
       } else {
         PADDLE_THROW(common::errors::Fatal(
@@ -1023,7 +1216,7 @@ PyObject* ToPyObject(const std::vector<paddle::Tensor>& value,
   return result;
 }
 
-PyObject* ToPyObject(const std::vector<std::vector<paddle::Tensor>>& value,
+PyObject* ToPyObject(const std::vector<std::vector<Tensor>>& value,
                      bool return_py_none_if_not_initialize) {
   PyObject* result = PyList_New((Py_ssize_t)value.size());
 
@@ -1036,7 +1229,7 @@ PyObject* ToPyObject(const std::vector<std::vector<paddle::Tensor>>& value,
   return result;
 }
 
-PyObject* ToPyObject(const phi::Place& value) {
+PyObject* ToPyObject(const Place& value) {
   auto obj = ::pybind11::cast(value);
   obj.inc_ref();
   return obj.ptr();
@@ -1060,13 +1253,19 @@ PyObject* ToPyObject(const phi::DenseTensor* value) {
   return obj.ptr();
 }
 
-PyObject* ToPyObject(const phi::DataType& dtype) {
-  auto obj = ::pybind11::cast(dtype);
-  obj.inc_ref();
-  return obj.ptr();
+PyObject* ToPyObject(const DataType& dtype) {
+  auto& cache = paddle::pybind::DataTypeSingletonCache::Instance();
+  PyObject* cached = cache.Get(dtype);
+  if (cached) {
+    Py_INCREF(cached);
+    return cached;
+  }
+  // Fallback: cache not initialized yet (should not happen in normal flow)
+  PADDLE_THROW(common::errors::Fatal(
+      "DataTypeSingletonCache is not initialized when ToPyObject is called."));
 }
 
-PyObject* ToPyObject(const std::vector<phi::DataType>& dtypes) {
+PyObject* ToPyObject(const std::vector<DataType>& dtypes) {
   PyObject* result = PyList_New((Py_ssize_t)dtypes.size());
   for (size_t i = 0; i < dtypes.size(); i++) {
     PyList_SET_ITEM(result, static_cast<Py_ssize_t>(i), ToPyObject(dtypes[i]));
@@ -1141,13 +1340,19 @@ PyObject* ToPyObject(const phi::distributed::Placement& value) {
   return obj.ptr();
 }
 
+PyObject* ToPyObject(std::shared_ptr<phi::distributed::Placement> value) {
+  auto obj = ::pybind11::cast(value, py::return_value_policy::reference);
+  obj.inc_ref();
+  return obj.ptr();
+}
+
 PyObject* ToPyObject(const phi::distributed::Placements& values) {
 #ifdef PADDLE_WITH_DISTRIBUTE
   PyObject* result = PyList_New((Py_ssize_t)values.size());
 
   for (size_t i = 0; i < values.size(); i++) {
     auto& value = values[i];
-    PyList_SET_ITEM(result, static_cast<Py_ssize_t>(i), ToPyObject(*value));
+    PyList_SET_ITEM(result, static_cast<Py_ssize_t>(i), ToPyObject(value));
   }
 
   return result;
@@ -1255,7 +1460,7 @@ PyObject* ToPyObject(const phi::Vocab& value) {
 
 // For Final State Dygraph,
 // We directly use paddle::optional(Tensor) as dispensable Tensor
-paddle::optional<paddle::Tensor> GetOptionalTensorFromArgs(
+paddle::optional<Tensor> GetOptionalTensorFromArgs(
     const std::string& op_type,
     const std::string& arg_name,
     PyObject* args,
@@ -1263,10 +1468,6 @@ paddle::optional<paddle::Tensor> GetOptionalTensorFromArgs(
     bool dispensable,
     const phi::distributed::ProcessMesh* mesh) {
   PyObject* obj = PyTuple_GET_ITEM(args, arg_idx);
-
-  if (PyTuple_Check(obj)) {
-    obj = PyTuple_GET_ITEM(obj, 0);
-  }
 
   if (obj == nullptr || obj == Py_None) {
     if (!dispensable) {
@@ -1284,7 +1485,49 @@ paddle::optional<paddle::Tensor> GetOptionalTensorFromArgs(
       ConvertToDistTensor(&(reinterpret_cast<TensorObject*>(obj)->tensor),
                           mesh);
     }
-    return paddle::make_optional<paddle::Tensor>(
+    return paddle::make_optional<Tensor>(
+        reinterpret_cast<TensorObject*>(obj)->tensor);
+  } else {
+    PADDLE_THROW(common::errors::InvalidArgument(
+        "%s(): argument '%s' (position %d) must be Tensor, but got %s",
+        op_type,
+        arg_name,
+        arg_idx,
+        reinterpret_cast<PyTypeObject*>(obj->ob_type)->tp_name));
+  }
+}
+
+paddle::optional<Tensor> GetOptionalTensorFromArgsOrKWArgs(
+    const std::string& op_type,
+    const std::string& arg_name,
+    PyObject* args,
+    ssize_t arg_idx,
+    PyObject* kwargs,
+    const std::vector<std::string>& keywords,
+    const int nargs,
+    int* remaining_kwargs,
+    bool dispensable,
+    const phi::distributed::ProcessMesh* mesh) {
+  PyObject* obj = GetItemFromArgsOrKWArgs(
+      args, arg_idx, kwargs, keywords, nargs, remaining_kwargs);
+
+  if (obj == nullptr || obj == Py_None) {
+    if (!dispensable) {
+      PADDLE_THROW(common::errors::InvalidArgument(
+          "%s(): argument '%s' (position %d) must be Tensor, but got None",
+          op_type,
+          arg_name,
+          arg_idx));
+    }
+    return paddle::none;
+  }
+
+  if (PyObject_TypeCheck(obj, p_tensor_type)) {
+    if (mesh) {
+      ConvertToDistTensor(&(reinterpret_cast<TensorObject*>(obj)->tensor),
+                          mesh);
+    }
+    return paddle::make_optional<Tensor>(
         reinterpret_cast<TensorObject*>(obj)->tensor);
   } else {
     PADDLE_THROW(common::errors::InvalidArgument(
@@ -1303,15 +1546,11 @@ PyObject* ToPyObject(std::shared_ptr<egr::GradNodeBase> grad_node) {
   return py_grad_node;
 }
 
-static paddle::Tensor& GetTensorFromPyObject(const std::string& op_type,
-                                             const std::string& arg_name,
-                                             PyObject* obj,
-                                             ssize_t arg_idx,
-                                             bool dispensable) {
-  if (PyTuple_Check(obj)) {
-    obj = PyTuple_GET_ITEM(obj, 0);
-  }
-
+static Tensor& GetTensorFromPyObject(const std::string& op_type,
+                                     const std::string& arg_name,
+                                     PyObject* obj,
+                                     ssize_t arg_idx,
+                                     bool dispensable) {
   if (obj == nullptr || obj == Py_None) {
     if (!dispensable) {
       PADDLE_THROW(common::errors::InvalidArgument(
@@ -1320,7 +1559,7 @@ static paddle::Tensor& GetTensorFromPyObject(const std::string& op_type,
           arg_name,
           arg_idx));
     }
-    static paddle::Tensor emptytensor;
+    static Tensor emptytensor;
     return emptytensor;
   }
 
@@ -1337,26 +1576,13 @@ static paddle::Tensor& GetTensorFromPyObject(const std::string& op_type,
   }
 }
 
-// For Intermediate State Dygraph,
-// we use an uninitialized Tensor to represent dispensable Tensor
-paddle::Tensor& GetTensorFromArgs(const std::string& op_type,
-                                  const std::string& arg_name,
-                                  PyObject* args,
-                                  ssize_t arg_idx,
-                                  bool dispensable) {
-  PyObject* obj = PyTuple_GET_ITEM(args, arg_idx);
-  return GetTensorFromPyObject(op_type, arg_name, obj, arg_idx, dispensable);
-}
-
-std::vector<paddle::Tensor> GetTensorListFromArgs(
+std::vector<Tensor> GetTensorListFromPyObject_(
     const std::string& op_type,
     const std::string& arg_name,
-    PyObject* args,
+    PyObject* list,
     ssize_t arg_idx,
     bool dispensable,
     const phi::distributed::ProcessMesh* mesh) {
-  PyObject* list = PyTuple_GET_ITEM(args, arg_idx);
-
   if (list == nullptr) {
     if (!dispensable) {
       PADDLE_THROW(common::errors::InvalidArgument(
@@ -1369,7 +1595,7 @@ std::vector<paddle::Tensor> GetTensorListFromArgs(
     return {};
   }
 
-  std::vector<paddle::Tensor> result;
+  std::vector<Tensor> result;
   const phi::distributed::ProcessMesh* local_mesh = nullptr;
   int mesh_start_index = -1;
 
@@ -1394,8 +1620,7 @@ std::vector<paddle::Tensor> GetTensorListFromArgs(
               op_type,
               arg_name,
               arg_idx));
-      paddle::Tensor& tensor =
-          reinterpret_cast<TensorObject*>(tensor_obj)->tensor;
+      Tensor& tensor = reinterpret_cast<TensorObject*>(tensor_obj)->tensor;
       if (local_mesh) {
         ConvertToDistTensor(&tensor, local_mesh);
       } else {
@@ -1410,7 +1635,7 @@ std::vector<paddle::Tensor> GetTensorListFromArgs(
       result.emplace_back(tensor);
     }
     for (Py_ssize_t i = 0; i < mesh_start_index; i++) {
-      paddle::Tensor& tensor =
+      Tensor& tensor =
           reinterpret_cast<TensorObject*>(PyList_GetItem(list, i))->tensor;
       ConvertToDistTensor(&tensor, local_mesh);
       result[i] = tensor;
@@ -1436,8 +1661,7 @@ std::vector<paddle::Tensor> GetTensorListFromArgs(
               op_type,
               arg_name,
               arg_idx));
-      paddle::Tensor& tensor =
-          reinterpret_cast<TensorObject*>(tensor_obj)->tensor;
+      Tensor& tensor = reinterpret_cast<TensorObject*>(tensor_obj)->tensor;
       if (local_mesh) {
         ConvertToDistTensor(&tensor, local_mesh);
       } else {
@@ -1452,7 +1676,7 @@ std::vector<paddle::Tensor> GetTensorListFromArgs(
       result.emplace_back(tensor);
     }
     for (Py_ssize_t i = 0; i < mesh_start_index; i++) {
-      paddle::Tensor& tensor =
+      Tensor& tensor =
           reinterpret_cast<TensorObject*>(PyTuple_GetItem(list, i))->tensor;
       ConvertToDistTensor(&tensor, local_mesh);
       result[i] = tensor;
@@ -1472,7 +1696,61 @@ std::vector<paddle::Tensor> GetTensorListFromArgs(
   return result;
 }
 
-paddle::optional<std::vector<paddle::Tensor>> GetOptionalTensorListFromArgs(
+// For Intermediate State Dygraph,
+// we use an uninitialized Tensor to represent dispensable Tensor
+Tensor& GetTensorFromArgs(const std::string& op_type,
+                          const std::string& arg_name,
+                          PyObject* args,
+                          ssize_t arg_idx,
+                          bool dispensable) {
+  PyObject* obj = PyTuple_GET_ITEM(args, arg_idx);
+  return GetTensorFromPyObject(op_type, arg_name, obj, arg_idx, dispensable);
+}
+
+Tensor& GetTensorFromArgsOrKWArgs(const std::string& op_type,
+                                  const std::string& arg_name,
+                                  PyObject* args,
+                                  ssize_t arg_idx,
+                                  PyObject* kwargs,
+                                  const std::vector<std::string>& keywords,
+                                  const int nargs,
+                                  int* remaining_kwargs,
+                                  bool dispensable) {
+  PyObject* obj = GetItemFromArgsOrKWArgs(
+      args, arg_idx, kwargs, keywords, nargs, remaining_kwargs);
+  return GetTensorFromPyObject(op_type, arg_name, obj, arg_idx, dispensable);
+}
+
+std::vector<Tensor> GetTensorListFromArgs(
+    const std::string& op_type,
+    const std::string& arg_name,
+    PyObject* args,
+    ssize_t arg_idx,
+    bool dispensable,
+    const phi::distributed::ProcessMesh* mesh) {
+  PyObject* list = PyTuple_GET_ITEM(args, arg_idx);
+  return GetTensorListFromPyObject_(
+      op_type, arg_name, list, arg_idx, dispensable, mesh);
+}
+
+std::vector<Tensor> GetTensorListFromArgsOrKWArgs(
+    const std::string& op_type,
+    const std::string& arg_name,
+    PyObject* args,
+    ssize_t arg_idx,
+    PyObject* kwargs,
+    const std::vector<std::string>& keywords,
+    const int nargs,
+    int* remaining_kwargs,
+    bool dispensable,
+    const phi::distributed::ProcessMesh* mesh) {
+  PyObject* list = GetItemFromArgsOrKWArgs(
+      args, arg_idx, kwargs, keywords, nargs, remaining_kwargs);
+  return GetTensorListFromPyObject_(
+      op_type, arg_name, list, arg_idx, dispensable, mesh);
+}
+
+paddle::optional<std::vector<Tensor>> GetOptionalTensorListFromArgs(
     const std::string& op_type,
     const std::string& arg_name,
     PyObject* args,
@@ -1493,7 +1771,7 @@ paddle::optional<std::vector<paddle::Tensor>> GetOptionalTensorListFromArgs(
     return paddle::none;
   }
 
-  std::vector<paddle::Tensor> result;
+  std::vector<Tensor> result;
   const phi::distributed::ProcessMesh* local_mesh = nullptr;
   int mesh_start_index = -1;
 
@@ -1518,8 +1796,7 @@ paddle::optional<std::vector<paddle::Tensor>> GetOptionalTensorListFromArgs(
               op_type,
               arg_name,
               arg_idx));
-      paddle::Tensor& tensor =
-          reinterpret_cast<TensorObject*>(tensor_obj)->tensor;
+      Tensor& tensor = reinterpret_cast<TensorObject*>(tensor_obj)->tensor;
       if (local_mesh) {
         ConvertToDistTensor(&tensor, local_mesh);
       } else {
@@ -1534,7 +1811,7 @@ paddle::optional<std::vector<paddle::Tensor>> GetOptionalTensorListFromArgs(
       result.emplace_back(tensor);
     }
     for (Py_ssize_t i = 0; i < mesh_start_index; i++) {
-      paddle::Tensor& tensor =
+      Tensor& tensor =
           reinterpret_cast<TensorObject*>(PyList_GetItem(list, i))->tensor;
       ConvertToDistTensor(&tensor, local_mesh);
       result[i] = tensor;
@@ -1560,8 +1837,7 @@ paddle::optional<std::vector<paddle::Tensor>> GetOptionalTensorListFromArgs(
               op_type,
               arg_name,
               arg_idx));
-      paddle::Tensor& tensor =
-          reinterpret_cast<TensorObject*>(tensor_obj)->tensor;
+      Tensor& tensor = reinterpret_cast<TensorObject*>(tensor_obj)->tensor;
       if (local_mesh) {
         ConvertToDistTensor(&tensor, local_mesh);
       } else {
@@ -1576,7 +1852,7 @@ paddle::optional<std::vector<paddle::Tensor>> GetOptionalTensorListFromArgs(
       result.emplace_back(tensor);
     }
     for (Py_ssize_t i = 0; i < mesh_start_index; i++) {
-      paddle::Tensor& tensor =
+      Tensor& tensor =
           reinterpret_cast<TensorObject*>(PyTuple_GetItem(list, i))->tensor;
       ConvertToDistTensor(&tensor, local_mesh);
       result[i] = tensor;
@@ -1594,16 +1870,12 @@ paddle::optional<std::vector<paddle::Tensor>> GetOptionalTensorListFromArgs(
   return result;
 }
 
-paddle::Tensor* GetTensorPtrFromArgs(const std::string& op_type,
-                                     const std::string& arg_name,
-                                     PyObject* args,
-                                     ssize_t arg_idx,
-                                     bool dispensable) {
+Tensor* GetTensorPtrFromArgs(const std::string& op_type,
+                             const std::string& arg_name,
+                             PyObject* args,
+                             ssize_t arg_idx,
+                             bool dispensable) {
   PyObject* obj = PyTuple_GET_ITEM(args, arg_idx);
-
-  if (PyTuple_Check(obj)) {
-    obj = PyTuple_GET_ITEM(obj, 0);
-  }
 
   if (obj == nullptr || obj == Py_None) {
     if (!dispensable) {
@@ -1613,7 +1885,7 @@ paddle::Tensor* GetTensorPtrFromArgs(const std::string& op_type,
           arg_name,
           arg_idx));
     }
-    static paddle::Tensor emptytensor;
+    static Tensor emptytensor;
     return &emptytensor;
   }
 
@@ -1629,7 +1901,7 @@ paddle::Tensor* GetTensorPtrFromArgs(const std::string& op_type,
   }
 }
 
-std::vector<paddle::Tensor*> GetTensorPtrListFromArgs(
+std::vector<Tensor*> GetTensorPtrListFromArgs(
     const std::string& op_type,
     const std::string& arg_name,
     PyObject* args,
@@ -1650,8 +1922,8 @@ std::vector<paddle::Tensor*> GetTensorPtrListFromArgs(
     return {};
   }
 
-  std::vector<paddle::Tensor*> result;
-  const phi::distributed::ProcessMesh* local_mesh = mesh;
+  std::vector<Tensor*> result;
+  const phi::distributed::ProcessMesh* local_mesh = nullptr;
   int mesh_start_index = -1;
 
   if (PyList_Check(list)) {
@@ -1665,7 +1937,7 @@ std::vector<paddle::Tensor*> GetTensorPtrListFromArgs(
           arg_idx));
     }
     for (Py_ssize_t i = 0; i < len; i++) {
-      paddle::Tensor* tensor =
+      Tensor* tensor =
           &(reinterpret_cast<TensorObject*>(PyList_GetItem(list, i))->tensor);
       if (local_mesh) {
         ConvertToDistTensor(tensor, local_mesh);
@@ -1681,7 +1953,7 @@ std::vector<paddle::Tensor*> GetTensorPtrListFromArgs(
       result.emplace_back(tensor);
     }
     for (Py_ssize_t i = 0; i < mesh_start_index; i++) {
-      paddle::Tensor* tensor =
+      Tensor* tensor =
           &(reinterpret_cast<TensorObject*>(PyList_GetItem(list, i))->tensor);
       ConvertToDistTensor(tensor, local_mesh);
       result[i] = tensor;
@@ -1697,7 +1969,7 @@ std::vector<paddle::Tensor*> GetTensorPtrListFromArgs(
           arg_idx));
     }
     for (Py_ssize_t i = 0; i < len; i++) {
-      paddle::Tensor* tensor =
+      Tensor* tensor =
           &(reinterpret_cast<TensorObject*>(PyTuple_GetItem(list, i))->tensor);
       if (local_mesh) {
         ConvertToDistTensor(tensor, local_mesh);
@@ -1713,7 +1985,7 @@ std::vector<paddle::Tensor*> GetTensorPtrListFromArgs(
       result.emplace_back(tensor);
     }
     for (Py_ssize_t i = 0; i < mesh_start_index; i++) {
-      paddle::Tensor* tensor =
+      Tensor* tensor =
           &(reinterpret_cast<TensorObject*>(PyTuple_GetItem(list, i))->tensor);
       ConvertToDistTensor(tensor, local_mesh);
       result[i] = tensor;
@@ -1733,8 +2005,8 @@ std::vector<paddle::Tensor*> GetTensorPtrListFromArgs(
   return result;
 }
 
-std::vector<paddle::Tensor*> GetTensorPtrListFromPyObject(PyObject* obj) {
-  std::vector<paddle::Tensor*> result;
+std::vector<Tensor*> GetTensorPtrListFromPyObject(PyObject* obj) {
+  std::vector<Tensor*> result;
   const phi::distributed::ProcessMesh* local_mesh = nullptr;
   int mesh_start_index = -1;
   if (PyList_Check(obj)) {
@@ -1744,7 +2016,7 @@ std::vector<paddle::Tensor*> GetTensorPtrListFromPyObject(PyObject* obj) {
           common::errors::InvalidArgument("The list of Tensor is empty."));
     }
     for (Py_ssize_t i = 0; i < len; i++) {
-      paddle::Tensor* tensor =
+      Tensor* tensor =
           &(reinterpret_cast<TensorObject*>(PyList_GetItem(obj, i))->tensor);
       if (local_mesh) {
         ConvertToDistTensor(tensor, local_mesh);
@@ -1760,7 +2032,7 @@ std::vector<paddle::Tensor*> GetTensorPtrListFromPyObject(PyObject* obj) {
       result.emplace_back(tensor);
     }
     for (Py_ssize_t i = 0; i < mesh_start_index; i++) {
-      paddle::Tensor* tensor =
+      Tensor* tensor =
           &(reinterpret_cast<TensorObject*>(PyList_GetItem(obj, i))->tensor);
       ConvertToDistTensor(tensor, local_mesh);
       result[i] = tensor;
@@ -1772,7 +2044,7 @@ std::vector<paddle::Tensor*> GetTensorPtrListFromPyObject(PyObject* obj) {
           common::errors::InvalidArgument("The tuple of Tensor is empty."));
     }
     for (Py_ssize_t i = 0; i < len; i++) {
-      paddle::Tensor* tensor =
+      Tensor* tensor =
           &(reinterpret_cast<TensorObject*>(PyTuple_GetItem(obj, i))->tensor);
       if (local_mesh) {
         ConvertToDistTensor(tensor, local_mesh);
@@ -1788,7 +2060,7 @@ std::vector<paddle::Tensor*> GetTensorPtrListFromPyObject(PyObject* obj) {
       result.emplace_back(tensor);
     }
     for (Py_ssize_t i = 0; i < mesh_start_index; i++) {
-      paddle::Tensor* tensor =
+      Tensor* tensor =
           &(reinterpret_cast<TensorObject*>(PyTuple_GetItem(obj, i))->tensor);
       ConvertToDistTensor(tensor, local_mesh);
       result[i] = tensor;
@@ -1803,9 +2075,8 @@ std::vector<paddle::Tensor*> GetTensorPtrListFromPyObject(PyObject* obj) {
   return result;
 }
 
-std::vector<paddle::Tensor> GetTensorListFromPyObject(PyObject* obj,
-                                                      bool allow_none) {
-  std::vector<paddle::Tensor> result;
+std::vector<Tensor> GetTensorListFromPyObject(PyObject* obj, bool allow_none) {
+  std::vector<Tensor> result;
   const phi::distributed::ProcessMesh* local_mesh = nullptr;
   int mesh_start_index = -1;
 
@@ -1815,7 +2086,7 @@ std::vector<paddle::Tensor> GetTensorListFromPyObject(PyObject* obj,
     for (Py_ssize_t i = 0; i < len; i++) {
       item = PyList_GetItem(obj, i);
       if (PyObject_TypeCheck(item, p_tensor_type)) {
-        paddle::Tensor& tensor = reinterpret_cast<TensorObject*>(item)->tensor;
+        Tensor& tensor = reinterpret_cast<TensorObject*>(item)->tensor;
         if (local_mesh) {
           ConvertToDistTensor(&tensor, local_mesh);
         } else {
@@ -1842,7 +2113,7 @@ std::vector<paddle::Tensor> GetTensorListFromPyObject(PyObject* obj,
     for (Py_ssize_t i = 0; i < mesh_start_index; i++) {
       item = PyList_GetItem(obj, i);
       if (PyObject_TypeCheck(item, p_tensor_type)) {
-        paddle::Tensor& tensor = reinterpret_cast<TensorObject*>(item)->tensor;
+        Tensor& tensor = reinterpret_cast<TensorObject*>(item)->tensor;
         ConvertToDistTensor(&tensor, local_mesh);
         result.emplace_back(tensor);
       }
@@ -1853,7 +2124,7 @@ std::vector<paddle::Tensor> GetTensorListFromPyObject(PyObject* obj,
     for (Py_ssize_t i = 0; i < len; i++) {
       item = PyTuple_GetItem(obj, i);
       if (PyObject_TypeCheck(item, p_tensor_type)) {
-        paddle::Tensor& tensor = reinterpret_cast<TensorObject*>(item)->tensor;
+        Tensor& tensor = reinterpret_cast<TensorObject*>(item)->tensor;
         if (local_mesh) {
           ConvertToDistTensor(&tensor, local_mesh);
         } else {
@@ -1880,7 +2151,7 @@ std::vector<paddle::Tensor> GetTensorListFromPyObject(PyObject* obj,
     for (Py_ssize_t i = 0; i < mesh_start_index; i++) {
       item = PyTuple_GetItem(obj, i);
       if (PyObject_TypeCheck(item, p_tensor_type)) {
-        paddle::Tensor& tensor = reinterpret_cast<TensorObject*>(item)->tensor;
+        Tensor& tensor = reinterpret_cast<TensorObject*>(item)->tensor;
         ConvertToDistTensor(&tensor, local_mesh);
         result.emplace_back(tensor);
       }
@@ -1894,13 +2165,12 @@ std::vector<paddle::Tensor> GetTensorListFromPyObject(PyObject* obj,
   return result;
 }
 
-paddle::Tensor& UnSafeGetTensorFromPyObject(PyObject* obj) {
+Tensor& UnSafeGetTensorFromPyObject(PyObject* obj) {
   return reinterpret_cast<TensorObject*>(obj)->tensor;
 }
 
-paddle::Tensor CreateTensorFromVarDesc(
-    const paddle::framework::VarDesc& var_desc) {
-  auto tensor = paddle::Tensor();
+Tensor CreateTensorFromVarDesc(const paddle::framework::VarDesc& var_desc) {
+  auto tensor = Tensor();
 
   auto dtype = var_desc.GetDataType();
   std::vector<int64_t> dims = var_desc.GetShape();
@@ -1915,15 +2185,15 @@ paddle::Tensor CreateTensorFromVarDesc(
 
   if (var_type == paddle::framework::proto::VarType::DENSE_TENSOR) {
     // TODO(jiabin): Maybe support LegacyLoD later
-    std::shared_ptr<phi::DenseTensor> dense_tensor = nullptr;
+    std::shared_ptr<DenseTensor> dense_tensor = nullptr;
     if (dims.size() == 1 && dims[0] == 0) {
       std::shared_ptr<phi::Allocation> allocation_ptr = nullptr;
-      dense_tensor = std::make_shared<phi::DenseTensor>(
+      dense_tensor = std::make_shared<DenseTensor>(
           allocation_ptr,
           phi::DenseTensorMeta(phi::TransToPhiDataType(dtype), ddims));
     } else {
       // TODO(dev): we need enhance check for ddims.
-      dense_tensor = std::make_shared<phi::DenseTensor>(
+      dense_tensor = std::make_shared<DenseTensor>(
           std::make_shared<phi::Allocation>(),
           phi::DenseTensorMeta(phi::TransToPhiDataType(dtype), ddims));
     }
@@ -1936,15 +2206,15 @@ paddle::Tensor CreateTensorFromVarDesc(
 
   if (!autograd_meta->GetMutableGradNode()) {
     autograd_meta->SetGradNode(
-        std::make_shared<egr::GradNodeAccumulation>(autograd_meta));
+        std::make_shared<egr::GradNodeAccumulation>(tensor));
   }
 
   return tensor;
 }
 
 PyObject* GetEmptyTensorsWithVarDesc(PyObject* self, PyObject* args) {
-  std::vector<paddle::Tensor> result;
-  std::unordered_map<std::string, paddle::Tensor> out_tensor_map;
+  std::vector<Tensor> result;
+  std::unordered_map<std::string, Tensor> out_tensor_map;
 
   auto var_desc_list = PyTuple_GetItem(args, 0);
 
@@ -1955,7 +2225,7 @@ PyObject* GetEmptyTensorsWithVarDesc(PyObject* self, PyObject* args) {
           PyList_GetItem(var_desc_list, i));
       auto var_name = var_desc.Name();
       if (out_tensor_map.find(var_name) == out_tensor_map.end()) {
-        paddle::Tensor tensor = CreateTensorFromVarDesc(var_desc);
+        Tensor tensor = CreateTensorFromVarDesc(var_desc);
         out_tensor_map[var_name] = tensor;
         result.emplace_back(tensor);
       } else {
@@ -1969,7 +2239,7 @@ PyObject* GetEmptyTensorsWithVarDesc(PyObject* self, PyObject* args) {
           PyTuple_GetItem(var_desc_list, i));
       auto var_name = var_desc.Name();
       if (out_tensor_map.find(var_name) == out_tensor_map.end()) {
-        paddle::Tensor tensor = CreateTensorFromVarDesc(var_desc);
+        Tensor tensor = CreateTensorFromVarDesc(var_desc);
         out_tensor_map[var_name] = tensor;
         result.emplace_back(tensor);
       } else {
@@ -1982,90 +2252,6 @@ PyObject* GetEmptyTensorsWithVarDesc(PyObject* self, PyObject* args) {
         "%s",
         (reinterpret_cast<PyTypeObject*>(var_desc_list->ob_type))->tp_name));
   }
-  return ToPyObject(result);
-}
-
-paddle::Tensor CreateTensorFromValue(const pir::Value& value) {
-  auto tensor = paddle::Tensor();
-
-  auto dims = phi::vectorize(GetValueDims(value));
-  auto ddims = phi::make_ddim(dims);
-  if (auto name = pir::utils::name_analysis::TryGetValueFirstName(value)) {
-    tensor.set_name(name.value());
-  }
-  auto autograd_meta = egr::EagerUtils::autograd_meta(&tensor);
-  autograd_meta->SetPersistable(false);
-  autograd_meta->SetStopGradient(GetValueBoolAttr(value, kAttrStopGradients));
-
-  if (value.type().isa<paddle::dialect::DenseTensorType>()) {
-    // TODO(jiabin): Maybe support LegacyLoD later
-    std::shared_ptr<phi::DenseTensor> dense_tensor = nullptr;
-    auto dtype = paddle::dialect::TransToPhiDataType(
-        value.type().dyn_cast<paddle::dialect::DenseTensorType>().dtype());
-
-    if (dims.size() == 1 && dims[0] == 0) {
-      std::shared_ptr<phi::Allocation> allocation_ptr = nullptr;
-      dense_tensor = std::make_shared<phi::DenseTensor>(
-          allocation_ptr, phi::DenseTensorMeta(dtype, ddims));
-    } else {
-      // TODO(dev): we need enhance check for ddims.
-      dense_tensor = std::make_shared<phi::DenseTensor>(
-          std::make_shared<phi::Allocation>(),
-          phi::DenseTensorMeta(dtype, ddims));
-    }
-    tensor.set_impl(dense_tensor);
-  } else if (value.type().isa<paddle::dialect::SelectedRowsType>()) {
-    std::shared_ptr<phi::SelectedRows> selected_rows_tensor =
-        std::make_shared<phi::SelectedRows>();
-    tensor.set_impl(selected_rows_tensor);
-  }
-
-  if (!autograd_meta->GetMutableGradNode()) {
-    autograd_meta->SetGradNode(
-        std::make_shared<egr::GradNodeAccumulation>(autograd_meta));
-  }
-
-  return tensor;
-}
-
-PyObject* GetEmptyTensorsWithValue(PyObject* self, PyObject* args) {
-  std::vector<paddle::Tensor> result;
-  std::unordered_map<pir::Value, paddle::Tensor> out_tensor_map;
-
-  auto value_list = PyTuple_GetItem(args, 0);
-
-  if (PyList_Check(value_list)) {
-    Py_ssize_t len = PyList_Size(value_list);
-    for (Py_ssize_t i = 0; i < len; i++) {
-      auto value = PyObjectCast<pir::Value>(PyList_GetItem(value_list, i));
-      if (out_tensor_map.find(value) == out_tensor_map.end()) {
-        paddle::Tensor tensor = CreateTensorFromValue(value);
-        out_tensor_map[value] = tensor;
-        result.emplace_back(tensor);
-      } else {
-        result.emplace_back(out_tensor_map[value]);
-      }
-    }
-  } else if (PyTuple_Check(value_list)) {
-    Py_ssize_t len = PyTuple_Size(value_list);
-    for (Py_ssize_t i = 0; i < len; i++) {
-      auto value = PyObjectCast<pir::Value>(PyTuple_GetItem(value_list, i));
-      if (out_tensor_map.find(value) == out_tensor_map.end()) {
-        paddle::Tensor tensor = CreateTensorFromValue(value);
-        out_tensor_map[value] = tensor;
-        result.emplace_back(tensor);
-      } else {
-        result.emplace_back(out_tensor_map[value]);
-      }
-    }
-  } else if (value_list != Py_None) {
-    PADDLE_THROW(common::errors::InvalidArgument(
-        "Argument of GetTensorsWithValueInArgs must be list of Value, "
-        "but got "
-        "%s",
-        (reinterpret_cast<PyTypeObject*>(value_list->ob_type))->tp_name));
-  }
-
   return ToPyObject(result);
 }
 
@@ -2116,8 +2302,8 @@ paddle::experimental::Scalar CastNumpy2Scalar(PyObject* obj,
   } else {
     PADDLE_THROW(common::errors::InvalidArgument(
         "%s(): argument (position %d) must be "
-        "numpy.float32/float64, numpy.int32/int64, numpy.complex64/complex128, "
-        "but got %s",
+        "numpy.float16/float32/float64, numpy.int32/int64, "
+        "numpy.complex64/complex128, but got %s",
         op_type,
         arg_pos + 1,
         type_name));  // NOLINT
@@ -2253,6 +2439,86 @@ std::vector<pir::Value> CastPyArg2VectorOfValue(PyObject* obj,
   return value_list;
 }
 
+std::vector<pir::Value> CastPyArg2VectorOfValueOrLong(
+    PyObject* obj,
+    const std::string& op_type,
+    size_t arg_pos,
+    bool dispensable) {
+  std::vector<pir::Value> value_list;
+
+  if (!PyList_Check(obj) && !PyTuple_Check(obj)) {
+    PADDLE_THROW(common::errors::InvalidType(
+        "%s(): argument (position %d) must be "
+        "Vector<>, but got %s",
+        op_type,
+        arg_pos + 1,
+        reinterpret_cast<PyTypeObject*>(obj->ob_type)->tp_name));
+  }
+
+  Py_ssize_t len = PySequence_Size(obj);
+  if (len == 0 && !dispensable) {
+    PADDLE_THROW(
+        common::errors::InvalidArgument("%s(): argument (position %d) must be "
+                                        "list of Value, but got empty list",
+                                        op_type,
+                                        arg_pos + 1));
+  }
+
+  DataType dtype = DataType::INT64;
+  std::vector<int64_t> shape;
+  for (Py_ssize_t i = 0; i < len; ++i) {
+    PyObject* item = PySequence_GetItem(obj, i);
+    if (!item) {
+      continue;
+    }
+
+    item = CastPyArg2ValuePreHook(item);
+
+    if (PyObject_TypeCheck(item, g_ir_value_pytype)) {
+      pir::Value val = ::pybind11::handle(item).cast<pir::Value>();
+      dtype = paddle::dialect::GetValueDataType(val);
+      shape = pir::GetShapeFromValue(val);
+      Py_DECREF(item);
+      break;
+    }
+
+    Py_DECREF(item);
+  }
+
+  for (Py_ssize_t i = 0; i < len; ++i) {
+    PyObject* item = PySequence_GetItem(obj, i);
+    if (!item) {
+      PADDLE_THROW(common::errors::Fatal(
+          "%s(): failed to get item from sequence at position %d",
+          op_type,
+          static_cast<int>(i)));
+    }
+
+    item = CastPyArg2ValuePreHook(item);
+
+    if (PyObject_CheckIRValue(item)) {
+      value_list.emplace_back(::pybind11::handle(item).cast<pir::Value>());
+    } else if (PyObject_CheckLong(item)) {
+      int64_t k_tmp = CastPyArg2Long(item, op_type, arg_pos);
+      value_list.emplace_back(
+          paddle::dialect::full(shape, k_tmp, dtype, CPUPlace()));
+    } else if (item == Py_None) {
+      continue;  // skip
+    } else {
+      PADDLE_THROW(common::errors::InvalidType(
+          "%s(): argument (position %d) must be vector<Value>, "
+          "but got vector<%s>",
+          op_type,
+          arg_pos + 1,
+          reinterpret_cast<PyTypeObject*>(item->ob_type)->tp_name));
+    }
+
+    Py_DECREF(item);
+  }
+
+  return value_list;
+}
+
 paddle::optional<std::vector<pir::Value>> CastPyArg2OptionalVectorOfValue(
     PyObject* obj,
     const std::string& op_type,
@@ -2298,7 +2564,7 @@ paddle::experimental::Scalar CastPyArg2Scalar(PyObject* obj,
     double value = CastPyArg2Double(obj, op_type, arg_pos);
     return paddle::experimental::Scalar(value);
   } else if (PyCheckTensor(obj)) {
-    paddle::Tensor& value = GetTensorFromPyObject(
+    Tensor& value = GetTensorFromPyObject(
         op_type, "" /*arg_name*/, obj, arg_pos, false /*dispensable*/);
     return paddle::experimental::Scalar(value);
   } else if (type_name.find("numpy") != std::string::npos) {
@@ -2323,6 +2589,17 @@ paddle::experimental::Scalar CastPyArg2Scalar(PyObject* obj,
 
   // Fake a Scalar
   return paddle::experimental::Scalar(1.0);
+}
+paddle::experimental::Scalar CastPyArg2Scalar(
+    PyObject* obj,
+    const std::string& op_type,
+    ssize_t arg_pos,
+    paddle::experimental::Scalar default_value) {
+  if (obj != nullptr) {
+    return CastPyArg2Scalar(obj, op_type, arg_pos);
+  } else {
+    return default_value;
+  }
 }
 
 std::vector<phi::Scalar> CastPyArg2ScalarArray(PyObject* obj,
@@ -2386,7 +2663,17 @@ std::vector<phi::Scalar> CastPyArg2ScalarArray(PyObject* obj,
         ((PyTypeObject*)obj->ob_type)->tp_name));  // NOLINT
   }
 }
-
+std::vector<phi::Scalar> CastPyArg2ScalarArray(
+    PyObject* obj,
+    const std::string& op_type,
+    ssize_t arg_pos,
+    std::vector<phi::Scalar> default_value) {
+  if (obj != nullptr) {
+    return CastPyArg2ScalarArray(obj, op_type, arg_pos);
+  } else {
+    return default_value;
+  }
+}
 paddle::experimental::IntArray CastPyArg2IntArray(PyObject* obj,
                                                   const std::string& op_type,
                                                   ssize_t arg_pos) {
@@ -2394,31 +2681,48 @@ paddle::experimental::IntArray CastPyArg2IntArray(PyObject* obj,
     return paddle::experimental::IntArray({});
   }
 
-  // obj could be: int, float, bool, paddle.Tensor
+  if (PyObject_CheckLong(obj)) {
+    return paddle::experimental::IntArray({PyObject_ToInt64(obj)});
+  }
+
+  if (PyList_Check(obj) || PyTuple_Check(obj) ||
+      Py_TYPE(obj) == &paddle::pybind::Paddle_SizeType) {
+    std::vector<int64_t> value = CastPyArg2Longs(obj, op_type, arg_pos);
+    return paddle::experimental::IntArray(value);
+  }
+
   PyTypeObject* type = obj->ob_type;
-  auto type_name = std::string(type->tp_name);
-  if (type_name == "list" || type_name == "tuple" ||
-      type_name == "numpy.ndarray") {
+  std::string type_name(type->tp_name);
+
+  if (type_name == "numpy.ndarray") {
     std::vector<int64_t> value = CastPyArg2Longs(obj, op_type, arg_pos);
     return paddle::experimental::IntArray(value);
   } else if (type_name == "paddle.Tensor" || type_name == "Tensor") {
-    paddle::Tensor& value = GetTensorFromPyObject(
+    Tensor& value = GetTensorFromPyObject(
         op_type, "" /*arg_name*/, obj, arg_pos, false /*dispensable*/);
     return paddle::experimental::IntArray(value);
-  } else if (PyObject_CheckLong(obj)) {
-    return paddle::experimental::IntArray({PyObject_ToInt64(obj)});
-  } else {
-    PADDLE_THROW(common::errors::InvalidType(
-        "%s(): argument (position %d) must be "
-        "list or int, but got %s",
-        op_type,
-        arg_pos + 1,
-        ((PyTypeObject*)obj->ob_type)->tp_name));  // NOLINT
   }
-  // Fake a IntArray
+
+  PADDLE_THROW(
+      common::errors::InvalidType("%s(): argument (position %d) must be "
+                                  "list, tuple, int, or Tensor, but got %s",
+                                  op_type,
+                                  arg_pos + 1,
+                                  type_name.c_str()));  // NOLINT
+
   return paddle::experimental::IntArray({1});
 }
-
+paddle::experimental::IntArray CastPyArg2IntArray(
+    PyObject* obj,
+    const std::string& op_type,
+    ssize_t arg_pos,
+    paddle::experimental::IntArray default_value) {
+  if (obj != nullptr) {
+    return CastPyArg2IntArray(obj, op_type, arg_pos);
+  } else {
+    return default_value;
+  }
+}
 paddle::framework::Scope* CastPyArg2ScopePtr(PyObject* obj) {
   if (PyObject_TypeCheck(obj, g_framework_scope_pytype)) {
     return ::pybind11::handle(obj).cast<paddle::framework::Scope*>();
@@ -2486,34 +2790,229 @@ std::vector<paddle::framework::Scope*> GetScopePtrListFromArgs(
   }
   return result;
 }
-
-paddle::Place CastPyArg2Place(PyObject* obj,
-                              const std::string& op_type,
-                              ssize_t arg_pos) {
-  return CastPyArg2Place(obj, arg_pos);
+paddle::framework::AttributeMap* GetProgramAttributesMapPtrFromPyArgs(
+    const std::string& op_type, PyObject* args, ssize_t arg_idx) {
+  PyObject* py_attrs_capsule = PyTuple_GET_ITEM(args, arg_idx);
+  paddle::framework::AttributeMap* attrs_ptr =
+      reinterpret_cast<paddle::framework::AttributeMap*>(PyCapsule_GetPointer(
+          py_attrs_capsule, "paddle.framework.AttributeMap"));
+  if (!attrs_ptr) {
+    PADDLE_THROW(common::errors::InvalidArgument(
+        "%s(): argument '%s' (position %d) must be AttributeMap, but got "
+        "%s",
+        op_type,
+        "attrs",
+        arg_idx,
+        (reinterpret_cast<PyTypeObject*>(py_attrs_capsule->ob_type))->tp_name));
+  }
+  return attrs_ptr;
 }
 
-paddle::DataType CastPyArg2DataType(PyObject* obj,
-                                    const std::string& op_type,
-                                    ssize_t arg_pos) {
+TensorListBufferAllocator::MapType
+    TensorListBufferAllocator::s_tensor_vector_map_;
+TensorListBufferAllocator::TensorListBufferAllocator(ssize_t len) : key_(len) {
+  MapIterType iter;
+  if (key_ == -1) {
+    iter = s_tensor_vector_map_.find(-1);
+    if (iter == s_tensor_vector_map_.end()) {
+      iter = s_tensor_vector_map_.emplace(-1,
+                                          std::make_unique<TensorListBuffer>());
+    }
+  } else {
+    auto range = s_tensor_vector_map_.equal_range(key_);
+    for (iter = range.first; iter != range.second; ++iter) {
+      if (iter->second->is_available) {
+        break;
+      }
+    }
+    if (iter == range.second) {
+      iter = s_tensor_vector_map_.emplace(
+          key_, std::make_unique<TensorListBuffer>(key_));
+    }
+    iter->second->is_available = false;
+  }
+  buffer_ptr_ = iter->second.get();
+}
+
+TensorListBufferAllocator::~TensorListBufferAllocator() {
+  if (buffer_ptr_) {
+    buffer_ptr_->is_available = true;
+
+    for (auto& tensor : buffer_ptr_->buffer) {
+      tensor.reset();
+    }
+  }
+}
+std::pair<PyObject*, ssize_t> GetPyArgumentInfo(const std::string& op_type,
+                                                const std::string& arg_name,
+                                                PyObject* args,
+                                                ssize_t arg_idx,
+                                                bool dispensable) {
+  PyObject* list = PyTuple_GET_ITEM(args, arg_idx);
+  ssize_t list_len = 0;
+  if (list == nullptr && !dispensable) {
+    PADDLE_THROW(common::errors::InvalidArgument(
+        "%s(): argument '%s' (position %d) must be list of Tensor, but got "
+        "None",
+        op_type,
+        arg_name,
+        arg_idx));
+  }
+  if (list == nullptr || list == Py_None) {
+    list_len = -1;
+  } else if (PyList_Check(list)) {
+    list_len = PyList_Size(list);
+  } else if (PyTuple_Check(list)) {
+    list_len = PyTuple_Size(list);
+  } else {
+    PADDLE_THROW(common::errors::InvalidArgument(
+        "%s(): argument '%s' (position %d) must be list of Tensors, but got "
+        "%s",
+        op_type,
+        arg_name,
+        arg_idx,
+        (reinterpret_cast<PyTypeObject*>(list->ob_type))->tp_name));
+  }
+  return std::make_pair(list, list_len);
+}
+
+std::vector<Tensor>& GetTensorListFromArgsWithBuffer(
+    const std::string& op_type,
+    const std::string& arg_name,
+    ssize_t arg_idx,
+    const phi::distributed::ProcessMesh* mesh,
+    PyObject* list,
+    ssize_t list_len,
+    const TensorListBufferAllocator& allocator) {
+  auto& result = allocator.GetAllocatedBuffer();
+
+  const phi::distributed::ProcessMesh* local_mesh = nullptr;
+  ssize_t mesh_start_index = -1;
+
+  if (PyList_Check(list)) {
+    for (Py_ssize_t i = 0; i < list_len; i++) {
+      PyObject* tensor_obj = PyList_GetItem(list, i);
+      PADDLE_ENFORCE_EQ(
+          PyObject_TypeCheck(tensor_obj, p_tensor_type),
+          true,
+          common::errors::InvalidArgument(
+              "%s(): argument '%s' (position %d) must be list of Tensors",
+              op_type,
+              arg_name,
+              arg_idx));
+      Tensor& tensor = reinterpret_cast<TensorObject*>(tensor_obj)->tensor;
+      if (local_mesh) {
+        ConvertToDistTensor(&tensor, local_mesh);
+      } else {
+        if (tensor.is_dist_tensor()) {
+          local_mesh = &(std::static_pointer_cast<phi::distributed::DistTensor>(
+                             tensor.impl())
+                             ->process_mesh());
+          mesh_start_index = i;
+        }
+      }
+      result[i] = tensor;
+    }
+    for (Py_ssize_t i = 0; i < mesh_start_index; i++) {
+      Tensor& tensor =
+          reinterpret_cast<TensorObject*>(PyList_GetItem(list, i))->tensor;
+      ConvertToDistTensor(&tensor, local_mesh);
+      result[i] = tensor;
+    }
+
+  } else if (PyTuple_Check(list)) {
+    for (Py_ssize_t i = 0; i < list_len; i++) {
+      PyObject* tensor_obj = PyTuple_GetItem(list, i);
+      PADDLE_ENFORCE_EQ(
+          PyObject_TypeCheck(tensor_obj, p_tensor_type),
+          true,
+          common::errors::InvalidArgument(
+              "%s(): argument '%s' (position %d) must be list of Tensors",
+              op_type,
+              arg_name,
+              arg_idx));
+      Tensor& tensor = reinterpret_cast<TensorObject*>(tensor_obj)->tensor;
+      if (local_mesh) {
+        ConvertToDistTensor(&tensor, local_mesh);
+      } else {
+        if (tensor.is_dist_tensor()) {
+          local_mesh = &(std::static_pointer_cast<phi::distributed::DistTensor>(
+                             tensor.impl())
+                             ->process_mesh());
+          mesh_start_index = i;
+        }
+      }
+      result[i] = tensor;
+    }
+    for (Py_ssize_t i = 0; i < mesh_start_index; i++) {
+      Tensor& tensor =
+          reinterpret_cast<TensorObject*>(PyTuple_GetItem(list, i))->tensor;
+      ConvertToDistTensor(&tensor, local_mesh);
+      result[i] = tensor;
+    }
+  }
+  return result;
+}
+
+Place CastPyArg2Place(PyObject* obj,
+                      const std::string& op_type,
+                      ssize_t arg_pos) {
+  return CastPyArg2Place(obj, arg_pos);
+}
+Place CastPyArg2Place(PyObject* obj,
+                      const std::string& op_type,
+                      ssize_t arg_pos,
+                      Place default_place) {
+  if (obj != nullptr) {
+    return CastPyArg2Place(obj, op_type, arg_pos);
+  } else {
+    return default_place;
+  }
+}
+DataType CastPyArg2DataType(PyObject* obj,
+                            const std::string& op_type,
+                            ssize_t arg_pos) {
   if (obj == Py_None) {
-    return phi::DataType::UNDEFINED;
+    return DataType::UNDEFINED;
   }
   if (PyObject_TypeCheck(obj, g_vartype_pytype)) {
     framework::proto::VarType::Type type = CastPyArg2ProtoType(obj, arg_pos);
     return phi::TransToPhiDataType(type);
+  } else if (PyObject_TypeCheck(obj, g_data_type_pytype)) {
+    return CastPyArg2DataTypeDirectly(obj, op_type, arg_pos);
+  } else if (PyObject_CheckStr(obj)) {
+    std::string type_str = CastPyArg2AttrString(obj, arg_pos);
+    return StrDtype2TensorDtype(type_str);
+  } else {
+    if (!pybind11::detail::npy_api::get().PyArrayDescr_Check_(obj)) {
+      pybind11::object dtype_obj = pybind11::module::import("numpy").attr(
+          "dtype")(pybind11::reinterpret_borrow<pybind11::object>(obj));
+      obj = dtype_obj.ptr();
+    }
+    int type_num =
+        reinterpret_cast<pybind11::detail::PyArrayDescr1_Proxy*>(obj)->type_num;
+    return NumpyDtype2TensorDtype(type_num);
   }
-  return CastPyArg2DataTypeDirectly(obj, op_type, arg_pos);
+}
+DataType CastPyArg2DataType(PyObject* obj,
+                            const std::string& op_type,
+                            ssize_t arg_pos,
+                            DataType default_value) {
+  if (obj != nullptr) {
+    return CastPyArg2DataType(obj, op_type, arg_pos);
+  } else {
+    return default_value;
+  }
 }
 
-paddle::Tensor PyTensorHook::operator()(const paddle::Tensor& var) {
+Tensor PyTensorHook::operator()(const Tensor& var) {
   py::gil_scoped_acquire gil;
   VLOG(3) << "Call PyTensorHook for var " << var.name();
 
   PyObject* res = nullptr;
   try {
     bool return_py_none_if_not_initialize = true;
-    if (var.defined() && !var.initialized()) {
+    if (var.defined() && !var.has_allocation()) {
       return_py_none_if_not_initialize = !var.is_dist_tensor();
     }
     PyObject* p_tmp_var = ToPyObject(var, return_py_none_if_not_initialize);
@@ -2591,7 +3090,7 @@ PackHook::~PackHook() {  // NOLINT
 }
 
 std::shared_ptr<egr::PyObjectHolderBase> PackHook::operator()(
-    const paddle::Tensor& tensor) {
+    const Tensor& tensor) {
   bool grad_tmp = egr::Controller::Instance().HasGrad();
   egr::Controller::Instance().SetHasGrad(false);
   ::pybind11::gil_scoped_acquire gil;
@@ -2635,7 +3134,7 @@ UnPackHook::~UnPackHook() {  // NOLINT
   Py_DECREF(hook_);
 }
 
-paddle::Tensor UnPackHook::operator()(
+Tensor UnPackHook::operator()(
     std::shared_ptr<egr::PyObjectHolderBase> packed_value) {
   bool grad_tmp = egr::Controller::Instance().HasGrad();
   egr::Controller::Instance().SetHasGrad(false);
@@ -2694,6 +3193,94 @@ void* UnPackHook::operator()(void* packed_value, void* other) {
   return reinterpret_cast<void*>(ret);
 }
 
+PyObject* ToPyObject(
+    const paddle::small_vector<std::vector<Tensor>, egr::kSlotSmallVectorSize>&
+        grads) {
+  PyObject* args = nullptr;
+  args = PyTuple_New(grads.size());
+
+  for (size_t i = 0; i < grads.size(); i++) {
+    if (grads[i].size() == 0) {
+      Py_INCREF(Py_None);
+      PyTuple_SET_ITEM(args, i, Py_None);
+    } else if (grads[i].size() == 1) {
+      PyTuple_SET_ITEM(args, i, ToPyObject(grads[i][0]));
+    } else {
+      PyTuple_SET_ITEM(args, i, ToPyObject(grads[i]));
+    }
+  }
+
+  return args;
+}
+
+paddle::small_vector<std::vector<Tensor>, egr::kSlotSmallVectorSize>
+CastPyArg2SmallVectorOfVectorOfTensor(PyObject* obj) {
+  paddle::small_vector<std::vector<Tensor>, egr::kSlotSmallVectorSize> result;
+  if (PyList_Check(obj)) {
+    Py_ssize_t len = PyList_Size(obj);
+    PyObject* item = nullptr;
+    for (Py_ssize_t i = 0; i < len; i++) {
+      item = PyList_GetItem(obj, i);
+      if (PyObject_TypeCheck(item, p_tensor_type)) {
+        std::vector<Tensor> tensors;
+        tensors.push_back(reinterpret_cast<TensorObject*>(item)->tensor);
+        result.emplace_back(tensors);
+      } else if (item == Py_None) {
+        // emplace empty Tensor for None
+        std::vector<Tensor> tensors;
+        result.emplace_back(tensors);
+      } else {
+        result.emplace_back(CastPyArg2VectorOfTensor(obj, 0));
+      }
+    }
+  } else if (PyTuple_Check(obj)) {
+    Py_ssize_t len = PyTuple_Size(obj);
+    PyObject* item = nullptr;
+    for (Py_ssize_t i = 0; i < len; i++) {
+      item = PyTuple_GetItem(obj, i);
+      if (PyObject_TypeCheck(item, p_tensor_type)) {
+        std::vector<Tensor> tensors;
+        tensors.push_back(reinterpret_cast<TensorObject*>(item)->tensor);
+        result.emplace_back(tensors);
+      } else if (item == Py_None) {
+        // emplace empty Tensor for None
+        std::vector<Tensor> tensors;
+        result.emplace_back(tensors);
+      } else {
+        result.emplace_back(CastPyArg2VectorOfTensor(obj, 0));
+      }
+    }
+  } else {
+    PADDLE_THROW(common::errors::InvalidType(
+        "argument must be "
+        "list or tuple, but got %s",
+        reinterpret_cast<PyTypeObject*>(obj->ob_type)->tp_name));
+  }
+  return result;
+}
+
+paddle::small_vector<std::vector<Tensor>, egr::kSlotSmallVectorSize>
+NodePostHook::operator()(
+    const paddle::small_vector<std::vector<Tensor>, egr::kSlotSmallVectorSize>&
+        grad_outputs,
+    const paddle::small_vector<std::vector<Tensor>, egr::kSlotSmallVectorSize>&
+        grad_inputs) {
+  bool grad_tmp = egr::Controller::Instance().HasGrad();
+  egr::Controller::Instance().SetHasGrad(false);
+  ::pybind11::gil_scoped_acquire gil;
+  PyObject* args = PyTuple_New(2);
+  PADDLE_ENFORCE_NOT_NULL(
+      args, common::errors::External(pybind11::detail::error_string().c_str()));
+  PyTuple_SET_ITEM(args, 0, ToPyObject(grad_outputs));
+  PyTuple_SET_ITEM(args, 1, ToPyObject(grad_inputs));
+  PyObject* ret = PyObject_Call(hook_.ptr(), args, nullptr);
+  PADDLE_ENFORCE_NOT_NULL(
+      ret, common::errors::External(pybind11::detail::error_string().c_str()));
+  Py_XDECREF(args);
+  egr::Controller::Instance().SetHasGrad(grad_tmp);
+  return CastPyArg2SmallVectorOfVectorOfTensor(ret);
+}
+
 /* ------------------ for SetStaticOpArgPreCastHook ----------------------- */
 
 static Py_tss_t static_op_arg_pre_cast_hook_key = {0, 0};
@@ -2738,6 +3325,81 @@ PyMODINIT_FUNC PyInit__static_op_arg_pre_cast_hook() {
   return nullptr;
 }
 
+PyObject* CalcScopeCacheKey(PyObject* dummy, PyObject* args) {
+  // Parse args
+  PyObject* program_id = PyTuple_GetItem(args, 0);
+  PyObject* input_tensors = PyTuple_GetItem(args, 1);
+  PyObject* use_cuda_graph = PyTuple_GetItem(args, 2);
+  PyObject* cuda_graph_dispatch_key = PyTuple_GetItem(args, 3);
+
+  // Check type
+  PADDLE_ENFORCE_EQ(PyLong_Check(program_id),
+                    true,
+                    common::errors::InvalidArgument(
+                        "The program_id should be a long integer."));
+  PADDLE_ENFORCE_EQ(PyList_Check(input_tensors) || PyTuple_Check(input_tensors),
+                    true,
+                    common::errors::InvalidArgument(
+                        "The input tensors should be a list/tuple of Tensor."));
+  PADDLE_ENFORCE_EQ(PyBool_Check(use_cuda_graph),
+                    true,
+                    common::errors::InvalidArgument(
+                        "The use_cuda_graph should be a boolean value."));
+  PADDLE_ENFORCE_EQ(
+      PyLong_Check(cuda_graph_dispatch_key),
+      true,
+      common::errors::InvalidArgument(
+          "The cuda_graph_dispatch_key should be a long integer."));
+
+  // Convert to C++ types
+  int64_t program_id_value = PyLong_AsLongLong(program_id);
+  bool use_cuda_graph_value = (use_cuda_graph == Py_True);
+  int64_t cuda_graph_dispatch_key_value =
+      PyLong_AsLongLong(cuda_graph_dispatch_key);
+
+  bool input_is_list = PyList_Check(input_tensors);
+  std::vector<const Tensor*> tensors_vec;
+  Py_ssize_t input_size =
+      input_is_list ? PyList_Size(input_tensors) : PyTuple_Size(input_tensors);
+  tensors_vec.reserve(input_size);
+  for (Py_ssize_t i = 0; i < input_size; ++i) {
+    PyObject* item = input_is_list ? PyList_GetItem(input_tensors, i)
+                                   : PyTuple_GetItem(input_tensors, i);
+    if (PyObject_TypeCheck(item, p_tensor_type)) {
+      tensors_vec.push_back(&(reinterpret_cast<TensorObject*>(item)->tensor));
+    } else {
+      PADDLE_THROW(common::errors::InvalidArgument(
+          "The input tensors should be a list or tuple of Tensor."));
+    }
+  }
+
+  // Calculate the scope cache key
+  const auto& hash_with_seed = [](int64_t value, int64_t seed) {
+    return seed + 0x9e3779b9 + (value << 6) + (value >> 2);
+  };
+  int64_t place_hash_key = 0;
+  for (const Tensor* tensor : tensors_vec) {
+    int64_t device_type = static_cast<int64_t>(tensor->place().GetType());
+    place_hash_key = hash_with_seed(place_hash_key, device_type);
+  }
+  int64_t scope_cache_key = program_id_value;
+  scope_cache_key = hash_with_seed(scope_cache_key, place_hash_key);
+  scope_cache_key = hash_with_seed(scope_cache_key,
+                                   static_cast<int64_t>(use_cuda_graph_value));
+  scope_cache_key =
+      hash_with_seed(scope_cache_key, cuda_graph_dispatch_key_value);
+
+  // Return the scope cache key as a Python object
+  return ToPyObject(scope_cache_key);
+}
+
+PyObject* GetProgramIdFromAttrs(PyObject* dummy, PyObject* args) {
+  auto prog_attrs =
+      GetProgramAttributesMapPtrFromPyArgs("run_program", args, 0);
+  int64_t program_id = PADDLE_GET(int64_t, prog_attrs->at("program_id"));
+  return ToPyObject(program_id);
+}
+
 /* ------------------ for auto parallel ----------------------- */
 
 static PyMethodDef EagerUtilMethods[] = {  // NOLINT
@@ -2745,14 +3407,18 @@ static PyMethodDef EagerUtilMethods[] = {  // NOLINT
      (PyCFunction)(void (*)())GetEmptyTensorsWithVarDesc,
      METH_VARARGS,
      "GetEmptyTensorsWithVarDesc"},
-    {"create_empty_tensors_with_values",
-     (PyCFunction)(void (*)())GetEmptyTensorsWithValue,
-     METH_VARARGS,
-     "GetEmptyTensorsWithValue."},
     {"set_static_op_arg_pre_cast_hook",
      (PyCFunction)SetStaticOpArgPreCastHook,
      METH_O,
      "Set hook for pre cast a static OP argument."},
+    {"calc_scope_cache_key",
+     (PyCFunction)CalcScopeCacheKey,
+     METH_VARARGS,
+     "Calculate the cache key for scope."},
+    {"get_program_id_from_attrs",
+     (PyCFunction)GetProgramIdFromAttrs,
+     METH_VARARGS,
+     "Get program id from program attrs map."},
     {nullptr, nullptr, 0, nullptr}};
 
 void BindEagerUtils(PyObject* module) {
@@ -2773,16 +3439,23 @@ CvtPlacements(Placements placements, int ndim) {
     if (placement->is_shard()) {
       auto shard_dim =
           dynamic_cast<const phi::distributed::Shard&>(*placement).get_dim();
-      PADDLE_ENFORCE_EQ(
-          dim_map[shard_dim],
-          -1,
-          common::errors::InvalidArgument(
-              "Tensor dim %lld is already sharded on mesh dim %lld,"
-              " DistTensor operator implementation does not support things "
-              "like hybrid"
-              " sharding strategies yet (i.e. [Shard(0), Shard(0)])",
-              shard_dim,
-              dim_map[shard_dim]));
+      if (dim_map[shard_dim] != -1) {
+        LOG(WARNING) << "WARNING: Tensor dim " << shard_dim
+                     << " is already sharded on "
+                     << "mesh dim" << dim_map[shard_dim]
+                     << ". Sharding a tensor dim with "
+                     << "multiple mesh dim is not supported yet.";
+      }
+      // PADDLE_ENFORCE_EQ(
+      //     dim_map[shard_dim],
+      //     -1,
+      //     common::errors::InvalidArgument(
+      //         "Tensor dim %lld is already sharded on mesh dim %lld,"
+      //         " DistTensor operator implementation does not support things "
+      //         "like hybrid"
+      //         " sharding strategies yet (i.e. [Shard(0), Shard(0)])",
+      //         shard_dim,
+      //         dim_map[shard_dim]));
       dim_map[shard_dim] = i;
     }
   }
@@ -2830,6 +3503,184 @@ void EagerSetDeviceId() {
         "PaddlePaddle should compile with XPU if use XPUPlace."));
 #endif
   }
+}
+
+paddle::optional<Tensor*> GetInputOutTensorFromKwargs(PyObject* kwargs) {
+  if (!kwargs) {
+    return paddle::none;
+  }
+  PyObject* obj = PyDict_GetItemString(kwargs, "out");
+  if (obj && PyObject_TypeCheck(obj, p_tensor_type)) {
+    return paddle::make_optional<Tensor*>(
+        &(reinterpret_cast<TensorObject*>(obj)->tensor));
+  }
+  return paddle::none;
+}
+
+template <size_t N>
+struct TensorTupleType;
+
+template <>
+struct TensorTupleType<2> {
+  using type = std::tuple<Tensor*, Tensor*>;
+};
+
+template <>
+struct TensorTupleType<3> {
+  using type = std::tuple<Tensor*, Tensor*, Tensor*>;
+};
+
+template <>
+struct TensorTupleType<4> {
+  using type = std::tuple<Tensor*, Tensor*, Tensor*, Tensor*>;
+};
+
+template <>
+struct TensorTupleType<5> {
+  using type = std::tuple<Tensor*, Tensor*, Tensor*, Tensor*, Tensor*>;
+};
+
+template <>
+struct TensorTupleType<6> {
+  using type = std::tuple<Tensor*, Tensor*, Tensor*, Tensor*, Tensor*, Tensor*>;
+};
+
+template <>
+struct TensorTupleType<7> {
+  using type =
+      std::tuple<Tensor*, Tensor*, Tensor*, Tensor*, Tensor*, Tensor*, Tensor*>;
+};
+
+template <size_t... Is>
+paddle::optional<typename TensorTupleType<sizeof...(Is)>::type>
+GetPredefinedOutTupleTensorFromKwargs_Impl(PyObject* kwargs,
+                                           std::index_sequence<Is...>) {
+  if (!kwargs) return paddle::none;
+
+  PyObject* obj = PyDict_GetItemString(kwargs, "out");
+  if (!obj || obj == Py_None) return paddle::none;
+  if (!PyTuple_Check(obj) || PyTuple_Size(obj) != sizeof...(Is)) {
+    PADDLE_THROW(common::errors::InvalidArgument(
+        "The out argument must be a tuple with %d elements.", sizeof...(Is)));
+    return paddle::none;
+  }
+
+  return std::make_tuple(
+      &(reinterpret_cast<TensorObject*>(PyTuple_GetItem(obj, Is))->tensor)...);
+}
+
+paddle::optional<std::tuple<Tensor*, Tensor*>>
+GetPredefinedOutTupleTensorFromKwargs_2(PyObject* kwargs) {
+  return GetPredefinedOutTupleTensorFromKwargs_Impl<0, 1>(
+      kwargs, std::make_index_sequence<2>{});
+}
+
+paddle::optional<std::tuple<Tensor*, Tensor*, Tensor*>>
+GetPredefinedOutTupleTensorFromKwargs_3(PyObject* kwargs) {
+  return GetPredefinedOutTupleTensorFromKwargs_Impl<0, 1, 2>(
+      kwargs, std::make_index_sequence<3>{});
+}
+
+paddle::optional<std::tuple<Tensor*, Tensor*, Tensor*, Tensor*>>
+GetPredefinedOutTupleTensorFromKwargs_4(PyObject* kwargs) {
+  return GetPredefinedOutTupleTensorFromKwargs_Impl<0, 1, 2, 3>(
+      kwargs, std::make_index_sequence<4>{});
+}
+
+paddle::optional<std::tuple<Tensor*, Tensor*, Tensor*, Tensor*, Tensor*>>
+GetPredefinedOutTupleTensorFromKwargs_5(PyObject* kwargs) {
+  return GetPredefinedOutTupleTensorFromKwargs_Impl<0, 1, 2, 3, 4>(
+      kwargs, std::make_index_sequence<5>{});
+}
+
+paddle::optional<
+    std::tuple<Tensor*, Tensor*, Tensor*, Tensor*, Tensor*, Tensor*>>
+GetPredefinedOutTupleTensorFromKwargs_6(PyObject* kwargs) {
+  return GetPredefinedOutTupleTensorFromKwargs_Impl<0, 1, 2, 3, 4, 5>(
+      kwargs, std::make_index_sequence<6>{});
+}
+
+paddle::optional<
+    std::tuple<Tensor*, Tensor*, Tensor*, Tensor*, Tensor*, Tensor*, Tensor*>>
+GetPredefinedOutTupleTensorFromKwargs_7(PyObject* kwargs) {
+  return GetPredefinedOutTupleTensorFromKwargs_Impl<0, 1, 2, 3, 4, 5, 6>(
+      kwargs, std::make_index_sequence<7>{});
+}
+
+void Check_PIR_not_support_out(PyObject* kwargs) {
+  if (!kwargs) {
+    return;
+  }
+  PyObject* obj = PyDict_GetItemString(kwargs, "out");
+  if (obj) {
+    static std::once_flag once_flag;
+    std::call_once(once_flag, [&] {
+      LOG(WARNING) << "Paddle static graph(PIR) not support input out tensor "
+                      "for now!!!!!";
+    });
+  }
+}
+
+std::unordered_map<std::string, std::string> ParseStringDict(
+    PyObject* py_dict) {
+  if (!PyDict_Check(py_dict)) {
+    PADDLE_THROW(common::errors::InvalidType(
+        "Expected a dictionary object, but got %s",
+        reinterpret_cast<PyTypeObject*>(py_dict->ob_type)->tp_name));
+  }
+
+  std::unordered_map<std::string, std::string> result;
+  PyObject *key, *value;
+  Py_ssize_t pos = 0;
+
+  while (PyDict_Next(py_dict, &pos, &key, &value)) {
+    if (!PyUnicode_Check(key) || !PyUnicode_Check(value)) {
+      PADDLE_THROW(common::errors::InvalidType(
+          "Both keys and values in the dictionary must be strings."));
+    }
+
+    Py_ssize_t key_len, value_len;
+    const char* c_key = PyUnicode_AsUTF8AndSize(key, &key_len);
+    const char* c_value = PyUnicode_AsUTF8AndSize(value, &value_len);
+
+    if (c_key == NULL || c_value == NULL) {
+      PADDLE_THROW(common::errors::External(
+          "Failed to convert Python string to C string."));
+    }
+
+    result.emplace(std::string(c_key, key_len),
+                   std::string(c_value, value_len));
+  }
+
+  return result;
+}
+std::unordered_map<std::string, void*> ParsePythonOpAttrs(PyObject* py_dict) {
+  if (!PyDict_Check(py_dict)) {
+    PADDLE_THROW(common::errors::InvalidType(
+        "Unknown python op attributes type, expected dict, but got %s",
+        reinterpret_cast<PyTypeObject*>(py_dict->ob_type)->tp_name));
+  }
+
+  PyObject* py_infer_meta = PyDict_GetItemString(py_dict, "infer_meta_fn_ptr");
+  PyObject* py_real_fn = PyDict_GetItemString(py_dict, "fn_ptr");
+  if (!py_infer_meta || !py_real_fn) {
+    PADDLE_THROW(common::errors::NotFound(
+        "Missing required keys 'infer_meta_fn_ptr' or 'fn_ptr' in op attrs."));
+  }
+
+  if (!PyCallable_Check(py_infer_meta) || !PyCallable_Check(py_real_fn)) {
+    PADDLE_THROW(common::errors::InvalidType(
+        "Expected callable objects for 'infer_meta_fn_ptr' and 'fn_ptr'."));
+  }
+
+  // Increase reference count to prevent garbage collection in C++
+  Py_INCREF(py_infer_meta);
+  Py_INCREF(py_real_fn);
+  std::unordered_map<std::string, void*> attrs;
+
+  attrs["infer_meta_fn_ptr"] = reinterpret_cast<void*>(py_infer_meta);
+  attrs["fn_ptr"] = reinterpret_cast<void*>(py_real_fn);
+  return attrs;
 }
 
 }  // namespace paddle::pybind

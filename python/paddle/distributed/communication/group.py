@@ -91,6 +91,23 @@ class Group:
         else:
             return -1
 
+    def get_global_rank(self, rank: int) -> int | Literal[-1]:
+        """
+        Get the global rank of a process within a group.
+
+        Args:
+            rank (int): The local rank within the group.
+
+        Returns:
+            If the current process is a member of the group, returns the corresponding global rank;
+            otherwise returns -1.
+
+        """
+        if self.is_member():
+            return self.ranks[rank]
+        else:
+            return -1
+
     def __repr__(self) -> str:
         debug_str = (
             f"rank: {self.rank}, nranks: {self.nranks}, id: {self.id}, ranks: "
@@ -104,6 +121,62 @@ class Group:
 class _GroupManager:
     global_group_id = 0
     group_map_by_id = {}
+
+
+class _DistGroupMeta(type):
+    """Metaclass exposing :attr:`group.WORLD` as a dynamic class property."""
+
+    @property
+    def WORLD(cls) -> Group | None:
+        try:
+            return _get_global_group()
+        except RuntimeError:
+            return None
+
+    @WORLD.setter
+    def WORLD(cls, value: Group | None) -> None:
+        # Validate before mutating any registry so a rejected assignment
+        # leaves the existing default group intact.
+        if value is not None:
+            if not isinstance(value, Group):
+                raise TypeError(
+                    "group.WORLD must be a Group instance or None, got "
+                    f"{type(value).__name__}"
+                )
+            if value.id != _GroupManager.global_group_id:
+                raise ValueError(
+                    f"group.WORLD expects a Group with id="
+                    f"{_GroupManager.global_group_id}, got id={value.id}"
+                )
+
+        # Lazy import: ``collective`` imports from this module at its top.
+        from paddle.distributed import collective as _coll
+
+        prev = _GroupManager.group_map_by_id.pop(
+            _GroupManager.global_group_id, None
+        )
+        _coll._group_map.pop(_coll._global_env_gid, None)
+        _coll._group_map_by_name.pop(_coll._default_group_name, None)
+        if prev is not None:
+            _coll._group_map_backend.pop(prev, None)
+
+        if value is None:
+            return
+
+        _GroupManager.group_map_by_id[_GroupManager.global_group_id] = value
+        _coll._group_map[_coll._global_env_gid] = value
+        _coll._group_map_by_name[_coll._default_group_name] = value
+        if value._pg is not None:
+            # ``ProcessGroup.name()`` returns the C++ backend name in upper
+            # case (e.g. ``NCCL``); the registry is keyed by the lower-case
+            # Python form used in ``_valid_backend_list``.
+            _coll._group_map_backend[value] = value._pg.name().lower()
+
+
+class _DistGroupNamespace(metaclass=_DistGroupMeta):
+    """Namespace exposing :attr:`WORLD`, re-exported as
+    :data:`paddle.distributed.group`.
+    """
 
 
 def _get_global_group():
@@ -125,18 +198,15 @@ def _is_global_group(group):
 def _warn_cur_rank_not_in_group(group):
     global_rank = dist.get_rank()
     if group and not group.is_member():
-        warnings.warn(
-            f"Current global rank {global_rank} is not in group {group.name}"
-        )
         return True
     return False
 
 
 def _get_or_throw_group_rank(global_rank, group):
     group_rank = group.get_group_rank(global_rank)
-    assert (
-        group_rank >= 0
-    ), f"The input rank {global_rank} can not be found inside the group {group.name}"
+    assert group_rank >= 0, (
+        f"The input rank {global_rank} can not be found inside the group {group.name}"
+    )
     return group_rank
 
 
@@ -152,7 +222,7 @@ def is_initialized() -> bool:
         This API only supports the dygraph mode.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env: DISTRIBUTED)
             >>> import paddle
@@ -183,7 +253,7 @@ def destroy_process_group(group: Group | None = None) -> None:
         This API only supports the dygraph mode.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env: DISTRIBUTED)
             >>> import paddle
@@ -201,11 +271,20 @@ def destroy_process_group(group: Group | None = None) -> None:
 
     """
     group = _get_global_group() if group is None else group
-    assert (
-        group.id in _GroupManager.group_map_by_id
-    ), f"Destroy group with id {group.id} is invalid."
+    assert group.id in _GroupManager.group_map_by_id, (
+        f"Destroy group with id {group.id} is invalid."
+    )
     if _is_global_group(group):
         _GroupManager.group_map_by_id.clear()
+        # The default group is also registered in the collective-layer
+        # registries by ``init_parallel_env``; clear those slots too so a
+        # follow-up ``init_process_group`` re-creates the default group
+        # rather than hitting ``init_parallel_env``'s early-return path.
+        from paddle.distributed import collective as _coll
+
+        _coll._group_map.pop(_coll._global_env_gid, None)
+        _coll._group_map_by_name.pop(_coll._default_group_name, None)
+        _coll._group_map_backend.pop(group, None)
     else:
         del _GroupManager.group_map_by_id[group.id]
 
@@ -222,14 +301,14 @@ def get_group(id: int = 0) -> Group:
         Group: the group instance.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env: DISTRIBUTED)
             >>> import paddle
             >>> import paddle.distributed as dist
 
             >>> dist.init_parallel_env()
-            >>> gid = paddle.distributed.new_group([2,4,6])
+            >>> gid = paddle.distributed.new_group([2, 4, 6])
             >>> paddle.distributed.get_group(gid.id)
 
     """
@@ -242,7 +321,7 @@ def get_group(id: int = 0) -> Group:
 
 def _sync_calc_stream(tensor):
     if framework.in_dynamic_mode():
-        return paddle._legacy_C_ops.c_sync_calc_stream(tensor, tensor)
+        return paddle._C_ops.sync_calc_stream(tensor)
     else:
         op_type = 'c_sync_calc_stream'
         helper = framework.LayerHelper(op_type, **locals())
@@ -277,14 +356,14 @@ def wait(
     Args:
         tensor (Tensor): The Tensor used before sync.
         group (Group): The Group instance to perform sync.
-        use_calc_stream (bool): Wether to use calculation stream (True) or communication stream (False).
+        use_calc_stream (bool): Whether to use calculation stream (True) or communication stream (False).
             Default to True.
 
     Returns:
         None.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env: DISTRIBUTED)
             >>> import paddle
@@ -317,7 +396,7 @@ def barrier(group: Group | None = None) -> None:
         None.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env: DISTRIBUTED)
             >>> import paddle
@@ -345,9 +424,11 @@ def barrier(group: Group | None = None) -> None:
 
     barrier_tensor = paddle.full([1], 1, dtype="int32")
     if framework.in_dynamic_mode():
-        return paddle._legacy_C_ops.barrier(
-            barrier_tensor, barrier_tensor, 'ring_id', ring_id
-        )
+        # barrier is not available in xpu for now
+        if not paddle.framework.core.is_compiled_with_xpu():
+            return paddle._legacy_C_ops.barrier(
+                barrier_tensor, barrier_tensor, 'ring_id', ring_id
+            )
     else:
         op_type = 'barrier'
         if not isinstance(ring_id, int):
@@ -372,7 +453,7 @@ def get_backend(group: Group | None = None) -> str:
         Returns the name of the given group backend.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env: DISTRIBUTED)
             >>> import paddle

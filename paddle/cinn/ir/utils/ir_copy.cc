@@ -25,12 +25,17 @@
 #include "paddle/cinn/ir/ir_printer.h"
 #include "paddle/cinn/ir/module.h"
 #include "paddle/cinn/ir/schedule/ir_schedule.h"
+#include "paddle/cinn/ir/stmt_visitors.h"
+
+using cinn::ir::stmt::BlockRef;
+using cinn::ir::stmt::StmtRef;
 
 namespace cinn {
 namespace ir {
 namespace ir_utils {
 namespace {
-struct IRCopyVisitor : public ir::IRVisitorRequireReImpl<Expr> {
+struct IRCopyVisitor : public ir::IRVisitorRequireReImpl<Expr>,
+                       public stmt::StmtVisitor<StmtRef, BlockRef> {
  public:
   explicit IRCopyVisitor(bool copy_buffer_node)
       : copy_buffer_node(copy_buffer_node) {}
@@ -42,12 +47,7 @@ struct IRCopyVisitor : public ir::IRVisitorRequireReImpl<Expr> {
   bool copy_buffer_node;
 
   Expr Visit(const Expr* op) override {
-    // Because AutoSimplify converts div to frac, VerifyIndex is temporarily
-    // added here to ensure correctness.
-    // This is essentially because visit now allows inplace modification of
-    // Expr, and then visit of IndexExpr will be prohibited, and IndexExpr's own
-    // access method will be used instead.
-    bool is_index = op->is_index() && common::VerifyIndex(*op);
+    bool is_index = op->is_index();
     auto copy = IRVisitorRequireReImpl::Visit(op);
     return copy.set_index(is_index);
   }
@@ -133,6 +133,11 @@ struct IRCopyVisitor : public ir::IRVisitorRequireReImpl<Expr> {
     return LoweredFunc(func);
   }
 
+  StmtRef VisitStmt(const StmtRef& stmt) {
+    return StmtVisitor::VisitStmt(stmt);
+  }
+  BlockRef VisitBlock(const BlockRef& block) override;
+
  protected:
   // The methods of ir nodes follows the order defined in node.h
   Expr Visit(const ir::IntImm* op) override {
@@ -195,6 +200,7 @@ struct IRCopyVisitor : public ir::IRVisitorRequireReImpl<Expr> {
     n->name = op->name;
     n->is_reduce_axis = op->is_reduce_axis;
     n->is_symbolic_constant = op->is_symbolic_constant;
+    n->is_let_symbol = op->is_let_symbol;
     n->set_type(op->type());
 
     if (op->lower_bound.defined()) {
@@ -278,7 +284,7 @@ struct IRCopyVisitor : public ir::IRVisitorRequireReImpl<Expr> {
     auto domain = Visit(op->domain);
     auto buffer_expr = Expr(op->buffer);
     // TODO(Superjomn) copy the operation.
-    auto operaion = op->operation;
+    auto operation = op->operation;
     auto name = op->name;
     auto tensor = make_shared<_Tensor_>();
 
@@ -294,7 +300,7 @@ struct IRCopyVisitor : public ir::IRVisitorRequireReImpl<Expr> {
     tensor->domain = domain;
     tensor->shape = shape;
     tensor->reduce_axis = op->reduce_axis;
-    tensor->operation = operaion;
+    tensor->operation = operation;
     tensor->name = name;
     tensor->set_type(op->type());
     tensor->axis_ = op->axis_;
@@ -474,15 +480,15 @@ struct IRCopyVisitor : public ir::IRVisitorRequireReImpl<Expr> {
   }
   Expr Visit(const ir::IterMark* op) override {
     Expr source = Visit(&(op->source));
-    IndexExpr extent = Visit(&(op->extent));
+    Expr extent = Visit(&(op->extent));
 
     return IterMark::Make(source, extent);
   }
   Expr Visit(const ir::IterSplit* op) override {
     Expr source = Visit(&(op->source));
-    IndexExpr lower_factor = Visit(&(op->lower_factor));
-    IndexExpr extent = Visit(&(op->extent));
-    IndexExpr scale = Visit(&(op->scale));
+    Expr lower_factor = Visit(&(op->lower_factor));
+    Expr extent = Visit(&(op->extent));
+    Expr scale = Visit(&(op->scale));
 
     return IterSplit::Make(source, lower_factor, extent, scale);
   }
@@ -491,7 +497,7 @@ struct IRCopyVisitor : public ir::IRVisitorRequireReImpl<Expr> {
     for (const auto& v : op->args) {
       args.push_back(Visit(&v));
     }
-    IndexExpr base = Visit(&(op->base));
+    Expr base = Visit(&(op->base));
     return IterSum::Make(args, base);
   }
 
@@ -525,6 +531,10 @@ struct IRCopyVisitor : public ir::IRVisitorRequireReImpl<Expr> {
   }
   NODETY_UNARY_OP_FOR_EACH(OP_UNARY_HANDLE)
 #undef OP_UNARY_HANDLE
+
+#define __(stmt__) StmtRef VisitStmt(const stmt::stmt__& stmt) override;
+  NODETY_FORALL_STMT(__)
+#undef __
 
   std::vector<Expr> Visit(const std::vector<Expr>& vs) {
     std::vector<Expr> copied;
@@ -562,6 +572,75 @@ Expr IRCopyVisitor::Visit(const ir::intrinsics::BuiltinIntrin* op) {
   return intrinsics::BuiltinIntrin::Make(
       op->name, op->args, op->id, op->arg_nums, op->type());
 }
+
+// copy for stmt
+StmtRef IRCopyVisitor::VisitStmt(const stmt::Let& stmt) {
+  return stmt::Let(Visit(&stmt->symbol()), Visit(&stmt->body()));
+}
+StmtRef IRCopyVisitor::VisitStmt(const stmt::Store& stmt) {
+  return stmt::Store(
+      Visit(&stmt->tensor()), Visit(&stmt->value()), Visit(stmt->indices()));
+}
+StmtRef IRCopyVisitor::VisitStmt(const stmt::Alloc& stmt) {
+  Expr condition;
+  Expr body;
+  if (stmt->condition().defined()) condition = Visit(&stmt->condition());
+  if (stmt->body().defined()) body = Visit(&stmt->body());
+  return stmt::Alloc(Visit(&stmt->destination()),
+                     stmt->type(),
+                     Visit(stmt->extents()),
+                     condition,
+                     body);
+}
+StmtRef IRCopyVisitor::VisitStmt(const stmt::Free& stmt) {
+  return stmt::Free(Visit(&stmt->destination()));
+}
+StmtRef IRCopyVisitor::VisitStmt(const stmt::IfThenElse& stmt) {
+  return stmt::IfThenElse(Visit(&stmt->condition()),
+                          VisitBlock(stmt->true_case()),
+                          VisitBlock(stmt->false_case()));
+}
+StmtRef IRCopyVisitor::VisitStmt(const stmt::For& stmt) {
+  return stmt::For(stmt->loop_var(),
+                   Visit(&stmt->min()),
+                   Visit(&stmt->extent()),
+                   stmt->for_type(),
+                   stmt->device_api(),
+                   VisitBlock(stmt->body()),
+                   stmt->vectorize_info(),
+                   stmt->bind_info());
+}
+StmtRef IRCopyVisitor::VisitStmt(const stmt::Evaluate& stmt) {
+  return stmt::Evaluate(Visit(&stmt->value()));
+}
+StmtRef IRCopyVisitor::VisitStmt(const stmt::Schedule& stmt) {
+  std::vector<Var> iter_vars;
+  for (auto iter_var : stmt->iter_vars()) {
+    auto* var = iter_var.As<_Var_>();
+    PADDLE_ENFORCE_NE(var,
+                      nullptr,
+                      ::common::errors::InvalidArgument(
+                          "Schedule iter_var is not a valid _Var_ type."));
+    iter_vars.emplace_back(Visit(var));
+  }
+  return stmt::Schedule(iter_vars,
+                        Visit(stmt->iter_values()),
+                        Visit(stmt->read_buffers()),
+                        Visit(stmt->write_buffers()),
+                        stmt->name(),
+                        VisitBlock(stmt->body()),
+                        stmt->attrs(),
+                        stmt->reduce_method());
+}
+// copy for block
+BlockRef IRCopyVisitor::VisitBlock(const stmt::BlockRef& block) {
+  std::vector<StmtRef> new_stmts;
+  for (const auto& stmt : block->stmts()) {
+    new_stmts.emplace_back(VisitStmt(stmt));
+  }
+  return stmt::BlockRef(new_stmts);
+}
+
 }  // namespace
 Expr IRCopy(const Expr& x, bool copy_buffer_node) {
   IRCopyVisitor visitor(copy_buffer_node);
@@ -577,6 +656,11 @@ std::vector<Expr> IRCopy(const std::vector<Expr>& x, bool copy_buffer_node) {
   return res;
 }
 
+BlockRef IRCopy(const BlockRef& x, bool copy_buffer_node) {
+  IRCopyVisitor visitor(copy_buffer_node);
+  return visitor.VisitBlock(x);
+}
+
 ir::ModuleExpr IRCopy(const ir::ModuleExpr& x, bool copy_buffer_node) {
   return ir::ModuleExpr(IRCopy(x.GetExprs(), copy_buffer_node));
 }
@@ -589,6 +673,8 @@ ir::Module IRCopy(const Module& m, bool copy_buffer_node) {
 ir::LoweredFunc IRCopy(const ir::LoweredFunc& x, bool copy_buffer_node) {
   IRCopyVisitor visitor(copy_buffer_node);
   auto copied = visitor.Visit(x.As<ir::_LoweredFunc_>());
+  // TODO(Dmovic): Update ir copy when remove expr body.
+  copied->body_block = x->body_block;
   return copied;
 }
 

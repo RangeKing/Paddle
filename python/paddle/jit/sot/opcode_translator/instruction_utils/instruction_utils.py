@@ -24,6 +24,7 @@ from ...utils import InnerError
 from .opcode_info import (
     ABS_JUMP,
     ALL_JUMP,
+    FUSED_INSTS,
     PYOPCODE_CACHE_SIZE,
     REL_BWD_JUMP,
     REL_JUMP,
@@ -98,13 +99,24 @@ def convert_instruction(instr: dis.Instruction) -> Instruction:
     )
 
 
+def replace_jump_target(
+    instrs: list[Instruction],
+    replacements: dict[Instruction, Instruction],
+) -> None:
+    """Replace jump targets based on the replacements dictionary.
+
+    Args:
+        instrs (list[Instruction]): The list of instructions to modify.
+        replacements (dict[Instruction, Instruction]): Mapping from old jump targets to new ones.
+    """
+    for instr in instrs:
+        if instr.jump_to in replacements:
+            instr.jump_to = replacements[instr.jump_to]
+
+
 def expand_super_instrs(instructions: list[Instruction]) -> list[Instruction]:
     expanded_instrs = []
-
-    def replace_jump_target(instrs, old_target, new_target):
-        for instr in instrs:
-            if instr.jump_to == old_target:
-                instr.jump_to = new_target
+    replacements = {}
 
     def copy_instruction(
         instr, opname, argval, arg, is_jump_target, is_generated
@@ -118,12 +130,6 @@ def expand_super_instrs(instructions: list[Instruction]) -> list[Instruction]:
             is_generated=is_generated,
             jump_to=instr.jump_to,
         )
-
-    FUSED_INSTS: dict[str, tuple[str, str]] = {
-        "LOAD_FAST_LOAD_FAST": ("LOAD_FAST", "LOAD_FAST"),
-        "STORE_FAST_STORE_FAST": ("STORE_FAST", "STORE_FAST"),
-        "STORE_FAST_LOAD_FAST": ("STORE_FAST", "LOAD_FAST"),
-    }
 
     for instr in instructions:
         if instr.opname in FUSED_INSTS:
@@ -143,11 +149,74 @@ def expand_super_instrs(instructions: list[Instruction]) -> list[Instruction]:
                 False,
                 False,
             )
-            replace_jump_target(instructions, instr, instr1)
+            replacements[instr] = instr1
+            expanded_instrs.append(instr1)
+            expanded_instrs.append(instr2)
+        # If the LOAD_ATTR opcode will lead to load_method in 3.13+, we manually split it into two instructions,
+        # to avoid Uncontrollable specialization that changes the behavior of LOAD_ATTR,
+        # which can lead to incorrect results when the current graph is smaller than the MIN_GRAPH_SIZE
+        elif (
+            sys.version_info >= (3, 13)
+            and instr.opname == "LOAD_ATTR"
+            and instr.arg & 1
+        ):
+            instr1 = copy_instruction(
+                instr,
+                "LOAD_ATTR",
+                instr.argval,
+                instr.arg & ~1,
+                instr.is_jump_target,
+                True,
+            )
+            instr2 = Instruction(
+                dis.opmap["PUSH_NULL"],
+                "PUSH_NULL",
+                None,
+                None,
+                is_generated=True,
+            )
+            replacements[instr] = instr1
             expanded_instrs.append(instr1)
             expanded_instrs.append(instr2)
         else:
             expanded_instrs.append(instr)
+
+    replace_jump_target(expanded_instrs, replacements)
+    return expanded_instrs
+
+
+def replace_load_fast_borrow_with_strong_ref(
+    instructions: list[Instruction],
+) -> list[Instruction]:
+    """
+    Patch LOAD_FAST_BORROW to LOAD_FAST for Python 3.14+.
+
+    LOAD_FAST_BORROW loads a value using a borrowing reference and does not
+    increment the reference count. In some cases this can cause subsequent
+    STORE_FAST or other operations to retain a reference that becomes invalid
+    once the borrowed value is released, leading to incorrect behavior or
+    crashes when the variable is accessed later.
+    To avoid these issues, we replace LOAD_FAST_BORROW with LOAD_FAST here.
+    """
+    replacements = {}
+    expanded_instrs = []
+    for instr in instructions:
+        if instr.opname == "LOAD_FAST_BORROW":
+            instr1 = Instruction(
+                dis.opmap["LOAD_FAST"],
+                "LOAD_FAST",
+                instr.arg,
+                instr.argval,
+                is_generated=instr.is_generated,
+                is_jump_target=instr.is_jump_target,
+                jump_to=instr.jump_to,
+            )
+            replacements[instr] = instr1
+            expanded_instrs.append(instr1)
+        else:
+            expanded_instrs.append(instr)
+
+    replace_jump_target(expanded_instrs, replacements)
     return expanded_instrs
 
 
@@ -194,7 +263,13 @@ def get_instructions(code: types.CodeType) -> list[Instruction]:
     #         XX 388    <-  256 + 132
     # filter all EXTENDED_ARG here
     instrs = [x for x in instrs if x.opname != "EXTENDED_ARG"]
-    return expand_super_instrs(instrs)
+    prepare_passes = [expand_super_instrs]
+    if sys.version_info >= (3, 14):
+        prepare_passes.append(replace_load_fast_borrow_with_strong_ref)
+
+    for pass_fn in prepare_passes:
+        instrs = pass_fn(instrs)
+    return instrs
 
 
 def modify_instrs(instructions: list[Instruction]) -> None:
@@ -318,8 +393,7 @@ def relocate_jump_target(instructions: list[Instruction]) -> bool:
                 if instr.opname in REL_BWD_JUMP:
                     new_arg = -new_arg
 
-            if sys.version_info >= (3, 10):
-                new_arg //= 2
+            new_arg //= 2
             _, invert_jump = correct_jump_direction(instr, new_arg)
             has_inverted_jump = has_inverted_jump or invert_jump
             assert instr.arg is not None
@@ -398,32 +472,29 @@ def modify_vars(instructions: list[Instruction], code_options):
     for instrs in instructions:
         if instrs.opname in [
             'LOAD_FAST',
+            'LOAD_FAST_BORROW',
             'LOAD_FAST_CHECK',
             'STORE_FAST',
             'DELETE_FAST',
         ]:
-            assert (
-                instrs.argval in co_varnames
-            ), f"`{instrs.argval}` not in {co_varnames}"
+            assert instrs.argval in co_varnames, (
+                f"`{instrs.argval}` not in {co_varnames}"
+            )
             instrs.arg = co_varnames.index(instrs.argval)
         elif instrs.opname == "LOAD_DEREF" or instrs.opname == "STORE_DEREF":
             if sys.version_info >= (3, 11):
                 namemap = co_varnames + co_freevars
-                assert (
-                    instrs.argval in namemap
-                ), f"`{instrs.argval}` not in {namemap}"
+                assert instrs.argval in namemap, (
+                    f"`{instrs.argval}` not in {namemap}"
+                )
                 instrs.arg = namemap.index(instrs.argval)
-        elif instrs.opname in [
-            'LOAD_FAST_LOAD_FAST',
-            'STORE_FAST_STORE_FAST',
-            'STORE_FAST_LOAD_FAST',
-        ]:
-            assert (
-                instrs.argval[0] in co_varnames
-            ), f"`{instrs.argval[0]}` not in {co_varnames}"
-            assert (
-                instrs.argval[1] in co_varnames
-            ), f"`{instrs.argval[1]}` not in {co_varnames}"
+        elif instrs.opname in FUSED_INSTS.keys():
+            assert instrs.argval[0] in co_varnames, (
+                f"`{instrs.argval[0]}` not in {co_varnames}"
+            )
+            assert instrs.argval[1] in co_varnames, (
+                f"`{instrs.argval[1]}` not in {co_varnames}"
+            )
             instrs.arg = (
                 co_varnames.index(instrs.argval[0]) << 4
             ) + co_varnames.index(instrs.argval[1])

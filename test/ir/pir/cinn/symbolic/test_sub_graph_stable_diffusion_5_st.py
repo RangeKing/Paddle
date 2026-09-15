@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# repo: diffusers_sub_grpah
+# repo: diffusers_sub_graph
 # model: stable_diffusion
-# api:paddle.tensor.creation.arange||method:__rmul__||method:__truediv__||api:paddle.tensor.ops.exp||method:__getitem__||method:cast||method:__getitem__||method:__mul__||method:__rmul__||api:paddle.tensor.ops.sin||api:paddle.tensor.ops.cos||api:paddle.tensor.manipulation.concat||method:__getitem__||method:__getitem__||api:paddle.tensor.manipulation.concat
+# api:paddle.tensor.creation.arange||method:__rmul__||method:__truediv__||api:paddle.exp||method:__getitem__||method:cast||method:__getitem__||method:__mul__||method:__rmul__||api:paddle.sin||api:paddle.cos||api:paddle.tensor.manipulation.concat||method:__getitem__||method:__getitem__||api:paddle.tensor.manipulation.concat
 import unittest
 
 import numpy as np
@@ -33,7 +33,7 @@ class LayerCase(paddle.nn.Layer):
         var_1 = paddle.tensor.creation.arange(start=0, end=160, dtype='float32')
         var_2 = -9.210340371976184 * var_1
         var_3 = var_2 / 160
-        var_4 = paddle.tensor.ops.exp(var_3)
+        var_4 = paddle.exp(var_3)
         var_5 = var_0[
             (
                 slice(None, None, None),
@@ -49,8 +49,8 @@ class LayerCase(paddle.nn.Layer):
         ]
         var_8 = var_6 * var_7
         var_9 = 1 * var_8
-        var_10 = paddle.tensor.ops.sin(var_9)
-        var_11 = paddle.tensor.ops.cos(var_9)
+        var_10 = paddle.sin(var_9)
+        var_11 = paddle.cos(var_9)
         var_12 = paddle.tensor.manipulation.concat([var_10, var_11], axis=-1)
         var_13 = var_12[
             (
@@ -80,15 +80,14 @@ class TestLayer(unittest.TestCase):
 
     def train(self, net, to_static, with_prim=False, with_cinn=False):
         if to_static:
-            paddle.set_flags({'FLAGS_prim_all': with_prim})
+            paddle.base.core._set_prim_all_enabled(with_prim)
             if with_cinn:
-                build_strategy = paddle.static.BuildStrategy()
-                build_strategy.build_cinn_pass = True
-                net = paddle.jit.to_static(
-                    net, build_strategy=build_strategy, full_graph=True
+                assert with_prim, (
+                    "with_cinn=True but with_prim=False is unsupported"
                 )
+                net = paddle.jit.to_static(net, backend="CINN", full_graph=True)
             else:
-                net = paddle.jit.to_static(net, full_graph=True)
+                net = paddle.jit.to_static(net, backend=None, full_graph=True)
         paddle.seed(123)
         outs = net(*self.inputs)
         return outs

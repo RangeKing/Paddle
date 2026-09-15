@@ -27,7 +27,7 @@ void SoftmaxKernel(const Context& dev_ctx,
                    DenseTensor* out) {
   using XPUType = typename XPUTypeTrait<T>::Type;
   const int rank = x.dims().size();
-  const int calc_axis = phi::funcs::CanonicalAxis(axis, rank);
+  const int calc_axis = funcs::CanonicalAxis(axis, rank);
 
   // allocate memory on device.
   dev_ctx.template Alloc<T>(out);
@@ -37,19 +37,19 @@ void SoftmaxKernel(const Context& dev_ctx,
   }
   // For 0D Tensor
   if (rank == 0) {
-    phi::funcs::set_constant(dev_ctx, out, static_cast<T>(1.0));
+    funcs::set_constant(dev_ctx, out, static_cast<T>(1.0));
     return;
   }
 
-  std::vector<int> x_dims;
+  std::vector<int64_t> x_dims;
   for (int i = 0; i < rank; i++) {
     x_dims.push_back(x.dims()[i]);
   }
 
-  int r = XPU_SUCCESS;
+  int r = 0;
   auto version =
-      phi::backends::xpu::get_xpu_version(dev_ctx.GetPlace().GetDeviceId());
-  if (version == phi::backends::xpu::XPUVersion::XPU1) {
+      backends::xpu::get_xpu_version(dev_ctx.GetPlace().GetDeviceId());
+  if (version == backends::xpu::XPUVersion::XPU1) {
     xpu::ctx_guard RAII_GUARD(dev_ctx.x_context());
     XPUType* clip_x_data_l3 = RAII_GUARD.alloc_l3_or_gm<XPUType>(x.numel());
     r = xpu::clamp(dev_ctx.x_context(),
@@ -63,14 +63,14 @@ void SoftmaxKernel(const Context& dev_ctx,
                               clip_x_data_l3,
                               reinterpret_cast<XPUType*>(out->data<T>()),
                               x_dims,
-                              calc_axis);
+                              static_cast<int64_t>(calc_axis));
     PADDLE_ENFORCE_XDNN_SUCCESS(r, "softmax");
   } else {
     r = xpu::softmax<XPUType>(dev_ctx.x_context(),
                               reinterpret_cast<const XPUType*>(x.data<T>()),
                               reinterpret_cast<XPUType*>(out->data<T>()),
                               x_dims,
-                              calc_axis);
+                              static_cast<int64_t>(calc_axis));
     PADDLE_ENFORCE_XDNN_SUCCESS(r, "softmax");
   }
 }
@@ -82,5 +82,5 @@ PD_REGISTER_KERNEL(softmax,
                    ALL_LAYOUT,
                    phi::SoftmaxKernel,
                    float,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}

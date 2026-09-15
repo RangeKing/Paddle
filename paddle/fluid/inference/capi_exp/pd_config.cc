@@ -19,7 +19,7 @@
 #include "paddle/fluid/inference/capi_exp/utils_internal.h"
 #include "paddle/fluid/platform/enforce.h"
 
-#define CHECK_NULL_POINTER_PARM(param)                         \
+#define CHECK_NULL_POINTER_PARAM(param)                        \
   PADDLE_ENFORCE_NOT_NULL(                                     \
       param,                                                   \
       common::errors::InvalidArgument("The pointer of " #param \
@@ -44,7 +44,7 @@ static Config::Precision ConvertToCxxPrecisionType(PD_PrecisionType precision) {
       return Config::Precision::kHalf;
     default:
       PADDLE_THROW(common::errors::InvalidArgument(
-          "Unsupport paddle precision type %d.", precision));
+          "Unsupported paddle precision type %d.", precision));
       return Config::Precision::kFloat32;
   }
 }
@@ -64,33 +64,33 @@ void PD_ConfigSetModel(__pd_keep PD_Config* pd_config,
                        const char* prog_file_path,
                        const char* params_file_path) {
   CHECK_AND_CONVERT_PD_CONFIG;
-  CHECK_NULL_POINTER_PARM(prog_file_path);
-  CHECK_NULL_POINTER_PARM(params_file_path);
+  CHECK_NULL_POINTER_PARAM(prog_file_path);
+  CHECK_NULL_POINTER_PARAM(params_file_path);
   config->SetModel(prog_file_path, params_file_path);
 }
 void PD_ConfigSetProgFile(__pd_keep PD_Config* pd_config,
                           const char* prog_file_path) {
   CHECK_AND_CONVERT_PD_CONFIG;
-  CHECK_NULL_POINTER_PARM(prog_file_path);
+  CHECK_NULL_POINTER_PARAM(prog_file_path);
   config->SetProgFile(prog_file_path);
 }
 void PD_ConfigSetParamsFile(__pd_keep PD_Config* pd_config,
                             const char* params_file_path) {
   CHECK_AND_CONVERT_PD_CONFIG;
-  CHECK_NULL_POINTER_PARM(params_file_path);
+  CHECK_NULL_POINTER_PARAM(params_file_path);
   config->SetParamsFile(params_file_path);
 }
 void PD_ConfigSetOptimCacheDir(__pd_keep PD_Config* pd_config,
                                const char* opt_cache_dir) {
   CHECK_AND_CONVERT_PD_CONFIG;
-  CHECK_NULL_POINTER_PARM(opt_cache_dir);
+  CHECK_NULL_POINTER_PARAM(opt_cache_dir);
   config->SetOptimCacheDir(opt_cache_dir);
 }
 
 void PD_ConfigSetModelDir(__pd_keep PD_Config* pd_config,
                           const char* model_dir) {
   CHECK_AND_CONVERT_PD_CONFIG;
-  CHECK_NULL_POINTER_PARM(model_dir);
+  CHECK_NULL_POINTER_PARAM(model_dir);
   config->SetModel(model_dir);
 }
 const char* PD_ConfigGetModelDir(__pd_keep PD_Config* pd_config) {
@@ -363,18 +363,33 @@ void PD_ConfigSwitchIrDebug(__pd_keep PD_Config* pd_config, PD_Bool x) {
   CHECK_AND_CONVERT_PD_CONFIG;
   config->SwitchIrDebug(x);
 }
+
 void PD_ConfigEnableMKLDNN(__pd_keep PD_Config* pd_config) {
-  CHECK_AND_CONVERT_PD_CONFIG;
-  config->EnableMKLDNN();
+  LOG(WARNING) << ONEDNN_UPDATE_WARNING(PD_ConfigEnableONEDNN);
+  PD_ConfigEnableONEDNN(pd_config);
 }
+void PD_ConfigEnableONEDNN(__pd_keep PD_Config* pd_config) {
+  CHECK_AND_CONVERT_PD_CONFIG;
+  config->EnableONEDNN();
+}
+
 void PD_ConfigSetMkldnnCacheCapacity(__pd_keep PD_Config* pd_config,
                                      int32_t capacity) {
+  LOG(WARNING) << ONEDNN_UPDATE_WARNING(PD_ConfigSetOnednnCacheCapacity);
+  PD_ConfigSetOnednnCacheCapacity(pd_config, capacity);
+}
+void PD_ConfigSetOnednnCacheCapacity(__pd_keep PD_Config* pd_config,
+                                     int32_t capacity) {
   CHECK_AND_CONVERT_PD_CONFIG;
-  config->SetMkldnnCacheCapacity(capacity);
+  config->SetOnednnCacheCapacity(capacity);
 }
 PD_Bool PD_ConfigMkldnnEnabled(__pd_keep PD_Config* pd_config) {
+  LOG(WARNING) << ONEDNN_UPDATE_WARNING(PD_ConfigOnednnEnabled);
+  return PD_ConfigOnednnEnabled(pd_config);
+}
+PD_Bool PD_ConfigOnednnEnabled(__pd_keep PD_Config* pd_config) {
   CHECK_AND_CONVERT_PD_CONFIG;
-  return config->mkldnn_enabled();  // NOLINT
+  return config->onednn_enabled();  // NOLINT
 }
 void PD_ConfigSetCpuMathLibraryNumThreads(
     __pd_keep PD_Config* pd_config, int32_t cpu_math_library_num_threads) {
@@ -389,21 +404,35 @@ int32_t PD_ConfigGetCpuMathLibraryNumThreads(__pd_keep PD_Config* pd_config) {
 void PD_ConfigSetMkldnnOp(__pd_keep PD_Config* pd_config,
                           size_t ops_num,
                           const char** op_list) {
+  LOG(WARNING) << ONEDNN_UPDATE_WARNING(PD_ConfigSetOnednnOp);
+  PD_ConfigSetOnednnOp(pd_config, ops_num, op_list);
+}
+void PD_ConfigSetOnednnOp(__pd_keep PD_Config* pd_config,
+                          size_t ops_num,
+                          const char** op_list) {
   CHECK_AND_CONVERT_PD_CONFIG;
   std::unordered_set<std::string> op_names;
   for (size_t index = 0; index < ops_num; ++index) {
     op_names.emplace(op_list[index]);
   }
-  config->SetMKLDNNOp(std::move(op_names));
+  config->SetONEDNNOp(std::move(op_names));
 }
 
 void PD_ConfigEnableMkldnnBfloat16(__pd_keep PD_Config* pd_config) {
+  LOG(WARNING) << ONEDNN_UPDATE_WARNING(PD_ConfigEnableOnednnBfloat16);
+  PD_ConfigEnableOnednnBfloat16(pd_config);
+}
+void PD_ConfigEnableOnednnBfloat16(__pd_keep PD_Config* pd_config) {
   CHECK_AND_CONVERT_PD_CONFIG;
-  config->EnableMkldnnBfloat16();
+  config->EnableOnednnBfloat16();
 }
 PD_Bool PD_ConfigMkldnnBfloat16Enabled(__pd_keep PD_Config* pd_config) {
+  LOG(WARNING) << ONEDNN_UPDATE_WARNING(PD_ConfigOnednnBfloat16Enabled);
+  return PD_ConfigOnednnBfloat16Enabled(pd_config);
+}
+PD_Bool PD_ConfigOnednnBfloat16Enabled(__pd_keep PD_Config* pd_config) {
   CHECK_AND_CONVERT_PD_CONFIG;
-  return config->mkldnn_bfloat16_enabled();  // NOLINT
+  return config->onednn_bfloat16_enabled();  // NOLINT
 }
 void PD_ConfigSetBfloat16Op(__pd_keep PD_Config* pd_config,
                             size_t ops_num,
@@ -416,12 +445,20 @@ void PD_ConfigSetBfloat16Op(__pd_keep PD_Config* pd_config,
   config->SetBfloat16Op(std::move(op_names));
 }
 void PD_ConfigEnableMkldnnInt8(__pd_keep PD_Config* pd_config) {
+  LOG(WARNING) << ONEDNN_UPDATE_WARNING(PD_ConfigEnableOnednnInt8);
+  PD_ConfigEnableOnednnInt8(pd_config);
+}
+void PD_ConfigEnableOnednnInt8(__pd_keep PD_Config* pd_config) {
   CHECK_AND_CONVERT_PD_CONFIG;
-  config->EnableMkldnnInt8();
+  config->EnableOnednnInt8();
 }
 PD_Bool PD_ConfigMkldnnInt8Enabled(__pd_keep PD_Config* pd_config) {
+  LOG(WARNING) << ONEDNN_UPDATE_WARNING(PD_ConfigOnednnInt8Enabled);
+  return PD_ConfigOnednnInt8Enabled(pd_config);
+}
+PD_Bool PD_ConfigOnednnInt8Enabled(__pd_keep PD_Config* pd_config) {
   CHECK_AND_CONVERT_PD_CONFIG;
-  return config->mkldnn_int8_enabled();  // NOLINT
+  return config->onednn_int8_enabled();  // NOLINT
 }
 PD_Bool PD_ConfigThreadLocalStreamEnabled(__pd_keep PD_Config* pd_config) {
   CHECK_AND_CONVERT_PD_CONFIG;
@@ -506,6 +543,31 @@ __pd_give PD_Cstr* PD_ConfigSummary(__pd_keep PD_Config* pd_config) {
   CHECK_AND_CONVERT_PD_CONFIG;
   auto sum_str = config->Summary();
   return paddle_infer::CvtStrToCstr(sum_str);
+}
+
+void PD_ConfigEnableNewExecutor(__pd_keep PD_Config* pd_config, PD_Bool x) {
+  CHECK_AND_CONVERT_PD_CONFIG;
+  config->EnableNewExecutor(x);
+}
+
+PD_Bool PD_ConfigNewExecutorEnabled(__pd_keep PD_Config* pd_config) {
+  CHECK_AND_CONVERT_PD_CONFIG;
+  return config->new_executor_enabled();  // NOLINT
+}
+
+void PD_ConfigEnableNewIR(__pd_keep PD_Config* pd_config, PD_Bool x) {
+  CHECK_AND_CONVERT_PD_CONFIG;
+  config->EnableNewIR(x);
+}
+
+PD_Bool PD_ConfigNewIREnabled(__pd_keep PD_Config* pd_config) {
+  CHECK_AND_CONVERT_PD_CONFIG;
+  return config->new_ir_enabled();  // NOLINT
+}
+
+void PD_ConfigUseOptimizedModel(__pd_keep PD_Config* pd_config, PD_Bool x) {
+  CHECK_AND_CONVERT_PD_CONFIG;
+  config->UseOptimizedModel(x);
 }
 
 }  // extern "C"

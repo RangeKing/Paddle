@@ -22,6 +22,8 @@
 #include "paddle/pir/include/core/operation.h"
 #include "paddle/pir/include/core/value.h"
 
+COMMON_DECLARE_bool(check_cuda_error);
+
 namespace paddle::framework {
 
 void CustomKernelInstruction::BuildCustomContext(
@@ -97,11 +99,11 @@ void CustomKernelInstruction::BuildCustomContext(
                             common::errors::PreconditionNotMet(
                                 "can not find var[%s] in scope", in_var_name));
     auto var = inner_scope->FindVar(in_var_name);
-    if (var->IsType<phi::DenseTensor>()) {
-      auto dense_tensor_in = var->GetMutable<phi::DenseTensor>();
+    if (var->IsType<DenseTensor>()) {
+      auto dense_tensor_in = var->GetMutable<DenseTensor>();
 
-      std::shared_ptr<phi::DenseTensor> tensor_in(
-          dense_tensor_in, [](phi::DenseTensor* ptr) {
+      std::shared_ptr<DenseTensor> tensor_in(
+          dense_tensor_in, [](DenseTensor* ptr) {
             VLOG(6) << ptr << " ptr will not be deleted by shared_ptr";
           });
       input_name2id_map_[t] = input_index;
@@ -111,15 +113,15 @@ void CustomKernelInstruction::BuildCustomContext(
       custom_in.set_impl(tensor_in);
       custom_kernel_ctx_.EmplaceBackInput(std::move(custom_in));
     } else if (var->IsType<VariableRefArray>()) {
-      std::vector<phi::DenseTensor*> vec_input_ptrs;
+      std::vector<DenseTensor*> vec_input_ptrs;
       std::vector<paddle::Tensor> vec_custom_in;
       auto& variable_array = var->Get<VariableRefArray>();
       for (size_t i = 0; i < variable_array.size(); ++i) {
-        if (variable_array[i]->IsType<phi::DenseTensor>()) {
-          phi::DenseTensor* dense_tensor_in = const_cast<phi::DenseTensor*>(
-              &(variable_array[i]->Get<phi::DenseTensor>()));
-          std::shared_ptr<phi::DenseTensor> tensor_in(
-              dense_tensor_in, [](phi::DenseTensor* ptr) {
+        if (variable_array[i]->IsType<DenseTensor>()) {
+          DenseTensor* dense_tensor_in = const_cast<DenseTensor*>(
+              &(variable_array[i]->Get<DenseTensor>()));
+          std::shared_ptr<DenseTensor> tensor_in(
+              dense_tensor_in, [](DenseTensor* ptr) {
                 VLOG(6) << ptr << " ptr will not be deleted by shared_ptr";
               });
           vec_input_ptrs.push_back(dense_tensor_in);
@@ -288,10 +290,10 @@ void CustomKernelInstruction::BuildCustomContext(
     if (out_ptr.type().isa<paddle::dialect::AllocatedDenseTensorType>()) {
       auto dense_tensor_out =
           inner_scope->FindVar(value_exec_info_.GetVarName(out_ptr))
-              ->GetMutable<phi::DenseTensor>();
+              ->GetMutable<DenseTensor>();
       cache_out_ptrs_.push_back(dense_tensor_out);
-      std::shared_ptr<phi::DenseTensor> tensor_out(
-          dense_tensor_out, [](phi::DenseTensor* ptr) {
+      std::shared_ptr<DenseTensor> tensor_out(
+          dense_tensor_out, [](DenseTensor* ptr) {
             VLOG(6) << ptr << " ptr will not be deleted by shared_ptr";
           });
       paddle::Tensor custom_out;
@@ -313,12 +315,12 @@ void CustomKernelInstruction::BuildCustomContext(
               "If custom operator's outputs contains `paddle::Vec()` type "
               "without setting InplaceMap, it only can hold one output."));
       for (size_t j = 0; j < variable_array.size(); ++j) {
-        if (variable_array[j]->IsType<phi::DenseTensor>()) {
-          auto dense_tensor_out = const_cast<phi::DenseTensor*>(
-              &(variable_array[j]->Get<phi::DenseTensor>()));
+        if (variable_array[j]->IsType<DenseTensor>()) {
+          auto dense_tensor_out = const_cast<DenseTensor*>(
+              &(variable_array[j]->Get<DenseTensor>()));
           cache_out_ptrs_.emplace_back(dense_tensor_out);
-          std::shared_ptr<phi::DenseTensor> tensor_out(
-              dense_tensor_out, [](phi::DenseTensor* ptr) {
+          std::shared_ptr<DenseTensor> tensor_out(
+              dense_tensor_out, [](DenseTensor* ptr) {
                 VLOG(6) << ptr << " ptr will not be deleted by shared_ptr";
               });
           paddle::Tensor custom_out;
@@ -350,7 +352,7 @@ void CustomKernelInstruction::BuildCustomContext(
 
 CustomKernelInstruction::CustomKernelInstruction(
     size_t id,
-    const phi::Place& place,
+    const Place& place,
     pir::Operation* op,
     const ValueExecutionInfo& value_exec_info)
     : InstructionBase(id, place),
@@ -485,7 +487,7 @@ void CustomKernelInstruction::BuildShapeDtype() {
   }
   for (auto in_tensors : vec_input_ptrs_) {
     std::vector<std::vector<int64_t>> input_shapes;
-    std::vector<phi::DataType> input_dtypes;
+    std::vector<DataType> input_dtypes;
     if (in_tensors.size() > 0) {
       for (auto in_tensor : in_tensors) {
         input_shapes.push_back(phi::vectorize(in_tensor->dims()));
@@ -498,6 +500,10 @@ void CustomKernelInstruction::BuildShapeDtype() {
 }
 
 void CustomKernelInstruction::Run() {
+  if (FLAGS_check_cuda_error) [[unlikely]] {
+    CUDAErrorCheck("CustomKernelInstruction " + custom_op_name_ + " begin");
+  }
+
   VLOG(3) << "Custom Operator: InferShape - calc output ddim.";
   BuildShapeDtype();
   std::vector<std::vector<int64_t>> output_shapes =
@@ -508,19 +514,21 @@ void CustomKernelInstruction::Run() {
                     vec_input_shapes_,
                     vec_input_name2id_map_,
                     custom_attrs_);
-  std::vector<phi::DataType> output_dtypes =
-      RunInferDtype(inferdtype_func_,
-                    *custom_op_meta_,
-                    input_dtypes_,
-                    input_name2id_map_,
-                    vec_input_dtypes_,
-                    vec_input_name2id_map_,
-                    custom_attrs_);
+  std::vector<DataType> output_dtypes = RunInferDtype(inferdtype_func_,
+                                                      *custom_op_meta_,
+                                                      input_dtypes_,
+                                                      input_name2id_map_,
+                                                      vec_input_dtypes_,
+                                                      vec_input_name2id_map_,
+                                                      custom_attrs_);
   UpdateOutputMeta(output_shapes, output_dtypes);
   for (auto& pair : this->InplaceInfo()) {
     ShareVarBuffer(pair.first, pair.second);
   }
   VLOG(6) << "Run custom op " << custom_op_name_ << " kernel.";
   kernel_func_(&custom_kernel_ctx_);
+  if (FLAGS_check_cuda_error) [[unlikely]] {
+    CUDAErrorCheck("CustomKernelInstruction " + custom_op_name_ + " finish");
+  }
 }
 }  // namespace paddle::framework

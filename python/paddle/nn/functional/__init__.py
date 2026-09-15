@@ -46,6 +46,7 @@ from .activation import (
     softplus,
     softshrink,
     softsign,
+    swiglu,
     swish,
     tanh,
     tanh_,
@@ -59,6 +60,7 @@ from .common import (
     class_center_sample,
     cosine_similarity,
     dropout,
+    dropout1d,
     dropout2d,
     dropout3d,
     feature_alpha_dropout,
@@ -87,10 +89,11 @@ from .extension import (
     temporal_shift,
 )
 from .flash_attention import (
+    flash_attention_v3_varlen,
     flash_attn_qkvpacked,
     flash_attn_varlen_qkvpacked,
     flashmask_attention,
-    scaled_dot_product_attention,
+    flashmask_get_unique_id,
     sdp_kernel,  # noqa: F401
 )
 from .input import (
@@ -115,6 +118,7 @@ from .loss import (
     margin_cross_entropy,
     margin_ranking_loss,
     mse_loss,
+    multi_label_margin_loss,
     multi_label_soft_margin_loss,
     multi_margin_loss,
     nll_loss,
@@ -129,6 +133,8 @@ from .loss import (
     triplet_margin_loss,
     triplet_margin_with_distance_loss,
 )
+from .moe_permute import moe_permute
+from .moe_unpermute import moe_unpermute
 from .norm import (
     batch_norm,
     group_norm,
@@ -136,6 +142,7 @@ from .norm import (
     layer_norm,
     local_response_norm,
     normalize,
+    rms_norm,
 )
 from .pooling import (
     adaptive_avg_pool1d,
@@ -158,6 +165,7 @@ from .pooling import (
     max_unpool2d,
     max_unpool3d,
 )
+from .sdpa import scaled_dot_product_attention
 from .sparse_attention import sparse_attention
 from .vision import (
     affine_grid,
@@ -167,6 +175,13 @@ from .vision import (
     pixel_unshuffle,
 )
 
+logsigmoid = log_sigmoid
+conv_transpose1d = conv1d_transpose
+conv_transpose2d = conv2d_transpose
+conv_transpose3d = conv3d_transpose
+huber_loss = smooth_l1_loss
+multilabel_margin_loss = multi_label_margin_loss
+multilabel_soft_margin_loss = multi_label_soft_margin_loss
 __all__ = [
     'celu',
     'conv1d',
@@ -175,6 +190,9 @@ __all__ = [
     'conv2d_transpose',
     'conv3d',
     'conv3d_transpose',
+    'conv_transpose1d',
+    'conv_transpose2d',
+    'conv_transpose3d',
     'pairwise_distance',
     'elu',
     'elu_',
@@ -187,6 +205,7 @@ __all__ = [
     'leaky_relu',
     'leaky_relu_',
     'log_sigmoid',
+    'logsigmoid',
     'maxout',
     'prelu',
     'relu',
@@ -200,6 +219,7 @@ __all__ = [
     'softsign',
     'sigmoid',
     'silu',
+    'swiglu',
     'swish',
     'mish',
     'tanh',
@@ -212,6 +232,7 @@ __all__ = [
     'gumbel_softmax',
     'sequence_mask',
     'dropout',
+    'dropout1d',
     'dropout2d',
     'dropout3d',
     'alpha_dropout',
@@ -236,6 +257,8 @@ __all__ = [
     'max_unpool1d',
     'max_unpool2d',
     'max_unpool3d',
+    'moe_permute',
+    'moe_unpermute',
     'adaptive_avg_pool1d',
     'adaptive_avg_pool2d',
     'adaptive_avg_pool3d',
@@ -279,6 +302,7 @@ __all__ = [
     'temporal_shift',
     'batch_norm',
     'layer_norm',
+    'rms_norm',
     'instance_norm',
     'class_center_sample',
     'sparse_attention',
@@ -289,11 +313,17 @@ __all__ = [
     'triplet_margin_loss',
     'adaptive_log_softmax_with_loss',
     'multi_margin_loss',
+    'multi_label_margin_loss',
+    'multilabel_margin_loss',
+    'multilabel_soft_margin_loss',
     'soft_margin_loss',
     'gaussian_nll_loss',
     'scaled_dot_product_attention',
     'flashmask_attention',
+    'flashmask_get_unique_id',
     'flash_attn_qkvpacked',
+    "flash_attention_v3_varlen",
     'flash_attn_varlen_qkvpacked',
     'group_norm',
+    'huber_loss',
 ]

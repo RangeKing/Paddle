@@ -31,17 +31,15 @@ class ElementwiseDivOpMaker : public ElementwiseOpMaker {
   std::string GetEquation() const override { return "Out = X / Y"; }
 
   void AddInputX() override {
-    AddInput(
-        "X",
-        "(Variable), Tensor or phi::DenseTensor of any dimensions. Its dtype "
-        "should be int32, int64, float32, float64.");
+    AddInput("X",
+             "(Variable), Tensor or DenseTensor of any dimensions. Its dtype "
+             "should be int32, int64, float32, float64.");
   }
 
   void AddInputY() override {
-    AddInput(
-        "Y",
-        "(Variable), Tensor or phi::DenseTensor of any dimensions. Its dtype "
-        "should be int32, int64, float32, float64.");
+    AddInput("Y",
+             "(Variable), Tensor or DenseTensor of any dimensions. Its dtype "
+             "should be int32, int64, float32, float64.");
   }
 
   std::string GetOpFunctionality() const override {
@@ -88,7 +86,8 @@ class ElementwiseDivCompositeGradOpMaker
         axis,
         -1,
         common::errors::InvalidArgument(
-            "We only support axis = -1 in composite div but we got: ", axis));
+            "We only support axis = -1 in composite div but we got: %d.",
+            axis));
     VLOG(6) << "Running div_grad composite func";
     prim::divide_grad<prim::DescTensor>(
         x, y, out, out_grad, axis, dx_ptr, dy_ptr);

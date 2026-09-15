@@ -25,14 +25,13 @@ limitations under the License. */
 
 #include "glog/logging.h"
 #include "paddle/common/exception.h"
-#include "paddle/phi/backends/context_pool.h"
 #include "paddle/phi/backends/gpu/gpu_decls.h"
 #include "paddle/phi/backends/gpu/gpu_info.h"
 #include "paddle/phi/backends/gpu/gpu_resources.h"
 #include "paddle/phi/common/place.h"
 #include "paddle/phi/core/allocator.h"
 #include "paddle/phi/core/cuda_stream.h"
-
+#include "paddle/phi/core/memory/allocation/allocator_facade.h"
 #ifdef PADDLE_WITH_CUDA
 #include "paddle/phi/backends/dynload/cublas.h"
 #include "paddle/phi/backends/dynload/cudnn.h"
@@ -55,8 +54,12 @@ limitations under the License. */
 // without eigen.
 #include "unsupported/Eigen/CXX11/Tensor"
 
+#include "paddle/common/flags.h"
 #include "paddle/phi/core/enforce.h"
 
+COMMON_DECLARE_bool(use_default_stream);
+COMMON_DECLARE_bool(cublas_allow_tf32);
+COMMON_DECLARE_bool(use_legacy_gemm);
 namespace phi {
 
 namespace internal {
@@ -150,12 +153,7 @@ static void StreamCallbackFunc(gpuStream_t stream,
                                void* user_data)
 #endif
 #ifdef PADDLE_WITH_CUDA
-#if CUDA_VERSION >= 10000
     static void CUDART_CB StreamCallbackFunc(void* user_data)
-#else
-    static void CUDART_CB
-    StreamCallbackFunc(cudaStream_t stream, cudaError_t status, void* user_data)
-#endif
 #endif
 {
   std::unique_ptr<std::function<void()>> func(
@@ -251,6 +249,20 @@ struct GPUContext::Impl {
   ~Impl() {
     backends::gpu::GPUDeviceGuard guard(place_.device);
     if (owned_) {
+#ifdef PADDLE_WITH_CUDA
+      if (cublas_workspace_) {
+        cudaFree(cublas_workspace_);
+        cublas_workspace_ = nullptr;
+      }
+#endif
+      if (cublaslt_workspace_) {
+#ifdef PADDLE_WITH_HIP
+        hipFree(cublaslt_workspace_);
+#else
+        cudaFree(cublaslt_workspace_);
+#endif
+        cublaslt_workspace_ = nullptr;
+      }
       DestroyInternalWorkspace();
       DestroyInternalEigenDevice();
       phi::DestroySparseHandle(sparse_handle_);
@@ -281,6 +293,77 @@ struct GPUContext::Impl {
 
   bool IsTensorCoreAvailable() const {
     return blas_tensor_core_handle_ != nullptr;
+  }
+
+  // Returns the cublas workspace size matching PyTorch's behavior
+  // for different GPU architectures.
+  // SM 9.x and later: 32 MiB, others: ~8.125 MiB.
+  static size_t GetCublasWorkspaceSize(int compute_capability) {
+    int major = compute_capability / 10;
+    if (major >= 9) {
+      return 4096 * 8 * 1024;  // 32 MiB
+    }
+    return 4096 * 1024 * 2 + 16 * 1024 * 8;  // ~8.125 MiB
+  }
+
+  void InitCublasWorkspace() {
+#if defined(PADDLE_WITH_CUDA) && !defined(_WIN32)
+    std::call_once(flag_cublas_workspace_, [&]() {
+      size_t workspace_size = GetCublasWorkspaceSize(compute_capability_);
+      PADDLE_ENFORCE_GPU_SUCCESS(
+          cudaMalloc(&cublas_workspace_, workspace_size));
+      cublas_workspace_size_ = workspace_size;
+    });
+#endif
+  }
+
+  void SetCublasWorkspace(blasHandle_t handle) {
+#if defined(PADDLE_WITH_CUDA) && !defined(_WIN32)
+    // cublasSetWorkspace requires cuBLAS >= 11.4 (CUDA >= 11.4).
+    // The dynload wrapper does not check for null, so we must verify
+    // the symbol exists before calling to avoid a null-function-pointer
+    // segfault on older CUDA versions.
+    InitCublasWorkspace();
+    PADDLE_RETRY_CUDA_SUCCESS(phi::dynload::cublasSetWorkspace(
+        handle, cublas_workspace_, cublas_workspace_size_));
+#endif
+  }
+
+  // Persistent cublasLt workspace: grow-only, freed in destructor.
+  // Returns {ptr, size}. Thread-safe via mutex for grow path.
+  std::pair<void*, size_t> GetCublasLtWorkspace(size_t required_size) {
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
+#ifdef PADDLE_WITH_CUDA
+    if (compute_capability_ / 10 >= 9) {
+      required_size =
+          std::max(required_size, GetCublasWorkspaceSize(compute_capability_));
+    }
+#endif
+    if (cublaslt_workspace_size_ >= required_size && cublaslt_workspace_) {
+      return {cublaslt_workspace_, cublaslt_workspace_size_};
+    }
+    std::lock_guard<std::mutex> guard(cublaslt_workspace_mtx_);
+    // Double-check after acquiring lock
+    if (cublaslt_workspace_size_ >= required_size && cublaslt_workspace_) {
+      return {cublaslt_workspace_, cublaslt_workspace_size_};
+    }
+    if (cublaslt_workspace_) {
+#ifdef PADDLE_WITH_HIP
+      hipFree(cublaslt_workspace_);
+#else
+      cudaFree(cublaslt_workspace_);
+#endif
+    }
+#ifdef PADDLE_WITH_HIP
+    PADDLE_ENFORCE_GPU_SUCCESS(hipMalloc(&cublaslt_workspace_, required_size));
+#else
+    PADDLE_ENFORCE_GPU_SUCCESS(cudaMalloc(&cublaslt_workspace_, required_size));
+#endif
+    cublaslt_workspace_size_ = required_size;
+    return {cublaslt_workspace_, cublaslt_workspace_size_};
+#else
+    return {nullptr, 0};
+#endif
   }
 
   void InitDnnWorkspace() {
@@ -331,10 +414,12 @@ struct GPUContext::Impl {
 
   gpuStream_t stream() const {
     auto s = stream_->raw_stream();
-    PADDLE_ENFORCE_NOT_NULL(
-        s,
-        common::errors::InvalidArgument(
-            "The GPU stream is nullptr. It must not be null."));
+    if (!FLAGS_use_default_stream) {
+      PADDLE_ENFORCE_NOT_NULL(
+          s,
+          common::errors::InvalidArgument(
+              "The GPU stream is nullptr. It must not be null."));
+    }
     return s;
   }
 
@@ -395,7 +480,6 @@ struct GPUContext::Impl {
         }
       }
 #ifdef PADDLE_WITH_CUDA
-#if CUDA_VERSION >= 9000
       if (!blas_tensor_core_handle_) {
         if (!blas_tensor_core_handle_creator_) {
           phi::InitBlasHandle(&blas_tensor_core_handle_, stream());
@@ -405,8 +489,6 @@ struct GPUContext::Impl {
         PADDLE_RETRY_CUDA_SUCCESS(phi::dynload::cublasSetMathMode(
             blas_tensor_core_handle_, CUBLAS_TENSOR_OP_MATH));
       }
-#endif
-#if CUDA_VERSION >= 11000
       if (!blas_tf32_tensor_core_handle_) {
         if (!blas_tf32_tensor_core_handle_creator_) {
           phi::InitBlasHandle(&blas_tf32_tensor_core_handle_, stream());
@@ -414,10 +496,21 @@ struct GPUContext::Impl {
           blas_tf32_tensor_core_handle_ =
               blas_tf32_tensor_core_handle_creator_();
         }
+        cublasMath_t tf32_mode = FLAGS_cublas_allow_tf32
+                                     ? CUBLAS_TF32_TENSOR_OP_MATH
+                                     : CUBLAS_DEFAULT_MATH;
         PADDLE_RETRY_CUDA_SUCCESS(phi::dynload::cublasSetMathMode(
-            blas_tf32_tensor_core_handle_, CUBLAS_TF32_TENSOR_OP_MATH));
+            blas_tf32_tensor_core_handle_, tf32_mode));
       }
 #endif
+#if defined(PADDLE_WITH_CUDA) && !defined(_WIN32)
+      if (!FLAGS_use_legacy_gemm) {
+        if (blas_handle_) SetCublasWorkspace(blas_handle_);
+        if (blas_tensor_core_handle_)
+          SetCublasWorkspace(blas_tensor_core_handle_);
+        if (blas_tf32_tensor_core_handle_)
+          SetCublasWorkspace(blas_tf32_tensor_core_handle_);
+      }
 #endif
     });
     PADDLE_ENFORCE_NOT_NULL(
@@ -612,7 +705,6 @@ struct GPUContext::Impl {
         }
       }
 #ifdef PADDLE_WITH_CUDA
-#if CUDA_VERSION >= 9000
       if (!blas_tensor_core_handle_) {
         if (!blas_tensor_core_handle_creator_) {
           phi::InitBlasHandle(&blas_tensor_core_handle_, stream());
@@ -622,8 +714,6 @@ struct GPUContext::Impl {
         PADDLE_RETRY_CUDA_SUCCESS(phi::dynload::cublasSetMathMode(
             blas_tensor_core_handle_, CUBLAS_TENSOR_OP_MATH));
       }
-#endif
-#if CUDA_VERSION >= 11000
       if (!blas_tf32_tensor_core_handle_) {
         if (!blas_tf32_tensor_core_handle_creator_) {
           phi::InitBlasHandle(&blas_tf32_tensor_core_handle_, stream());
@@ -631,13 +721,24 @@ struct GPUContext::Impl {
           blas_tf32_tensor_core_handle_ =
               blas_tf32_tensor_core_handle_creator_();
         }
+        cublasMath_t tf32_mode = FLAGS_cublas_allow_tf32
+                                     ? CUBLAS_TF32_TENSOR_OP_MATH
+                                     : CUBLAS_DEFAULT_MATH;
         PADDLE_RETRY_CUDA_SUCCESS(phi::dynload::cublasSetMathMode(
-            blas_tf32_tensor_core_handle_, CUBLAS_TF32_TENSOR_OP_MATH));
+            blas_tf32_tensor_core_handle_, tf32_mode));
       }
 #endif
+#if defined(PADDLE_WITH_CUDA) && !defined(_WIN32)
+      if (!FLAGS_use_legacy_gemm) {
+        if (blas_handle_) SetCublasWorkspace(blas_handle_);
+        if (blas_tensor_core_handle_)
+          SetCublasWorkspace(blas_tensor_core_handle_);
+        if (blas_tf32_tensor_core_handle_)
+          SetCublasWorkspace(blas_tf32_tensor_core_handle_);
+      }
 #endif
     });
-    if (blas_tf32_tensor_core_handle_ && phi::AllowTF32Cublas()) {
+    if (blas_tf32_tensor_core_handle_ && FLAGS_cublas_allow_tf32) {
       std::lock_guard<std::mutex> guard(blas_tf32_mtx_);
       callback(blas_tf32_tensor_core_handle_);
     } else {
@@ -657,7 +758,6 @@ struct GPUContext::Impl {
         }
       }
 #ifdef PADDLE_WITH_CUDA
-#if CUDA_VERSION >= 9000
       if (!blas_tensor_core_handle_) {
         if (!blas_tensor_core_handle_creator_) {
           phi::InitBlasHandle(&blas_tensor_core_handle_, stream());
@@ -667,8 +767,6 @@ struct GPUContext::Impl {
         PADDLE_RETRY_CUDA_SUCCESS(phi::dynload::cublasSetMathMode(
             blas_tensor_core_handle_, CUBLAS_TENSOR_OP_MATH));
       }
-#endif
-#if CUDA_VERSION >= 11000
       if (!blas_tf32_tensor_core_handle_) {
         if (!blas_tf32_tensor_core_handle_creator_) {
           phi::InitBlasHandle(&blas_tf32_tensor_core_handle_, stream());
@@ -676,10 +774,21 @@ struct GPUContext::Impl {
           blas_tf32_tensor_core_handle_ =
               blas_tf32_tensor_core_handle_creator_();
         }
+        cublasMath_t tf32_mode = FLAGS_cublas_allow_tf32
+                                     ? CUBLAS_TF32_TENSOR_OP_MATH
+                                     : CUBLAS_DEFAULT_MATH;
         PADDLE_RETRY_CUDA_SUCCESS(phi::dynload::cublasSetMathMode(
-            blas_tf32_tensor_core_handle_, CUBLAS_TF32_TENSOR_OP_MATH));
+            blas_tf32_tensor_core_handle_, tf32_mode));
       }
 #endif
+#if defined(PADDLE_WITH_CUDA) && !defined(_WIN32)
+      if (!FLAGS_use_legacy_gemm) {
+        if (blas_handle_) SetCublasWorkspace(blas_handle_);
+        if (blas_tensor_core_handle_)
+          SetCublasWorkspace(blas_tensor_core_handle_);
+        if (blas_tf32_tensor_core_handle_)
+          SetCublasWorkspace(blas_tf32_tensor_core_handle_);
+      }
 #endif
     });
     if (blas_tensor_core_handle_ != nullptr) {
@@ -737,13 +846,8 @@ struct GPUContext::Impl {
         hipStreamAddCallback(stream(), internal::StreamCallbackFunc, func, 0));
 #endif
 #ifdef PADDLE_WITH_CUDA
-#if CUDA_VERSION >= 10000
     PADDLE_ENFORCE_GPU_SUCCESS(
         cudaLaunchHostFunc(stream(), internal::StreamCallbackFunc, func));
-#else
-    PADDLE_ENFORCE_GPU_SUCCESS(
-        cudaStreamAddCallback(stream(), internal::StreamCallbackFunc, func, 0));
-#endif
 #endif
   }
 
@@ -765,10 +869,11 @@ struct GPUContext::Impl {
 
   const Attribute& GetDnnAttr(const std::string& attr_name) const {
     auto iter = dnn_attrs_.find(attr_name);
-    PADDLE_ENFORCE_NE(iter,
-                      dnn_attrs_.end(),
-                      common::errors::NotFound(
-                          "Attribute `%s` is not found in OneDNNContext."));
+    PADDLE_ENFORCE_NE(
+        iter,
+        dnn_attrs_.end(),
+        common::errors::NotFound("Attribute `%s` is not found in GPUContext.",
+                                 attr_name));
     return iter->second;
   }
 
@@ -802,6 +907,11 @@ struct GPUContext::Impl {
   std::function<blasHandle_t()> blas_tf32_tensor_core_handle_creator_{nullptr};
   blasLtHandle_t blaslt_handle_{nullptr};
   std::function<blasLtHandle_t()> blaslt_handle_creator_{nullptr};
+  void* cublas_workspace_{nullptr};
+  size_t cublas_workspace_size_{0};
+  void* cublaslt_workspace_{nullptr};
+  size_t cublaslt_workspace_size_{0};
+  mutable std::mutex cublaslt_workspace_mtx_;
   dnnHandle_t dnn_handle_{nullptr};
   std::function<dnnHandle_t()> dnn_handle_creator_{nullptr};
   solverHandle_t solver_handle_{nullptr};
@@ -818,6 +928,7 @@ struct GPUContext::Impl {
   std::once_flag flag_cublas_;
   std::once_flag flag_tensorcore_cublas_;
   std::once_flag flag_eigen_device_;
+  std::once_flag flag_cublas_workspace_;
 
 #if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL)
   // NCCL communicator (single process version) for NCCL collective operations.
@@ -839,7 +950,7 @@ struct GPUContext::Impl {
   mutable std::future<void> last_future_;
 
   Allocator* allocator_{nullptr};  // external resource.
-  // A internal resouce to initinalize eigen_device.
+  // A internal resource to initinalize eigen_device.
   std::unique_ptr<internal::EigenGpuStreamDevice> eigen_stream_{nullptr};
 
   // Holds some attributes only used by the gpudnn kernel calculation
@@ -877,6 +988,11 @@ blasHandle_t GPUContext::cublas_handle() const {
 
 blasLtHandle_t GPUContext::cublaslt_handle() const {
   return impl_->GetBlasLtHandle();
+}
+
+std::pair<void*, size_t> GPUContext::cublaslt_workspace(
+    size_t required_size) const {
+  return impl_->GetCublasLtWorkspace(required_size);
 }
 
 solverHandle_t GPUContext::cusolver_dn_handle() const {
@@ -960,11 +1076,21 @@ void GPUContext::Init() {
 }
 
 void GPUContext::SetStream(gpuStream_t stream) {
+#if !defined(_WIN32)
+  this->SetAllocator(paddle::memory::allocation::AllocatorFacade::Instance()
+                         .GetAllocator(impl_->GetPlace(), stream)
+                         .get());
+#endif
   impl_->allocator_ = const_cast<Allocator*>(&this->GetAllocator());  // NOLINT
   impl_->SetStream(stream);
 }
 
 void GPUContext::SetCUDAStream(CUDAStream* stream, bool clear) {
+#if !defined(_WIN32)
+  this->SetAllocator(paddle::memory::allocation::AllocatorFacade::Instance()
+                         .GetAllocator(stream->place(), stream->raw_stream())
+                         .get());
+#endif
   impl_->allocator_ = const_cast<Allocator*>(&this->GetAllocator());  // NOLINT
   impl_->SetCUDAStream(stream, clear);
 }

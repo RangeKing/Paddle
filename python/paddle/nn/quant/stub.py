@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-""" Define stub used in quantization."""
+"""Define stub used in quantization."""
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ class Stub(Layer):
             It will use a global configuration to create the observers if the 'observer' is none.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.nn.quant import Stub

@@ -22,6 +22,7 @@
 #include "paddle/common/layout.h"
 #include "paddle/phi/backends/cpu/cpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/blas/blas.h"
 #include "paddle/phi/kernels/funcs/eigen/common.h"
 #include "paddle/phi/kernels/funcs/eigen/extensions.h"
@@ -32,21 +33,32 @@ namespace phi {
 template <typename T, typename Context>
 void GroupNormKernel(const Context& dev_ctx,
                      const DenseTensor& x,
-                     const paddle::optional<DenseTensor>& scale,
-                     const paddle::optional<DenseTensor>& bias,
-                     float epsilon,
+                     const optional<DenseTensor>& scale,
+                     const optional<DenseTensor>& bias,
+                     double epsilon,
                      int groups,
                      const std::string& data_layout_str,
                      DenseTensor* y,
                      DenseTensor* mean,
                      DenseTensor* var) {
-  const DataLayout data_layout = common::StringToDataLayout(data_layout_str);
+  if (y && y->numel() == 0) {
+    dev_ctx.template Alloc<T>(y);
+    // mean, var are intermediate in ops yaml config.
+    if (mean) {
+      Full<T, Context>(dev_ctx, mean->dims(), 0, mean);
+    }
+    if (var) {
+      Full<T, Context>(dev_ctx, var->dims(), 0, var);
+    }
+    return;
+  }
+  const DataLayout data_layout = StringToDataLayout(data_layout_str);
   const auto scale_ptr = scale.get_ptr();
   const auto bias_ptr = bias.get_ptr();
 
   const auto x_dims = x.dims();
   const int C = static_cast<int>(
-      data_layout == DataLayout::kNCHW ? x_dims[1] : x_dims[x_dims.size() - 1]);
+      data_layout == DataLayout::NCHW ? x_dims[1] : x_dims[x_dims.size() - 1]);
   const int group_size = C / groups;
 
   dev_ctx.template Alloc<T>(y);
@@ -63,14 +75,14 @@ void GroupNormKernel(const Context& dev_ctx,
   const T* bias_data = nullptr;
   if (bias_ptr) bias_data = bias_ptr->data<T>();
 
-  int imsize = 1;
-  if (data_layout == DataLayout::kNCHW) {
+  int64_t imsize = 1;
+  if (data_layout == DataLayout::NCHW) {
     for (int i = 2; i < x_dims.size(); ++i) {
-      imsize *= static_cast<int>(x_dims[i]);
+      imsize *= x_dims[i];
     }
   } else {
     for (int i = 1; i < x_dims.size() - 1; ++i) {
-      imsize *= static_cast<int>(x_dims[i]);
+      imsize *= x_dims[i];
     }
   }
   auto* iter_x_data = x_data;
@@ -83,15 +95,16 @@ void GroupNormKernel(const Context& dev_ctx,
       std::fill(x_mean_arr.begin(), x_mean_arr.end(), T(0));
       std::fill(x_var_arr.begin(), x_var_arr.end(), T(0));
       T x_mean = 0, x_var = 0;
-      int number = std::min(group_size, static_cast<int>(C - gid * group_size));
+      int64_t number = std::min(static_cast<int64_t>(group_size),
+                                C - static_cast<int64_t>(gid) * group_size);
       auto* tmp_x = iter_x_data;
       auto* x_src_data = iter_x_data;
       auto* tmp_y = iter_y_data;
       auto* y_src_data = iter_y_data;
 
-      if (data_layout == DataLayout::kNCHW) {
-        for (int cid = 0; cid < number; cid++) {
-          int imid = 0;
+      if (data_layout == DataLayout::NCHW) {
+        for (int64_t cid = 0; cid < number; cid++) {
+          int64_t imid = 0;
           for (imid = 0; imid < imsize - (imsize % M);
                imid += M, iter_x_data += M) {
             // TODO(gaoxiang): Because AVX/AVX2/AVX512 can not directly used
@@ -126,9 +139,9 @@ void GroupNormKernel(const Context& dev_ctx,
           }
         }
       } else {
-        for (int cid = 0; cid < number; cid++) {
+        for (int64_t cid = 0; cid < number; cid++) {
           iter_x_data = tmp_x + cid;
-          int imid = 0;
+          int64_t imid = 0;
           for (imid = 0; imid < imsize - (imsize % M);
                imid += M, iter_x_data += M * C) {
             // TODO(gaoxiang): Because AVX/AVX2/AVX512 can not directly used
@@ -172,9 +185,10 @@ void GroupNormKernel(const Context& dev_ctx,
       mean_data[bid * groups + gid] = x_mean;
       var_data[bid * groups + gid] = x_var;
 
-      if (data_layout == DataLayout::kNCHW) {
-        for (int cid = 0; cid < number; cid++) {
-          for (int imid = 0; imid < imsize; imid++, tmp_x++, iter_y_data++) {
+      if (data_layout == DataLayout::NCHW) {
+        for (int64_t cid = 0; cid < number; cid++) {
+          for (int64_t imid = 0; imid < imsize;
+               imid++, tmp_x++, iter_y_data++) {
             T val = (tmp_x[0] - x_mean) * var_inv;
             if (scale_data) val *= scale_data[gid * group_size + cid];
             if (bias_data) val += bias_data[gid * group_size + cid];
@@ -182,10 +196,10 @@ void GroupNormKernel(const Context& dev_ctx,
           }
         }
       } else {
-        for (int cid = 0; cid < number; cid++) {
+        for (int64_t cid = 0; cid < number; cid++) {
           tmp_x = x_src_data + cid;
           iter_y_data = y_src_data + cid;
-          for (int imid = 0; imid < imsize;
+          for (int64_t imid = 0; imid < imsize;
                imid++, tmp_x += C, iter_y_data += C) {
             T val = (tmp_x[0] - x_mean) * var_inv;
             if (scale_data) val *= scale_data[gid * group_size + cid];
@@ -196,9 +210,9 @@ void GroupNormKernel(const Context& dev_ctx,
         iter_y_data = tmp_y + group_size;
       }
     }
-    if (data_layout == DataLayout::kNHWC) {
-      iter_x_data = x_data + (bid + 1) * C * imsize;
-      iter_y_data = y_data + (bid + 1) * C * imsize;
+    if (data_layout == DataLayout::NHWC) {
+      iter_x_data = x_data + static_cast<int64_t>(bid + 1) * C * imsize;
+      iter_y_data = y_data + static_cast<int64_t>(bid + 1) * C * imsize;
     }
   }
 }

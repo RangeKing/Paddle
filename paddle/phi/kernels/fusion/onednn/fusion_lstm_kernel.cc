@@ -20,23 +20,23 @@
 namespace phi {
 namespace fusion {
 
+using funcs::OneDNNGetDataType;
+using funcs::OneDNNMemDesc;
+using funcs::RNNReorderType;
 using phi::OneDNNContext;
-using phi::funcs::OneDNNGetDataType;
-using phi::funcs::OneDNNMemDesc;
-using phi::funcs::RNNReorderType;
 using OneDNNMemoryFormat = dnnl::memory::format_tag;
 
 template <typename T, typename T_out = T>
-class LSTMMKLDNNHandler
-    : public RNNMKLDNNHandler<T, dnnl::lstm_forward, T_out> {
+class LSTMONEDNNHandler
+    : public RNNONEDNNHandler<T, dnnl::lstm_forward, T_out> {
  public:
-  LSTMMKLDNNHandler(const OneDNNContext& dev_ctx,
+  LSTMONEDNNHandler(const OneDNNContext& dev_ctx,
                     const dnnl::engine onednn_engine,
                     phi::Place cpu_place,
-                    const phi::DenseTensor* input,
-                    const phi::DenseTensor* weight_h,
-                    const phi::DenseTensor* h0,
-                    const phi::DenseTensor* c0 UNUSED,
+                    const DenseTensor* input,
+                    const DenseTensor* weight_h,
+                    const DenseTensor* h0,
+                    const DenseTensor* c0 UNUSED,
                     const bool is_reverse,
                     const int64_t N,
                     const int64_t Ti,
@@ -50,7 +50,7 @@ class LSTMMKLDNNHandler
                     std::string gate_activation,
                     std::string cell_activation,
                     std::string candidate_activation)
-      : RNNMKLDNNHandler<T, dnnl::lstm_forward, T_out>(dev_ctx,
+      : RNNONEDNNHandler<T, dnnl::lstm_forward, T_out>(dev_ctx,
                                                        onednn_engine,
                                                        cpu_place,
                                                        input,
@@ -174,7 +174,7 @@ class LSTMMKLDNNHandler
 
   template <typename U>
   std::shared_ptr<dnnl::memory> AcquireWeightXMemory(
-      const phi::DenseTensor* weight_x) {
+      const DenseTensor* weight_x) {
     const std::string wx_key = this->memory_key_ + "@weight_x";
     auto memory_p =
         std::static_pointer_cast<dnnl::memory>(this->dev_ctx_.GetBlob(wx_key));
@@ -206,7 +206,7 @@ class LSTMMKLDNNHandler
 
   template <typename U>
   std::shared_ptr<dnnl::memory> AcquireWeightHMemory(
-      const phi::DenseTensor* weight_h) {
+      const DenseTensor* weight_h) {
     const std::string wh_key = this->memory_key_ + "@weight_h";
     auto memory_p =
         std::static_pointer_cast<dnnl::memory>(this->dev_ctx_.GetBlob(wh_key));
@@ -236,8 +236,7 @@ class LSTMMKLDNNHandler
     return memory_p;
   }
 
-  std::shared_ptr<dnnl::memory> AcquireBiasMemory(
-      const phi::DenseTensor* bias) {
+  std::shared_ptr<dnnl::memory> AcquireBiasMemory(const DenseTensor* bias) {
     const std::string bias_key = this->memory_key_ + "@bias";
     auto memory_p = std::static_pointer_cast<dnnl::memory>(
         this->dev_ctx_.GetBlob(bias_key));
@@ -265,7 +264,7 @@ class LSTMMKLDNNHandler
   }
 
   std::shared_ptr<dnnl::memory> AcquirePeepholeWeights(
-      const phi::DenseTensor* bias) {
+      const DenseTensor* bias) {
     const std::string peepholes_key = this->memory_key_ + "@peepholes_weights";
     auto memory_p = std::static_pointer_cast<dnnl::memory>(
         this->dev_ctx_.GetBlob(peepholes_key));
@@ -291,7 +290,7 @@ class LSTMMKLDNNHandler
     return memory_p;
   }
 
-  std::shared_ptr<dnnl::memory> AcquireC0Memory(const phi::DenseTensor* c0) {
+  std::shared_ptr<dnnl::memory> AcquireC0Memory(const DenseTensor* c0) {
     const std::string c0_key = this->memory_key_ + "@c0";
     auto memory_p =
         std::static_pointer_cast<dnnl::memory>(this->dev_ctx_.GetBlob(c0_key));
@@ -299,12 +298,11 @@ class LSTMMKLDNNHandler
     if (!memory_p) {
       auto user_c0_memory = dnnl::memory();
       if (c0) {
-        user_c0_memory =
-            dnnl::memory({{1, 1, this->N, this->OC},
-                          OneDNNGetDataType<float>(),
-                          OneDNNMemoryFormat::ldnc},
-                         this->engine_,
-                         phi::funcs::to_void_cast(c0->data<float>()));
+        user_c0_memory = dnnl::memory({{1, 1, this->N, this->OC},
+                                       OneDNNGetDataType<float>(),
+                                       OneDNNMemoryFormat::ldnc},
+                                      this->engine_,
+                                      funcs::to_void_cast(c0->data<float>()));
       } else {
         user_c0_memory = dnnl::memory({{1, 1, this->N, this->OC},
                                        OneDNNGetDataType<float>(),
@@ -329,12 +327,12 @@ class LSTMMKLDNNHandler
 
 template <typename T, typename Context, typename Tout = T>
 void RunKernel(const Context& dev_ctx,
-               const phi::DenseTensor& x_in,
-               const phi::DenseTensor& weight_x_in,
-               const phi::DenseTensor& weight_h_in,
-               const phi::DenseTensor& bias_in,
-               const paddle::optional<phi::DenseTensor>& h0_in,
-               const paddle::optional<phi::DenseTensor>& c0_in,
+               const DenseTensor& x_in,
+               const DenseTensor& weight_x_in,
+               const DenseTensor& weight_h_in,
+               const DenseTensor& bias_in,
+               const optional<DenseTensor>& h0_in,
+               const optional<DenseTensor>& c0_in,
                bool use_peepholes,
                bool is_reverse,
                bool use_seq,
@@ -345,15 +343,15 @@ void RunKernel(const Context& dev_ctx,
                float shift_data,
                const std::vector<float>& scale_weights,
                bool force_fp32_output,
-               phi::DenseTensor* hidden,
-               phi::DenseTensor* cell,
-               phi::DenseTensor* xx,
-               phi::DenseTensor* batched_input,
-               phi::DenseTensor* batched_hidden,
-               phi::DenseTensor* batched_cell,
-               phi::DenseTensor* reordered_h0,
-               phi::DenseTensor* reordered_c0,
-               phi::DenseTensor* checked_cell) {
+               DenseTensor* hidden,
+               DenseTensor* cell,
+               DenseTensor* xx,
+               DenseTensor* batched_input,
+               DenseTensor* batched_hidden,
+               DenseTensor* batched_cell,
+               DenseTensor* reordered_h0,
+               DenseTensor* reordered_c0,
+               DenseTensor* checked_cell) {
   const auto& onednn_engine = dev_ctx.GetEngine();
 
   // Get Tensors
@@ -370,8 +368,8 @@ void RunKernel(const Context& dev_ctx,
                         : x_dims;
 
   // Get tensor dimensions
-  const auto x_mat_dims_vec = common::vectorize(x_mat_dims);
-  const auto weight_h_dims = common::vectorize(weight_h->dims());
+  const auto x_mat_dims_vec = vectorize(x_mat_dims);
+  const auto weight_h_dims = vectorize(weight_h->dims());
   const auto& input_lod = input->lod()[0];
 
   // Calculate RNN dimensions
@@ -389,7 +387,7 @@ void RunKernel(const Context& dev_ctx,
 
   std::string unique_name =
       dev_ctx.GetInputsName("X")[0] + dev_ctx.GetInputsName("WeightH")[0];
-  LSTMMKLDNNHandler<T, Tout> handler(dev_ctx,
+  LSTMONEDNNHandler<T, Tout> handler(dev_ctx,
                                      onednn_engine,
                                      dev_ctx.GetPlace(),
                                      input,
@@ -422,11 +420,11 @@ void RunKernel(const Context& dev_ctx,
     weight_x_memory_p = handler.template AcquireWeightXMemory<float>(weight_x);
     weight_h_memory_p = handler.template AcquireWeightHMemory<float>(weight_h);
   } else if (weight_h->dtype() == phi::DataType::BFLOAT16) {
-    h0_memory_p = handler.template AcquireH0Memory<phi::dtype::bfloat16>(h0);
+    h0_memory_p = handler.template AcquireH0Memory<phi::bfloat16>(h0);
     weight_x_memory_p =
-        handler.template AcquireWeightXMemory<phi::dtype::bfloat16>(weight_x);
+        handler.template AcquireWeightXMemory<phi::bfloat16>(weight_x);
     weight_h_memory_p =
-        handler.template AcquireWeightHMemory<phi::dtype::bfloat16>(weight_h);
+        handler.template AcquireWeightHMemory<phi::bfloat16>(weight_h);
   } else {
     h0_memory_p = handler.template AcquireH0Memory<uint8_t>(h0);
     weight_x_memory_p = handler.template AcquireWeightXMemory<int8_t>(weight_x);
@@ -459,8 +457,7 @@ void RunKernel(const Context& dev_ctx,
   astream.wait();
 
   auto* hidden_onednn_data = hidden_onednn_memory_p->get_data_handle();
-  auto* hidden_data =
-      phi::funcs::to_void_cast(dev_ctx.template Alloc<Tout>(hidden));
+  auto* hidden_data = funcs::to_void_cast(dev_ctx.template Alloc<Tout>(hidden));
   if (handler.is_NTC()) {
     handler.reorderRNNdata(hidden_onednn_data,
                            hidden_data,
@@ -478,12 +475,12 @@ void RunKernel(const Context& dev_ctx,
 
 template <typename T, typename Context>
 void FusionLSTMMKLDNNKernel(const Context& dev_ctx,
-                            const phi::DenseTensor& x,
-                            const phi::DenseTensor& weight_x,
-                            const phi::DenseTensor& weight_h,
-                            const phi::DenseTensor& bias,
-                            const paddle::optional<phi::DenseTensor>& h0,
-                            const paddle::optional<phi::DenseTensor>& c0,
+                            const DenseTensor& x,
+                            const DenseTensor& weight_x,
+                            const DenseTensor& weight_h,
+                            const DenseTensor& bias,
+                            const optional<DenseTensor>& h0,
+                            const optional<DenseTensor>& c0,
                             bool use_peepholes,
                             bool is_reverse,
                             bool use_seq,
@@ -494,16 +491,16 @@ void FusionLSTMMKLDNNKernel(const Context& dev_ctx,
                             float shift_data,
                             const std::vector<float>& scale_weights,
                             bool force_fp32_output,
-                            phi::DenseTensor* hidden,
-                            phi::DenseTensor* cell,
-                            phi::DenseTensor* xx,
-                            phi::DenseTensor* batched_input,
-                            phi::DenseTensor* batched_hidden,
-                            phi::DenseTensor* batched_cell,
-                            phi::DenseTensor* reordered_h0,
-                            phi::DenseTensor* reordered_c0,
-                            phi::DenseTensor* checked_cell) {
-  const bool is_bf16 = std::is_same<T, phi::dtype::bfloat16>::value;
+                            DenseTensor* hidden,
+                            DenseTensor* cell,
+                            DenseTensor* xx,
+                            DenseTensor* batched_input,
+                            DenseTensor* batched_hidden,
+                            DenseTensor* batched_cell,
+                            DenseTensor* reordered_h0,
+                            DenseTensor* reordered_c0,
+                            DenseTensor* checked_cell) {
+  const bool is_bf16 = std::is_same<T, phi::bfloat16>::value;
 
   // BF16 does not support force output
   if (!is_bf16 && force_fp32_output) {  // NOLINT
@@ -572,4 +569,4 @@ PD_REGISTER_KERNEL(fusion_lstm,
                    phi::fusion::FusionLSTMMKLDNNKernel,
                    float,
                    uint8_t,
-                   phi::dtype::bfloat16) {}
+                   phi::bfloat16) {}

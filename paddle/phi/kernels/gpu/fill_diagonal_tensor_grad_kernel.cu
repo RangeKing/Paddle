@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <vector>
 
+#include "paddle/phi/backends/gpu/cuda/cuda_graph_with_memory_pool.h"
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/common/memory_utils.h"
 #include "paddle/phi/core/kernel_registry.h"
@@ -42,7 +43,7 @@ __global__ void fill_grad_kernel(int64_t size,
 }
 
 template <typename T, typename Context>
-void FillDiagonalTensorGradKernel(const Context &ctx,
+void FillDiagonalTensorGradKernel(const Context &dev_ctx,
                                   const DenseTensor &out_grad,
                                   int64_t offset,
                                   int dim1,
@@ -52,9 +53,9 @@ void FillDiagonalTensorGradKernel(const Context &ctx,
   auto matrows = 1;
 
   if (x_grad) {
-    auto *data = ctx.template Alloc<T>(x_grad);
+    auto *data = dev_ctx.template Alloc<T>(x_grad);
     auto dx_dims = x_grad->dims();
-    phi::Copy(ctx, out_grad, ctx.GetPlace(), false, x_grad);
+    Copy(dev_ctx, out_grad, dev_ctx.GetPlace(), false, x_grad);
 
     for (int i = 0; i < dx_dims.size(); i++) {
       if (i != dim1 && i != dim2) {
@@ -71,15 +72,17 @@ void FillDiagonalTensorGradKernel(const Context &ctx,
 
     auto size = x_grad->numel();
 
-    auto stream = ctx.stream();
+    auto stream = dev_ctx.stream();
     DenseTensor tensor_tmp;
-    tensor_tmp.Resize(common::make_ddim({2 + matrows}));
-    int64_t *memory_block_cu = ctx.template Alloc<int64_t>(&tensor_tmp);
-    const auto gpu_place = ctx.GetPlace();
+    tensor_tmp.Resize({2 + matrows});
+    int64_t *memory_block_cu = dev_ctx.template Alloc<int64_t>(&tensor_tmp);
+    const auto gpu_place = dev_ctx.GetPlace();
+    auto *stable_mb = backends::gpu::RestoreHostMemIfCapturingCUDAGraph(
+        memory_block.data(), memory_block.size());
     memory_utils::Copy(gpu_place,
                        memory_block_cu,
                        CPUPlace(),
-                       memory_block.data(),
+                       stable_mb,
                        sizeof(int64_t) * (2 + matrows),
                        stream);
 
@@ -105,8 +108,8 @@ PD_REGISTER_KERNEL(fill_diagonal_tensor_grad,
                    int16_t,
                    int8_t,
                    uint8_t,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>,
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::complex64,
+                   phi::complex128,
                    bool) {}

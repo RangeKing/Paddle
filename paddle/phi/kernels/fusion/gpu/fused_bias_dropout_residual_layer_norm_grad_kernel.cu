@@ -14,18 +14,17 @@
 #ifdef PADDLE_WITH_HIP
 #include <hip/hip_fp16.h>
 #include <hip/hip_runtime.h>
-#include <hipcub/hipcub.hpp>
-namespace cub = hipcub;
 #else
 #include <cuda_fp16.h>
-#include <cub/cub.cuh>
 #endif
-
 #include "paddle/phi/backends/gpu/gpu_device_function.h"
 #include "paddle/phi/backends/gpu/gpu_dnn.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/core/tensor_utils.h"
+#include "paddle/phi/kernels/full_kernel.h"
+#include "paddle/phi/kernels/funcs/cub.h"
 #include "paddle/phi/kernels/funcs/layer_norm_impl.cu.h"
+#include "paddle/phi/kernels/fusion/gpu/fused_bias_dropout_residual_layer_norm_grad_kernel.h"
 #include "paddle/phi/kernels/fusion/gpu/fused_dropout_helper.h"
 
 namespace phi {
@@ -35,9 +34,9 @@ void FusedBiasDropoutResidualLnGradKernel(
     const Context& dev_ctx,
     const DenseTensor& x,
     const DenseTensor& residual,
-    const paddle::optional<DenseTensor>& bias,
-    const paddle::optional<DenseTensor>& ln_scale,
-    const paddle::optional<DenseTensor>& ln_bias,
+    const optional<DenseTensor>& bias,
+    const optional<DenseTensor>& ln_scale,
+    const optional<DenseTensor>& ln_bias,
     const DenseTensor& ln_mean,
     const DenseTensor& ln_variance,
     const DenseTensor& bias_dropout_residual_out,
@@ -85,13 +84,25 @@ void FusedBiasDropoutResidualLnGradKernel(
            : dev_ctx.template Alloc<U>(ln_bias_grad,
                                        ln_bias_grad->numel() * sizeof(U)));
 
+  if (y_grad.numel() == 0) {
+    Full<T, Context>(dev_ctx, x_grad->dims(), 0, x_grad);
+    if (ln_scale_grad)
+      Full<T, Context>(dev_ctx, ln_scale_grad->dims(), 0, ln_scale_grad);
+    if (ln_bias_grad)
+      Full<T, Context>(dev_ctx, ln_bias_grad->dims(), 0, ln_bias_grad);
+    if (residual_grad)
+      Full<T, Context>(dev_ctx, residual_grad->dims(), 0, residual_grad);
+    if (bias_grad) Full<T, Context>(dev_ctx, bias_grad->dims(), 0, bias_grad);
+    return;
+  }
+
   const auto input_x_dims = y_grad.dims();
-  int bsz_seq = 1;
+  int64_t bsz_seq = 1;
   for (int i = 0; i < input_x_dims.size() - 1; i++) {
     bsz_seq *= input_x_dims[i];
   }
-  int dim_embed = input_x_dims[input_x_dims.size() - 1];
-  phi::fusion::DropoutParam dropout_param(
+  int64_t dim_embed = input_x_dims[input_x_dims.size() - 1];
+  fusion::DropoutParam dropout_param(
       dropout_fix_seed,
       0,
       is_test,
@@ -99,7 +110,7 @@ void FusedBiasDropoutResidualLnGradKernel(
       dropout_rate,
       nullptr,
       dropout_seed);
-  phi::fusion::FusedDropoutLayerNormHelper<T, uint8_t>
+  fusion::FusedDropoutLayerNormHelper<T, uint8_t>
       fused_dropout_layernorm_helper(
           dev_ctx, bsz_seq, dim_embed, dropout_param, ln_epsilon);
   fused_dropout_layernorm_helper.LayernormResidualDropoutBiasGrad(
@@ -127,7 +138,7 @@ PD_REGISTER_KERNEL(fused_bias_dropout_residual_layer_norm_grad,
                    ALL_LAYOUT,
                    phi::fusion::FusedBiasDropoutResidualLnGradKernel,
                    float,
-                   phi::dtype::float16) {}
+                   phi::float16) {}
 #else
 PD_REGISTER_KERNEL(fused_bias_dropout_residual_layer_norm_grad,
                    GPU,
@@ -135,5 +146,5 @@ PD_REGISTER_KERNEL(fused_bias_dropout_residual_layer_norm_grad,
                    phi::fusion::FusedBiasDropoutResidualLnGradKernel,
                    float,
                    double,
-                   phi::dtype::float16) {}
+                   phi::float16) {}
 #endif

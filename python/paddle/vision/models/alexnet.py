@@ -96,7 +96,7 @@ class AlexNet(nn.Layer):
         :ref:`api_paddle_nn_Layer`. An instance of AlexNet model.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.vision.models import AlexNet
@@ -105,7 +105,7 @@ class AlexNet(nn.Layer):
             >>> x = paddle.rand([1, 3, 224, 224])
             >>> out = alexnet(x)
             >>> print(out.shape)
-            [1, 1000]
+            paddle.Size([1, 1000])
     """
 
     num_classes: int
@@ -192,9 +192,9 @@ def _alexnet(
     model = AlexNet(**kwargs)
 
     if pretrained:
-        assert (
-            arch in model_urls
-        ), f"{arch} model do not have a pretrained model now, you should set pretrained=False"
+        assert arch in model_urls, (
+            f"{arch} model do not have a pretrained model now, you should set pretrained=False"
+        )
         weight_path = get_weights_path_from_url(
             model_urls[arch][0], model_urls[arch][1]
         )
@@ -221,7 +221,7 @@ def alexnet(
         :ref:`api_paddle_nn_Layer`. An instance of AlexNet model.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.vision.models import alexnet
@@ -236,6 +236,6 @@ def alexnet(
             >>> out = model(x)
 
             >>> print(out.shape)
-            [1, 1000]
+            paddle.Size([1, 1000])
     """
     return _alexnet('alexnet', pretrained, **kwargs)

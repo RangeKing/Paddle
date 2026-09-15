@@ -1,7 +1,26 @@
+string(REGEX MATCH "9[0-9]|1[0-9][0-9]" ARCH_BIN_CONTAINS_GE_90
+             "${COMPILED_CUDA_ARCHS}")
+
+if(WITH_DISTRIBUTE
+   AND WITH_GPU
+   AND ARCH_BIN_CONTAINS_GE_90)
+  message(STATUS "Enable DeepEP alltoall communication.")
+  add_subdirectory(deep_ep)
+  set(DEEPEP_LIB deep_ep)
+endif()
+
+if(WITH_DISTRIBUTE
+   AND WITH_XPU
+   AND WITH_XPU_XRE5)
+  message(STATUS "Enable DeepEP alltoall communication.")
+  add_subdirectory(deep_ep_xpu)
+  set(DEEPEP_LIB deep_ep_xpu)
+endif()
+
 cc_library(
   process_group
   SRCS process_group.cc
-  DEPS phi common xxhash)
+  DEPS phi common xxhash ${DEEPEP_LIB})
 
 cc_library(
   eager_reducer
@@ -28,11 +47,24 @@ if(WITH_NCCL OR WITH_RCCL)
 
 endif()
 
+if(WITH_FLAGCX AND NOT WITH_XPU)
+  cc_library(
+    process_group_flagcx
+    SRCS process_group_flagcx.cc common.cc
+    DEPS process_group phi)
+endif()
+
 if(WITH_XPU_BKCL)
   cc_library(
     process_group_bkcl
     SRCS process_group_bkcl.cc bkcl_tools.cc common.cc
+         process_group_kernel_utils.cc
     DEPS process_group phi)
+
+  cc_library(
+    xpu_async_load
+    SRCS xpu_async_load.cc
+    DEPS process_group phi ${DEVICE_EVENT_LIBS})
 endif()
 
 if(WITH_MPI)

@@ -24,7 +24,9 @@ limitations under the License. */
 
 #include "paddle/fluid/framework/convert_utils.h"
 #include "paddle/fluid/framework/data_type.h"
+#include "paddle/fluid/framework/dlpack_tensor.h"
 #include "paddle/phi/api/lib/data_transform.h"
+#include "paddle/phi/backends/onednn/onednn_helper.h"
 #include "paddle/phi/common/complex.h"
 #include "paddle/phi/core/dense_tensor.h"
 #include "paddle/phi/core/platform/profiler/event_tracing.h"
@@ -37,7 +39,7 @@ namespace paddle::framework {
 
 template <typename TENSOR>
 void TensorCopyImpl(const TENSOR& src,
-                    const phi::Place& dst_place,
+                    const Place& dst_place,
                     const phi::DeviceContext& ctx,
                     TENSOR* dst) {
   if (&src == dst) {
@@ -53,7 +55,7 @@ void TensorCopyImpl(const TENSOR& src,
   auto src_place = src.place();
   auto src_ptr = src.data();
 #ifdef PADDLE_WITH_DNNL
-  dst->set_mem_desc(src.mem_desc());
+  phi::funcs::SetOneDNNMemDesc(dst, phi::funcs::GetOneDNNMemDesc(src));
   // oneDNN tensors due to padding may be of bigger size
   // than numel()*size(type())
   auto dst_ptr =
@@ -186,7 +188,7 @@ void TensorCopyImpl(const TENSOR& src,
         phi::is_gpu_place(ctx_place),
         true,
         common::errors::PreconditionNotMet(
-            "Device context place mismatch. When copying phi::DenseTensor "
+            "Device context place mismatch. When copying DenseTensor "
             "data from GPU memory to CUDA Pinned memory, current "
             "device context place should be GPU."));
     auto ctx_gpu_place = ctx_place;
@@ -211,7 +213,7 @@ void TensorCopyImpl(const TENSOR& src,
         phi::is_gpu_place(ctx_place),
         true,
         common::errors::PreconditionNotMet(
-            "Device context place mismatch. When copying phi::DenseTensor "
+            "Device context place mismatch. When copying DenseTensor "
             "data from CUDA Pinned memory to GPU memory, current "
             "device context place should be GPU."));
     auto ctx_gpu_place = ctx_place;
@@ -265,9 +267,7 @@ void TensorCopyImpl(const TENSOR& src,
 }
 
 template <typename TENSOR>
-void TensorCopyImpl(const TENSOR& src,
-                    const phi::Place& dst_place,
-                    TENSOR* dst) {
+void TensorCopyImpl(const TENSOR& src, const Place& dst_place, TENSOR* dst) {
   phi::DeviceContextPool& pool = phi::DeviceContextPool::Instance();
   const phi::DeviceContext* dev_ctx = nullptr;
   if (phi::is_gpu_place(dst_place) || phi::is_custom_place(dst_place)) {
@@ -278,23 +278,23 @@ void TensorCopyImpl(const TENSOR& src,
   TensorCopyImpl(src, dst_place, *dev_ctx, dst);
 }
 
-void TensorCopy(const phi::DenseTensor& src,
-                const phi::Place& dst_place,
-                phi::DenseTensor* dst) {
-  TensorCopyImpl<phi::DenseTensor>(src, dst_place, dst);
+void TensorCopy(const DenseTensor& src,
+                const Place& dst_place,
+                DenseTensor* dst) {
+  TensorCopyImpl<DenseTensor>(src, dst_place, dst);
   dst->set_strides(src.strides());
 }
-void TensorCopy(const phi::DenseTensor& src,
-                const phi::Place& dst_place,
+void TensorCopy(const DenseTensor& src,
+                const Place& dst_place,
                 const phi::DeviceContext& ctx,
-                phi::DenseTensor* dst) {
-  TensorCopyImpl<phi::DenseTensor>(src, dst_place, ctx, dst);
+                DenseTensor* dst) {
+  TensorCopyImpl<DenseTensor>(src, dst_place, ctx, dst);
   dst->set_strides(src.strides());
 }
 
-void TensorCopySync(const phi::DenseTensor& src,
-                    const phi::Place& dst_place,
-                    phi::DenseTensor* dst) {
+void TensorCopySync(const DenseTensor& src,
+                    const Place& dst_place,
+                    DenseTensor* dst) {
   if (&src == dst) {
     auto src_copy = src;
     TensorCopySync(src_copy, dst_place, dst);
@@ -306,7 +306,7 @@ void TensorCopySync(const phi::DenseTensor& src,
   dst->set_layout(src.layout());
 #ifdef PADDLE_WITH_DNNL
   if (src.layout() == DataLayout::ONEDNN) {
-    dst->set_mem_desc(src.mem_desc());
+    phi::funcs::SetOneDNNMemDesc(dst, phi::funcs::GetOneDNNMemDesc(src));
   }
 #endif
   auto src_place = src.place();
@@ -360,8 +360,8 @@ void TensorCopySync(const phi::DenseTensor& src,
       return;
     }
     memory::Copy(dst_place, dst_ptr, src_place, src_ptr, size);
-    phi::XPUPlace xpu_dst_place = dst_place;
-    phi::XPUPlace xpu_src_place = src_place;
+    XPUPlace xpu_dst_place = dst_place;
+    XPUPlace xpu_src_place = src_place;
     if (xpu_dst_place.device == xpu_src_place.device) {
       auto xpu_ctx = phi::DeviceContextPool::Instance().Get(xpu_dst_place);
       xpu_ctx->Wait();
@@ -446,15 +446,15 @@ void TensorCopySync(const phi::DenseTensor& src,
 }
 
 void TensorToStream(std::ostream& os,
-                    const phi::DenseTensor& tensor,
+                    const DenseTensor& tensor,
                     const phi::DeviceContext& dev_ctx) {
-  const auto ensure_contiguous = [](const phi::DenseTensor& tensor) {
+  const auto ensure_contiguous = [](const DenseTensor& tensor) {
     if (tensor.meta().is_contiguous()) {
       return tensor;
     }
     return paddle::experimental::Trans2Contiguous(tensor);
   };
-  const phi::DenseTensor& contiguous_tensor = ensure_contiguous(tensor);
+  const DenseTensor& contiguous_tensor = ensure_contiguous(tensor);
   {  // the 1st field, uint32_t version
     constexpr uint32_t version = 0;
     os.write(reinterpret_cast<const char*>(&version), sizeof(version));
@@ -469,7 +469,7 @@ void TensorToStream(std::ostream& os,
     auto* pb_dims = desc.mutable_dims();
     pb_dims->Resize(static_cast<int>(dims.size()), 0);
     std::copy(dims.begin(), dims.end(), pb_dims->begin());
-    int32_t size = desc.ByteSize();
+    int32_t size = static_cast<int32_t>(desc.ByteSizeLong());
     os.write(reinterpret_cast<const char*>(&size), sizeof(size));
     auto out = desc.SerializeAsString();
     os.write(out.data(), size);
@@ -488,7 +488,7 @@ void TensorToStream(std::ostream& os,
       constexpr size_t kBufSize = 1024 * 1024 * 64;  // 64MB
       std::unique_ptr<char[]> buf(new char[kBufSize]);
       auto& gpu_dev_ctx = static_cast<const phi::GPUContext&>(dev_ctx);
-      phi::CPUPlace cpu;
+      CPUPlace cpu;
       uintptr_t data = reinterpret_cast<uintptr_t>(data_ptr);
       while (size != 0) {
         size_t size_to_write = std::min(kBufSize, static_cast<size_t>(size));
@@ -512,7 +512,7 @@ void TensorToStream(std::ostream& os,
       constexpr size_t kBufSize = 1024 * 1024 * 64;  // 64MB
       std::unique_ptr<char[]> buf(new char[kBufSize]);
       auto& xpu_dev_ctx = static_cast<const phi::XPUContext&>(dev_ctx);
-      phi::CPUPlace cpu;
+      CPUPlace cpu;
       uintptr_t data = reinterpret_cast<uintptr_t>(data_ptr);
       while (size != 0) {
         size_t size_to_write = std::min(kBufSize, static_cast<size_t>(size));
@@ -536,7 +536,7 @@ void TensorToStream(std::ostream& os,
       std::unique_ptr<char[]> buf(new char[kBufSize]);  // NOLINT
       auto& custom_device_context =
           static_cast<const phi::CustomContext&>(dev_ctx);
-      phi::CPUPlace cpu;
+      CPUPlace cpu;
       uintptr_t data = reinterpret_cast<uintptr_t>(data_ptr);
       while (size != 0) {
         size_t size_to_write = std::min(kBufSize, static_cast<size_t>(size));
@@ -564,9 +564,7 @@ void TensorToStream(std::ostream& os,
 }
 
 struct DeserializedDataFunctor {
-  DeserializedDataFunctor(void** buf,
-                          phi::DenseTensor* tensor,
-                          const phi::Place& place)
+  DeserializedDataFunctor(void** buf, DenseTensor* tensor, const Place& place)
       : buf_(buf), tensor_(tensor), place_(place) {}
 
   template <typename T>
@@ -575,12 +573,12 @@ struct DeserializedDataFunctor {
   }
 
   void** buf_;
-  phi::DenseTensor* tensor_;
-  phi::Place place_;
+  DenseTensor* tensor_;
+  Place place_;
 };
 
 void TensorFromStream(std::istream& is,
-                      phi::DenseTensor* tensor,
+                      DenseTensor* tensor,
                       const phi::DeviceContext& dev_ctx,
                       const size_t& seek,
                       const std::vector<int64_t>& shape) {
@@ -619,7 +617,7 @@ void TensorFromStream(std::istream& is,
         phi::is_custom_place(dev_ctx.GetPlace())) {
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP) || \
     defined(PADDLE_WITH_XPU) || defined(PADDLE_WITH_CUSTOM_DEVICE)
-      phi::DenseTensor cpu_tensor;
+      DenseTensor cpu_tensor;
       cpu_tensor.Resize(common::make_ddim(shape));
       framework::VisitDataType(
           desc.data_type(),
@@ -649,7 +647,7 @@ void TensorFromStream(std::istream& is,
 }
 
 void TensorFromStream(std::istream& is,
-                      phi::DenseTensor* tensor,
+                      DenseTensor* tensor,
                       const phi::DeviceContext& dev_ctx) {
   uint32_t version = 0;
   is.read(reinterpret_cast<char*>(&version), sizeof(version));
@@ -668,10 +666,10 @@ void TensorFromStream(std::istream& is,
         is.good(),
         true,
         common::errors::Unavailable("Cannot read tensor desc size"));
-    PADDLE_ENFORCE_GE(size,
-                      0,
-                      common::errors::InvalidArgument(
-                          "phi::DenseTensor desc size should >= 0"));
+    PADDLE_ENFORCE_GE(
+        size,
+        0,
+        common::errors::InvalidArgument("DenseTensor desc size should >= 0"));
     std::unique_ptr<char[]> buf(new char[size]);  // NOLINT
     is.read(reinterpret_cast<char*>(buf.get()), size);
     PADDLE_ENFORCE_EQ(
@@ -692,7 +690,7 @@ void TensorFromStream(std::istream& is,
         phi::is_custom_place(dev_ctx.GetPlace())) {
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP) || \
     defined(PADDLE_WITH_XPU) || defined(PADDLE_WITH_CUSTOM_DEVICE)
-      phi::DenseTensor cpu_tensor;
+      DenseTensor cpu_tensor;
       cpu_tensor.Resize(common::make_ddim(dims));
       framework::VisitDataType(
           desc.data_type(),
@@ -725,162 +723,23 @@ void TensorFromStream(std::istream& is,
   }
 }
 
-// get tensor data point by DLDataType
-void* GetDstPtrByDLDataType(DLDataType type,
-                            phi::DenseTensor* dst,
-                            const phi::Place& dst_place) {
-  // vector types not currently supported
-  PADDLE_ENFORCE_LE(
-      type.lanes,
-      1,
-      common::errors::Unimplemented("Vector type is not supported currently."));
-
-  switch (type.bits) {
-    case 8:
-      if (type.code == kDLInt)
-        return static_cast<void*>(dst->mutable_data<int8_t>(dst_place));
-      if (type.code == kDLUInt)
-        return static_cast<void*>(dst->mutable_data<uint8_t>(dst_place));
-      PADDLE_THROW(common::errors::Unimplemented(
-          "DLDataType code <%d> is illegal when DLDataType.bits is <%d>.",
-          type.code,
-          type.bits));
-    case 16:
-      if (type.code == kDLInt)
-        return static_cast<void*>(dst->mutable_data<int16_t>(dst_place));
-      if (type.code == kDLFloat)
-        return static_cast<void*>(
-            dst->mutable_data<phi::dtype::float16>(dst_place));
-      if (type.code == kDLBfloat)
-        return static_cast<void*>(
-            dst->mutable_data<phi::dtype::bfloat16>(dst_place));
-      PADDLE_THROW(common::errors::Unimplemented(
-          "DLDataType code <%d> is illegal when DLDataType.bits is <%d>.",
-          type.code,
-          type.bits));
-    case 32:
-      if (type.code == kDLInt)
-        return static_cast<void*>(dst->mutable_data<int32_t>(dst_place));
-      if (type.code == kDLFloat)
-        return static_cast<void*>(dst->mutable_data<float>(dst_place));
-      PADDLE_THROW(common::errors::Unimplemented(
-          "DLDataType code <%d> is illegal when DLDataType.bits is <%d>.",
-          type.code,
-          type.bits));
-    case 64:
-      if (type.code == kDLInt)
-        return static_cast<void*>(dst->mutable_data<int64_t>(dst_place));
-      if (type.code == kDLFloat)
-        return static_cast<void*>(dst->mutable_data<double>(dst_place));
-      if (type.code == kDLComplex)
-        return static_cast<void*>(
-            dst->mutable_data<phi::dtype::complex<float>>(dst_place));
-      PADDLE_THROW(common::errors::Unimplemented(
-          "DLDataType code <%d> is illegal when DLDataType.bits is <%d>.",
-          type.code,
-          type.bits));
-    case 128:
-      if (type.code == kDLComplex)
-        return static_cast<void*>(
-            dst->mutable_data<phi::dtype::complex<double>>(dst_place));
-      PADDLE_THROW(common::errors::Unimplemented(
-          "DLDataType code <%d> is illegal when DLDataType.bits is <%d>.",
-          type.code,
-          type.bits));
-    default:
-      PADDLE_THROW(common::errors::Unimplemented(
-          "Unsupported DLDataType.bits %d.", type.bits));
-  }
-}
-
-// get Tensor data dtype from given DLDataType
-phi::DataType GetDstPtrByDLDataType(DLDataType type) {
-  // vector types not currently supported
-  PADDLE_ENFORCE_LE(
-      type.lanes,
-      1,
-      common::errors::Unimplemented("Vector type is not supported currently."));
-
-  switch (type.bits) {
-    case 8:
-      if (type.code == kDLBool) return phi::DataType::BOOL;
-      if (type.code == kDLInt) return phi::DataType::INT8;
-      if (type.code == kDLUInt) return phi::DataType::UINT8;
-      PADDLE_THROW(common::errors::Unimplemented(
-          "DLDataType code <%d> is illegal when DLDataType.bits is <%d>.",
-          type.code,
-          type.bits));
-    case 16:
-      if (type.code == kDLInt) return phi::DataType::INT16;
-      if (type.code == kDLFloat) return phi::DataType::FLOAT16;
-      if (type.code == kDLBfloat) return phi::DataType::BFLOAT16;
-      PADDLE_THROW(common::errors::Unimplemented(
-          "DLDataType code <%d> is illegal when DLDataType.bits is <%d>.",
-          type.code,
-          type.bits));
-    case 32:
-      if (type.code == kDLInt) return phi::DataType::INT32;
-      if (type.code == kDLFloat) return phi::DataType::FLOAT32;
-      PADDLE_THROW(common::errors::Unimplemented(
-          "DLDataType code <%d> is illegal when DLDataType.bits is <%d>.",
-          type.code,
-          type.bits));
-    case 64:
-      if (type.code == kDLInt) return phi::DataType::INT64;
-      if (type.code == kDLFloat) return phi::DataType::FLOAT64;
-      if (type.code == kDLComplex) return phi::DataType::COMPLEX64;
-      PADDLE_THROW(common::errors::Unimplemented(
-          "DLDataType code <%d> is illegal when DLDataType.bits is <%d>.",
-          type.code,
-          type.bits));
-    case 128:
-      if (type.code == kDLComplex) return phi::DataType::COMPLEX128;
-      PADDLE_THROW(common::errors::Unimplemented(
-          "DLDataType code <%d> is illegal when DLDataType.bits is <%d>.",
-          type.code,
-          type.bits));
-    default:
-      PADDLE_THROW(common::errors::Unimplemented(
-          "Unsupported DLDataType.bits %d.", type.bits));
-  }
-}
-
-/*
-dlpack related code ref:
-https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/DLConvertor.cpp
-and paddle/phi/api/lib/tensor_utils.cc
-*/
-using Deleter = std::function<void(void*)>;
-
-std::unordered_map<void*, std::function<void(phi::Allocation*)>> ptr_to_deleter;
-std::mutex ptr_to_deleter_mutex;  // use mutex to keep thread safe
-
-void DeleterBridge(phi::Allocation* alloc) {
-  std::lock_guard<std::mutex> lock(ptr_to_deleter_mutex);
-  auto it = ptr_to_deleter.find(static_cast<void*>(alloc->ptr()));
-  if (it != ptr_to_deleter.end()) {
-    it->second(alloc);         // call the deleter
-    ptr_to_deleter.erase(it);  // remove the entry from the map safely
-  }
-}
-
-phi::DataType ConvertToPDDataType(const std::string& typestr) {
-  static const std::unordered_map<std::string, phi::DataType> type_map = {
-      {"<c8", phi::DataType::COMPLEX64},
-      {"<c16", phi::DataType::COMPLEX128},
-      {"<f2", phi::DataType::BFLOAT16},
-      {"<f4", phi::DataType::FLOAT32},
-      {"<f8", phi::DataType::FLOAT64},
-      {"|u1", phi::DataType::UINT8},
-      {"|i1", phi::DataType::INT8},
-      {"<i2", phi::DataType::INT16},
-      {"<i4", phi::DataType::INT32},
-      {"<i8", phi::DataType::INT64},
-      {"|b1", phi::DataType::BOOL},
+DataType ConvertToPDDataType(const std::string& typestr) {
+  static const std::unordered_map<std::string, DataType> type_map = {
+      {"<c8", DataType::COMPLEX64},
+      {"<c16", DataType::COMPLEX128},
+      {"<f2", DataType::BFLOAT16},
+      {"<f4", DataType::FLOAT32},
+      {"<f8", DataType::FLOAT64},
+      {"|u1", DataType::UINT8},
+      {"|i1", DataType::INT8},
+      {"<i2", DataType::INT16},
+      {"<i4", DataType::INT32},
+      {"<i8", DataType::INT64},
+      {"|b1", DataType::BOOL},
       // NOTE: Paddle not support uint32, uint64, uint16 yet.
-      // {"<u2", phi::DataType::UINT16},
-      // {"<u4", phi::DataType::UINT32},
-      // {"<u8", phi::DataType::UINT64},
+      // {"<u2", DataType::UINT16},
+      // {"<u4", DataType::UINT32},
+      // {"<u8", DataType::UINT64},
   };
   auto it = type_map.find(typestr);
   PADDLE_ENFORCE_NE(
@@ -890,147 +749,22 @@ phi::DataType ConvertToPDDataType(const std::string& typestr) {
   return it->second;
 }
 
-phi::DenseTensor from_blob(void* data,
-                           DLManagedTensor* src,
-                           const phi::DDim& shape,
-                           const phi::DDim& strides,
-                           phi::DataType dtype,
-                           const phi::Place& place,
-                           const Deleter& deleter) {
-  auto meta = phi::DenseTensorMeta(dtype, shape, strides);
-
-  phi::Allocation::DeleterFnPtr f = nullptr;
-  if (deleter) {
-    auto g = [deleter, src](phi::Allocation* p) {
-      if (src->manager_ctx) {
-        deleter(src);
-      }
-    };
-
-    {
-      std::lock_guard<std::mutex> lock(ptr_to_deleter_mutex);
-      ptr_to_deleter[data] = g;
-    }
-
-    f = DeleterBridge;
-  }
-
-  // Calculate the number of elements of underlying storage
-  size_t size = 1;
-  for (auto i = 0; i < shape.size(); ++i) {
-    if (shape[i] == 0) {
-      size = 0;
-      break;
-    }
-    size += strides[i] * (shape[i] - 1);
-  }
-
-  auto alloc =
-      std::make_shared<phi::Allocation>(data, size * SizeOf(dtype), f, place);
-  return phi::DenseTensor(alloc, meta);
+DenseTensor TensorFromDLPack(DLManagedTensor* src) {
+  return framework::FromDLPack(src);
 }
 
-phi::DenseTensor TensorFromDLPack(DLManagedTensor* src, Deleter deleter) {
-  std::vector<int64_t> shape_vec;
-  std::copy(src->dl_tensor.shape,
-            src->dl_tensor.shape + src->dl_tensor.ndim,
-            std::back_inserter(shape_vec));
-
-  phi::Place place;
-  if (src->dl_tensor.device.device_type == kDLCPU) {
-    place = phi::CPUPlace();
-  } else if (src->dl_tensor.device.device_type == kDLCUDA) {
-    place = phi::GPUPlace(src->dl_tensor.device.device_id);
-  } else if (src->dl_tensor.device.device_type == kDLCUDAHost) {
-    place = phi::GPUPinnedPlace();
-  } else {
-    PADDLE_THROW(common::errors::Unimplemented("Given Place is not supported"));
-  }
-
-  ::DLDataType type = src->dl_tensor.dtype;
-  auto dtype = GetDstPtrByDLDataType(type);
-  if (!src->dl_tensor.strides) {
-    return from_blob(
-        src->dl_tensor.data,
-        src,
-        common::make_ddim(shape_vec),
-        phi::DenseTensorMeta::calc_strides(common::make_ddim(shape_vec)),
-        dtype,
-        place,
-        std::move(deleter));
-  } else {
-    std::vector<int64_t> strides_vec;
-    std::copy(src->dl_tensor.strides,
-              src->dl_tensor.strides + src->dl_tensor.ndim,
-              std::back_inserter(strides_vec));
-    return from_blob(src->dl_tensor.data,
-                     src,
-                     common::make_ddim(shape_vec),
-                     common::make_ddim(strides_vec),
-                     dtype,
-                     place,
-                     deleter);
-  }
-}
-
-phi::DenseTensor TensorFromDLPack(DLManagedTensor* src) {
-  auto deleter = [src](void* self [[maybe_unused]]) {
-    if (src->deleter) {
-      src->deleter(src);
-    }
-  };
-  return TensorFromDLPack(src, std::move(deleter));
-}
-
-// Keep the this overloaded version of the interface unchanged.
-void TensorFromDLPack(const ::DLTensor& dl_tensor, phi::DenseTensor* dst) {
-  phi::CPUPlace dst_place = phi::CPUPlace();
-  phi::CPUPlace src_place = phi::CPUPlace();
-
-  std::vector<int64_t> vec;
-  std::copy(dl_tensor.shape,
-            dl_tensor.shape + dl_tensor.ndim,
-            std::back_inserter(vec));
-
-  phi::DDim vddim = common::make_ddim(vec);
-
-  dst->Resize(vddim);
-  ::DLDataType type = dl_tensor.dtype;
-  void* dst_ptr = GetDstPtrByDLDataType(type, dst, dst_place);
-
-  auto src_ptr = static_cast<const void*>(dl_tensor.data);
-  auto size = common::product(vddim) * type.bits / 8;
-
-  if (dl_tensor.device.device_type == kDLCPU) {
-    memory::Copy(dst_place, dst_ptr, src_place, src_ptr, size);
-  }
-#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
-  if (dl_tensor.device.device_type == kDLCUDA) {
-    phi::GPUPlace dst_place = phi::GPUPlace(dl_tensor.device.device_id);
-    phi::GPUPlace src_place = phi::GPUPlace(dl_tensor.device.device_id);
-    dst_ptr = GetDstPtrByDLDataType(type, dst, dst_place);
-    auto* ctx = phi::DeviceContextPool::Instance().GetByPlace(dst_place);
-    memory::Copy(dst_place,
-                 dst_ptr,
-                 src_place,
-                 src_ptr,
-                 size,
-                 reinterpret_cast<const phi::GPUContext&>(*ctx).stream());
-  }
-#endif
-#ifdef PADDLE_WITH_XPU
-  PADDLE_THROW(common::errors::Unimplemented("XPUPlace is not supported"));
-#endif
+DenseTensor TensorFromDLPack(DLManagedTensorVersioned* src) {
+  return framework::FromDLPackVersioned(src);
 }
 
 template <typename T>
-std::string format_tensor(const phi::DenseTensor& tensor) {
+std::string format_tensor(const DenseTensor& tensor) {
   // TODO(zhiqiu): use the print option to format tensor.
   return "NOT IMPLEMENTED";
 }
 
 template <typename T>
-std::ostream& print_tensor(std::ostream& os, const phi::DenseTensor& tensor) {
+std::ostream& print_tensor(std::ostream& os, const DenseTensor& tensor) {
   auto inspect = tensor.data<T>();
   auto element_num = tensor.numel();
 
@@ -1058,7 +792,7 @@ std::ostream& print_tensor(std::ostream& os, const phi::DenseTensor& tensor) {
 
 template <>
 std::ostream& print_tensor<phi::dtype::complex<float>>(
-    std::ostream& os, const phi::DenseTensor& tensor) {
+    std::ostream& os, const DenseTensor& tensor) {
   auto inspect = tensor.data<phi::dtype::complex<float>>();
   auto element_num = tensor.numel();
 
@@ -1076,7 +810,7 @@ std::ostream& print_tensor<phi::dtype::complex<float>>(
 
 template <>
 std::ostream& print_tensor<phi::dtype::complex<double>>(
-    std::ostream& os, const phi::DenseTensor& tensor) {
+    std::ostream& os, const DenseTensor& tensor) {
   auto inspect = tensor.data<phi::dtype::complex<double>>();
   auto element_num = tensor.numel();
 
@@ -1109,7 +843,7 @@ std::ostream& operator<<(std::ostream& os, const LegacyLoD& lod) {
   return os;
 }
 
-TEST_API std::ostream& operator<<(std::ostream& os, const phi::DenseTensor& t) {
+TEST_API std::ostream& operator<<(std::ostream& os, const DenseTensor& t) {
   if (!t.valid()) {
     os << "invalid\n";
     return os;
@@ -1121,7 +855,7 @@ TEST_API std::ostream& operator<<(std::ostream& os, const phi::DenseTensor& t) {
   os << "  - shape: [" << t.dims() << "]\n";
   os << "  - layout: " << common::DataLayoutToString(t.layout()) << "\n";
 
-  if (!t.initialized()) {
+  if (!t.has_allocation()) {
     os << "uninited\n";
     return os;
   }
@@ -1133,7 +867,7 @@ TEST_API std::ostream& operator<<(std::ostream& os, const phi::DenseTensor& t) {
   if (phi::is_cpu_place(t.place())) {
     tensor.ShareDataWith(t);
   } else {
-    phi::CPUPlace place;
+    CPUPlace place;
     paddle::framework::TensorCopy(t, place, &tensor);
     phi::DeviceContextPool& pool = phi::DeviceContextPool::Instance();
     auto& dev_ctx = *pool.Get(t.place());

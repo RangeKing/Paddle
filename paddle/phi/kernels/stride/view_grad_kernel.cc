@@ -11,10 +11,11 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-#include "paddle/phi/kernels/view_grad_kernel.h"
+#include "paddle/common/ddim.h"
 #include "paddle/common/flags.h"
-#include "paddle/phi/backends/all_context.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/reshape_grad_kernel.h"
+#include "paddle/phi/kernels/reshape_kernel.h"
 #include "paddle/phi/kernels/view_kernel.h"
 
 COMMON_DECLARE_bool(use_stride_kernel);
@@ -32,29 +33,11 @@ void ViewShapeGradKernel(const Context& dev_ctx,
         "FLAGS_use_stride_kernel is closed. Strided kernel "
         "be called, something wrong has happened!"));
   }
-  ViewShapeStridedKernel<Context>(
-      dev_ctx, out_grad, common::vectorize<int64_t>(input.dims()), input_grad);
+  ReshapeStridedKernel(dev_ctx, out_grad, vectorize(input.dims()), input_grad);
 }
 
-template <typename Context>
-void ViewDtypeGradKernel(const Context& dev_ctx,
-                         const DenseTensor& input,
-                         const DenseTensor& out_grad,
-                         DataType dtype,
-                         DenseTensor* input_grad) {
-  if (!FLAGS_use_stride_kernel) {
-    PADDLE_THROW(common::errors::Fatal(
-        "FLAGS_use_stride_kernel is closed. Strided kernel "
-        "be called, something wrong has happened!"));
-  }
-  ViewDtypeKernel<Context>(dev_ctx, out_grad, input.dtype(), input_grad);
-}
 }  // namespace phi
 
 PD_REGISTER_KERNEL_FOR_ALL_BACKEND_DTYPE(view_shape_grad,
                                          STRIDED,
                                          phi::ViewShapeGradKernel) {}
-
-PD_REGISTER_KERNEL_FOR_ALL_BACKEND_DTYPE(view_dtype_grad,
-                                         STRIDED,
-                                         phi::ViewDtypeGradKernel) {}

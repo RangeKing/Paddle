@@ -15,7 +15,12 @@
 import unittest
 
 import numpy as np
-from op_test import OpTest, convert_float_to_uint16
+from op_test import (
+    OpTest,
+    convert_float_to_uint16,
+    get_device_place,
+    is_custom_device,
+)
 
 import paddle
 from paddle.base import core
@@ -116,9 +121,11 @@ class TestHeavisideAPI_float64(unittest.TestCase):
 
     def test_static(self):
         for use_cuda in (
-            [False, True] if paddle.device.is_compiled_with_cuda() else [False]
+            [False, True]
+            if (paddle.device.is_compiled_with_cuda() or is_custom_device())
+            else [False]
         ):
-            place = paddle.CUDAPlace(0) if use_cuda else paddle.CPUPlace()
+            place = get_device_place() if use_cuda else paddle.CPUPlace()
 
             paddle.enable_static()
             prog = paddle.static.Program()
@@ -146,9 +153,11 @@ class TestHeavisideAPI_float64(unittest.TestCase):
 
     def test_dygraph(self):
         for use_cuda in (
-            [False, True] if paddle.device.is_compiled_with_cuda() else [False]
+            [False, True]
+            if (paddle.device.is_compiled_with_cuda() or is_custom_device())
+            else [False]
         ):
-            place = paddle.CUDAPlace(0) if use_cuda else paddle.CPUPlace()
+            place = get_device_place() if use_cuda else paddle.CPUPlace()
             paddle.disable_static(place=place)
             result = paddle.heaviside(
                 paddle.to_tensor(self.x_np), paddle.to_tensor(self.y_np)
@@ -205,6 +214,30 @@ class TestElementwiseOp2(TestElementwiseOp):
         self.outputs = {'Out': np.heaviside(self.inputs['X'], self.inputs['Y'])}
 
 
+class TestElementwiseOp3(TestElementwiseOp):
+    def setUp(self):
+        self.op_type = "elementwise_heaviside"
+        x = np.random.uniform(-10, 10, [100]).astype("float64")
+        y = np.random.uniform(-10, 10, [3, 100]).astype("float64")
+        self.python_api = paddle.heaviside
+        self.prim_op_type = "comp"
+        self.public_python_api = paddle.heaviside
+        self.inputs = {'X': x, 'Y': y}
+        self.outputs = {'Out': np.heaviside(self.inputs['X'], self.inputs['Y'])}
+
+
+class TestElementwiseOp4(TestElementwiseOp):
+    def setUp(self):
+        self.op_type = "elementwise_heaviside"
+        x = np.random.uniform(0, 10, []).astype("float64")
+        y = np.random.uniform(-10, 0, [2, 3, 20]).astype("float64")
+        self.python_api = paddle.heaviside
+        self.prim_op_type = "comp"
+        self.public_python_api = paddle.heaviside
+        self.inputs = {'X': x, 'Y': y}
+        self.outputs = {'Out': np.heaviside(self.inputs['X'], self.inputs['Y'])}
+
+
 class TestHeavisideFP16Op(OpTest):
     def setUp(self):
         self.dtype = np.float16
@@ -236,8 +269,8 @@ class TestHeavisideFP16Op(OpTest):
 
 
 @unittest.skipIf(
-    not core.is_compiled_with_cuda()
-    or not core.is_bfloat16_supported(core.CUDAPlace(0)),
+    not (core.is_compiled_with_cuda() or is_custom_device())
+    or not core.is_bfloat16_supported(get_device_place()),
     "core is not compiled with CUDA or not support bfloat16",
 )
 class TestHeavisideBF16Op(OpTest):
@@ -254,7 +287,7 @@ class TestHeavisideBF16Op(OpTest):
         }
         self.outputs = {'Out': np.heaviside(self.inputs['X'], self.inputs['Y'])}
 
-        self.place = core.CUDAPlace(0)
+        self.place = get_device_place()
         self.inputs['X'] = convert_float_to_uint16(self.inputs['X'])
         self.inputs['Y'] = convert_float_to_uint16(self.inputs['Y'])
         self.outputs['Out'] = convert_float_to_uint16(self.outputs['Out'])
@@ -304,6 +337,270 @@ class TestHeavisideError(unittest.TestCase):
             )
 
         self.assertRaises(ValueError, test_input_xy)
+
+
+@unittest.skipIf(
+    not (core.is_compiled_with_cuda() or is_custom_device()),
+    "core is not compiled with CUDA",
+)
+class TestElementwiseHeavisideOp_Stride(OpTest):
+    no_need_check_grad = True
+
+    def setUp(self):
+        self.op_type = "elementwise_heaviside"
+        self.python_api = paddle.heaviside
+        self.public_python_api = paddle.heaviside
+        self.transpose_api = paddle.transpose
+        self.as_stride_api = paddle.as_strided
+        self.init_dtype()
+        self.init_input_output()
+
+        self.inputs_stride = {
+            'X': OpTest.np_dtype_to_base_dtype(self.x),
+            'Y': OpTest.np_dtype_to_base_dtype(self.y_trans),
+        }
+
+        self.inputs = {
+            'X': OpTest.np_dtype_to_base_dtype(self.x),
+            'Y': OpTest.np_dtype_to_base_dtype(self.y),
+        }
+
+        self.outputs = {'Out': self.out}
+
+    def init_dtype(self):
+        self.dtype = np.float64
+        self.val_dtype = np.float64
+
+    def test_check_output(self):
+        place = get_device_place()
+        self.check_strided_forward = True
+        self.check_output(
+            place,
+        )
+
+    def init_input_output(self):
+        self.strided_input_type = "transpose"
+        self.x = np.random.uniform(0.1, 1, [13, 17]).astype(self.dtype)
+        self.y = np.random.uniform(0.1, 1, [13, 17]).astype(self.dtype)
+        self.out = np.heaviside(self.x, self.y)
+        self.perm = [1, 0]
+        self.y_trans = np.transpose(self.y, self.perm)
+
+    def test_check_gradient(self):
+        pass
+
+
+class TestElementwiseHeavisideOp_Stride1(TestElementwiseHeavisideOp_Stride):
+    def init_input_output(self):
+        self.strided_input_type = "transpose"
+        self.x = np.random.uniform(0.1, 1, [20, 2, 13, 17]).astype(self.dtype)
+        self.y = np.random.uniform(0.1, 1, [20, 2, 13, 17]).astype(self.dtype)
+        self.out = np.heaviside(self.x, self.y)
+        self.perm = [0, 1, 3, 2]
+        self.y_trans = np.transpose(self.y, self.perm)
+
+
+class TestElementwiseHeavisideOp_Stride2(TestElementwiseHeavisideOp_Stride):
+    def init_input_output(self):
+        self.strided_input_type = "transpose"
+        self.x = np.random.uniform(0.1, 1, [20, 2, 13, 17]).astype(self.dtype)
+        self.y = np.random.uniform(0.1, 1, [20, 2, 13, 17]).astype(self.dtype)
+        self.out = np.heaviside(self.x, self.y)
+        self.perm = [0, 2, 1, 3]
+        self.y_trans = np.transpose(self.y, self.perm)
+
+
+class TestElementwiseHeavisideOp_Stride3(TestElementwiseHeavisideOp_Stride):
+    def init_input_output(self):
+        self.strided_input_type = "transpose"
+        self.x = np.random.uniform(0.1, 1, [20, 2, 13, 17]).astype(self.dtype)
+        self.y = np.random.uniform(0.1, 1, [20, 2, 13, 1]).astype(self.dtype)
+        self.out = np.heaviside(self.x, self.y)
+        self.perm = [0, 1, 3, 2]
+        self.y_trans = np.transpose(self.y, self.perm)
+
+
+class TestElementwiseHeavisideOp_Stride4(TestElementwiseHeavisideOp_Stride):
+    def init_input_output(self):
+        self.strided_input_type = "transpose"
+        self.x = np.random.uniform(0.1, 1, [1, 2, 13, 17]).astype(self.dtype)
+        self.y = np.random.uniform(0.1, 1, [20, 2, 13, 1]).astype(self.dtype)
+        self.out = np.heaviside(self.x, self.y)
+        self.perm = [1, 0, 2, 3]
+        self.y_trans = np.transpose(self.y, self.perm)
+
+
+class TestElementwiseHeavisideOp_Stride5(TestElementwiseHeavisideOp_Stride):
+    def init_input_output(self):
+        self.strided_input_type = "as_stride"
+        self.x = np.random.uniform(0.1, 1, [23, 10, 1, 17]).astype(self.dtype)
+        self.y = np.random.uniform(0.1, 1, [23, 2, 13, 20]).astype(self.dtype)
+        self.y_trans = self.y
+        self.y = self.y[:, 0:1, :, 0:1]
+        self.out = np.heaviside(self.x, self.y)
+        self.shape_param = [23, 1, 13, 1]
+        self.stride_param = [520, 260, 20, 1]
+
+
+class TestElementwiseHeavisideOp_Stride_ZeroDim1(
+    TestElementwiseHeavisideOp_Stride
+):
+    def init_input_output(self):
+        self.strided_input_type = "transpose"
+        self.x = np.random.uniform(0.1, 1, []).astype(self.dtype)
+        self.y = np.random.uniform(0.1, 1, [13, 17]).astype(self.dtype)
+        self.out = np.heaviside(self.x, self.y)
+        self.perm = [1, 0]
+        self.y_trans = np.transpose(self.y, self.perm)
+
+
+class TestElementwiseHeavisideOp_Stride_ZeroSize1(
+    TestElementwiseHeavisideOp_Stride
+):
+    def init_data(self):
+        self.strided_input_type = "transpose"
+        self.x = np.random.rand(1, 0, 2).astype('float32')
+        self.y = np.random.rand(3, 0, 1).astype('float32')
+        self.out = np.heaviside(self.x, self.y)
+        self.perm = [2, 1, 0]
+        self.y_trans = np.transpose(self.y, self.perm)
+
+
+@unittest.skipIf(
+    not (core.is_compiled_with_cuda() or is_custom_device()),
+    "core is not compiled with CUDA",
+)
+class TestHeavisideZeroSizeTensor(unittest.TestCase):
+    """Regression test for 0-size tensor in paddle.heaviside forward and backward.
+
+    When input has a dimension of 0, the broadcast backward kernels
+    (ElemwiseGradBroadcast1CUDA / ElemwiseGradBroadcast2CUDA) were incorrectly
+    launched with block_size=0 or grid_size=0, causing CUDA error(9)
+    (cudaErrorInvalidConfiguration).
+
+    Fix: add early-return guards in ElemwiseGradBroadcast1CUDA (h==0 || w==0)
+    and ElemwiseGradBroadcast2CUDA (pre==0 || n==0 || post==0).
+    """
+
+    def setUp(self):
+        self.place = get_device_place()
+        paddle.disable_static(place=self.place)
+
+    def _check_forward_backward(self, x_shape, y_shape, dtype='float32'):
+        """Run forward + backward and assert output shape and no CUDA error."""
+        x = paddle.zeros(x_shape, dtype=dtype)
+        y = paddle.ones(y_shape, dtype=dtype)
+        x.stop_gradient = False
+        y.stop_gradient = False
+
+        out = paddle.heaviside(x, y)
+        expected_shape = list(
+            np.broadcast_shapes(tuple(x_shape), tuple(y_shape))
+        )
+        self.assertEqual(list(out.shape), expected_shape)
+
+        out_grad = paddle.ones_like(out)
+        grads = paddle.grad(
+            [out],
+            [x, y],
+            grad_outputs=[out_grad],
+            allow_unused=True,
+        )
+        self.assertEqual(list(grads[0].shape), x_shape)
+        self.assertEqual(list(grads[1].shape), y_shape)
+
+        # Verify no sticky CUDA error was left by any kernel launch
+        core.eager._for_test_check_cuda_error()
+        return out
+
+    def _check_forward_only(self, x_shape, y_shape, dtype='int32'):
+        """Run forward-only for non-float dtypes and assert shape + no CUDA error."""
+        x = paddle.zeros(x_shape, dtype=dtype)
+        y = paddle.ones(y_shape, dtype=dtype)
+        out = paddle.heaviside(x, y)
+
+        expected_shape = list(
+            np.broadcast_shapes(tuple(x_shape), tuple(y_shape))
+        )
+        self.assertEqual(list(out.shape), expected_shape)
+        core.eager._for_test_check_cuda_error()
+        return out
+
+    # ---------------------------------------------------------------
+    # Same-shape 0-size (no broadcast) — ElemwiseGradComputeNoBroadcast
+    # ---------------------------------------------------------------
+
+    def test_same_shape_zero_leading_dim_float32(self):
+        """[0, 2048] x [0, 2048] – same shape, no broadcast."""
+        self._check_forward_backward([0, 2048], [0, 2048])
+
+    def test_same_shape_zero_leading_dim_float64(self):
+        """[0, 17] x [0, 17]."""
+        self._check_forward_backward([0, 17], [0, 17], 'float64')
+
+    def test_same_shape_zero_trailing_dim_float64(self):
+        """[13, 0] x [13, 0]."""
+        self._check_forward_backward([13, 0], [13, 0], 'float64')
+
+    def test_same_shape_zero_trailing_dim_int32(self):
+        """[13, 0] x [13, 0] – int32, forward only."""
+        self._check_forward_only([13, 0], [13, 0], 'int32')
+
+    def test_same_shape_zero_trailing_dim_int64(self):
+        """[13, 0] x [13, 0] – int64, forward only."""
+        self._check_forward_only([13, 0], [13, 0], 'int64')
+
+    def test_same_shape_zero_leading_dim_int32(self):
+        """[0, 17] x [0, 17] – int32, forward only."""
+        self._check_forward_only([0, 17], [0, 17], 'int32')
+
+    def test_same_shape_zero_leading_dim_int64(self):
+        """[0, 17] x [0, 17] – int64, forward only."""
+        self._check_forward_only([0, 17], [0, 17], 'int64')
+
+    # ---------------------------------------------------------------
+    # ElemwiseGradBroadcast1CUDA — h=0 (block_size would be 0)
+    # ---------------------------------------------------------------
+
+    def test_broadcast1_zero_trailing_dim_scalar(self):
+        """[300, 0] x [1] → Broadcast1CUDA(h=pre=0, w=n=1), block_size=0."""
+        self._check_forward_backward([300, 0], [1])
+
+    def test_broadcast1_zero_leading_dim_scalar(self):
+        """[0, 2048] x [1] → Broadcast1CUDA(h=pre=0, w=n=1), block_size=0."""
+        self._check_forward_backward([0, 2048], [1])
+
+    def test_broadcast1_zero_leading_dim_last_dim(self):
+        """[0, 2048] x [2048] → Broadcast1CUDA(h=pre=0, w=n=2048), block_size=0."""
+        self._check_forward_backward([0, 2048], [2048])
+
+    def test_broadcast1_scalar_zero_trailing_dim(self):
+        """[1] x [300, 0] – symmetric of test_broadcast1_zero_trailing_dim_scalar."""
+        self._check_forward_backward([1], [300, 0])
+
+    def test_broadcast1_scalar_zero_leading_dim(self):
+        """[1] x [0, 2048] – symmetric of test_broadcast1_zero_leading_dim_scalar."""
+        self._check_forward_backward([1], [0, 2048])
+
+    def test_broadcast1_last_dim_zero_leading_dim(self):
+        """[2048] x [0, 2048] – symmetric of test_broadcast1_zero_leading_dim_last_dim."""
+        self._check_forward_backward([2048], [0, 2048])
+
+    # ---------------------------------------------------------------
+    # ElemwiseGradBroadcast1CUDA — w=0 (grid_size would be 0)
+    # ---------------------------------------------------------------
+
+    def test_broadcast1_zero_mid_dim_w_zero(self):
+        """[2, 0, 3] x [0, 3] → Broadcast1CUDA(h=2, w=0), grid_size=0."""
+        self._check_forward_backward([2, 0, 3], [0, 3])
+
+    # ---------------------------------------------------------------
+    # ElemwiseGradBroadcast2CUDA — post=0 (block_size would be 0)
+    # ---------------------------------------------------------------
+
+    def test_broadcast2_zero_post_dim(self):
+        """[2, 3, 0] x [3, 1] → Broadcast2CUDA(pre=2, n=3, post=0), block_size=0."""
+        self._check_forward_backward([2, 3, 0], [3, 1])
 
 
 if __name__ == '__main__':

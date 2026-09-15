@@ -145,14 +145,14 @@ class BeamSearchFunctor {
    * Return false if all the input tensor is empty, in machine translation task
    * that means no candidates is provided, and the task will stop running.
    */
-  void operator()(const DeviceContext& context,
-                  const phi::DenseTensor* pre_ids,
-                  const phi::DenseTensor* pre_scores,
-                  const phi::DenseTensor* ids,
-                  const phi::DenseTensor* scores,
-                  phi::DenseTensor* selected_ids,
-                  phi::DenseTensor* selected_scores,
-                  phi::DenseTensor* parent_idx,
+  void operator()(const DeviceContext& dev_ctx,
+                  const DenseTensor* pre_ids,
+                  const DenseTensor* pre_scores,
+                  const DenseTensor* ids,
+                  const DenseTensor* scores,
+                  DenseTensor* selected_ids,
+                  DenseTensor* selected_scores,
+                  DenseTensor* parent_idx,
                   size_t level,
                   size_t beam_size,
                   int end_id,

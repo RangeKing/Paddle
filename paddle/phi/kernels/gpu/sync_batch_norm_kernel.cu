@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "paddle/phi/kernels/sync_batch_norm_kernel.h"
+#include "paddle/common/enforce.h"
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/common/memory_utils.h"
 #include "paddle/phi/core/kernel_registry.h"
@@ -21,7 +22,7 @@
 namespace phi {
 
 template <typename T, typename Context>
-void SyncBatchNormKernel(const Context& ctx,
+void SyncBatchNormKernel(const Context& dev_ctx,
                          const DenseTensor& x,
                          const DenseTensor& mean,
                          const DenseTensor& variance,
@@ -48,7 +49,7 @@ void SyncBatchNormKernel(const Context& ctx,
 
   double epsilon = epsilon_f;
   const bool trainable_stats = trainable_statistics;
-  const DataLayout layout = common::StringToDataLayout(data_layout_str);
+  const DataLayout layout = StringToDataLayout(data_layout_str);
   bool test_mode = is_test && (!trainable_statistics);
   const auto& x_dims = x.dims();
   PADDLE_ENFORCE_GE(x_dims.size(),
@@ -61,67 +62,72 @@ void SyncBatchNormKernel(const Context& ctx,
                         "The Input dim size should be less than 6."));
   int N, C, H, W, D;
   funcs::ExtractNCWHD(x_dims, layout, &N, &C, &H, &W, &D);
-  int x_numel = x.numel();
+  int64_t x_numel = x.numel();
+  const int64_t fsize = static_cast<int64_t>(H) * W * D;
 
   const T* x_d = x.template data<T>();
   const auto* s_d = scale.template data<BatchNormParamType<T>>();
   const auto* b_d = bias.template data<BatchNormParamType<T>>();
 
-  T* y_d = ctx.template Alloc<T>(y);
+  T* y_d = dev_ctx.template Alloc<T>(y);
 
   const BatchNormParamType<T>* mean_data = nullptr;
   const BatchNormParamType<T>* var_data = nullptr;
 
-  auto stream = ctx.stream();
+  auto stream = dev_ctx.stream();
   const int block = 512;
-  int max_threads = ctx.GetMaxPhysicalThreadCount();
+  int max_threads = dev_ctx.GetMaxPhysicalThreadCount();
 
-  phi::Allocator::AllocationPtr alloc_ptr{nullptr};
+  Allocator::AllocationPtr alloc_ptr{nullptr};
 
   if (test_mode) {
     mean_data = mean.template data<BatchNormParamType<T>>();
     var_data = variance.template data<BatchNormParamType<T>>();
   } else {
     // x, x^2, 1, here 1 is used to calc device num
-    // device num also can be got from phi::DeviceContextPool
-    const int bytes = (C * 2 + 1) * sizeof(BatchNormParamType<T>);
-    phi::DenseTensor stats_tensor;
-    stats_tensor.Resize({static_cast<int64_t>(bytes)});
-    ctx.template Alloc<BatchNormParamType<T>>(&stats_tensor);
+    // device num also can be got from DeviceContextPool
+    const int64_t bytes_64 =
+        (static_cast<int64_t>(C) * 2 + 1) * sizeof(BatchNormParamType<T>);
+    DenseTensor stats_tensor;
+    stats_tensor.Resize({bytes_64});
+    dev_ctx.template Alloc<BatchNormParamType<T>>(&stats_tensor);
     auto* stats_data = stats_tensor.data<BatchNormParamType<T>>();
     auto* stats = reinterpret_cast<BatchNormParamType<T>*>(stats_data);
     const int threads = 512;
     int grid = std::min(C, (max_threads + threads - 1) / threads);
-    if (layout == phi::DataLayout::kNCHW) {
-      KeLocalStats<T, threads, phi::DataLayout::kNCHW>
-          <<<grid, threads, 0, stream>>>(x_d, N, H * W * D, C, stats);
+    if (layout == DataLayout::NCHW) {
+      KeLocalStats<T, threads, DataLayout::NCHW>
+          <<<grid, threads, 0, stream>>>(x_d, N, fsize, C, stats);
     } else {
-      KeLocalStats<T, threads, phi::DataLayout::kNHWC>
-          <<<grid, threads, 0, stream>>>(x_d, N, H * W * D, C, stats);
+      KeLocalStats<T, threads, DataLayout::NHWC>
+          <<<grid, threads, 0, stream>>>(x_d, N, fsize, C, stats);
     }
 
 #if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL)
     auto comm_ctx =
-        static_cast<distributed::NCCLCommContext*>(ctx.GetCommContext());
+        static_cast<distributed::NCCLCommContext*>(dev_ctx.GetCommContext());
     if (comm_ctx) {
       comm_ctx->AllReduce(&stats_tensor, stats_tensor, ncclSum, stream);
     }
 #endif
 
-    auto* est_mean_data = ctx.template Alloc<BatchNormParamType<T>>(mean_out);
+    auto* est_mean_data =
+        dev_ctx.template Alloc<BatchNormParamType<T>>(mean_out);
     auto* est_var_data =
-        ctx.template Alloc<BatchNormParamType<T>>(variance_out);
+        dev_ctx.template Alloc<BatchNormParamType<T>>(variance_out);
 
-    auto* sv_mean_data = ctx.template Alloc<BatchNormParamType<T>>(saved_mean);
+    auto* sv_mean_data =
+        dev_ctx.template Alloc<BatchNormParamType<T>>(saved_mean);
     auto* sv_inv_var_data =
-        ctx.template Alloc<BatchNormParamType<T>>(saved_variance);
+        dev_ctx.template Alloc<BatchNormParamType<T>>(saved_variance);
 
     int64_t reserve_space_size = 0;
+    DenseTensor tmp_reserve_space;
     if (reserve_space == nullptr) {
-      reserve_space = new DenseTensor();
+      reserve_space = &tmp_reserve_space;
     }
     reserve_space->Resize({reserve_space_size});
-    ctx.template Alloc<T>(reserve_space);
+    dev_ctx.template Alloc<T>(reserve_space);
 
     // Note, Input('Mean')/Input('Variance') share variable with
     // Output('MeanOut')/Output('VarianceOut')
@@ -141,31 +147,16 @@ void SyncBatchNormKernel(const Context& ctx,
     var_data = stats + C;
   }
 
-  int grid2 = (std::min(x_numel, max_threads) + block - 1) / block;
-  if (layout == phi::DataLayout::kNCHW) {
-    KeNormAffine<T, phi::DataLayout::kNCHW>
-        <<<grid2, block, 0, stream>>>(x_d,
-                                      s_d,
-                                      b_d,
-                                      mean_data,
-                                      var_data,
-                                      epsilon,
-                                      C,
-                                      H * W * D,
-                                      x_numel,
-                                      y_d);
+  const int64_t grid2_64 =
+      (std::min(x_numel, static_cast<int64_t>(max_threads)) + block - 1) /
+      block;
+  uint32_t grid2 = static_cast<uint32_t>(grid2_64);
+  if (layout == DataLayout::NCHW) {
+    KeNormAffine<T, DataLayout::NCHW><<<grid2, block, 0, stream>>>(
+        x_d, s_d, b_d, mean_data, var_data, epsilon, C, fsize, x_numel, y_d);
   } else {
-    KeNormAffine<T, phi::DataLayout::kNHWC>
-        <<<grid2, block, 0, stream>>>(x_d,
-                                      s_d,
-                                      b_d,
-                                      mean_data,
-                                      var_data,
-                                      epsilon,
-                                      C,
-                                      H * W * D,
-                                      x_numel,
-                                      y_d);
+    KeNormAffine<T, DataLayout::NHWC><<<grid2, block, 0, stream>>>(
+        x_d, s_d, b_d, mean_data, var_data, epsilon, C, fsize, x_numel, y_d);
   }
 }
 
@@ -177,7 +168,7 @@ PD_REGISTER_KERNEL(sync_batch_norm,
                    ALL_LAYOUT,
                    phi::SyncBatchNormKernel,
                    float,
-                   phi::dtype::float16) {
+                   phi::float16) {
   if (kernel_key.dtype() == phi::DataType::FLOAT16) {
     kernel->InputAt(1).SetDataType(phi::DataType::FLOAT32);
     kernel->InputAt(2).SetDataType(phi::DataType::FLOAT32);
@@ -197,8 +188,8 @@ PD_REGISTER_KERNEL(sync_batch_norm,
                    phi::SyncBatchNormKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {
+                   phi::float16,
+                   phi::bfloat16) {
   if (kernel_key.dtype() == phi::DataType::FLOAT16 ||
       kernel_key.dtype() == phi::DataType::BFLOAT16) {
     kernel->InputAt(1).SetDataType(phi::DataType::FLOAT32);
@@ -218,7 +209,7 @@ PD_REGISTER_KERNEL(sync_batch_norm,
                    phi::SyncBatchNormKernel,
                    float,
                    double,
-                   phi::dtype::float16) {
+                   phi::float16) {
   if (kernel_key.dtype() == phi::DataType::FLOAT16) {
     kernel->InputAt(1).SetDataType(phi::DataType::FLOAT32);
     kernel->InputAt(2).SetDataType(phi::DataType::FLOAT32);

@@ -53,18 +53,16 @@ void Array2PointVec(const T* box,
 }
 
 template <class T>
-void Array2Poly(const T* box,
-                const size_t box_size,
-                phi::funcs::gpc_polygon* poly) {
+void Array2Poly(const T* box, const size_t box_size, funcs::gpc_polygon* poly) {
   size_t pts_num = box_size / 2;
   (*poly).num_contours = 1;
   (*poly).hole = reinterpret_cast<int*>(malloc(sizeof(int)));  // NOLINT
   (*poly).hole[0] = 0;
-  (*poly).contour = (phi::funcs::gpc_vertex_list*)malloc(  // NOLINT
-      sizeof(phi::funcs::gpc_vertex_list));
+  (*poly).contour = (funcs::gpc_vertex_list*)malloc(  // NOLINT
+      sizeof(funcs::gpc_vertex_list));
   (*poly).contour->num_vertices = static_cast<int>(pts_num);
-  (*poly).contour->vertex = (phi::funcs::gpc_vertex*)malloc(  // NOLINT
-      sizeof(phi::funcs::gpc_vertex) * pts_num);
+  (*poly).contour->vertex = (funcs::gpc_vertex*)malloc(  // NOLINT
+      sizeof(funcs::gpc_vertex) * pts_num);
   for (size_t i = 0; i < pts_num; ++i) {
     (*poly).contour->vertex[i].x = box[2 * i];
     (*poly).contour->vertex[i].y = box[2 * i + 1];
@@ -73,16 +71,16 @@ void Array2Poly(const T* box,
 
 template <class T>
 void PointVec2Poly(const std::vector<Point_<T>>& vec,
-                   phi::funcs::gpc_polygon* poly) {
+                   funcs::gpc_polygon* poly) {
   size_t pts_num = vec.size();
   (*poly).num_contours = 1;
   (*poly).hole = reinterpret_cast<int*>(malloc(sizeof(int)));  // NOLINT
   (*poly).hole[0] = 0;
-  (*poly).contour = (phi::funcs::gpc_vertex_list*)malloc(  // NOLINT
-      sizeof(phi::funcs::gpc_vertex_list));
+  (*poly).contour = (funcs::gpc_vertex_list*)malloc(  // NOLINT
+      sizeof(funcs::gpc_vertex_list));
   (*poly).contour->num_vertices = pts_num;
-  (*poly).contour->vertex = (phi::funcs::gpc_vertex*)malloc(  // NOLINT
-      sizeof(phi::funcs::gpc_vertex) * pts_num);
+  (*poly).contour->vertex = (funcs::gpc_vertex*)malloc(  // NOLINT
+      sizeof(funcs::gpc_vertex) * pts_num);
   for (size_t i = 0; i < pts_num; ++i) {
     (*poly).contour->vertex[i].x = vec[i].x;
     (*poly).contour->vertex[i].y = vec[i].y;
@@ -90,7 +88,7 @@ void PointVec2Poly(const std::vector<Point_<T>>& vec,
 }
 
 template <class T>
-void Poly2PointVec(const phi::funcs::gpc_vertex_list& contour,
+void Poly2PointVec(const funcs::gpc_vertex_list& contour,
                    std::vector<Point_<T>>* vec) {
   int pts_num = contour.num_vertices;
   (*vec).resize(pts_num);
@@ -126,13 +124,13 @@ T PolyOverlapArea(const T* box1,
                   const T* box2,
                   const size_t box_size,
                   const bool normalized UNUSED) {
-  phi::funcs::gpc_polygon poly1;
-  phi::funcs::gpc_polygon poly2;
+  funcs::gpc_polygon poly1;
+  funcs::gpc_polygon poly2;
   Array2Poly<T>(box1, box_size, &poly1);
   Array2Poly<T>(box2, box_size, &poly2);
-  phi::funcs::gpc_polygon respoly;
-  phi::funcs::gpc_op op = phi::funcs::GPC_INT;
-  phi::funcs::gpc_polygon_clip(op, &poly2, &poly1, &respoly);
+  funcs::gpc_polygon respoly;
+  funcs::gpc_op op = funcs::GPC_INT;
+  funcs::gpc_polygon_clip(op, &poly2, &poly1, &respoly);
 
   T inter_area = T(0.);
   int contour_num = respoly.num_contours;
@@ -144,9 +142,9 @@ T PolyOverlapArea(const T* box1,
     inter_area += GetContourArea<T>(resvec);
   }
 
-  phi::funcs::gpc_free_polygon(&poly1);
-  phi::funcs::gpc_free_polygon(&poly2);
-  phi::funcs::gpc_free_polygon(&respoly);
+  funcs::gpc_free_polygon(&poly1);
+  funcs::gpc_free_polygon(&poly2);
+  funcs::gpc_free_polygon(&respoly);
   return inter_area;
 }
 
@@ -236,14 +234,14 @@ T PolyIoU(const T* box1,
 
 inline std::vector<size_t> GetNmsLodFromRoisNum(const DenseTensor* rois_num) {
   std::vector<size_t> rois_lod;
-  if (rois_num->dtype() == phi::DataType::INT64) {
+  if (rois_num->dtype() == DataType::INT64) {
     auto* rois_num_data = rois_num->data<int64_t>();
     rois_lod.push_back(static_cast<size_t>(0));
     for (int64_t i = 0; i < rois_num->numel(); ++i) {
       rois_lod.push_back(rois_lod.back() +
                          static_cast<size_t>(rois_num_data[i]));
     }
-  } else if (rois_num->dtype() == phi::DataType::INT32) {
+  } else if (rois_num->dtype() == DataType::INT32) {
     auto* rois_num_data = rois_num->data<int>();
     rois_lod.push_back(static_cast<size_t>(0));
     for (int i = 0; i < rois_num->numel(); ++i) {
@@ -255,11 +253,11 @@ inline std::vector<size_t> GetNmsLodFromRoisNum(const DenseTensor* rois_num) {
 }
 
 template <typename T, typename Context>
-void SliceOneClass(const Context& ctx,
+void SliceOneClass(const Context& dev_ctx,
                    const DenseTensor& items,
                    const int class_id,
                    DenseTensor* one_class_item) {
-  T* item_data = ctx.template Alloc<T>(one_class_item);
+  T* item_data = dev_ctx.template Alloc<T>(one_class_item);
   const T* items_data = items.data<T>();
   const int64_t num_item = items.dims()[0];
   const int class_num = static_cast<int>(items.dims()[1]);
@@ -302,43 +300,42 @@ void NMSFast(const DenseTensor& bbox,
   T adaptive_threshold = nms_threshold;
   const T* bbox_data = bbox.data<T>();
 
-  while (!sorted_indices.empty()) {
-    const int idx = sorted_indices.front().second;
+  size_t num_indices = sorted_indices.size();
+  selected_indices->reserve(num_indices);
+  for (size_t i = 0; i < num_indices; ++i) {
+    const int idx = sorted_indices[i].second;
     bool keep = true;
-    for (const auto kept_idx : *selected_indices) {
-      if (keep) {
-        T overlap = T(0.);
-        // 4: [xmin ymin xmax ymax]
-        if (box_size == 4) {
-          overlap = JaccardOverlap<T>(bbox_data + idx * box_size,
-                                      bbox_data + kept_idx * box_size,
-                                      normalized);
-        }
-        // 8: [x1 y1 x2 y2 x3 y3 x4 y4] or 16, 24, 32
-        if (box_size == 8 || box_size == 16 || box_size == 24 ||
-            box_size == 32) {
-          overlap = PolyIoU<T>(bbox_data + idx * box_size,
-                               bbox_data + kept_idx * box_size,
-                               box_size,
-                               normalized);
-        }
-        keep = overlap <= adaptive_threshold;
-      } else {
+    const T* current_bbox = bbox_data + idx * box_size;
+    size_t selected_size = selected_indices->size();
+
+    for (size_t j = 0; j < selected_size; ++j) {
+      const auto kept_idx = (*selected_indices)[j];
+      T overlap = T(0.);
+      const T* kept_bbox = bbox_data + kept_idx * box_size;
+      // 4: [xmin ymin xmax ymax]
+      if (box_size == 4) {
+        overlap = JaccardOverlap<T>(current_bbox, kept_bbox, normalized);
+      } else if (box_size == 8 || box_size == 16 || box_size == 24 ||
+                 box_size ==
+                     32) {  // 8: [x1 y1 x2 y2 x3 y3 x4 y4] or 16, 24, 32
+        overlap = PolyIoU<T>(current_bbox, kept_bbox, box_size, normalized);
+      }
+      keep = overlap <= adaptive_threshold;
+      if (!keep) {
         break;
       }
     }
     if (keep) {
       selected_indices->push_back(idx);
-    }
-    sorted_indices.erase(sorted_indices.begin());
-    if (keep && eta < 1 && adaptive_threshold > 0.5) {
-      adaptive_threshold *= eta;
+      if (eta < 1 && adaptive_threshold > 0.5) {
+        adaptive_threshold *= eta;
+      }
     }
   }
 }
 
 template <typename T, typename Context>
-void MultiClassNMS(const Context& ctx,
+void MultiClassNMS(const Context& dev_ctx,
                    const DenseTensor& scores,
                    const DenseTensor& bboxes,
                    const int scores_size,
@@ -368,8 +365,8 @@ void MultiClassNMS(const Context& ctx,
     } else {
       score_slice.Resize({scores.dims()[0], 1});
       bbox_slice.Resize({scores.dims()[0], 4});
-      SliceOneClass<T, Context>(ctx, scores, c, &score_slice);
-      SliceOneClass<T, Context>(ctx, bboxes, c, &bbox_slice);
+      SliceOneClass<T, Context>(dev_ctx, scores, c, &score_slice);
+      SliceOneClass<T, Context>(dev_ctx, bboxes, c, &bbox_slice);
     }
     NMSFast<T>(bbox_slice,
                score_slice,
@@ -396,7 +393,7 @@ void MultiClassNMS(const Context& ctx,
         sdata = scores_data + label * scores.dims()[1];
       } else {
         score_slice.Resize({scores.dims()[0], 1});
-        SliceOneClass<T, Context>(ctx, scores, label, &score_slice);
+        SliceOneClass<T, Context>(dev_ctx, scores, label, &score_slice);
         sdata = score_slice.data<T>();
       }
       const std::vector<int>& label_indices = it.second;
@@ -430,7 +427,7 @@ void MultiClassNMS(const Context& ctx,
 }
 
 template <typename T, typename Context>
-void MultiClassOutput(const Context& ctx,
+void MultiClassOutput(const Context& dev_ctx,
                       const DenseTensor& scores,
                       const DenseTensor& bboxes,
                       const std::map<int, std::vector<int>>& selected_indices,
@@ -456,7 +453,7 @@ void MultiClassOutput(const Context& ctx,
     int label = it.first;
     const std::vector<int>& indices = it.second;
     if (scores_size == 2) {
-      SliceOneClass<T, Context>(ctx, bboxes, label, &bbox);
+      SliceOneClass<T, Context>(dev_ctx, bboxes, label, &bbox);
     } else {
       sdata = scores_data + label * predict_dim;
     }
@@ -485,10 +482,10 @@ void MultiClassOutput(const Context& ctx,
 }
 
 template <typename T, typename Context>
-void MultiClassNMSKernel(const Context& ctx,
+void MultiClassNMSKernel(const Context& dev_ctx,
                          const DenseTensor& bboxes,
                          const DenseTensor& scores,
-                         const paddle::optional<DenseTensor>& rois_num,
+                         const optional<DenseTensor>& rois_num,
                          float score_threshold,
                          int nms_top_k,
                          int keep_top_k,
@@ -501,7 +498,7 @@ void MultiClassNMSKernel(const Context& ctx,
                          DenseTensor* nms_rois_num) {
   bool return_index = index != nullptr;
   bool has_roisnum = rois_num.get_ptr() != nullptr;
-  auto score_dims = common::vectorize<int>(scores.dims());
+  auto score_dims = vectorize<int>(scores.dims());
   auto score_size = score_dims.size();
 
   std::vector<std::map<int, std::vector<int>>> all_indices;
@@ -541,7 +538,7 @@ void MultiClassNMSKernel(const Context& ctx,
       scores_slice = scores.Slice(boxes_lod[i], boxes_lod[i + 1]);  // NOLINT
       boxes_slice = bboxes.Slice(boxes_lod[i], boxes_lod[i + 1]);   // NOLINT
     }
-    MultiClassNMS<T, Context>(ctx,
+    MultiClassNMS<T, Context>(dev_ctx,
                               scores_slice,
                               boxes_slice,
                               score_size,
@@ -562,18 +559,18 @@ void MultiClassNMSKernel(const Context& ctx,
   if (num_kept == 0) {
     if (return_index) {
       out->Resize({0, out_dim});
-      ctx.template Alloc<T>(out);
+      dev_ctx.template Alloc<T>(out);
       index->Resize({0, 1});
-      ctx.template Alloc<int>(index);
+      dev_ctx.template Alloc<int>(index);
     } else {
       out->Resize({1, 1});
-      T* od = ctx.template Alloc<T>(out);
+      T* od = dev_ctx.template Alloc<T>(out);
       od[0] = -1;
       batch_starts = {0, 1};
     }
   } else {
     out->Resize({num_kept, out_dim});
-    ctx.template Alloc<T>(out);
+    dev_ctx.template Alloc<T>(out);
     int offset = 0;
     int* oindices = nullptr;
     for (int i = 0; i < n; ++i) {
@@ -606,10 +603,10 @@ void MultiClassNMSKernel(const Context& ctx,
         DenseTensor nout = out->Slice(s, e);
         if (return_index) {
           index->Resize({num_kept, 1});
-          int* output_idx = ctx.template Alloc<int>(index);
+          int* output_idx = dev_ctx.template Alloc<int>(index);
           oindices = output_idx + s;
         }
-        MultiClassOutput<T, Context>(ctx,
+        MultiClassOutput<T, Context>(dev_ctx,
                                      scores_slice,
                                      boxes_slice,
                                      all_indices[i],
@@ -622,7 +619,7 @@ void MultiClassNMSKernel(const Context& ctx,
   }
   if (nms_rois_num != nullptr) {
     nms_rois_num->Resize({n});
-    ctx.template Alloc<int>(nms_rois_num);
+    dev_ctx.template Alloc<int>(nms_rois_num);
     int* num_data = nms_rois_num->data<int>();
     for (int i = 1; i <= n; i++) {
       num_data[i - 1] = batch_starts[i] - batch_starts[i - 1];  // NOLINT

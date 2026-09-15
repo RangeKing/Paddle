@@ -22,15 +22,13 @@ from paddle.base.layer_helper import LayerHelper
 from paddle.framework import in_dynamic_or_pir_mode
 
 if TYPE_CHECKING:
-    from typing import Literal, TypeAlias, Union
+    from typing import Literal, TypeAlias
 
     from paddle import Tensor
 
     _ReduceModeStringLiteral: TypeAlias = Literal['mean', 'sum', 'none']
     _ReduceModeNumberLiteral: TypeAlias = Literal[0, 1, 2]
-    _ReduceMode: TypeAlias = Union[
-        _ReduceModeStringLiteral, _ReduceModeNumberLiteral
-    ]
+    _ReduceMode: TypeAlias = _ReduceModeStringLiteral | _ReduceModeNumberLiteral
 
 
 def identity_loss(x: Tensor, reduction: _ReduceMode = "none") -> Tensor:
@@ -62,7 +60,7 @@ def identity_loss(x: Tensor, reduction: _ReduceMode = "none") -> Tensor:
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> paddle.enable_static()
@@ -72,7 +70,7 @@ def identity_loss(x: Tensor, reduction: _ReduceMode = "none") -> Tensor:
     if isinstance(reduction, str):
         reduction = {"sum": 0, "mean": 1, "none": 2}.get(reduction.lower())
         if reduction is None:
-            raise Exception("Unsupported reduction type.")
+            raise TypeError("Unsupported reduction type.")
 
     if in_dynamic_or_pir_mode():
         return _C_ops.identity_loss(x, reduction)

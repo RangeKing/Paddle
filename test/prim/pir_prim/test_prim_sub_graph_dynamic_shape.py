@@ -27,12 +27,11 @@ def addmm_net(input, x, y):
 
 
 def apply_to_static(net, use_cinn, input_spec=None):
-    build_strategy = paddle.static.BuildStrategy()
-    build_strategy.build_cinn_pass = use_cinn
+    backend = "CINN" if use_cinn else None
     return paddle.jit.to_static(
         net,
         input_spec=input_spec,
-        build_strategy=build_strategy,
+        backend=backend,
         full_graph=True,
     )
 
@@ -121,11 +120,11 @@ def batch_norm_net4(x, y, z):
 
 
 def swiglu_net1(x, y):
-    return paddle.incubate.nn.functional.swiglu(x, y)
+    return paddle.nn.functional.swiglu(x, y)
 
 
 def swiglu_net2(x):
-    return paddle.incubate.nn.functional.swiglu(x)
+    return paddle.nn.functional.swiglu(x)
 
 
 def squared_l2_norm_net(x):
@@ -957,6 +956,9 @@ class TestPrimLerp1(TestPrimThree):
         self.necessary_ops = "pd_op.lerp"
         self.enable_cinn = False
         self.tol = 1e-5
+        if not (core.is_compiled_with_rocm() or core.is_compiled_with_cuda()):
+            # NOTE: Currently, the prim operator can only be aligned with GPU implementations
+            self.tol = 2e-5
 
 
 class TestPrimLerp2(TestPrimThree):
@@ -978,6 +980,9 @@ class TestPrimLerp2(TestPrimThree):
         self.necessary_ops = "pd_op.lerp"
         self.enable_cinn = False
         self.tol = 1e-6
+        if not (core.is_compiled_with_rocm() or core.is_compiled_with_cuda()):
+            # NOTE: Currently, the prim operator can only be aligned with GPU implementations
+            self.tol = 2e-6
 
 
 class TestPrimLerp3(TestPrimThree):

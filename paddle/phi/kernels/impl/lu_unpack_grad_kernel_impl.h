@@ -31,6 +31,7 @@ void LUUnpackGradKernel(const Context& dev_ctx,
                         bool unpack_pivots UNUSED,
                         DenseTensor* x_grad) {
   dev_ctx.template Alloc<T>(x_grad);
+  if (x_grad->numel() == 0) return;
 
   DenseTensor dl_tril, du_triu;
   const auto ldims = l_grad.dims();
@@ -39,8 +40,8 @@ void LUUnpackGradKernel(const Context& dev_ctx,
   auto W = ldims[ldims.size() - 1];
   dev_ctx.template Alloc<T>(&dl_tril);
   auto L_dataptr = dl_tril.data<T>();
-  phi::funcs::ForRange<Context> l_for_range(dev_ctx, l_grad.numel());
-  phi::funcs::TrilTriuCompute<T> tril_computer(
+  funcs::ForRange<Context> l_for_range(dev_ctx, l_grad.numel());
+  funcs::TrilTriuCompute<T> tril_computer(
       l_grad.data<T>(), -1, true, H, W, L_dataptr);
   l_for_range(tril_computer);
 
@@ -50,8 +51,8 @@ void LUUnpackGradKernel(const Context& dev_ctx,
   W = udims[udims.size() - 1];
   dev_ctx.template Alloc<T>(&du_triu);
   auto U_dataptr = du_triu.data<T>();
-  phi::funcs::ForRange<Context> u_for_range(dev_ctx, u_grad.numel());
-  phi::funcs::TrilTriuCompute<T> triu_computer(
+  funcs::ForRange<Context> u_for_range(dev_ctx, u_grad.numel());
+  funcs::TrilTriuCompute<T> triu_computer(
       u_grad.data<T>(), 0, false, H, W, U_dataptr);
   u_for_range(triu_computer);
 
@@ -64,9 +65,9 @@ void LUUnpackGradKernel(const Context& dev_ctx,
   std::vector<int64_t> axes = {xrank - 2, xrank - 1};
   std::vector<int64_t> slice_starts(2, 0);
   std::vector<int64_t> slice_ends(2, 0);
-  auto valuedims = common::vectorize(xdims);
+  auto valuedims = vectorize(xdims);
 
-  phi::funcs::SetConstant<Context, T> setter;
+  funcs::SetConstant<Context, T> setter;
   setter(dev_ctx, x_grad, static_cast<T>(0));
   if (m <= n) {
     slice_starts[0] = 0;

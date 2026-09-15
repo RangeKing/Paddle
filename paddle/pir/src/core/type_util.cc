@@ -23,8 +23,7 @@ Type GetElementTypeOrSelf(Type type) {
   return type;
 }
 
-bool VerifyCompatibleShape(const pir::DDim &lhs_shape,
-                           const pir::DDim &rhs_shape) {
+bool VerifyCompatibleShape(const DDim &lhs_shape, const DDim &rhs_shape) {
   if (lhs_shape.size() != rhs_shape.size()) return false;
 
   for (auto dim1 : common::vectorize(lhs_shape)) {
@@ -54,10 +53,10 @@ bool VerifyCompatibleShape(Type lhs_type, Type rhs_type) {
 bool VerifyCompatibleDims(const std::vector<int64_t> &dims) {
   if (dims.empty()) return true;
   auto static_dim = std::accumulate(
-      dims.begin(), dims.end(), dims.front(), [](auto &fold, auto &dim) {
+      dims.begin(), dims.end(), dims.front(), [](auto fold, auto dim) {
         return ShapedTypeInterface::IsDynamic(dim) ? fold : dim;
       });
-  return std::all_of(dims.begin(), dims.begin(), [&](auto dim) {
+  return std::all_of(dims.begin(), dims.end(), [&](auto dim) {
     return ShapedTypeInterface::IsDynamic(dim) || dim == static_dim;
   });
 }

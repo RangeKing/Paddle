@@ -18,23 +18,45 @@ limitations under the License. */
 #include "paddle/phi/kernels/transpose_kernel.h"
 
 namespace phi {
-bool VerifyThreadConfigurationParameters(const dim3& block, const dim3& grid) {
+
+// int64 version of CUDA's dim3.
+// This is used only on host side for safe dim processing. Dims that cannot be
+// contained in uint32_t will be rejected by host checker.
+struct Dim3 {
+  int64_t x, y, z;
+  explicit Dim3(int64_t x, int64_t y, int64_t z) : x(x), y(y), z(z) {}
+  operator dim3() {
+    return {static_cast<uint32_t>(x),
+            static_cast<uint32_t>(y),
+            static_cast<uint32_t>(z)};
+  }
+};
+
+bool VerifyThreadConfigurationParameters(const Dim3& block, const Dim3& grid) {
   return block.x <= 1024 && block.y <= 1024 && block.z <= 64 &&
          block.x * block.y * block.z <= 1024 &&
-         block.x * block.y * block.z >= 96 && grid.y < 65536 && grid.z < 65536;
+         block.x * block.y * block.z >= 96 &&
+         grid.x <= std::numeric_limits<int32_t>::max() && grid.y <= 65535 &&
+         grid.z <= 65535;
 }
 
 template <typename T, size_t N>
 __global__ void ContiguousCaseZeroFunc(
     const T* input_data,
     T* out_data,
-    Array<int64_t, phi::DDim::kMaxRank + 1> input_stride) {
+    Array<int64_t, DDim::kMaxRank + 1> input_stride) {
   int64_t input_offset = 0;
-  int64_t output_offset = (blockIdx.z * gridDim.y * gridDim.x +
-                           blockIdx.y * gridDim.x + blockIdx.x) *
-                              blockDim.z * blockDim.y * blockDim.x +
-                          threadIdx.z * blockDim.y * blockDim.x +
-                          threadIdx.y * blockDim.x + threadIdx.x;
+  int64_t grid_idx = static_cast<int64_t>(blockIdx.z) * gridDim.y * gridDim.x +
+                     static_cast<int64_t>(blockIdx.y) * gridDim.x + blockIdx.x;
+  int64_t block_size =
+      static_cast<int64_t>(blockDim.z) *
+      (static_cast<int64_t>(blockDim.y) * static_cast<int64_t>(blockDim.x));
+  int64_t block_idx =
+      static_cast<int64_t>(threadIdx.z) * (static_cast<int64_t>(blockDim.y) *
+                                           static_cast<int64_t>(blockDim.x)) +
+      static_cast<int64_t>(threadIdx.y) * static_cast<int64_t>(blockDim.x) +
+      static_cast<int64_t>(threadIdx.x);
+  int64_t output_offset = grid_idx * block_size + block_idx;
   int64_t coordinate[6] = {threadIdx.x,
                            threadIdx.y,
                            threadIdx.z,
@@ -54,17 +76,18 @@ template <typename T, size_t N>
 __global__ void ContiguousCaseOneFunc(
     const T* input_data,
     T* out_data,
-    Array<int64_t, phi::DDim::kMaxRank + 1> input_stride,
+    Array<int64_t, DDim::kMaxRank + 1> input_stride,
     Array<int64_t, 6> dims,
     const int64_t x_max) {
-  int64_t x = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t x = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (x < x_max) {
     int64_t input_offset = 0;
-    int64_t output_offset = (blockIdx.z * gridDim.y + blockIdx.y) * x_max + x;
+    int64_t output_offset =
+        (static_cast<int64_t>(blockIdx.z) * gridDim.y + blockIdx.y) * x_max + x;
 
     int64_t reg_dims[6] = {
         dims[0], dims[1], dims[2], dims[3], dims[4], dims[5]};
-    int64_t coordinate[phi::DDim::kMaxRank + 1];
+    int64_t coordinate[DDim::kMaxRank + 1];
 
     switch (N) {
       case 1:
@@ -144,13 +167,11 @@ __global__ void ContiguousCaseOneFunc(
 template <typename T, size_t N>
 __global__ void ContiguousDefaultFunc(
     const T* input_data,
-    phi::Array<int64_t, phi::DDim::kMaxRank + 1> input_stride,
-    phi::Array<int64_t, phi::DDim::kMaxRank + 1> dims,
+    Array<int64_t, DDim::kMaxRank + 1> input_stride,
+    Array<int64_t, DDim::kMaxRank + 1> dims,
     const int64_t numel,
     T* out_data) {
-  int64_t gid = blockIdx.x * blockDim.x + threadIdx.x;
-#pragma unroll
-  for (int64_t i = gid; i < numel; i += blockDim.x * gridDim.x) {
+  CUDA_KERNEL_LOOP_TYPE(i, numel, int64_t) {
     int64_t input_offset = 0;
     int64_t index_tmp = i;
 #pragma unroll
@@ -163,15 +184,19 @@ __global__ void ContiguousDefaultFunc(
   }
 }
 
+// This used to reject tensors with a non-zero offset, which is orthogonal to
+// whether the strides are a pure permutation; see the comment on
+// is_only_transposed_tensor in stride/matmul_stride_kernel.cu. Rejecting them
+// fell back from TransposeKernel to ContiguousCaseOneFunc, one element per
+// thread with no coalescing on the read side.
+//
+// Dropping the test requires the set_meta() fix in ContiguousKernel below,
+// which this test was the only thing keeping unreachable.
 bool is_only_transposed(const DDim& shape,
                         const DDim& stride,
-                        uint64_t offset,
                         DDim& src_shape,           // NOLINT
                         DDim& src_stride,          // NOLINT
                         std::vector<int>& axis) {  // NOLINT
-  if (offset != 0) {
-    return false;
-  }
   std::set<int> visited_idx;
   axis.resize(stride.size());
   for (int i = 0; i < stride.size(); i++) {
@@ -209,18 +234,18 @@ bool is_only_transposed(const DDim& shape,
 }
 
 template <typename T, typename Context>
-bool LaunchContiguousCazeZeroKernel(
+bool LaunchContiguousCaseZeroKernel(
     const Context& dev_ctx,
     const T* input_data,
-    const phi::Array<int64_t, phi::DDim::kMaxRank + 1>& input_stride,
-    const phi::Array<int64_t, phi::DDim::kMaxRank + 1>& input_dims,
+    const Array<int64_t, DDim::kMaxRank + 1>& input_stride,
+    const Array<int64_t, DDim::kMaxRank + 1>& input_dims,
     int rank,
     T* output_data) {
   if (rank > 6) {
     return false;
   }
 
-  dim3 grid(1, 1, 1), block(1, 1, 1);
+  Dim3 grid(1, 1, 1), block(1, 1, 1);
 
   if (rank >= 1) {
     block.x = input_dims[rank - 1];
@@ -281,16 +306,16 @@ bool LaunchContiguousCazeZeroKernel(
 }
 
 template <typename T, typename Context>
-bool LaunchContiguousCazeOneKernel(
+bool LaunchContiguousCaseOneKernel(
     const Context& dev_ctx,
     const T* input_data,
-    const phi::Array<int64_t, phi::DDim::kMaxRank + 1>& input_stride,
-    const phi::Array<int64_t, phi::DDim::kMaxRank + 1>& input_dims,
+    const Array<int64_t, DDim::kMaxRank + 1>& input_stride,
+    const Array<int64_t, DDim::kMaxRank + 1>& input_dims,
     int rank,
-    int numel,
+    int64_t numel,
     T* output_data) {
-  dim3 grid(1, 1, 1), block(1, 1, 1);
-  phi::Array<int64_t, 6> cur_input_dims;
+  Dim3 grid(1, 1, 1), block(1, 1, 1);
+  Array<int64_t, 6> cur_input_dims;
   block.x = 512;
 
   if (rank >= 1) {
@@ -424,10 +449,10 @@ template <typename T, typename Context>
 void LaunchContiguousDefaultKernel(
     const Context& dev_ctx,
     const T* input_data,
-    const phi::Array<int64_t, phi::DDim::kMaxRank + 1>& input_stride,
-    const phi::Array<int64_t, phi::DDim::kMaxRank + 1>& input_dims,
+    const Array<int64_t, DDim::kMaxRank + 1>& input_stride,
+    const Array<int64_t, DDim::kMaxRank + 1>& input_dims,
     int rank,
-    int numel,
+    int64_t numel,
     T* output_data) {
   int64_t block = 512;
   int64_t grid = (numel + block - 1) / block;
@@ -479,19 +504,25 @@ template <typename T, typename Context>
 void ContiguousKernel(const Context& dev_ctx,
                       const DenseTensor& input,
                       DenseTensor* out) {
-  phi::DenseTensorMeta meta = input.meta();
+  DenseTensorMeta meta = input.meta();
   std::vector<int> axis;
   DDim src_stride = meta.strides;
   DDim src_shape = meta.dims;
   if (is_only_transposed(
-          meta.dims, meta.strides, meta.offset, src_shape, src_stride, axis)) {
-    meta.strides = meta.calc_strides(meta.dims);
-    out->set_meta(meta);
+          meta.dims, meta.strides, src_shape, src_stride, axis)) {
+    // The input offset belongs to tmp_tensor, not to out: out is freshly
+    // allocated and contiguous, so its offset must be zero. Assigning meta to
+    // out directly was only safe while offset was guaranteed to be zero.
+    const uint64_t in_offset = meta.offset;
     DenseTensor tmp_tensor = input;
-    phi::DenseTensorMeta tmp_meta = meta;
+    DenseTensorMeta tmp_meta = meta;
     tmp_meta.strides = src_stride;
     tmp_meta.dims = src_shape;
+    tmp_meta.offset = in_offset;
     tmp_tensor.set_meta(tmp_meta);
+    meta.strides = meta.calc_strides(meta.dims);
+    meta.offset = 0;
+    out->set_meta(meta);
     TransposeKernel<T, Context>(dev_ctx, tmp_tensor, axis, out);
     return;
   }
@@ -509,8 +540,8 @@ void ContiguousKernel(const Context& dev_ctx,
     return;
   }
 
-  Array<int64_t, phi::DDim::kMaxRank + 1> input_stride;
-  Array<int64_t, phi::DDim::kMaxRank + 1> input_dims;
+  Array<int64_t, DDim::kMaxRank + 1> input_stride;
+  Array<int64_t, DDim::kMaxRank + 1> input_dims;
   for (int i = 0; i < input.dims().size(); i++) {
     input_dims[i] = input.dims()[i];
     input_stride[i] = input.strides()[i];
@@ -522,9 +553,9 @@ void ContiguousKernel(const Context& dev_ctx,
     input_stride[0] = 1;
   }
 
-  if (LaunchContiguousCazeZeroKernel<T, Context>(
+  if (LaunchContiguousCaseZeroKernel<T, Context>(
           dev_ctx, input_data, input_stride, input_dims, rank, output_data)) {
-  } else if (LaunchContiguousCazeOneKernel<T, Context>(dev_ctx,
+  } else if (LaunchContiguousCaseOneKernel<T, Context>(dev_ctx,
                                                        input_data,
                                                        input_stride,
                                                        input_dims,
@@ -550,15 +581,18 @@ PD_REGISTER_KERNEL(contiguous,
                    phi::ContiguousKernel,
                    bool,
                    uint8_t,
+                   uint16_t,
+                   uint32_t,
+                   uint64_t,
                    int8_t,
                    int16_t,
                    int32_t,
                    int64_t,
                    float,
                    double,
-                   ::phi::dtype::float16,
-                   ::phi::dtype::bfloat16,
-                   ::phi::dtype::complex<float>,
-                   ::phi::dtype::complex<double>,
-                   ::phi::dtype::float8_e4m3fn,
-                   ::phi::dtype::float8_e5m2) {}
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::complex64,
+                   phi::complex128,
+                   phi::float8_e4m3fn,
+                   phi::float8_e5m2) {}

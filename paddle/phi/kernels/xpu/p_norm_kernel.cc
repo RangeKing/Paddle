@@ -15,11 +15,15 @@
 #include "paddle/phi/kernels/p_norm_kernel.h"
 #include "paddle/phi/backends/xpu/enforce_xpu.h"
 #include "paddle/phi/core/kernel_registry.h"
-
+#include "paddle/phi/kernels/full_kernel.h"
 namespace phi {
 
-inline void GetDims(
-    const phi::DDim& dim, int axis, int* m, int* t, int* n, bool asvector) {
+inline void GetDims(const DDim& dim,
+                    int axis,
+                    int64_t* m,
+                    int64_t* t,
+                    int64_t* n,
+                    bool asvector) {
   *m = 1;
   *n = 1;
   *t = dim[axis];
@@ -38,7 +42,7 @@ inline void GetDims(
 template <typename T, typename Context>
 void PNormKernel(const Context& dev_ctx,
                  const DenseTensor& x,
-                 float porder,
+                 double porder,
                  int axis,
                  float epsilon,
                  bool keepdim,
@@ -46,14 +50,18 @@ void PNormKernel(const Context& dev_ctx,
                  DenseTensor* out) {
   using XPUType = typename XPUTypeTrait<T>::Type;
   dev_ctx.template Alloc<T>(out);
+  if (x.numel() == 0) {
+    Full<T, Context>(dev_ctx, out->dims(), 0, out);
+    return;
+  }
   auto xdim = x.dims();
   if (axis < 0) axis = xdim.size() + axis;
-  std::vector<int> r_dim;
-  std::vector<int> x_dim;
-  std::vector<int> y_dim;
-  int m = 1;
-  int n = 1;
-  int t = 1;
+  std::vector<int64_t> r_dim;
+  std::vector<int64_t> x_dim;
+  std::vector<int64_t> y_dim;
+  int64_t m = 1;
+  int64_t n = 1;
+  int64_t t = 1;
   GetDims(xdim, axis, &m, &t, &n, asvector);
 
   for (int i = 0; i < xdim.size(); i++) {
@@ -102,7 +110,7 @@ void PNormKernel(const Context& dev_ctx,
     PADDLE_ENFORCE_XDNN_NOT_NULL(zeros);
     r = xpu::constant(dev_ctx.x_context(), zeros, 1, 0.0f);
     PADDLE_ENFORCE_XDNN_SUCCESS(r, "constant");
-    std::vector<int> zeros_dim(1, 1);
+    std::vector<int64_t> zeros_dim(1, 1);
 
     bool* tmp2_x = RAII_GUARD.alloc_l3_or_gm<bool>(m * t * n);
     PADDLE_ENFORCE_XDNN_NOT_NULL(tmp2_x);
@@ -125,13 +133,15 @@ void PNormKernel(const Context& dev_ctx,
 
   } else {
     DenseTensor porder_tensor;
-    phi::DDim pdim = common::make_ddim({1});
+    DDim pdim = make_ddim({1});
     porder_tensor.Resize(pdim);
     dev_ctx.template Alloc<T>(&porder_tensor);
-    r = xpu::constant(
-        dev_ctx.x_context(), porder_tensor.data<float>(), 1, porder);
+    r = xpu::constant(dev_ctx.x_context(),
+                      porder_tensor.data<float>(),
+                      1,
+                      static_cast<float>(porder));
     PADDLE_ENFORCE_XDNN_SUCCESS(r, "constant");
-    std::vector<int> p_dim(1, 1);
+    std::vector<int64_t> p_dim(1, 1);
 
     XPUType* tmp2_x = RAII_GUARD.alloc_l3_or_gm<XPUType>(m * t * n);
     PADDLE_ENFORCE_XDNN_NOT_NULL(tmp2_x);
@@ -154,8 +164,10 @@ void PNormKernel(const Context& dev_ctx,
                         r_dim);
     PADDLE_ENFORCE_XDNN_SUCCESS(r, "reduce_sum");
 
-    r = xpu::constant(
-        dev_ctx.x_context(), porder_tensor.data<float>(), 1, 1.0f / porder);
+    r = xpu::constant(dev_ctx.x_context(),
+                      porder_tensor.data<float>(),
+                      1,
+                      static_cast<float>(1.0 / porder));
     PADDLE_ENFORCE_XDNN_SUCCESS(r, "constant");
 
     r = xpu::broadcast_pow(

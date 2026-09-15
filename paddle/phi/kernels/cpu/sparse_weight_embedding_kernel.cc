@@ -17,7 +17,6 @@
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/core/utils/data_type.h"
 #include "paddle/phi/kernels/embedding_kernel.h"
-#include "paddle/phi/kernels/funcs/blas/blas.h"
 #include "paddle/phi/kernels/funcs/embedding_util.h"
 
 namespace phi {
@@ -45,19 +44,17 @@ struct EmbeddingCPUSparseFunctor {
     int64_t row_width = table_t.value().dims()[1];
     const auto* table = table_t.value().template data<T>();
     auto* output = dev_ctx_.template Alloc<T>(output_t);
-    auto input_data_type = table_t.value().dtype();
 
     for (int64_t i = 0; i < ids_numel; ++i) {
       if (padding_idx_ != kNoPadding && ids[i] == padding_idx_) {
         memset(output + i * row_width, 0, row_width * sizeof(T));
       } else {
-        PADDLE_ENFORCE_GE(
-            ids[i],
-            0,
-            common::errors::InvalidArgument(
-                "Variable value (input) of OP(fluid.layers.embedding) "
-                "expected >= 0. But received %ld",
-                ids[i]));
+        PADDLE_ENFORCE_GE(ids[i],
+                          0,
+                          common::errors::InvalidArgument(
+                              "Variable value (input) of OP(embedding) "
+                              "expected >= 0. But received %ld",
+                              ids[i]));
         auto id_index = table_t.Index(ids[i]);
         PADDLE_ENFORCE_GE(
             id_index,
@@ -65,15 +62,9 @@ struct EmbeddingCPUSparseFunctor {
             common::errors::InvalidArgument(
                 "the input key should be exists. But received %d.", id_index));
 
-        if (input_data_type == phi::DataType::BFLOAT16) {
-          memcpy(output + i * row_width,
-                 table + id_index * row_width,
-                 row_width * sizeof(T));
-        } else {
-          auto blas = phi::funcs::GetBlas<phi::CPUContext, T>(dev_ctx_);
-          blas.VCOPY(
-              row_width, table + id_index * row_width, output + i * row_width);
-        }
+        memcpy(output + i * row_width,
+               table + id_index * row_width,
+               static_cast<size_t>(row_width) * sizeof(T));
       }
     }
   }
@@ -87,17 +78,17 @@ struct EmbeddingCPUSparseFunctor {
 };
 
 template <typename T, typename Context>
-void SparseWeightEmbeddingKernel(const Context& ctx,
+void SparseWeightEmbeddingKernel(const Context& dev_ctx,
                                  const DenseTensor& input,
                                  const SelectedRows& weight,
                                  int64_t padding_idx,
                                  DenseTensor* out) {
   EmbeddingCPUSparseFunctor<T, Context> functor(
-      ctx, input, weight, padding_idx, out);
+      dev_ctx, input, weight, padding_idx, out);
 
-  if (input.dtype() == phi::DataType::INT32) {
+  if (input.dtype() == DataType::INT32) {
     functor.template apply<int>();
-  } else if (input.dtype() == phi::DataType::INT64) {
+  } else if (input.dtype() == DataType::INT64) {
     functor.template apply<int64_t>();
   } else {
     PADDLE_THROW(common::errors::Unimplemented(
@@ -113,4 +104,4 @@ PD_REGISTER_KERNEL(sparse_weight_embedding,
                    phi::SparseWeightEmbeddingKernel,
                    float,
                    double,
-                   phi::dtype::bfloat16) {}
+                   phi::bfloat16) {}

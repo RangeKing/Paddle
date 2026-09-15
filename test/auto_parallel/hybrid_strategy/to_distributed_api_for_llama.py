@@ -24,7 +24,7 @@ from paddle import nn
 from paddle.distributed import to_distributed
 from paddle.distributed.auto_parallel.high_level_api import ToDistributedConfig
 
-EPOCHES = 1
+EPOCHS = 1
 VOCAB_SIZE = 8000
 BATCH_NUM = 2
 BATCH_SIZE = 4
@@ -113,11 +113,11 @@ def scaled_dot_product_attention(
 
     #  [ bz, seqlen, nhead, head_dim] -> [bs, nhead, seq_len, head_dim]
     query_states = paddle.transpose(query_states, [0, 2, 1, 3])
-    # merge with the next tranpose
+    # merge with the next transpose
     key_states = paddle.transpose(key_states, [0, 2, 1, 3])
     value_states = paddle.transpose(value_states, [0, 2, 1, 3])
 
-    # matmul and devide by sqrt(head_dim)
+    # matmul and divide by sqrt(head_dim)
     attn_weights = paddle.matmul(
         query_states / math.sqrt(head_dim), key_states.transpose([0, 1, 3, 2])
     )
@@ -233,9 +233,7 @@ class LlamaMlp(nn.Layer):
         )
 
     def forward(self, x):
-        x = paddle.incubate.nn.functional.swiglu(
-            self.gate_proj(x), self.up_proj(x)
-        )
+        x = paddle.nn.functional.swiglu(self.gate_proj(x), self.up_proj(x))
         out = self.down_proj(x)
         return out
 
@@ -428,7 +426,6 @@ class LlamaModel(nn.Layer):
         hidden_states = inputs_embeds
 
         for idx, (decoder_layer) in enumerate(self.layers):
-
             layer_outputs = decoder_layer(
                 hidden_states,
                 position_ids,
@@ -505,7 +502,6 @@ class LlamaLMHead(paddle.nn.Layer):
 
 
 class LlamaForCausalLM(paddle.nn.Layer):
-
     def __init__(
         self,
         param_prefix="",
@@ -537,7 +533,6 @@ class LlamaForCausalLM(paddle.nn.Layer):
         attention_mask=None,
         labels=None,
     ):
-
         outputs = self.llama(
             input_ids,
             position_ids=position_ids,
@@ -627,7 +622,7 @@ class TestLlamaDecoderForSemiAutoParallel:
             dist_config,
         )
 
-        for epoch in range(EPOCHES):
+        for epoch in range(EPOCHS):
             dist_model.train()
             for i, data in enumerate(dist_loader()):
                 inputs, labels = data

@@ -67,6 +67,9 @@ def _has_global_step(lr_ops):
 
 
 def is_sparse_op(op):
+    if not hasattr(op, 'type'):
+        return False
+
     if (
         op.type in SPARSE_OP_LIST
         and op.attr('is_sparse') is True
@@ -283,13 +286,13 @@ class CompileTimeStrategy:
         self.tensor_table_dict[feed_var_name] = {}
         self.tensor_table_dict[feed_var_name]["feed_var_name"] = feed_var_name
         self.tensor_table_dict[feed_var_name]["fetch_var_name"] = fetch_var_name
-        self.tensor_table_dict[feed_var_name][
-            "startup_program"
-        ] = startup_program
+        self.tensor_table_dict[feed_var_name]["startup_program"] = (
+            startup_program
+        )
         self.tensor_table_dict[feed_var_name]["main_program"] = main_program
-        self.tensor_table_dict[feed_var_name][
-            "tensor_table_class"
-        ] = tensor_table_class
+        self.tensor_table_dict[feed_var_name]["tensor_table_class"] = (
+            tensor_table_class
+        )
 
     def get_tensor_table_dict(self):
         return self.tensor_table_dict
@@ -1253,6 +1256,9 @@ class CompileTimeStrategy:
         def _get_params_grads(sparse_varnames):
             block = origin_program.global_block()
 
+            if not hasattr(block, 'vars'):
+                return [], []
+
             dense_param_grads = []
             sparse_param_grads = []
 
@@ -1260,6 +1266,9 @@ class CompileTimeStrategy:
             origin_var_dict = origin_program.global_block().vars
             role_id = int(core.op_proto_and_checker_maker.OpRole.Backward)
             for op in block.ops:
+                if not hasattr(op, 'type'):
+                    continue
+
                 if _is_opt_role_op(op):
                     # delete clip op from opt_ops when run in Parameter Server mode
                     if (
@@ -1287,6 +1296,9 @@ class CompileTimeStrategy:
         def _get_sparse_varnames():
             varnames = []
             for op in origin_program.global_block().ops:
+                if not hasattr(op, 'type'):
+                    continue
+
                 if (
                     op.type in SPARSE_OP_TYPE_DICT.keys()
                     and op.attr('remote_prefetch') is True
@@ -1343,6 +1355,9 @@ def _get_optimize_ops(_program):
     block = _program.global_block()
     opt_ops = []
     for op in block.ops:
+        if not hasattr(op, 'type'):
+            continue
+
         if _is_opt_role_op(op):
             # delete clip op from opt_ops when run in Parameter Server mode
             if (

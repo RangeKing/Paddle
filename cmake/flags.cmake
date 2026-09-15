@@ -4,40 +4,36 @@ include(CheckCCompilerFlag)
 include(CheckCXXSymbolExists)
 include(CheckTypeSize)
 
-function(check_compiler_cxx14_flag)
+function(check_compiler_cxx_baseline_flag)
   if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    if(${CMAKE_CXX_COMPILER_VERSION} VERSION_LESS 5.4)
-      message(FATAL_ERROR "Unsupported GCC version. GCC >= 5.4 required.")
-    elseif(${CMAKE_CXX_COMPILER_VERSION} VERSION_GREATER 8.2)
-      message(
-        WARNING
-          "Found GCC ${CMAKE_CXX_COMPILER_VERSION} which is too high, recommended to use GCC 8.2"
-      )
+    if(${CMAKE_CXX_COMPILER_VERSION} VERSION_LESS 11)
+      message(FATAL_ERROR "Unsupported GCC version. GCC >= 11 required.")
     endif()
   elseif(CMAKE_CXX_COMPILER_ID MATCHES "AppleClang|Clang")
     # cmake >= 3.0 compiler id "AppleClang" on Mac OS X, otherwise "Clang"
     # Apple Clang is a different compiler than upstream Clang which has different version numbers.
     # https://gist.github.com/yamaya/2924292
     if(APPLE) # cmake < 3.0 compiler id "Clang" on Mac OS X
-      if(${CMAKE_CXX_COMPILER_VERSION} VERSION_LESS 5.1)
+      if(${CMAKE_CXX_COMPILER_VERSION} VERSION_LESS 14)
         message(
           FATAL_ERROR
-            "Unsupported AppleClang version. AppleClang >= 5.1 required.")
+            "Unsupported AppleClang version. AppleClang >= 14 required.")
       endif()
     else()
-      if(${CMAKE_CXX_COMPILER_VERSION} VERSION_LESS 3.4)
-        message(FATAL_ERROR "Unsupported Clang version. Clang >= 3.4 required.")
+      if(${CMAKE_CXX_COMPILER_VERSION} VERSION_LESS 14)
+        message(FATAL_ERROR "Unsupported Clang version. Clang >= 14 required.")
       endif()
     endif()
   endif()
 endfunction()
 
-check_compiler_cxx14_flag()
+check_compiler_cxx_baseline_flag()
 
 if(NOT WIN32)
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++20")
 else()
-  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -std=c++17")
+  # TODO(windows-cxx20): Keep Windows host C++ builds on C++17 until the CI
+  # toolchain supports C++20.
   set(CMAKE_CXX_STANDARD 17)
 endif()
 
@@ -152,14 +148,13 @@ if(NOT WIN32)
       -fdata-sections
       -Wl
       -gc-sections
-      -Werror
       -Wall
       -Wextra
       -Wno-unused-parameter
       -Wno-unused-function
       -Wno-error=array-bounds #Warning in Eigen, gcc 12.2
-      -Wno-error=ignored-attributes # Warnings in Eigen, gcc 6.3
-      -Wno-error=int-in-bool-context # Warning in Eigen gcc 7.2
+      -Wno-error=ignored-attributes
+      -Wno-error=int-in-bool-context
       -Wimplicit-fallthrough=0 # Warning in tinyformat.h
       ${fsanitize})
 
@@ -245,19 +240,12 @@ if(APPLE)
   set(COMMON_FLAGS
       -Wno-deprecated-register
       -Werror=format
-      -Werror=inconsistent-missing-override
       -Werror=braced-scalar-init
       -Werror=uninitialized
       -Werror=tautological-constant-out-of-range-compare
       -Werror=literal-conversion
       -Werror=pragma-pack
       -Werror=c++17-extensions)
-endif()
-
-if(WITH_HETERPS AND WITH_PSLIB)
-  set(COMMON_FLAGS -D_GLIBCXX_USE_CXX11_ABI=0 ${COMMON_FLAGS})
-
-  set(GPU_COMMON_FLAGS -D_GLIBCXX_USE_CXX11_ABI=0 ${GPU_COMMON_FLAGS})
 endif()
 
 if(LINUX)
@@ -296,9 +284,7 @@ if(WITH_ROCM)
   string(APPEND CMAKE_CXX_FLAGS " -Wno-strict-aliasing")
 endif()
 
-if(WITH_PSCORE
-   OR WITH_PSLIB
-   OR WITH_TENSORRT)
+if(WITH_TENSORRT)
   string(REPLACE "-Wnon-virtual-dtor" "-Wno-non-virtual-dtor" CMAKE_CXX_FLAGS
                  ${CMAKE_CXX_FLAGS})
   string(REPLACE "-Wnon-virtual-dtor" "-Wno-non-virtual-dtor" CMAKE_C_FLAGS

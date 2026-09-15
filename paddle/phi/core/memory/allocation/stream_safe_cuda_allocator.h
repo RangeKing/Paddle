@@ -21,6 +21,7 @@
 #include "paddle/phi/common/place.h"
 #include "paddle/phi/core/memory/allocation/allocator.h"
 #include "paddle/phi/core/memory/allocation/spin_lock.h"
+#include "paddle/phi/core/memory/mem_visitor.h"
 
 #ifdef PADDLE_WITH_CUDA
 #include <cuda_runtime.h>
@@ -33,6 +34,8 @@ namespace memory {
 namespace allocation {
 
 class StreamSafeCUDAAllocator;
+class VMMAutoGrowthBestFitMultiPoolAllocatorV2;
+class VMMRemapEventAllocation;
 
 class StreamSafeCUDAAllocation : public Allocation {
  public:
@@ -43,13 +46,22 @@ class StreamSafeCUDAAllocation : public Allocation {
   bool RecordStream(gpuStream_t stream);
   void EraseStream(gpuStream_t stream);
   bool CanBeFreed();
+  bool SetVMMV2RemapEvent();
   gpuStream_t GetOwningStream() const;
+  void *ptr() const noexcept override { return underlying_allocation_->ptr(); }
+  size_t size() const noexcept override {
+    return underlying_allocation_->size();
+  }
+  const Place &place() const noexcept override {
+    return underlying_allocation_->place();
+  }
 
  private:
   thread_local static std::once_flag once_flag_;
   void RecordGraphCapturingStreams();
   void RecordStreamWithNoGraphCapturing(gpuStream_t stream);
   DecoratedAllocationPtr underlying_allocation_;
+  VMMRemapEventAllocation *vmm_v2_remap_allocation_{nullptr};
   std::set<gpuStream_t> graph_capturing_stream_set_;
   std::map<gpuStream_t, gpuEvent_t> outstanding_event_map_;
   gpuStream_t owning_stream_;
@@ -64,30 +76,49 @@ class StreamSafeCUDAAllocator
       public std::enable_shared_from_this<StreamSafeCUDAAllocator> {
  public:
   StreamSafeCUDAAllocator(std::shared_ptr<Allocator> underlying_allocator,
-                          phi::GPUPlace place,
+                          GPUPlace place,
                           gpuStream_t default_stream,
                           bool in_cuda_graph_capturing = false);
   ~StreamSafeCUDAAllocator();
 
+  std::shared_ptr<Allocator> &GetUnderLyingAllocator() {
+    return underlying_allocator_;
+  }
+  VMMAutoGrowthBestFitMultiPoolAllocatorV2 *GetVMMV2Allocator() const {
+    return vmm_v2_allocator_;
+  }
+  std::vector<StreamSafeCUDAAllocator *> &GetAllocatorByPlace() {
+    return allocator_map_[place_];
+  }
   bool IsAllocThreadSafe() const override;
   gpuStream_t GetDefaultStream() const;
   void SetDefaultStream(gpuStream_t stream);
+  void Accept(AllocatorVisitor *visitor) override { visitor->Visit(this); }
 
  protected:
   phi::Allocation *AllocateImpl(size_t size) override;
   void FreeImpl(phi::Allocation *allocation) override;
-  uint64_t ReleaseImpl(const phi::Place &place) override;
+  uint64_t ReleaseImpl(const Place &place) override;
+  size_t CompactImpl(const Place &place) override;
 
  private:
-  void ProcessUnfreedAllocations();
-  uint64_t ProcessUnfreedAllocationsAndRelease();
+  struct PendingAllocationStats {
+    size_t count{0};
+    size_t bytes{0};
+  };
 
-  static std::map<phi::Place, std::vector<StreamSafeCUDAAllocator *>>
-      allocator_map_;
+  void ProcessUnfreedAllocations();
+  PendingAllocationStats GetPendingAllocationStats();
+
+  static std::map<Place, std::vector<StreamSafeCUDAAllocator *>> allocator_map_;
   static SpinLock allocator_map_lock_;
 
   std::shared_ptr<Allocator> underlying_allocator_;
-  phi::GPUPlace place_;
+  VMMAutoGrowthBestFitMultiPoolAllocatorV2 *vmm_v2_allocator_{nullptr};
+  // True iff the underlying stack is VMM V1 (MultiScalePoolAllocator), the only
+  // one emitting kAlloc / kFreeCompleted. Resolved once at construction.
+  bool underlying_records_mem_history_{false};
+  GPUPlace place_;
   gpuStream_t default_stream_;
   std::list<StreamSafeCUDAAllocation *> unfreed_allocations_;
   SpinLock unfreed_allocation_lock_;

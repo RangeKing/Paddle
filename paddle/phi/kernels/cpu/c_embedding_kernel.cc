@@ -42,7 +42,7 @@ void GetIdsEmbedding(const TIds* ids,
 }
 
 template <typename T, typename Context>
-void CEmbeddingKernel(const Context& ctx,
+void CEmbeddingKernel(const Context& dev_ctx,
                       const DenseTensor& w,
                       const DenseTensor& ids,
                       int64_t start_index,
@@ -50,13 +50,13 @@ void CEmbeddingKernel(const Context& ctx,
                       DenseTensor* out) {
   VLOG(10) << "table_dims:" << w.dims();
   const T* table_data = w.data<T>();
-  T* output_data = ctx.template Alloc<T>(out);
+  T* output_data = dev_ctx.template Alloc<T>(out);
 
   const int64_t height = w.dims()[0];
   const int64_t width = w.dims()[1];
 
   const auto& index_type = ids.dtype();
-  if (index_type == phi::DataType::INT32) {
+  if (index_type == DataType::INT32) {
     GetIdsEmbedding(ids.data<int32_t>(),
                     ids.numel(),
                     start_index,
@@ -64,7 +64,7 @@ void CEmbeddingKernel(const Context& ctx,
                     height,
                     width,
                     output_data);
-  } else if (index_type == phi::DataType::INT64) {
+  } else if (index_type == DataType::INT64) {
     GetIdsEmbedding(ids.data<int64_t>(),
                     ids.numel(),
                     start_index,
@@ -85,6 +85,6 @@ PD_REGISTER_KERNEL(c_embedding,
                    phi::CEmbeddingKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::float16,
+                   phi::complex64,
+                   phi::complex128) {}

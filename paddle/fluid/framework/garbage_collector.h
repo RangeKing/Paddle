@@ -59,7 +59,7 @@ class GarbageCollector {
 
 class CPUGarbageCollector : public GarbageCollector {
  public:
-  CPUGarbageCollector(const phi::CPUPlace &place, size_t max_memory_size);
+  CPUGarbageCollector(const CPUPlace &place, size_t max_memory_size);
 
  protected:
   void ClearCallback(const std::function<void()> &callback) override;
@@ -69,6 +69,15 @@ class CPUGarbageCollector : public GarbageCollector {
 class XPUGarbageCollector : public GarbageCollector {
  public:
   XPUGarbageCollector(const phi::XPUPlace &place, size_t max_memory_size);
+
+ protected:
+  void ClearCallback(const std::function<void()> &callback) override;
+};
+
+class XPUPinnedGarbageCollector : public GarbageCollector {
+ public:
+  XPUPinnedGarbageCollector(const phi::XPUPinnedPlace &place,
+                            size_t max_memory_size);
 
  protected:
   void ClearCallback(const std::function<void()> &callback) override;

@@ -93,8 +93,7 @@ def convert_load(x):
 
         # get the new output of the var
         if isinstance(x, Value):
-
-            from paddle.jit.pir_dy2static.parameter_recorder import (
+            from paddle.jit.dy2static.parameter_recorder import (
                 _global_inplace_map,
             )
 
@@ -450,8 +449,8 @@ def _run_paddle_cond(
     _convert_tensor_array_if_necessary(helper, push_pop_names)
     pred = cast_bool_if_necessary(pred)
     init_args = helper.get(return_name_ids)
+    from paddle.jit.dy2static.parameter_recorder import _global_inplace_map
     from paddle.jit.dy2static.program_translator import ProgramTranslator
-    from paddle.jit.pir_dy2static.parameter_recorder import _global_inplace_map
 
     if use_pir_api():
         inplace_map = _global_inplace_map
@@ -539,11 +538,11 @@ def _remove_no_value_return_var(out):
                 ):
                     # return None
                     if index == 0:
-                        processed_out = (None,) + out[1:]
+                        processed_out = (None, *out[1:])
                     elif index == 1:
                         processed_out = align_ret[:1] + out[1:]
                     else:
-                        processed_out = (align_ret[:index],) + out[1:]
+                        processed_out = (align_ret[:index], *out[1:])
                     break
 
         for index, item in enumerate(processed_out):
@@ -675,7 +674,7 @@ def convert_super(super_fn):
 class VariableTuple:
     """
     this class will cause enumerate can't be wrapped by other iterator change function.
-    this will be fixed when list<Variable> is producted.
+    this will be fixed when list<Variable> is produced.
     VariableTuple can only deal with variables which is fixed.
     """
 
@@ -703,6 +702,30 @@ def convert_enumerate(*args):
 
 def convert_range(*args):
     has_variable = any(isinstance(x, (Variable, Value)) for x in args)
+    # NOTE(SigureMo): Add an `Assign` OP after the Tensor input to mark it as a variable, which can
+    # avoid confusing it with the scalar case in `arange` API.
+    # For example:
+    # ```python
+    # l = []
+    # for i in range(n):
+    #    l.append(i)
+    # ```
+    # - If `n` is a scalar (e.g., `n=10`), we expect to create an `ArangeOp` with a fixed output shape [10].
+    # - If `n` is a Tensor (e.g., `n=full([], 10, "int32")`), we expect to create an `ArangeOp` with a dynamic
+    # output shape [-1]. To ensure the python level and graph level all recognize this is data-dependent control
+    # flow.
+    # However, we can't distinguish the scalar case and the Tensor case when creating the `ArangeOp`. Because
+    # the scalar case also be convert as a `Full` OP output.
+    # So we add an `Assign` OP after the Tensor input to **mark** it as a variable, which can avoid confusing
+    # it with the scalar case.
+    is_full_op_output = lambda x: (
+        isinstance(x, Value)
+        and x.get_defining_op()
+        and x.get_defining_op().name() == "pd_op.full"
+    )
+    args = [
+        paddle.assign(arg) if is_full_op_output(arg) else arg for arg in args
+    ]
     if has_variable:
         if len(args) == 1:
             return paddle.arange(0, args[0], 1, "int64")
@@ -725,7 +748,7 @@ def convert_shape(x):
     #  (1) if x.shape contains -1, such as [2, -1, 64], returns [2, var, 64],
     #      where var = paddle.shape(x)[1]
 
-    #  (2) if x.shape does not contains -1, return lsit(x.shape) directly
+    #  (2) if x.shape does not contains -1, return list(x.shape) directly
 
     if isinstance(x, (Variable, Value)):
         values = list(x.shape)
@@ -757,13 +780,17 @@ def convert_var_dtype(var, dtype):
             'int32',
             'int64',
             'uint8',
-        ], f"The dtype of var {var.name} is {src_dtype}, which is not supported in the cast op."
+        ], (
+            f"The dtype of var {var.name} is {src_dtype}, which is not supported in the cast op."
+        )
         assert dtype in [
             'bool',
             'int',
             'float',
             'complex',
-        ], f"The casted target dtype is {dtype}, which is not supported in type casting."
+        ], (
+            f"The casted target dtype is {dtype}, which is not supported in type casting."
+        )
         cast_map = {
             'bool': 'bool',
             'int': 'int32',
@@ -777,7 +804,9 @@ def convert_var_dtype(var, dtype):
             'int',
             'float',
             'complex',
-        ], f"The casted target dtype is {dtype}, which is not supported in type casting."
+        ], (
+            f"The casted target dtype is {dtype}, which is not supported in type casting."
+        )
         return eval(dtype)(var)
 
 

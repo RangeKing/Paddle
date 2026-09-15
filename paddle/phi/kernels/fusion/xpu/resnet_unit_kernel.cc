@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include "paddle/phi/backends/xpu/enforce_xpu.h"
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/utils/optional.h"
 
@@ -27,12 +26,12 @@ void ResNetUnitXPUKernel(const Context &dev_ctx,
                          const DenseTensor &bias_x_in,
                          const DenseTensor &mean_x_in,
                          const DenseTensor &var_x_in,
-                         const paddle::optional<DenseTensor> &z_in,
-                         const paddle::optional<DenseTensor> &filter_z_in,
-                         const paddle::optional<DenseTensor> &scale_z_in,
-                         const paddle::optional<DenseTensor> &bias_z_in,
-                         const paddle::optional<DenseTensor> &mean_z_in,
-                         const paddle::optional<DenseTensor> &var_z_in,
+                         const optional<DenseTensor> &z_in,
+                         const optional<DenseTensor> &filter_z_in,
+                         const optional<DenseTensor> &scale_z_in,
+                         const optional<DenseTensor> &bias_z_in,
+                         const optional<DenseTensor> &mean_z_in,
+                         const optional<DenseTensor> &var_z_in,
                          int stride,
                          int stride_z,
                          int padding,
@@ -63,15 +62,15 @@ void ResNetUnitXPUKernel(const Context &dev_ctx,
 
   bool is_nchw = (data_format == "NCHW");
   // input x
-  const phi::DenseTensor *input_x = &x_in;
-  const phi::DenseTensor *filter_x = &filter_x_in;
-  const phi::DenseTensor *scale_x = &scale_x_in;
-  const phi::DenseTensor *bias_x = &bias_x_in;
+  const DenseTensor *input_x = &x_in;
+  const DenseTensor *filter_x = &filter_x_in;
+  const DenseTensor *scale_x = &scale_x_in;
+  const DenseTensor *bias_x = &bias_x_in;
 
   // output x
-  phi::DenseTensor *conv_out_x = conv_x;
+  DenseTensor *conv_out_x = conv_x;
 
-  phi::DenseTensor *output = out;
+  DenseTensor *output = out;
 
   //  attrs
   float eps = epsilon;
@@ -85,20 +84,20 @@ void ResNetUnitXPUKernel(const Context &dev_ctx,
   std::vector<XPUType *> conv_y_list = {
       reinterpret_cast<XPUType *>(dev_ctx.template Alloc<T>(conv_out_x))};
 
-  std::vector<std::vector<int>> x_shape_list = {
-      common::vectorize<int>(input_x->dims())};
+  std::vector<std::vector<int64_t>> x_shape_list = {
+      vectorize<int64_t>(input_x->dims())};
 
-  auto filter_x_shape = common::vectorize<int>(filter_x->dims());
-  std::vector<int> ksize = {filter_x_shape[2], filter_x_shape[3]};
+  auto filter_x_shape = vectorize<int64_t>(filter_x->dims());
+  std::vector<int64_t> ksize = {filter_x_shape[2], filter_x_shape[3]};
   if (!is_nchw) {
     ksize[0] = filter_x_shape[1];
     ksize[1] = filter_x_shape[2];
   }
-  std::vector<int> strides = {stride, stride};
-  std::vector<std::vector<int>> ksize_list = {ksize};
-  std::vector<std::vector<int>> stride_list = {strides};
-  std::vector<int> paddings = {padding, padding};
-  std::vector<int> dilations = {dilation, dilation};
+  std::vector<int64_t> strides = {stride, stride};
+  std::vector<std::vector<int64_t>> ksize_list = {ksize};
+  std::vector<std::vector<int64_t>> stride_list = {strides};
+  std::vector<int64_t> paddings = {padding, padding};
+  std::vector<int64_t> dilations = {dilation, dilation};
   std::vector<const float *> scale_list = {scale_x->data<float>()};
   std::vector<const float *> bias_list = {bias_x->data<float>()};
   std::vector<float *> batch_mean_list = {
@@ -114,22 +113,22 @@ void ResNetUnitXPUKernel(const Context &dev_ctx,
   std::vector<const float *> w_maxlist = {nullptr};
   if (has_shortcut) {
     // input z
-    const phi::DenseTensor *input_z = z_in.get_ptr();
-    const phi::DenseTensor *filter_z = filter_z_in.get_ptr();
-    const phi::DenseTensor *scale_z = scale_z_in.get_ptr();
-    const phi::DenseTensor *bias_z = bias_z_in.get_ptr();
+    const DenseTensor *input_z = z_in.get_ptr();
+    const DenseTensor *filter_z = filter_z_in.get_ptr();
+    const DenseTensor *scale_z = scale_z_in.get_ptr();
+    const DenseTensor *bias_z = bias_z_in.get_ptr();
 
-    phi::DenseTensor *conv_out_z = conv_z;
+    DenseTensor *conv_out_z = conv_z;
 
     x_list.push_back(reinterpret_cast<const XPUType *>(input_z->data<T>()));
     w_list.push_back(reinterpret_cast<const XPUType *>(filter_z->data<T>()));
     conv_y_list.push_back(
         reinterpret_cast<XPUType *>(dev_ctx.template Alloc<T>(conv_out_z)));
 
-    x_shape_list.push_back(common::vectorize<int>(input_z->dims()));
+    x_shape_list.push_back(vectorize<int64_t>(input_z->dims()));
 
-    auto filter_z_shape = common::vectorize<int>(filter_z->dims());
-    std::vector<int> ksize_z = {filter_z_shape[2], filter_z_shape[3]};
+    auto filter_z_shape = vectorize<int64_t>(filter_z->dims());
+    std::vector<int64_t> ksize_z = {filter_z_shape[2], filter_z_shape[3]};
     if (!is_nchw) {
       ksize_z[0] = filter_z_shape[1];
       ksize_z[1] = filter_z_shape[2];
@@ -146,8 +145,8 @@ void ResNetUnitXPUKernel(const Context &dev_ctx,
     w_maxlist.push_back(nullptr);
   } else {
     if (fuse_add) {
-      const phi::DenseTensor *input_z = z_in.get_ptr();
-      auto input_z_shape = common::vectorize<int>(input_z->dims());
+      const DenseTensor *input_z = z_in.get_ptr();
+      auto input_z_shape = vectorize<int64_t>(input_z->dims());
       x_list.push_back(reinterpret_cast<const XPUType *>(input_z->data<T>()));
       x_shape_list.push_back(input_z_shape);
       x_maxlist.push_back(nullptr);
@@ -190,5 +189,5 @@ PD_REGISTER_KERNEL(resnet_unit,
                    XPU,
                    ALL_LAYOUT,
                    phi::ResNetUnitXPUKernel,
-                   phi::dtype::float16,
+                   phi::float16,
                    float) {}

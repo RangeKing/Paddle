@@ -28,17 +28,47 @@ void CollectShapeManager::CollectShapeInfo(
     framework::ValueExecutionInfo *value_exe_info,
     framework::Scope *scope) {
   std::lock_guard<std::mutex> lock(info_mutex_);
+  VLOG(3) << "collect shape in instruction:" << instr->Name();
   is_shape_range_info_ready_ = false;
   for (auto &input : instr->Inputs()) {
+    VLOG(3) << "input id:" << input.first.impl();
+    if (!op_value2instr_id_.count(input.first)) {
+      // Because the input value maybe same between different ops.
+      // To prevent duplicate shape collection, we only select one op for
+      // getting shape of value
+      op_value2instr_id_[input.first] = instr->Id();
+    }
+    if (op_value2instr_id_[input.first] != instr->Id()) {
+      VLOG(3) << "input shape has been collected in same instruction, jump it, "
+                 "and input id:"
+              << input.first.impl();
+      continue;
+    }
     auto var_name = value_exe_info->GetVarName(input.first);
     auto *var = scope->FindVar(var_name);
-    if (!var || !var->IsType<phi::DenseTensor>()) continue;
-    auto tensor = var->Get<phi::DenseTensor>();
-    if (!tensor.initialized()) continue;
+    if (!var || !var->IsType<DenseTensor>()) {
+      VLOG(3) << "input var is null : " << (var == nullptr);
+      VLOG(3) << "input var is dense_tensor : " << (var->IsType<DenseTensor>());
+      VLOG(3) << "input is null or not dense_tensor, jump it, and input id:"
+              << input.first.impl();
+      continue;
+    }
+
+    auto tensor = var->Get<DenseTensor>();
+    if (!tensor.has_allocation() && !instr->NoNeedBuffer().count(input.first)) {
+      VLOG(3) << "input tensor is has_allocation: "
+              << (tensor.has_allocation());
+      VLOG(3) << "input tensor is no need buffer:"
+              << instr->NoNeedBuffer().count(input.first);
+      VLOG(3) << "input tensor is not initialized and not no need buffer, jump "
+                 "it, and input id:"
+              << input.first.impl();
+      continue;
+    }
     paddle::platform::DeviceContextPool &pool =
         paddle::platform::DeviceContextPool::Instance();
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
-    auto *dev_ctx = pool.Get(phi::GPUPlace());
+    auto *dev_ctx = pool.Get(GPUPlace());
     auto stream = static_cast<phi::GPUContext *>(dev_ctx)->stream();
 #ifdef PADDLE_WITH_HIP
     hipStreamSynchronize(stream);
@@ -47,7 +77,7 @@ void CollectShapeManager::CollectShapeInfo(
 #endif
 #endif
 
-    phi::DDim dim = tensor.dims();
+    DDim dim = tensor.dims();
     std::vector<int32_t> shape(dim.size());
     for (int i = 0; i < static_cast<int>(shape.size()); ++i)
       shape[i] = static_cast<int32_t>(dim[i]);
@@ -70,36 +100,36 @@ void CollectShapeManager::CollectShapeInfo(
     // This is a simple method to identify all shape tensors with some
     // mistakes, but it doesn't matter.
     auto is_shape_tensor = tensor.numel() <= 8 && tensor.numel() >= 1;
-    if ((tensor.dtype() == phi::DataType::INT32 ||
-         tensor.dtype() == phi::DataType::INT64) &&
+    if ((tensor.dtype() == DataType::INT32 ||
+         tensor.dtype() == DataType::INT64) &&
         is_shape_tensor) {
       std::vector<int> int32_host(tensor.numel());
 
       if (phi::is_cpu_place(tensor.place())) {
         auto &int32_tensor = tensor;
-        if (tensor.dtype() == phi::DataType::INT64) {
-          auto *cpu_ctx = pool.Get(phi::CPUPlace());
+        if (tensor.dtype() == DataType::INT64) {
+          auto *cpu_ctx = pool.Get(CPUPlace());
           int32_tensor = phi::funcs::TransDataType(
               reinterpret_cast<const phi::CPUContext &>(*cpu_ctx),
               tensor,
               DataType::INT32);
         }
-        paddle::memory::Copy(phi::CPUPlace(),
+        paddle::memory::Copy(CPUPlace(),
                              int32_host.data(),
-                             phi::CPUPlace(),
+                             CPUPlace(),
                              int32_tensor.data<int>(),
                              int32_tensor.numel() * sizeof(int));
       } else if (phi::is_gpu_place(tensor.place())) {
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
         auto *dev_ctx = pool.Get(tensor.place());
         auto &int32_tensor = tensor;
-        if (tensor.dtype() == phi::DataType::INT64) {
+        if (tensor.dtype() == DataType::INT64) {
           int32_tensor = phi::funcs::TransDataType(
               reinterpret_cast<const phi::GPUContext &>(*dev_ctx),
               tensor,
               DataType::INT32);
         }
-        paddle::memory::Copy(phi::CPUPlace(),
+        paddle::memory::Copy(CPUPlace(),
                              int32_host.data(),
                              int32_tensor.place(),
                              int32_tensor.data<int>(),
@@ -124,36 +154,53 @@ void CollectShapeManager::StatisticShapeRangeInfo() {
         for (auto const &it : shape_data) {
           auto val = it.first;
           auto shapes = it.second;
+
           std::vector<int32_t> min_shape(shapes[0].begin(), shapes[0].end());
           std::vector<int32_t> max_shape(shapes[0].begin(), shapes[0].end());
           std::vector<int32_t> opt_shape(shapes[0].begin(), shapes[0].end());
-
-          auto ShapeMaxFreq =
-              [](const std::map<int32_t, int32_t> &m) -> int32_t {
-            std::vector<std::pair<int32_t, int32_t>> counter;
-            for (auto &it : m) counter.emplace_back(it);
-            std::sort(counter.begin(),
-                      counter.end(),
-                      [](std::pair<int32_t, int32_t> &a,
-                         std::pair<int32_t, int32_t> &b) {
-                        return a.second > b.second;
-                      });
-            return counter[0].first;
-          };
-
-          for (size_t d = 0; d < shapes[0].size(); ++d) {
-            std::map<int32_t, int32_t> counter;
-            for (auto &shape : shapes) {
-              counter[shape[d]] += 1;
-              if (shape[d] < min_shape[d]) min_shape[d] = shape[d];
-              if (shape[d] > max_shape[d]) max_shape[d] = shape[d];
+          // Applicable to scenarios where min/opt/max are specified;
+          if (shapes.size() == 3) {
+            for (size_t d = 0; d < shapes[0].size(); ++d) {
+              std::vector<int32_t> dim_values;
+              for (const auto &shape : shapes) {
+                dim_values.push_back(shape[d]);
+              }
+              std::sort(dim_values.begin(), dim_values.end());
+              min_shape[d] = dim_values[0];
+              opt_shape[d] = dim_values[1];
+              max_shape[d] = dim_values[2];
             }
-            opt_shape[d] = ShapeMaxFreq(counter);
-          }
+            min_data[val] = min_shape;
+            max_data[val] = max_shape;
+            opt_data[val] = opt_shape;
+          } else {
+            // suitable for scenarios where shape is automatically collected.
+            auto ShapeMaxFreq =
+                [](const std::map<int32_t, int32_t> &m) -> int32_t {
+              std::vector<std::pair<int32_t, int32_t>> counter;
+              for (auto &it : m) counter.emplace_back(it);
+              std::sort(counter.begin(),
+                        counter.end(),
+                        [](std::pair<int32_t, int32_t> &a,
+                           std::pair<int32_t, int32_t> &b) {
+                          return a.second > b.second;
+                        });
+              return counter[0].first;
+            };
 
-          min_data[val] = min_shape;
-          max_data[val] = max_shape;
-          opt_data[val] = opt_shape;
+            for (size_t d = 0; d < shapes[0].size(); ++d) {
+              std::map<int32_t, int32_t> counter;
+              for (auto &shape : shapes) {
+                counter[shape[d]] += 1;
+                if (shape[d] < min_shape[d]) min_shape[d] = shape[d];
+                if (shape[d] > max_shape[d]) max_shape[d] = shape[d];
+              }
+              opt_shape[d] = ShapeMaxFreq(counter);
+            }
+            min_data[val] = min_shape;
+            max_data[val] = max_shape;
+            opt_data[val] = opt_shape;
+          }
         }
       };
   extract_min_max_opt(min_shapes_, max_shapes_, opt_shapes_, shape_info_);

@@ -51,7 +51,8 @@ from ..base.backward import (
 )
 from ..base.framework import Parameter
 from ..base.layer_helper import LayerHelper, LayerHelperBase
-from .lr import LRScheduler
+from ..base.log_helper import get_logger
+from .lr import LambdaDecay, LRScheduler
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -67,6 +68,11 @@ if TYPE_CHECKING:
         params: Sequence[Tensor]
         weight_decay: NotRequired[float | WeightDecayRegularizer | None]
         learning_rate: NotRequired[float | Tensor | LRScheduler | None]
+
+
+local_logger = get_logger(
+    __name__, logging.INFO, fmt='%(asctime)s-%(levelname)s: %(message)s'
+)
 
 
 __all__ = []
@@ -88,14 +94,14 @@ def append_backward_new(
     from paddle.incubate.autograd.primx import Transform, orig2prim
 
     program = default_main_program()
-    assert (
-        program.num_blocks == 1
-    ), "The append_backward_new interface is designed to process only one block."
+    assert program.num_blocks == 1, (
+        "The append_backward_new interface is designed to process only one block."
+    )
     block = program.current_block()
     for el in loss_list:
-        assert (
-            el.block == block
-        ), 'variable in loss_list should be in current block of main program'
+        assert el.block == block, (
+            'variable in loss_list should be in current block of main program'
+        )
 
     orig2prim(block)
     ad = Transform(block)
@@ -155,11 +161,14 @@ class Optimizer:
             For more information, please refer to :ref:`api_guide_Name`.
             The default value is None.
 
+    Keyword Args:
+        maximize (bool, optional): Maximize the objective with respect to the params, instead of minimizing. The default value is False.
+
     Returns:
        Base class for optimizer.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # Take the subclass adam as an example
             >>> import paddle
@@ -212,6 +221,8 @@ class Optimizer:
         weight_decay: float | WeightDecayRegularizer | None = None,
         grad_clip: GradientClipBase | None = None,
         name: str | None = None,
+        *,
+        maximize: bool = False,
     ) -> None:
         if parameters is not None:
             # paddle.Tensor is also iterable, so here we don't check whether
@@ -268,15 +279,16 @@ class Optimizer:
             self.regularization = weight_decay
         self._grad_clip = grad_clip
         self._learning_rate = learning_rate
+        self._maximize = maximize
 
         self._dtype = None
         # Infer the dtype form parameter
         if self._parameter_list:
             if isinstance(self._parameter_list[0], dict):
                 for param_group in self._parameter_list:
-                    assert (
-                        'params' in param_group
-                    ), 'params should be set in parameters if parameter groups are optimized in different options'
+                    assert 'params' in param_group, (
+                        'params should be set in parameters if parameter groups are optimized in different options'
+                    )
                 self._dtype = self._parameter_list[0]['params'][0].dtype
             else:
                 self._dtype = self._parameter_list[0].dtype
@@ -287,7 +299,7 @@ class Optimizer:
         # Dictionary of accumulators. Some optimizer subclasses need to
         # allocate and manage extra tensors associated with the parameters
         # to train. These tensors are called accumulators.
-        # {accum_name : { paramter_name : accumulator_for_parameter, ...}, ...}
+        # {accum_name : { parameter_name : accumulator_for_parameter, ...}, ...}
         self._accumulators = defaultdict(lambda: {})
         self.helper = None
         self._opti_name_list = []
@@ -318,6 +330,13 @@ class Optimizer:
         # create master gradients' states
         self._create_master_grad_states()
 
+        # for fusion storage
+        self._use_fusion_storage = False
+        self._need_refuse = False
+        self.fusion_storage = None
+        self._fuse_buffer_version = 0
+        self.merged_model_params = None
+
     def _create_master_grad_states(self):
         # master gradients states
         if in_pir_mode():
@@ -332,12 +351,58 @@ class Optimizer:
     def _create_multi_tensor_dict(self):
         n = len(self._param_groups) if self._param_groups is not None else 1
         return {
-            'FP32_LODTensor': [[] for _ in range(n)],
-            'FP16_LODTensor': [[] for _ in range(n)],
+            'FP32_DenseTensor': [[] for _ in range(n)],
+            'FP16_DenseTensor': [[] for _ in range(n)],
         }
 
     def _get_auxiliary_var(self, key):
         return self._auxiliary_vars.get(key, None)
+
+    def set_merged_model_params(self, merged_model_params):
+        self.merged_model_params = merged_model_params
+        self.need_refuse()
+
+    @imperative_base.no_grad()
+    def _maybe_refuse(self):
+        from .fusion_utils import FusionStorage
+
+        # only support dygraph mode
+        if not framework.in_dygraph_mode():
+            return
+
+        # TODO(@gexiao): support other optimizer if needed
+        if (
+            self.__class__.__name__ != "AdamW"
+            and self.__class__.__name__ != "Muon"
+        ):
+            return
+
+        # add buffer check
+        if self.fused_states_buffer is not None:
+            for _, v in self._accumulators.items():
+                for _, vv in v.items():
+                    if not vv._is_shared_buffer_with(self.fused_states_buffer):
+                        self.need_refuse()
+            for _, v in self._master_weights.items():
+                if not v._is_shared_buffer_with(self.fused_states_buffer):
+                    self.need_refuse()
+
+        if not self._need_refuse:
+            return
+
+        local_logger.warning(
+            f"refuse optimizer fuse buffer version start: {self._fuse_buffer_version}"
+        )
+        self.fusion_storage = FusionStorage(
+            self._accumulators,
+            self._master_weights,
+            self.merged_model_params,
+        )
+        self._fuse_buffer_version += 1
+        self.reset_need_refuse()
+        local_logger.warning(
+            f"refuse optimizer fuse buffer version end: {self._fuse_buffer_version}"
+        )
 
     @framework.dygraph_only
     def state_dict(self) -> dict[str, Tensor]:
@@ -350,7 +415,7 @@ class Optimizer:
             dict[str,Tensor], dict contains all the Tensor used by optimizer
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> emb = paddle.nn.Embedding(10, 10)
@@ -397,7 +462,7 @@ class Optimizer:
             None
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
 
@@ -407,10 +472,14 @@ class Optimizer:
                 >>> paddle.save(layer_state_dict, "emb.pdparams")
 
                 >>> scheduler = paddle.optimizer.lr.NoamDecay(
-                ...     d_model=100, warmup_steps=100, verbose=True)
+                ...     d_model=100,
+                ...     warmup_steps=100,
+                ...     verbose=True,
+                ... )
                 >>> adam = paddle.optimizer.Adam(
                 ...     learning_rate=scheduler,
-                ...     parameters=emb.parameters())
+                ...     parameters=emb.parameters(),
+                ... )
                 >>> opt_state_dict = adam.state_dict()
                 >>> paddle.save(opt_state_dict, "adam.pdopt")
 
@@ -419,7 +488,13 @@ class Optimizer:
 
         '''
         if isinstance(self._learning_rate, LRScheduler):
-            self._learning_rate.set_state_dict(state_dict["LR_Scheduler"])
+            lr_state_dict = state_dict.get("LR_Scheduler", None)
+            if not isinstance(self._learning_rate, LambdaDecay):
+                assert lr_state_dict is not None, (
+                    "LR_Scheduler state must be included in the state dict except LambdaDecay"
+                )
+            if lr_state_dict:
+                self._learning_rate.set_state_dict(lr_state_dict)
 
         # NOTE: exclude learning rate scheduler's state from
         # _accumulators_holder.
@@ -433,9 +508,9 @@ class Optimizer:
         self._accumulators_holder = state_dict
         for k, v in self._accumulators.items():
             for para_name, var_tmp in v.items():
-                assert (
-                    var_tmp.name in state_dict
-                ), f"optimizer Tensor {var_tmp.name} not found"
+                assert var_tmp.name in state_dict, (
+                    f"optimizer Tensor {var_tmp.name} not found"
+                )
 
                 var = var_tmp.value()
                 tensor = var.get_tensor()
@@ -450,31 +525,35 @@ class Optimizer:
                         )
                 var.set_value(state_dict[var_tmp.name])
 
+    load_state_dict = set_state_dict
+
     def get_opti_var_name_list(self) -> list[str]:
         return self._opti_name_list
 
+    def get_lr_dtype(self) -> paddle.dtype:
+        # lr var can't be float16 or bfloat16, for pure fp16 or bf16 training, should extra handle the dtype for lr
+        _lr_dtype = (
+            paddle.get_default_dtype() if self._dtype is None else self._dtype
+        )
+        _lr_dtype = (
+            paddle.float32
+            if (
+                (
+                    paddle.get_default_dtype() != "float16"
+                    and _lr_dtype == paddle.float16
+                )
+                or (
+                    paddle.get_default_dtype() != "bfloat16"
+                    and _lr_dtype == paddle.bfloat16
+                )
+            )
+            else _lr_dtype
+        )
+        return _lr_dtype
+
     def _create_global_learning_rate(self):
         def do_create():
-            # lr var can't be float16 or bfloat16, for pure fp16 or bf16 training, should extra handle the dtype for lr
-            _lr_dtype = (
-                paddle.get_default_dtype()
-                if self._dtype is None
-                else self._dtype
-            )
-            _lr_dtype = (
-                paddle.float32
-                if (
-                    (
-                        paddle.get_default_dtype() != "float16"
-                        and _lr_dtype == paddle.float16
-                    )
-                    or (
-                        paddle.get_default_dtype() != "bfloat16"
-                        and _lr_dtype == paddle.bfloat16
-                    )
-                )
-                else _lr_dtype
-            )
+            _lr_dtype = self.get_lr_dtype()
             if isinstance(self._learning_rate, LRScheduler):
                 lr_var = self._global_learning_rate()
                 # only create global lr_var once
@@ -489,11 +568,11 @@ class Optimizer:
                         initializer = paddle.nn.initializer.Constant(
                             value=lr_value
                         )
-                        paramete_meta = paddle.pir.core.ParameterMeta(
+                        parameter_meta = paddle.pir.core.ParameterMeta(
                             [], _lr_dtype
                         )
                         init_result = initializer(
-                            paramete_meta, startup_program.global_block()
+                            parameter_meta, startup_program.global_block()
                         )
                         init_result.persistable = True
                         set_parameter(init_result, lr_name)
@@ -553,7 +632,7 @@ class Optimizer:
                                 ]
                             else:
                                 _lr_dtype = (
-                                    paddle.pir.core.convert_np_dtype_to_dtype_(
+                                    paddle.pir.core.convert_nptype_to_datatype(
                                         _lr_dtype
                                     )
                                 )
@@ -599,7 +678,7 @@ class Optimizer:
             None
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> linear = paddle.nn.Linear(10, 10)
@@ -667,7 +746,7 @@ class Optimizer:
             None
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> linear = paddle.nn.Linear(10, 10)
@@ -675,7 +754,11 @@ class Optimizer:
                 >>> adam = paddle.optimizer.Adam(0.1, parameters=linear.parameters())
 
                 >>> # set learning rate manually by class LRScheduler
-                >>> scheduler = paddle.optimizer.lr.MultiStepDecay(learning_rate=0.5, milestones=[2,4,6], gamma=0.8)
+                >>> scheduler = paddle.optimizer.lr.MultiStepDecay(
+                ...     learning_rate=0.5,
+                ...     milestones=[2, 4, 6],
+                ...     gamma=0.8,
+                ... )
                 >>> adam.set_lr_scheduler(scheduler)
                 >>> lr = adam.get_lr()
                 >>> print("current lr is {}".format(lr))
@@ -693,7 +776,7 @@ class Optimizer:
 
         if not isinstance(scheduler, LRScheduler):
             raise TypeError(
-                f"The type of 'scheduler' in optimizer.set_lr_schduler must be LRScheduler, but received {type(scheduler)}."
+                f"The type of 'scheduler' in optimizer.set_lr_scheduler must be LRScheduler, but received {type(scheduler)}."
             )
         self._learning_rate = scheduler
 
@@ -701,13 +784,13 @@ class Optimizer:
         """
         Get current learning rate of optimizer.
         If 'LRScheduler' is not used, the return value is all the same.
-        If 'LRScheduler' is used, the return value is the current scheduled learing rete.
+        If 'LRScheduler' is used, the return value is the current scheduled learning rete.
 
         Returns:
             float, The current learning rate of optimizer.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> # train on default dynamic graph mode
                 >>> import paddle
@@ -715,12 +798,12 @@ class Optimizer:
                 >>> emb = paddle.nn.Embedding(10, 3)
 
                 >>> ## example1: LRScheduler is not used, return the same value is all the same
-                >>> adam = paddle.optimizer.Adam(0.01, parameters = emb.parameters())
+                >>> adam = paddle.optimizer.Adam(0.01, parameters=emb.parameters())
                 >>> for batch in range(10):
-                ...     input = paddle.randint(low=0, high=5, shape=[5])
+                ...     input = paddle.randint(low=0, high=5, size=[5])
                 ...     out = emb(input)
                 ...     out.backward()
-                ...     print("Learning rate of step{}: {}".format(batch, adam.get_lr())) # 0.01
+                ...     print("Learning rate of step{}: {}".format(batch, adam.get_lr()))  # 0.01
                 ...     adam.step()
                 Learning rate of step0: 0.01
                 Learning rate of step1: 0.01
@@ -735,12 +818,12 @@ class Optimizer:
 
                 >>> ## example2: StepDecay is used, return the scheduled learning rate
                 >>> scheduler = paddle.optimizer.lr.StepDecay(learning_rate=0.5, step_size=2, gamma=0.1)
-                >>> adam = paddle.optimizer.Adam(scheduler, parameters = emb.parameters())
+                >>> adam = paddle.optimizer.Adam(scheduler, parameters=emb.parameters())
                 >>> for batch in range(10):
-                ...     input = paddle.randint(low=0, high=5, shape=[5])
+                ...     input = paddle.randint(low=0, high=5, size=[5])
                 ...     out = emb(input)
                 ...     out.backward()
-                ...     print("Learning rate of step{}: {}".format(batch, adam.get_lr())) # 0.5->0.05...
+                ...     print("Learning rate of step{}: {}".format(batch, adam.get_lr()))  # 0.5->0.05...
                 ...     adam.step()
                 ...     scheduler.step()
                 Learning rate of step0: 0.5
@@ -769,7 +852,7 @@ class Optimizer:
                 >>> exe = paddle.static.Executor()
                 >>> exe.run(start_prog)
                 >>> for batch in range(10):
-                ...     print("Learning rate of step{}: {}".format(batch, adam.get_lr())) # 0.5->0.05->0.005...
+                ...     print("Learning rate of step{}: {}".format(batch, adam.get_lr()))  # 0.5->0.05->0.005...
                 ...     out = exe.run(main_prog, feed={'x': np.random.randn(3, 10).astype('float32')})
                 ...     scheduler.step()
                 Learning rate of step0: 0.5
@@ -821,10 +904,11 @@ class Optimizer:
                 if param_lr == 1.0:
                     return self._global_learning_rate()
                 else:
-                    with paddle.static.default_main_program()._lr_schedule_guard(
-                        is_with_opt=True
-                    ), framework.name_scope(
-                        'scale_with_param_lr'
+                    with (
+                        paddle.static.default_main_program()._lr_schedule_guard(
+                            is_with_opt=True
+                        ),
+                        framework.name_scope('scale_with_param_lr'),
                     ):
                         return self._global_learning_rate() * param_lr
         else:
@@ -982,6 +1066,9 @@ class Optimizer:
             raise Exception(
                 f"Accumulator {name} already exists for parameter {param.name}"
             )
+        else:
+            # once master weights are created, accumulators must be created at the same time
+            self.need_refuse()
         if shape is None:
             shape = param.shape
 
@@ -1046,9 +1133,9 @@ class Optimizer:
 
             if framework.in_dygraph_mode():
                 if len(self._accumulators_holder) > 0:
-                    assert (
-                        var_name in self._accumulators_holder
-                    ), f"Optimizer set error, {var_name} should in state dict"
+                    assert var_name in self._accumulators_holder, (
+                        f"Optimizer set error, {var_name} should in state dict"
+                    )
                     var.set_value(self._accumulators_holder.pop(var_name))
 
                     # load scale value for xpu
@@ -1165,9 +1252,9 @@ class Optimizer:
         target_block = global_block
         current_block = framework.default_main_program().current_block()
         if current_block.idx != global_block.idx:
-            assert (
-                current_block.backward_block_idx != -1
-            ), "current block is not global_block, but it doesn't have backward block."
+            assert current_block.backward_block_idx != -1, (
+                "current block is not global_block, but it doesn't have backward block."
+            )
             target_block = framework.default_main_program().blocks[
                 current_block.backward_block_idx
             ]
@@ -1183,8 +1270,8 @@ class Optimizer:
             'Adam',
         ]:
             if (
-                len(self._param_dict['FP32_LODTensor'][param_group_idx]) == 0
-                and len(self._param_dict['FP16_LODTensor'][param_group_idx])
+                len(self._param_dict['FP32_DenseTensor'][param_group_idx]) == 0
+                and len(self._param_dict['FP16_DenseTensor'][param_group_idx])
                 == 0
             ):
                 if isinstance(parameters_and_grads, list):
@@ -1229,9 +1316,12 @@ class Optimizer:
                     ):
                         param_grad_list.append(param_and_grad[0])
                         param_grad_list.append(param_and_grad[1])
-                with param_grad_list[0].block.program._optimized_guard(
-                    param_grad_list
-                ), name_scope("optimizer"):
+                with (
+                    param_grad_list[0].block.program._optimized_guard(
+                        param_grad_list
+                    ),
+                    name_scope("optimizer"),
+                ):
                     device = self._get_device_for_param(param_grad_list[0].name)
                     with device_guard(device):
                         self._append_optimize_multi_tensor_op(
@@ -1252,14 +1342,24 @@ class Optimizer:
 
             if isinstance(parameters_and_grads, list):
                 with paddle.base.framework.dygraph_guard_if_declarative():
-                    self._create_accumulators(
-                        target_block,
-                        [
-                            p[0]
-                            for p in parameters_and_grads
-                            if not p[0].stop_gradient
-                        ],
-                    )
+                    _need_shard = False
+                    for param, _ in parameters_and_grads:
+                        if hasattr(param, '_need_shard_auto'):
+                            _need_shard = True
+                            break
+                    if _need_shard:
+                        paddle.distributed.auto_parallel.fully_shard.shard_accumulators(
+                            parameters_and_grads, self, target_block
+                        )
+                    else:
+                        self._create_accumulators(
+                            target_block,
+                            [
+                                p[0]
+                                for p in parameters_and_grads
+                                if not p[0].stop_gradient
+                            ],
+                        )
             else:
                 params_acc_dict = parameters_and_grads.copy()
                 params_acc_dict['params'] = [
@@ -1272,6 +1372,12 @@ class Optimizer:
 
             if framework.in_dygraph_mode():
                 found_inf = self._get_auxiliary_var('found_inf')
+                if (
+                    "xpu" in paddle.device.get_device()
+                    and found_inf is not None
+                    and found_inf.is_dist()
+                ):
+                    found_inf = found_inf._local_value()
                 if found_inf:
                     if isinstance(found_inf, core.eager.Tensor):
                         self._set_auxiliary_var('found_inf', True)
@@ -1279,6 +1385,7 @@ class Optimizer:
                     if isinstance(found_inf, core.eager.Tensor):
                         self._set_auxiliary_var('found_inf', False)
                     if isinstance(parameters_and_grads, list):
+                        self._maybe_refuse()
                         for param_and_grad in parameters_and_grads:
                             # Parameters can be uninitialized in pipeline parallel of semi-auto parallel.
                             # Since gradient clip and parameters update mixed up in one interface, so we
@@ -1316,9 +1423,12 @@ class Optimizer:
                 for param_and_grad in parameters_and_grads:
                     if param_and_grad[1] is None:
                         continue
-                    with param_and_grad[0].block.program._optimized_guard(
-                        param_and_grad
-                    ), name_scope("optimizer"):
+                    with (
+                        param_and_grad[0].block.program._optimized_guard(
+                            param_and_grad
+                        ),
+                        name_scope("optimizer"),
+                    ):
                         if param_and_grad[0].stop_gradient is False:
                             device = self._get_device_for_param(
                                 param_and_grad[0].name
@@ -1440,15 +1550,17 @@ class Optimizer:
                 grad is the gradient value corresponding to the parameter.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> x = paddle.arange(26, dtype="float32").reshape([2, 13])
 
                 >>> linear = paddle.nn.Linear(13, 5)
                 >>> # This can be any optimizer supported by dygraph.
-                >>> adam = paddle.optimizer.Adam(learning_rate = 0.01,
-                ...                             parameters = linear.parameters())
+                >>> adam = paddle.optimizer.Adam(
+                ...     learning_rate=0.01,
+                ...     parameters=linear.parameters(),
+                ... )
                 >>> out = linear(x)
                 >>> out.backward()
                 >>> adam.step()
@@ -1531,7 +1643,7 @@ class Optimizer:
             list: A list of operators appended to the current program.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
 
@@ -1539,8 +1651,10 @@ class Optimizer:
                 >>> linear = paddle.nn.Linear(10, 10)
                 >>> out = linear(inp)
                 >>> loss = paddle.mean(out)
-                >>> optimizer = paddle.optimizer.Adam(learning_rate=0.1,
-                ...         parameters=linear.parameters())
+                >>> optimizer = paddle.optimizer.Adam(
+                ...     learning_rate=0.1,
+                ...     parameters=linear.parameters(),
+                ... )
                 >>> params_grads = optimizer.backward(loss)
                 >>> optimizer.apply_gradients(params_grads)
 
@@ -1590,6 +1704,42 @@ class Optimizer:
                 paddle.static.default_main_program(),
                 paddle.static.default_startup_program(),
             ):
+                auto_dp = paddle.distributed.auto_parallel.auto_dp_utils.in_auto_dp_mode()
+                from paddle.distributed.fsdp._fsdp_context import (
+                    get_fsdp_context,
+                )
+
+                fsdp_context = get_fsdp_context()
+                if fsdp_context is not None:
+                    if self._param_groups and isinstance(
+                        self._param_groups[0], dict
+                    ):
+                        raise NotImplementedError(
+                            "FSDP does not support optimizer parameter groups."
+                        )
+                    fsdp_context.comm_sync_and_reset_status()
+                    if hasattr(fsdp_context, "bind_decay_param_fun"):
+                        fsdp_context.bind_decay_param_fun(self)
+                    new_params_grads = []
+                    for group in fsdp_context.buffer_manager.buffer_groups:
+                        if not group.params_buffer.data_buffer.stop_gradient:
+                            new_params_grads.append(
+                                (
+                                    group.params_buffer.data_buffer,
+                                    group.grads_buffer.data_buffer,
+                                )
+                            )
+                    params_grads = new_params_grads
+                    if self._grad_clip is not None:
+                        self._grad_clip.should_comm_on_shard_dim = True
+                        self._grad_clip.fsdp_group = (
+                            fsdp_context.buffer_manager._fsdp_group
+                        )
+                elif auto_dp:
+                    paddle.distributed.auto_parallel.auto_dp_utils._convert_fake_replicate_grad_to_partial(
+                        params_grads
+                    )
+
                 if isinstance(params_grads, list):
                     if self._grad_clip is not None:
                         params_grads = self._grad_clip(params_grads)
@@ -1717,15 +1867,15 @@ class Optimizer:
                 )
                 params_and_grads.append((param, new_grad))
         else:
-            repeate_regularizer = False
+            repeat_regularizer = False
             with framework.name_scope('regularization'):
                 for param, grad in parameters_and_grads:
                     if (
-                        not repeate_regularizer
+                        not repeat_regularizer
                         and param.regularizer is not None
                         and regularization is not None
                     ):
-                        repeate_regularizer = True
+                        repeat_regularizer = True
                         logging.info(
                             "If regularizer of a Parameter has been set by 'base.ParamAttr' or 'base.WeightNormParamAttr' already. "
                             f"The Regularization[{regularization}] in Optimizer will not take effect, and it will only be applied to other Parameters!"
@@ -1775,15 +1925,17 @@ class Optimizer:
             None
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
 
                 >>> a = paddle.arange(26, dtype="float32").reshape([2, 13])
                 >>> linear = paddle.nn.Linear(13, 5)
                 >>> # This can be any optimizer supported by dygraph.
-                >>> adam = paddle.optimizer.Adam(learning_rate = 0.01,
-                ...                             parameters = linear.parameters())
+                >>> adam = paddle.optimizer.Adam(
+                ...     learning_rate=0.01,
+                ...     parameters=linear.parameters(),
+                ... )
                 >>> out = linear(a)
                 >>> out.backward()
                 >>> adam.step()
@@ -1805,6 +1957,10 @@ class Optimizer:
 
         for p in param_list:
             p.clear_gradient(set_to_zero)
+
+    @framework.non_static_only
+    def zero_grad(self, set_to_none: bool = True) -> None:
+        self.clear_grad(set_to_zero=not set_to_none)
 
     @imperative_base.no_grad()
     def minimize(
@@ -1837,7 +1993,7 @@ class Optimizer:
                 ``fetch_list`` before run, see details in ``Executor``.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> linear = paddle.nn.Linear(10, 10)
@@ -1848,17 +2004,19 @@ class Optimizer:
                 >>> beta1 = paddle.to_tensor([0.9], dtype="float32")
                 >>> beta2 = paddle.to_tensor([0.99], dtype="float32")
 
-                >>> adam = paddle.optimizer.Adam(learning_rate=0.1,
-                ...         parameters=linear.parameters(),
-                ...         weight_decay=0.01)
+                >>> adam = paddle.optimizer.Adam(
+                ...     learning_rate=0.1,
+                ...     parameters=linear.parameters(),
+                ...     weight_decay=0.01,
+                ... )
                 >>> loss.backward()
                 >>> adam.minimize(loss)
                 >>> adam.clear_grad()
 
         """
-        assert isinstance(
-            loss, (Variable, paddle.pir.Value)
-        ), "The loss should be an Tensor."
+        assert isinstance(loss, (Variable, paddle.pir.Value)), (
+            "The loss should be an Tensor."
+        )
 
         parameter_list = parameters if parameters else self._parameter_list
 
@@ -1882,9 +2040,9 @@ class Optimizer:
         params = (
             paddle.static.default_main_program().global_block().all_parameters()
         )
-        assert not isinstance(
-            self._parameter_list[0], dict
-        ), "Only list of parameters is supported while using optimizer in @paddle.jit.static."
+        assert not isinstance(self._parameter_list[0], dict), (
+            "Only list of parameters is supported while using optimizer in @paddle.jit.static."
+        )
         selected_params = {param.name for param in self._parameter_list}
         parameters = [param for param in params if param.trainable]
         parameters = list(
@@ -1893,45 +2051,100 @@ class Optimizer:
                 parameters,
             )
         )
-        params_grads = [(param, param.grad) for param in parameters]
+        if self._maximize is True:
+            params_grads = [(param, -param.grad) for param in parameters]
+        else:
+            params_grads = [(param, param.grad) for param in parameters]
         optimize_ops = self.apply_gradients(params_grads)
 
     @imperative_base.no_grad()
     @framework.non_static_only
-    def step(self) -> None:
+    def step(
+        self, closure: Callable[[], Tensor] | None = None
+    ) -> Tensor | None:
         """
         Execute the optimizer and update parameters once.
 
+        Args:
+            closure (Callable|None, optional): A closure that reevaluates the model
+                and returns the loss. It should be a callable that takes no arguments
+                and returns a Tensor. This is useful for optimizers that need to
+                evaluate the loss multiple times (e.g., line search). Default is None.
+
         Returns:
-            None
+            Tensor|None: If closure is provided, returns the loss value computed by
+                the closure. Otherwise returns None.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
 
-                >>> a = paddle.arange(26, dtype="float32").reshape([2, 13])
+                >>> x = paddle.arange(26, dtype="float32").reshape([2, 13])
                 >>> linear = paddle.nn.Linear(13, 5)
                 >>> # This can be any optimizer supported by dygraph.
-                >>> adam = paddle.optimizer.Adam(learning_rate = 0.01,
-                ...                         parameters = linear.parameters())
-                >>> out = linear(a)
+                >>> adam = paddle.optimizer.Adam(
+                ...     learning_rate=0.01,
+                ...     parameters=linear.parameters(),
+                ... )
+                >>> out = linear(x)
                 >>> out.backward()
                 >>> adam.step()
                 >>> adam.clear_grad()
+
+                >>> # usage 1: not use closure
+                >>> adam.zero_grad()
+                >>> output = linear(x)
+                >>> loss = paddle.mean(output)
+                >>> loss.backward()
+                >>> adam.step()
+
+                >>> # usage 2: use closure
+                >>> def closure():
+                ...     adam.zero_grad()
+                ...     output = linear(x)
+                ...     loss = paddle.mean(output)
+                ...     loss.backward()
+                ...     return loss
+                >>> step_loss = adam.step(closure)
         """
+        loss = None
+        if closure is not None:
+            with imperative_base.enable_grad():
+                loss = closure()
+
         if paddle.base.dygraph.base.in_to_static_mode():
             self._declarative_step()
-            return
+            return loss
 
         if not isinstance(self._param_groups[0], dict):
             params_grads = []
             for param in self._param_groups:
                 if param.stop_gradient:
                     continue
-                if param._grad_ivar() is not None:
-                    grad_var = param._grad_ivar()
-                    params_grads.append((param, grad_var))
+                if getattr(self, 'enable_tensor_fusion', False):
+                    if (
+                        hasattr(param, "main_grad")
+                        and param.main_grad is not None
+                    ):
+                        if self._maximize is True:
+                            params_grads.append((param, -param.main_grad))
+                        else:
+                            params_grads.append((param, param.main_grad))
+                elif (
+                    hasattr(param, "main_grad") and param.main_grad is not None
+                ):
+                    if self._maximize is True:
+                        params_grads.append((param, -param.main_grad))
+                    else:
+                        params_grads.append((param, param.main_grad))
+                else:
+                    if param._grad_ivar() is not None:
+                        grad_var = param._grad_ivar()
+                        if self._maximize is True:
+                            params_grads.append((param, -grad_var))
+                        else:
+                            params_grads.append((param, grad_var))
 
             self._apply_optimize(
                 loss=None,
@@ -1949,7 +2162,10 @@ class Optimizer:
                         continue
                     if param._grad_ivar() is not None:
                         grad_var = param._grad_ivar()
-                        params_grads['params'].append((param, grad_var))
+                        if self._maximize is True:
+                            params_grads['params'].append((param, -grad_var))
+                        else:
+                            params_grads['params'].append((param, grad_var))
                 params_grads.update(
                     {k: v for k, v in param_group.items() if k != 'params'}
                 )
@@ -1959,13 +2175,14 @@ class Optimizer:
                     params_grads=params_grads,
                     param_group_idx=idx,
                 )
+        return loss
 
     def _add_param_group(self, param_group):
         """
         Add a param group to parameter_list.
 
         Args:
-            param_group (dict): The group of Tensors to be optimzed with
+            param_group (dict): The group of Tensors to be optimized with
             different optimization options.
         """
         params = param_group['params']
@@ -2009,7 +2226,7 @@ class Optimizer:
         """
         Update the param group with new entry
         Args:
-            parameters (dict): The extra group of Tensors to be optimzed with
+            parameters (dict): The extra group of Tensors to be optimized with
             different optimization options. Only used in child class.
         """
         pass
@@ -2041,9 +2258,9 @@ class Optimizer:
         :param dtype: instance of core.VarDesc.VarType
         :return: True if dtype is one of fp16 or bf16, False otherwise
         """
-        assert isinstance(
-            dtype, (core.VarDesc.VarType, core.DataType)
-        ), "The dtype should be an instance of core.VarDesc.VarType or core.DataType."
+        assert isinstance(dtype, (core.VarDesc.VarType, core.DataType)), (
+            "The dtype should be an instance of core.VarDesc.VarType or core.DataType."
+        )
         if isinstance(dtype, core.VarDesc.VarType):
             return (
                 dtype == core.VarDesc.VarType.FP16
@@ -2054,3 +2271,41 @@ class Optimizer:
                 dtype == core.DataType.FLOAT16
                 or dtype == core.DataType.BFLOAT16
             )
+
+    def use_fusion_storage(self):
+        self._use_fusion_storage = True
+        self.need_refuse()
+
+    def need_refuse(self):
+        self._need_refuse = self._use_fusion_storage
+
+    def reset_need_refuse(self):
+        self._need_refuse = False
+
+    @property
+    def fused_buffer_version(self):
+        return self._fuse_buffer_version
+
+    @property
+    def fused_states_buffer(self):
+        if self.fusion_storage is None:
+            return None
+        return self.fusion_storage.buffer
+
+    @property
+    def fused_states_buffer_ipc_meta(self):
+        if self.fusion_storage is None:
+            return None
+        return self.fusion_storage.buffer_ipc_meta
+
+    @property
+    def fused_states_accumulators_meta(self):
+        if self.fusion_storage is None:
+            return None
+        return self.fusion_storage.accumulators_meta
+
+    @property
+    def fused_states_master_weights_meta(self):
+        if self.fusion_storage is None:
+            return None
+        return self.fusion_storage.master_weights_meta

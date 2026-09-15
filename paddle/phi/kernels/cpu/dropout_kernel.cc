@@ -23,15 +23,15 @@
 namespace phi {
 
 template <typename T, typename Context>
-void ComputeDropoutInference(const Context& ctx,
+void ComputeDropoutInference(const Context& dev_ctx,
                              const DenseTensor& x,
                              const Scalar& dropout_prob,
                              bool upscale_in_train,
                              DenseTensor* y) {
   if (upscale_in_train) {
     const auto* X_data = x.data<T>();
-    T* Y_data = ctx.template Alloc<T>(y);
-#ifdef PADDLE_WITH_MKLML
+    T* Y_data = dev_ctx.template Alloc<T>(y);
+#if defined(PADDLE_WITH_MKLML) || defined(PADDLE_WITH_HML)
 #pragma omp parallel for
 #endif
     for (int i = 0; i < x.numel(); i++) {
@@ -40,7 +40,7 @@ void ComputeDropoutInference(const Context& ctx,
   } else {
     auto X = EigenMatrix<T>::Reshape(x, 1);
     auto Y = EigenMatrix<T>::Reshape(*y, 1);
-    auto& place = *ctx.eigen_device();
+    auto& place = *dev_ctx.eigen_device();
     Y.device(place) = X * static_cast<T>(1.0f - dropout_prob.to<float>());
   }
 }
@@ -48,7 +48,7 @@ void ComputeDropoutInference(const Context& ctx,
 template <typename T, typename Context>
 void DropoutRawKernel(const Context& dev_ctx,
                       const DenseTensor& x,
-                      const paddle::optional<DenseTensor>& seed_tensor,
+                      const optional<DenseTensor>& seed_tensor,
                       const Scalar& p,
                       bool is_test,
                       const std::string& mode,
@@ -114,7 +114,7 @@ void DropoutRawKernel(const Context& dev_ctx,
 template <typename T, typename Context>
 void DropoutNdKernel(const Context& dev_ctx,
                      const DenseTensor& x,
-                     const paddle::optional<DenseTensor>& seed_tensor,
+                     const optional<DenseTensor>& seed_tensor,
                      const Scalar& p,
                      bool is_test,
                      const std::string& mode,
@@ -209,8 +209,8 @@ PD_REGISTER_KERNEL(dropout,
                    phi::DropoutRawKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {
+                   phi::float16,
+                   phi::bfloat16) {
   kernel->OutputAt(1).SetDataType(phi::DataType::UINT8);
 }
 

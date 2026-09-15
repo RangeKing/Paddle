@@ -16,7 +16,7 @@
 
 #include "paddle/phi/backends/onednn/onednn_reuse.h"
 #include "paddle/phi/core/kernel_registry.h"
-
+#include "paddle/phi/kernels/full_kernel.h"
 namespace phi {
 
 template <typename T, typename Context>
@@ -28,6 +28,12 @@ void PReluGradKernel(const Context& dev_ctx,
                      const std::string& mode,
                      DenseTensor* x_grad,
                      DenseTensor* alpha_grad) {
+  if (x_grad->numel() == 0) {
+    dev_ctx.template Alloc<T>(x_grad);
+    if (alpha_grad) {
+      Full<T, Context>(dev_ctx, alpha_grad->dims(), 0, alpha_grad);
+    }
+  }
   bool is_test = dev_ctx.HasDnnAttr("is_test")
                      ? PADDLE_GET_CONST(bool, dev_ctx.GetDnnAttr("is_test"))
                      : false;
@@ -56,14 +62,10 @@ void PReluGradKernel(const Context& dev_ctx,
                     {DNNL_ARG_DIFF_WEIGHTS, *diff_weights_memory_p}});
   astream.wait();
 
-  x_grad->set_mem_desc(diff_src_memory_p->get_desc());
+  phi::funcs::SetOneDNNMemDesc(x_grad, diff_src_memory_p->get_desc());
 }
 
 }  // namespace phi
 
-PD_REGISTER_KERNEL(prelu_grad,
-                   OneDNN,
-                   ONEDNN,
-                   phi::PReluGradKernel,
-                   float,
-                   phi::dtype::bfloat16) {}
+PD_REGISTER_KERNEL(
+    prelu_grad, OneDNN, ONEDNN, phi::PReluGradKernel, float, phi::bfloat16) {}

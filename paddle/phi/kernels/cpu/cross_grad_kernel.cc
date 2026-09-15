@@ -74,13 +74,13 @@ void CrossGradKernel(const Context &dev_ctx,
                                 "But received: Input(X/Y).dims() == [%s].",
                                 input_x_dims));
   }
-  auto outer_loops = 1;
-  for (auto i = 0; i < dim; i++) {
-    outer_loops *= static_cast<int>(input_x_dims[i]);
+  int64_t outer_loops = 1;
+  for (int i = 0; i < dim; i++) {
+    outer_loops *= input_x_dims[i];
   }
-  auto slice_size = 1;
-  for (auto i = dim + 1; i < input_x_dims.size(); i++) {
-    slice_size *= static_cast<int>(input_x_dims[i]);
+  int64_t slice_size = 1;
+  for (int i = dim + 1; i < input_x_dims.size(); i++) {
+    slice_size *= input_x_dims[i];
   }
 
   int64_t numel = x.numel();
@@ -93,30 +93,31 @@ void CrossGradKernel(const Context &dev_ctx,
 
   auto *input_y_conj_data = dev_ctx.template Alloc<T>(&y_conj);
 
-  phi::funcs::ForRange<Context> for_range(dev_ctx, numel);
-  phi::funcs::ConjFunctor<T> functor_x(
-      input_x.data<T>(), numel, input_x_conj_data);
-  phi::funcs::ConjFunctor<T> functor_y(
-      input_y.data<T>(), numel, input_y_conj_data);
+  funcs::ForRange<Context> for_range(dev_ctx, numel);
+  funcs::ConjFunctor<T> functor_x(input_x.data<T>(), numel, input_x_conj_data);
+  funcs::ConjFunctor<T> functor_y(input_y.data<T>(), numel, input_y_conj_data);
   for_range(functor_x);
   for_range(functor_y);
 
   std::vector<T> input_x_vec, input_y_vec, input_dout_vec;
-  phi::TensorToVector(x_conj, dev_ctx, &input_x_vec);
-  phi::TensorToVector(y_conj, dev_ctx, &input_y_vec);
-  phi::TensorToVector(input_out_grad, dev_ctx, &input_dout_vec);
+  TensorToVector(x_conj, dev_ctx, &input_x_vec);
+  TensorToVector(y_conj, dev_ctx, &input_y_vec);
+  TensorToVector(input_out_grad, dev_ctx, &input_dout_vec);
   std::vector<T> out_dx_vec(output_x_grad->numel());
   std::vector<T> out_dy_vec(output_y_grad->numel());
 
   dev_ctx.template Alloc<T>(output_x_grad);
   dev_ctx.template Alloc<T>(output_y_grad);
+  if (numel == 0) {
+    return;
+  }
 
-  for (auto i = 0; i < outer_loops; i++) {
-    for (auto j = 0; j < 3; j++) {
-      auto dst_pos = (3 * i + j) * slice_size;
-      auto in_pos1 = (3 * i + ((j + 1) % 3)) * slice_size;
-      auto in_pos2 = (3 * i + ((j + 2) % 3)) * slice_size;
-      for (auto k = 0; k < slice_size; k++) {
+  for (int64_t i = 0; i < outer_loops; i++) {
+    for (int64_t j = 0; j < 3; j++) {
+      int64_t dst_pos = (3 * i + j) * slice_size;
+      int64_t in_pos1 = (3 * i + ((j + 1) % 3)) * slice_size;
+      int64_t in_pos2 = (3 * i + ((j + 2) % 3)) * slice_size;
+      for (int64_t k = 0; k < slice_size; k++) {
         out_dx_vec[dst_pos + k] =
             input_dout_vec[in_pos2 + k] * input_y_vec[in_pos1 + k] -
             input_dout_vec[in_pos1 + k] * input_y_vec[in_pos2 + k];
@@ -126,8 +127,8 @@ void CrossGradKernel(const Context &dev_ctx,
       }
     }
   }
-  phi::TensorFromVector(out_dx_vec, dev_ctx, output_x_grad);
-  phi::TensorFromVector(out_dy_vec, dev_ctx, output_y_grad);
+  TensorFromVector(out_dx_vec, dev_ctx, output_x_grad);
+  TensorFromVector(out_dy_vec, dev_ctx, output_y_grad);
   output_x_grad->Resize(input_x_dims);
   output_y_grad->Resize(input_x_dims);
 }
@@ -141,5 +142,5 @@ PD_REGISTER_KERNEL(cross_grad,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::complex64,
+                   phi::complex128) {}

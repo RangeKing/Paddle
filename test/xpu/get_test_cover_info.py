@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
 import fcntl
 import inspect
 import os
@@ -78,7 +79,7 @@ type_dict_paddle_to_numpy = {
     DataType.COMPLEX64: np.complex64,
 }
 
-type_dict_str_to_paddle = {
+str_to_vartype = {
     'uint8': VarDesc.VarType.UINT8,
     'int8': VarDesc.VarType.INT8,
     'int16': VarDesc.VarType.INT16,
@@ -291,7 +292,7 @@ def is_empty_grad_op_type(xpu_version, op, test_type):
         return True
 
     grad_op_types = xpu_op_list[grad_op]
-    paddle_test_type = type_dict_str_to_paddle[test_type]
+    paddle_test_type = str_to_vartype[test_type]
     if paddle_test_type not in grad_op_types:
         return True
 
@@ -360,6 +361,23 @@ def check_run_big_shape_test():
         )(cls)
 
     return wrapper
+
+
+@contextlib.contextmanager
+def xpu_matmul_quant_type_guard(dtype):
+    # only fp32 is supported now
+    assert dtype in ["float", "int16"]
+    if dtype == "float":
+        env_name = "XPU_PADDLE_FC_FLOAT"
+    elif dtype == "int16":
+        env_name = "XPU_PADDLE_FC_INT16"
+    origin_env = os.getenv(env_name)
+    os.environ[env_name] = "1"
+    yield
+    if origin_env is not None:
+        os.environ[env_name] = origin_env
+    else:
+        del os.environ[env_name]
 
 
 def get_test_cover_info():

@@ -16,6 +16,7 @@
 
 #include "paddle/phi/core/tensor_utils.h"
 #include "paddle/phi/kernels/empty_kernel.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/blas/blas.h"
 #include "paddle/phi/kernels/funcs/common_shape.h"
 #include "paddle/phi/kernels/funcs/complex_functors.h"
@@ -24,7 +25,6 @@
 #include "paddle/phi/kernels/funcs/tril_triu_compute.h"
 #include "paddle/phi/kernels/triangular_solve_grad_kernel.h"
 #include "paddle/phi/kernels/triangular_solve_kernel.h"
-
 namespace phi {
 
 template <typename T, typename Context>
@@ -38,20 +38,29 @@ void TriangularSolveGradKernel(const Context& dev_ctx,
                                bool unitriangular,
                                DenseTensor* dx,
                                DenseTensor* dy) {
+  if (out.numel() == 0) {
+    if (dx) {
+      Full<T, Context>(dev_ctx, dx->dims(), 0, dx);
+    }
+    if (dy) {
+      Full<T, Context>(dev_ctx, dy->dims(), 0, dy);
+    }
+    return;
+  }
   std::vector<int64_t> x_bst_dims_vec;
   std::vector<int64_t> y_bst_dims_vec;
   std::tie(x_bst_dims_vec, y_bst_dims_vec) =
       funcs::MatrixGetBroadcastDims(x, y);
 
   IntArray y_bst_dims_array(y_bst_dims_vec);
-  DenseTensor dy_bst = phi::Empty<T, Context>(dev_ctx, y_bst_dims_array);
+  DenseTensor dy_bst = Empty<T, Context>(dev_ctx, y_bst_dims_array);
   if (dy) {
     // calculate x's conjugate for complex
     DenseTensor x_conj;
     x_conj.Resize(x.dims());
 
-    phi::funcs::ForRange<Context> x_for_range(dev_ctx, x.numel());
-    phi::funcs::ConjFunctor<T> x_functor(
+    funcs::ForRange<Context> x_for_range(dev_ctx, x.numel());
+    funcs::ConjFunctor<T> x_functor(
         x.data<T>(), x.numel(), dev_ctx.template Alloc<T>(&x_conj));
     x_for_range(x_functor);
 
@@ -71,23 +80,21 @@ void TriangularSolveGradKernel(const Context& dev_ctx,
   }
 
   IntArray x_bst_dims_array(x_bst_dims_vec);
-  DenseTensor dx_bst = phi::Empty<T, Context>(dev_ctx, x_bst_dims_array);
+  DenseTensor dx_bst = Empty<T, Context>(dev_ctx, x_bst_dims_array);
   if (dx) {
     // calculate x's conjugate for complex
     DenseTensor out_conj;
     out_conj.Resize(out.dims());
 
-    phi::funcs::ForRange<Context> out_for_range(dev_ctx, out.numel());
-    phi::funcs::ConjFunctor<T> out_functor(
+    funcs::ForRange<Context> out_for_range(dev_ctx, out.numel());
+    funcs::ConjFunctor<T> out_functor(
         out.data<T>(), out.numel(), dev_ctx.template Alloc<T>(&out_conj));
     out_for_range(out_functor);
 
-    auto blas = phi::funcs::GetBlas<Context, T>(dev_ctx);
+    auto blas = funcs::GetBlas<Context, T>(dev_ctx);
     if (transpose) {
-      auto mat_dim_a =
-          phi::funcs::CreateMatrixDescriptor(out_conj.dims(), 0, false);
-      auto mat_dim_b =
-          phi::funcs::CreateMatrixDescriptor(dy_bst.dims(), 0, true);
+      auto mat_dim_a = funcs::CreateMatrixDescriptor(out_conj.dims(), 0, false);
+      auto mat_dim_b = funcs::CreateMatrixDescriptor(dy_bst.dims(), 0, true);
       blas.MatMul(out_conj,
                   mat_dim_a,
                   dy_bst,
@@ -96,10 +103,8 @@ void TriangularSolveGradKernel(const Context& dev_ctx,
                   &dx_bst,
                   static_cast<T>(0));
     } else {
-      auto mat_dim_a =
-          phi::funcs::CreateMatrixDescriptor(dy_bst.dims(), 0, false);
-      auto mat_dim_b =
-          phi::funcs::CreateMatrixDescriptor(out_conj.dims(), 0, true);
+      auto mat_dim_a = funcs::CreateMatrixDescriptor(dy_bst.dims(), 0, false);
+      auto mat_dim_b = funcs::CreateMatrixDescriptor(out_conj.dims(), 0, true);
       blas.MatMul(dy_bst,
                   mat_dim_a,
                   out_conj,
@@ -110,14 +115,13 @@ void TriangularSolveGradKernel(const Context& dev_ctx,
     }
 
     // get upper or lower triangular
-    DenseTensor dx_bst_upper =
-        phi::Empty<T, Context>(dev_ctx, x_bst_dims_array);
+    DenseTensor dx_bst_upper = Empty<T, Context>(dev_ctx, x_bst_dims_array);
 
     const auto& dims = dx_bst.dims();
     const auto H = dims[dims.size() - 2];
     const auto W = dims[dims.size() - 1];
-    phi::funcs::ForRange<Context> x_for_range(dev_ctx, dx_bst.numel());
-    phi::funcs::TrilTriuCompute<T> tril_triu_functor(
+    funcs::ForRange<Context> x_for_range(dev_ctx, dx_bst.numel());
+    funcs::TrilTriuCompute<T> tril_triu_functor(
         dx_bst.data<T>(), unitriangular, !upper, H, W, dx_bst_upper.data<T>());
     x_for_range(tril_triu_functor);
 

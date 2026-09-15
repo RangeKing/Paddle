@@ -16,10 +16,9 @@ from __future__ import annotations
 
 import functools
 import math
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, TypeAlias
 
 import numpy as np
-from typing_extensions import TypeAlias
 
 from ...base.framework import (
     EagerParamBase,
@@ -39,8 +38,11 @@ if TYPE_CHECKING:
         "conv2d",
         "conv3d",
         "conv1d_transpose",
+        "conv_transpose1d",
         "conv2d_transpose",
+        "conv_transpose2d",
         "conv3d_transpose",
+        "conv_transpose3d",
         "tanh",
         "relu",
         "leaky_relu",
@@ -159,14 +161,14 @@ def calculate_gain(
     Args:
         nonlinearity(str): name of nonlinearity activation function. If it is a linear function, such as:
             `linear/conv1d/conv2d/conv3d/conv1d_transpose/conv2d_transpose/conv3d_transpose` , 1.0 will be returned.
-        param(bool|int|float|None, optional): optional parameter for somme nonlinearity function. Now, it only applies to
+        param(bool|int|float|None, optional): optional parameter for some nonlinearity function. Now, it only applies to
             'leaky_relu'. Default: None, it will be calculated as 0.01 in the formula.
 
     Returns:
         A float value, which is the recommended gain for this nonlinearity function.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -193,8 +195,11 @@ def calculate_gain(
         'conv2d': 1,
         'conv3d': 1,
         'conv1d_transpose': 1,
+        'conv_transpose1d': 1,
         'conv2d_transpose': 1,
+        'conv_transpose2d': 1,
         'conv3d_transpose': 1,
+        'conv_transpose3d': 1,
         'tanh': 5.0 / 3,
         'relu': math.sqrt(2.0),
         'leaky_relu': math.sqrt(2.0 / (1 + param**2)),

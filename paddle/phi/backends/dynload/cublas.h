@@ -14,9 +14,11 @@ limitations under the License. */
 
 #pragma once
 
-#include <cublasXt.h>
 #include <cublas_v2.h>
 #include <cuda.h>
+#if CUDA_VERSION >= 12030 && defined(__linux__)
+#include <cublas_api.h>
+#endif
 
 #include <mutex>  // NOLINT
 #include <type_traits>
@@ -103,39 +105,58 @@ extern void *cublas_dso_handle;
   __macro(cublasCmatinvBatched);          \
   __macro(cublasZmatinvBatched);          \
   __macro(cublasSgetrsBatched);           \
-  __macro(cublasDgetrsBatched);
+  __macro(cublasDgetrsBatched);           \
+  __macro(cublasSdot_v2);                 \
+  __macro(cublasDdot_v2);                 \
+  __macro(cublasCdotc_v2);                \
+  __macro(cublasZdotc_v2);                \
+  __macro(cublasCdotu_v2);                \
+  __macro(cublasZdotu_v2);                \
+  __macro(cublasDotEx);                   \
+  __macro(cublasGemmEx);                  \
+  __macro(cublasSgemmStridedBatched);     \
+  __macro(cublasDgemmStridedBatched);     \
+  __macro(cublasCgemmStridedBatched);     \
+  __macro(cublasZgemmStridedBatched);     \
+  __macro(cublasHgemmStridedBatched);     \
+  __macro(cublasSetMathMode);             \
+  __macro(cublasGetMathMode);             \
+  __macro(cublasCgeam);                   \
+  __macro(cublasZgeam);                   \
+  __macro(cublasGemmBatchedEx);           \
+  __macro(cublasGemmStridedBatchedEx);
 
 CUBLAS_BLAS_ROUTINE_EACH(DECLARE_DYNAMIC_LOAD_CUBLAS_WRAP)
 
-// APIs available after CUDA 8.0
-#if CUDA_VERSION >= 8000
-#define CUBLAS_BLAS_ROUTINE_EACH_R2(__macro) \
-  __macro(cublasGemmEx);                     \
-  __macro(cublasSgemmStridedBatched);        \
-  __macro(cublasDgemmStridedBatched);        \
-  __macro(cublasCgemmStridedBatched);        \
-  __macro(cublasZgemmStridedBatched);        \
-  __macro(cublasHgemmStridedBatched);
-
-CUBLAS_BLAS_ROUTINE_EACH_R2(DECLARE_DYNAMIC_LOAD_CUBLAS_WRAP)
+// NVIDIA's cublas_v2.h defines: #define cublasSetWorkspace
+// cublasSetWorkspace_v2 The actual exported symbol in NVIDIA's libcublas.so is
+// cublasSetWorkspace_v2, so dlsym must look up "cublasSetWorkspace_v2" (the _v2
+// name). Non-NVIDIA toolchains (e.g. Iluvatar/COREX) do NOT define this macro
+// and export only "cublasSetWorkspace" in their shared library. We use #ifdef
+// to detect which symbol name dlsym should look up.
+#if !defined(_WIN32)
+#ifdef cublasSetWorkspace  // NVIDIA: macro maps to cublasSetWorkspace_v2
+#define CUBLAS_WORKSPACE_ROUTINE(__macro) __macro(cublasSetWorkspace_v2);
+#else  // Iluvatar/COREX: only cublasSetWorkspace exists
+#define CUBLAS_WORKSPACE_ROUTINE(__macro) __macro(cublasSetWorkspace);
+#endif
+CUBLAS_WORKSPACE_ROUTINE(DECLARE_DYNAMIC_LOAD_CUBLAS_WRAP)
 #endif
 
-// APIs available after CUDA 9.0
-#if CUDA_VERSION >= 9000
-#define CUBLAS_BLAS_ROUTINE_EACH_R3(__macro) \
-  __macro(cublasSetMathMode);                \
-  __macro(cublasGetMathMode);
+#if CUDA_VERSION >= 12030 && defined(__linux__)
+#define CUBLAS_BLAS_ROUTINE_EACH_R5(__macro) \
+  __macro(cublasSgemv_v2_64);                \
+  __macro(cublasDgemv_v2_64);                \
+  __macro(cublasCgemv_v2_64);                \
+  __macro(cublasZgemv_v2_64);                \
+  __macro(cublasSgemm_v2_64);                \
+  __macro(cublasDgemm_v2_64);                \
+  __macro(cublasCgemm_v2_64);                \
+  __macro(cublasZgemm_v2_64);                \
+  __macro(cublasGemmStridedBatchedEx_64);    \
+  __macro(cublasGemmEx_64);
 
-CUBLAS_BLAS_ROUTINE_EACH_R3(DECLARE_DYNAMIC_LOAD_CUBLAS_WRAP)
-#endif
-
-// APIs available after CUDA 9.1
-#if CUDA_VERSION >= 9010
-#define CUBLAS_BLAS_ROUTINE_EACH_R4(__macro) \
-  __macro(cublasGemmBatchedEx);              \
-  __macro(cublasGemmStridedBatchedEx);
-
-CUBLAS_BLAS_ROUTINE_EACH_R4(DECLARE_DYNAMIC_LOAD_CUBLAS_WRAP)
+CUBLAS_BLAS_ROUTINE_EACH_R5(DECLARE_DYNAMIC_LOAD_CUBLAS_WRAP)
 #endif
 
 #undef DECLARE_DYNAMIC_LOAD_CUBLAS_WRAP

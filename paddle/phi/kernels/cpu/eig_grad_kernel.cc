@@ -23,18 +23,17 @@ template <typename T, typename Context>
 void EigGradKernel(const Context& dev_ctx,
                    const DenseTensor& out_w,
                    const DenseTensor& out_v,
-                   const DenseTensor& dout_w,
-                   const DenseTensor& dout_v,
+                   const optional<DenseTensor>& dout_w,
+                   const optional<DenseTensor>& dout_v,
                    DenseTensor* dx) {
-  auto* dx_data = dev_ctx.template Alloc<phi::dtype::Complex<T>>(dx);
-
-  auto& dims = out_v.dims();
-  phi::DDim dim_origin = dims;
-  int num_dims = dim_origin.size();
+  auto* dx_data = dev_ctx.template Alloc<dtype::Complex<T>>(dx);
+  if (dx->numel() == 0) {
+    return;
+  }
   int batch_count = BatchCount(out_v);
-  const int order = static_cast<int>(dim_origin[num_dims - 1]);
+  const int order = static_cast<int>(out_v.dims(-1));
 
-  ComputeBackwardForComplexInput<phi::dtype::Complex<T>, Context>(
+  ComputeBackwardForComplexInput<dtype::Complex<T>, Context>(
       out_w, out_v, dout_w, dout_v, dx_data, batch_count, order, dev_ctx);
 }
 
@@ -46,8 +45,8 @@ PD_REGISTER_KERNEL(eig_grad,
                    phi::EigGradKernel,
                    float,
                    double,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {
+                   phi::complex64,
+                   phi::complex128) {
   kernel->InputAt(0).SetDataType(phi::dtype::ToReal(kernel_key.dtype()));
   kernel->InputAt(2).SetDataType(phi::dtype::ToReal(kernel_key.dtype()));
   kernel->OutputAt(0).SetDataType(phi::dtype::ToComplex(kernel_key.dtype()));

@@ -18,19 +18,23 @@ namespace phi {
 namespace fusion {
 
 template <typename T, typename Context>
-void MultiHeadAttentionVariableForwardKernel(
-    const Context& ctx,
-    const DenseTensor& query,
-    const DenseTensor& key,
-    const DenseTensor& value,
-    const DenseTensor& seq_lens,
-    const DenseTensor& kv_seq_lens,
-    const paddle::optional<DenseTensor>& mask,
-    const float scale,
-    const bool causal,
-    const int pre_cache_length,
-    DenseTensor* output) {
-  ctx.template Alloc<T>(output);
+void MultiHeadAttentionVariableForwardKernel(const Context& dev_ctx,
+                                             const DenseTensor& query,
+                                             const DenseTensor& key,
+                                             const DenseTensor& value,
+                                             const DenseTensor& seq_lens,
+                                             const DenseTensor& kv_seq_lens,
+                                             const optional<DenseTensor>& mask,
+                                             const float scale,
+                                             const bool causal,
+                                             const int pre_cache_length,
+                                             DenseTensor* output) {
+  dev_ctx.template Alloc<T>(output);
+  if (output->numel() == 0) return;
+  // If seq_lens or kv_seq_lens is a 0-size tensor, no valid sequence lengths
+  // are provided, so there is nothing to compute.
+  if (seq_lens.numel() == 0 || kv_seq_lens.numel() == 0) return;
+
   Params params{};
   // [B, N, S, H]
   params.seq_lens = seq_lens.data<int>();
@@ -65,7 +69,8 @@ void MultiHeadAttentionVariableForwardKernel(
   params.causal = causal;
   params.pre_cache_length = pre_cache_length;
 
-  if (mask) {
+  // if the mask is 0-size tensor, we don't need to set mask_ptr
+  if (mask && mask.get().numel() > 0) {
     // [B, 1, S, D]
     auto mask_tensor = mask.get();
     int64_t mask_num_heads = mask_tensor.dims()[1];
@@ -108,10 +113,13 @@ void MultiHeadAttentionVariableForwardKernel(
     if (params.head_size % KernelType::MM0::kAlignmentA) {
       return;
     }
+    if (params.value_head_size % KernelType::MM0::kAlignmentB) {
+      return;
+    }
     kernel_launched = true;
-    kernel_fn(k_, params, ctx);
+    kernel_fn(k_, params, dev_ctx);
   };
-  dispatch_cutlass_forward<T, decltype(launchKernel)>(ctx, launchKernel);
+  dispatch_cutlass_forward<T, decltype(launchKernel)>(dev_ctx, launchKernel);
   PADDLE_ENFORCE_EQ(
       kernel_launched,
       true,
@@ -126,7 +134,7 @@ PD_REGISTER_KERNEL(variable_length_memory_efficient_attention,
                    ALL_LAYOUT,
                    phi::fusion::MultiHeadAttentionVariableForwardKernel,
                    float,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {
+                   phi::float16,
+                   phi::bfloat16) {
   kernel->InputAt(3).SetDataType(phi::DataType::INT32);
 }

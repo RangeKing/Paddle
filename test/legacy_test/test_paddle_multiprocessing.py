@@ -11,11 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 import gc
 import os
 import time
 import unittest
+
+from op_test import get_device, is_custom_device
 
 import paddle
 import paddle.incubate.multiprocessing as mp
@@ -49,6 +50,28 @@ def send_parambase(queue, event, device, dtype):
     queue.put(tensor)
     queue.put(tensor)
     event.wait()
+
+
+def check_ipc_tensor(event, ipc_metas):
+    ground_truth1 = paddle.to_tensor([1, 2, 3])
+    ground_truth2 = paddle.to_tensor([3, 4, 5])
+    shared_ipc_tensor = paddle.to_tensor(
+        paddle.base.core.DenseTensor._new_shared_cuda(ipc_metas)
+    )
+    paddle.cuda.ipc_collect()
+
+    def tensor_equal(t1, t2):
+        return (t1 == t2).all().item()
+
+    # Step1: Check initial value of ipc tensor
+    while not tensor_equal(ground_truth1, shared_ipc_tensor):
+        time.sleep(0.1)
+    event.set()
+
+    # Step2: Check ipc tensor after update
+    while not tensor_equal(ground_truth2, shared_ipc_tensor):
+        time.sleep(0.1)
+    event.set()
 
 
 class leak_checker:
@@ -143,7 +166,7 @@ class TestMultiprocessingBase(unittest.TestCase):
             self.assertTrue(data[0].equal(5).all())
             self.assertTrue(data[1].equal(5).all())
 
-            process.join(1 if device != "gpu" else 10)
+            process.join(1 if device != get_device() else 10)
             self.assertFalse(process.is_alive())
 
         def test_receive():
@@ -164,7 +187,7 @@ class TestMultiprocessingBase(unittest.TestCase):
             del t1, t2
 
             event.set()
-            process.join(1 if device != "gpu" else 10)
+            process.join(1 if device != get_device() else 10)
             self.assertFalse(process.is_alive())
 
         with leak_checker(self) as lc:
@@ -198,15 +221,39 @@ class TestMultiprocessingCpu(TestMultiprocessingBase):
 
 class TestMultiprocessingGpu(TestMultiprocessingBase):
     @unittest.skipIf(
-        not paddle.base.core.is_compiled_with_cuda(),
+        not (paddle.base.core.is_compiled_with_cuda() or is_custom_device()),
         "core is not compiled with CUDA",
     )
     def func_test_pass_tensor(self):
-        paddle.set_device("gpu")
-        self._test_sharing(mp.get_context("spawn"), "gpu")
+        paddle.set_device(get_device())
+        self._test_sharing(mp.get_context("spawn"), get_device())
 
     def test_pass_tensor(self):
         self.func_test_pass_tensor()
+
+    def test_ipc_tensor(self):
+        paddle.device.set_device(get_device())
+        initial_tensor = paddle.to_tensor([1, 2, 3])
+        bonus = paddle.to_tensor([2])
+        ipc_metas = initial_tensor.value().get_tensor()._share_cuda()
+        ctx = mp.get_context("spawn")
+        event = ctx.Event()
+        process = ctx.Process(target=check_ipc_tensor, args=(event, ipc_metas))
+        process.daemon = True
+        process.start()
+
+        # Step1: Check initial value of ipc tensor
+        event.wait(30)
+        self.assertTrue(event.is_set())
+
+        # Step2: Check ipc tensor after update
+        event.clear()
+        initial_tensor.add_(bonus)
+        event.wait(30)
+        self.assertTrue(event.is_set())
+
+        process.join(10)
+        self.assertFalse(process.is_alive())
 
 
 if __name__ == "__main__":

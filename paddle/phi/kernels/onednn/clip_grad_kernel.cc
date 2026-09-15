@@ -42,13 +42,9 @@ void ClipGradKernel(const Context& dev_ctx,
                                   {DNNL_ARG_DIFF_SRC, *diff_src_memory_p}});
   astream.wait();
 
-  x_grad->set_mem_desc(diff_dst_memory_p->get_desc());
+  phi::funcs::SetOneDNNMemDesc(x_grad, diff_dst_memory_p->get_desc());
 }
 }  // namespace phi
 
-PD_REGISTER_KERNEL(clip_grad,
-                   OneDNN,
-                   ONEDNN,
-                   phi::ClipGradKernel,
-                   float,
-                   phi::dtype::bfloat16) {}
+PD_REGISTER_KERNEL(
+    clip_grad, OneDNN, ONEDNN, phi::ClipGradKernel, float, phi::bfloat16) {}

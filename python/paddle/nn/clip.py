@@ -26,6 +26,7 @@ from paddle.base import core, framework, unique_name
 from paddle.base.data_feeder import check_variable_and_dtype
 from paddle.base.libpaddle import DataType
 from paddle.common_ops_import import Variable, check_type, default_main_program
+from paddle.distributed.utils.moe_utils import get_complete_pp_mesh
 from paddle.framework import (
     LayerHelper,
     in_dynamic_mode,
@@ -68,7 +69,7 @@ def clip_by_norm(x, max_norm, name=None):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.nn import clip
@@ -122,15 +123,18 @@ def merge_selected_rows(x, name=None):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> import paddle.base as base
 
             >>> b = paddle.static.default_main_program().global_block()
             >>> var = b.create_var(
-            ...     name="X", dtype="float32", persistable=True,
-            ...     type=base.core.VarDesc.VarType.SELECTED_ROWS)
+            ...     name="X",
+            ...     dtype="float32",
+            ...     persistable=True,
+            ...     type=base.core.VarDesc.VarType.SELECTED_ROWS,
+            ... )
             >>> y = paddle.nn.clip.merge_selected_rows(var)
     """
     if in_dynamic_or_pir_mode():
@@ -175,7 +179,7 @@ def get_tensor_from_selected_rows(x, name=None):
         Variable: DenseTensor transformed from SelectedRows. The data type is same with input.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> import paddle.base as base
@@ -188,7 +192,12 @@ def get_tensor_from_selected_rows(x, name=None):
             >>> x = scope.var('X').get_selected_rows()
             >>> x.set_rows(x_rows)
             >>> x.set_height(height)
-            >>> x = block.create_var(name="X", dtype="float32", persistable=True, type=base.core.VarDesc.VarType.SELECTED_ROWS)
+            >>> x = block.create_var(
+            ...     name="X",
+            ...     dtype="float32",
+            ...     persistable=True,
+            ...     type=base.core.VarDesc.VarType.SELECTED_ROWS,
+            ... )
             >>> z = paddle.nn.clip.get_tensor_from_selected_rows(x)
     """
     if in_pir_mode():
@@ -239,6 +248,18 @@ def _cast_to_mp_type_if_enabled(x):
         return x
 
 
+def _can_inplace_clip_grad(grad: Tensor, clip_input: Tensor):
+    if not grad._is_initialized() or not clip_input._is_initialized():
+        return False
+
+    # 1. Inplace ops only support DistTensor and DenseTensor.
+    # 2. Inplace ops do not support 0-D tensor.
+    if (grad.is_dist() or grad.is_dense()) and len(grad.shape) != 0:
+        return True
+
+    return False
+
+
 def _squared_l2_norm(x):
     r"""
     Return the squared L2 norm of a tensor.
@@ -286,7 +307,7 @@ class ErrorClipByValue(BaseErrorClipAttr):
         will be set to ``-max`` by framework.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -413,13 +434,16 @@ class ClipGradByValue(ClipGradBase):
             automatically. In this case, ``max`` must be greater than :math:`0`.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> x = paddle.uniform([10, 10], min=-1.0, max=1.0, dtype='float32')
-            >>> linear = paddle.nn.Linear(in_features=10, out_features=10,
-            ...                           weight_attr=paddle.ParamAttr(need_clip=True),
-            ...                           bias_attr=paddle.ParamAttr(need_clip=False))
+            >>> linear = paddle.nn.Linear(
+            ...     in_features=10,
+            ...     out_features=10,
+            ...     weight_attr=paddle.ParamAttr(need_clip=True),
+            ...     bias_attr=paddle.ParamAttr(need_clip=False),
+            ... )
             >>> out = linear(x)
             >>> loss = paddle.mean(out)
             >>> loss.backward()
@@ -521,7 +545,7 @@ class ClipGradByNorm(ClipGradBase):
         clip_norm(float): The maximum norm value.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> x = paddle.uniform([10, 10], min=-1.0, max=1.0, dtype='float32')
@@ -656,13 +680,16 @@ class ClipGradByGlobalNorm(ClipGradBase):
         auto_skip_clip (bool, optional): skip clipping gradient. Default value is ``False``.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> x = paddle.uniform([10, 10], min=-1.0, max=1.0, dtype='float32')
-            >>> linear = paddle.nn.Linear(in_features=10, out_features=10,
-            ...                           weight_attr=paddle.ParamAttr(need_clip=True),
-            ...                           bias_attr=paddle.ParamAttr(need_clip=False))
+            >>> linear = paddle.nn.Linear(
+            ...     in_features=10,
+            ...     out_features=10,
+            ...     weight_attr=paddle.ParamAttr(need_clip=True),
+            ...     bias_attr=paddle.ParamAttr(need_clip=False),
+            ... )
             >>> out = linear(x)
             >>> loss = paddle.mean(out)
             >>> loss.backward()
@@ -704,6 +731,7 @@ class ClipGradByGlobalNorm(ClipGradBase):
         sum_square_list = []
         sum_square_list_fp16 = []
         sum_square_list_fp32 = []
+        flag_auto_hybrid_pp = True  # Determine whether to use the new dynamic graph semi-automatic parallel pp framework
         if len(params_grads) > 0 and len(params_grads[0]) > 0:
             src_mesh = params_grads[0][0].process_mesh
         else:
@@ -729,6 +757,14 @@ class ClipGradByGlobalNorm(ClipGradBase):
             # if the gradient mesh is not equal to src mesh
             # do reshard to get the result of squared_l2 from other pp stage mesh
             if src_mesh is not None and g.process_mesh != src_mesh:
+                flag_auto_hybrid_pp = False
+                pp_mesh = get_complete_pp_mesh(g.process_mesh)
+                if set(g.process_mesh.process_ids) < set(pp_mesh.process_ids):
+                    flag_auto_hybrid_pp = True
+                    sum_square = dist.reshard(
+                        sum_square, pp_mesh, sum_square.placements
+                    )
+
                 sum_square = dist.reshard(
                     sum_square, src_mesh, sum_square.placements
                 )
@@ -743,7 +779,7 @@ class ClipGradByGlobalNorm(ClipGradBase):
             else:
                 sum_square_list.append(sum_square)
 
-        # all parameters have been filterd out
+        # all parameters have been filtered out
         if (
             len(sum_square_list)
             + len(sum_square_list_fp16)
@@ -771,9 +807,56 @@ class ClipGradByGlobalNorm(ClipGradBase):
             global_norm_var.append(global_norm_var_fp64)
 
         global_norm_var = async_add_n(global_norm_var)
+
+        # NOTE(zhengtianyu): Fix grad_clip in auto_hybrid_pp mode.
+        # Reason: In auto_hybrid_pp mode, each rank only keeps local parameters and gradient information,
+        # so global_norm_var is in a partial state, leading to incorrect calculation.
+        # Reference dynamic manual-parallel: Each rank computes local global_norm_var,
+        # then performs pp group communication reduce(sum) to get correct global_norm_var.
+        # For complete alignment with old dygraph semi-auto parallel PP logic,
+        # refer to NOTE: align ClipGradByGlobalNorm in auto_parallel_align_mode
+        if flag_auto_hybrid_pp and src_mesh is not None:
+            g_mesh = dist.get_mesh()
+            if (
+                g_mesh
+                and "pp" in g_mesh.dim_names
+                and g_mesh.get_dim_size("pp") > 1
+            ):
+                # Get the pipeline parallelism subgroup for communication
+                pp_group = g_mesh.get_submesh_with_dim("pp").get_group("pp")
+
+                # Perform all-reduce on the local tensor value across the PP group
+                global_norm_var_local = global_norm_var._local_value()
+                dist.all_reduce(
+                    global_norm_var_local,
+                    op=dist.ReduceOp.SUM,
+                    group=pp_group,
+                )
+
+                global_norm_var = dist.shard_tensor(
+                    global_norm_var_local,
+                    global_norm_var.process_mesh,
+                    global_norm_var.placements,
+                )
+
+        if self.should_comm_on_shard_dim and hasattr(self, 'sharding_group'):
+            paddle.distributed.all_reduce(
+                global_norm_var._local_value(), group=self.sharding_group
+            ).wait()
+
+        if self.should_comm_on_shard_dim and hasattr(self, 'mp_group'):
+            paddle.distributed.all_reduce(
+                global_norm_var._local_value(), group=self.mp_group
+            ).wait()
+
+        if self.should_comm_on_shard_dim and hasattr(self, 'fsdp_group'):
+            paddle.distributed.all_reduce(
+                global_norm_var, group=self.fsdp_group
+            ).wait()
+
         global_norm_var = paddle.sqrt(global_norm_var)
         max_global_norm = paddle.full(
-            shape=[], dtype=sum_dtype, fill_value=self.clip_norm
+            shape=[1], dtype=sum_dtype, fill_value=self.clip_norm
         )
 
         need_clip = False
@@ -821,11 +904,25 @@ class ClipGradByGlobalNorm(ClipGradBase):
                                 "Reshard a sharded tensor from a local mesh to a global mesh is not supported"
                             )
                     else:
+                        pp_mesh = get_complete_pp_mesh(g.process_mesh)
+
+                        if set(g.process_mesh.process_ids) < set(
+                            pp_mesh.process_ids
+                        ):
+                            clip_input = dist.reshard(
+                                clip_input, pp_mesh, clip_input.placements
+                            )
+
                         clip_input = paddle.distributed.reshard(
                             clip_input, g.process_mesh, clip_input.placements
                         )
-                new_grad = paddle.multiply(g, clip_input)
-                params_and_grads.append((p, new_grad))
+
+                if _can_inplace_clip_grad(g, clip_input):
+                    g.multiply_(clip_input)
+                    params_and_grads.append((p, g))
+                else:
+                    new_grad = paddle.multiply(g, clip_input)
+                    params_and_grads.append((p, new_grad))
             else:
                 params_and_grads.append((p, g))
 
@@ -839,12 +936,12 @@ class ClipGradByGlobalNorm(ClipGradBase):
         no_fusion_sum_square_fp16 = []
         no_fusion_sum_square_fp32 = []
 
-        # fusion grad need to commnuicate in dp&mp
+        # fusion grad need to communicate in dp&mp
         sum_square_dist = []
         sum_square_dist_fp16 = []
         sum_square_dist_fp32 = []
 
-        # fusion grad only need to commnuicate in dp
+        # fusion grad only need to communicate in dp
         sum_square_not_dist = []
         sum_square_not_dist_fp16 = []
         sum_square_not_dist_fp32 = []
@@ -935,7 +1032,7 @@ class ClipGradByGlobalNorm(ClipGradBase):
                 else:
                     sum_square_not_dist.append(sum_square)
 
-        # all parameters have been filterd out
+        # all parameters have been filtered out
         if (
             len(no_fusion_sum_square)
             + len(no_fusion_sum_square_fp16)
@@ -1018,11 +1115,11 @@ class ClipGradByGlobalNorm(ClipGradBase):
             )
 
         if self.should_comm_on_shard_dim and self.has_dist_param:
-            global_norm_dist_var = paddle._C_ops.c_allreduce_sum(
-                global_norm_dist_var, self.sharding_group.id, True, False
+            global_norm_dist_var = paddle._C_ops.all_reduce(
+                global_norm_dist_var, self.sharding_group.id, dist.ReduceOp.SUM
             )
-            global_norm_dist_var = paddle._C_ops.c_allreduce_sum(
-                global_norm_dist_var, self.mp_group.id, True, False
+            global_norm_dist_var = paddle._C_ops.all_reduce(
+                global_norm_dist_var, self.mp_group.id, dist.ReduceOp.SUM
             )
             if global_norm_var is None:
                 global_norm_var = global_norm_dist_var
@@ -1036,8 +1133,10 @@ class ClipGradByGlobalNorm(ClipGradBase):
                 shape=[1], dtype=sum_dtype, fill_value=0.0
             )
         if self.should_comm_on_shard_dim and self.has_not_dist_param:
-            global_norm_not_dist_var = paddle._C_ops.c_allreduce_sum(
-                global_norm_not_dist_var, self.sharding_group.id, True, False
+            global_norm_not_dist_var = paddle._C_ops.all_reduce(
+                global_norm_not_dist_var,
+                self.sharding_group.id,
+                dist.ReduceOp.SUM,
             )
             if global_norm_var is None:
                 global_norm_var = global_norm_not_dist_var
@@ -1135,7 +1234,7 @@ class ClipGradByGlobalNorm(ClipGradBase):
                     'FP16 and BF16 are not supported at the same time.'
                 )
 
-            # all parameters have been filterd out
+            # all parameters have been filtered out
             if (
                 len(sum_square_list)
                 + len(sum_square_list_fp16)
@@ -1341,15 +1440,18 @@ def set_gradient_clip(clip, param_list=None, program=None):
         None
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
             >>> paddle.enable_static()
 
             >>> def network():
-            ...     image = paddle.static.data(name='image', shape=[
-            ...                        None, 28], dtype='float32')
+            ...     image = paddle.static.data(
+            ...         name='image',
+            ...         shape=[None, 28],
+            ...         dtype='float32',
+            ...     )
             ...     param_attr1 = paddle.ParamAttr("fc1_param")
             ...     fc1 = paddle.static.nn.fc(image, size=10, weight_attr=param_attr1)
             ...     param_attr2 = paddle.ParamAttr("fc2_param")
@@ -1362,7 +1464,8 @@ def set_gradient_clip(clip, param_list=None, program=None):
             >>> with paddle.static.program_guard(paddle.static.Program(), paddle.static.Program()):
             ...     loss = network()
             ...     paddle.nn.clip.set_gradient_clip(
-            ...         paddle.nn.ClipGradByGlobalNorm(clip_norm=2.0))
+            ...         paddle.nn.ClipGradByGlobalNorm(clip_norm=2.0),
+            ...     )
             ...     sgd = paddle.optimizer.SGD(learning_rate=1e-3)
             ...     sgd.minimize(loss)
 
@@ -1371,7 +1474,8 @@ def set_gradient_clip(clip, param_list=None, program=None):
             ...     loss = network()
             ...     paddle.nn.clip.set_gradient_clip(
             ...         paddle.nn.ClipGradByValue(min=-1.0, max=1.0),
-            ...         param_list=["fc1_param", "fc2_param"])
+            ...         param_list=["fc1_param", "fc2_param"],
+            ...     )
             ...     sgd = paddle.optimizer.SGD(learning_rate=1e-3)
             ...     sgd.minimize(loss)
 
@@ -1382,7 +1486,8 @@ def set_gradient_clip(clip, param_list=None, program=None):
             ...     param_var2 = paddle.static.default_main_program().global_block().var("fc2_param")
             ...     paddle.nn.clip.set_gradient_clip(
             ...         paddle.nn.ClipGradByValue(min=-1.0, max=1.0),
-            ...         param_list=[param_var1, param_var2])
+            ...         param_list=[param_var1, param_var2],
+            ...     )
             ...     sgd = paddle.optimizer.SGD(learning_rate=1e-3)
             ...     sgd.minimize(loss)
 
@@ -1407,7 +1512,7 @@ def set_gradient_clip(clip, param_list=None, program=None):
         "We recommend a new strategy: set 'grad_clip' "
         "when initializing the 'optimizer'. "
         "This method can reduce the mistakes, please "
-        "refer to documention of 'optimizer'."
+        "refer to documentation of 'optimizer'."
     )
 
     if not isinstance(clip, ClipGradBase):
@@ -1445,8 +1550,9 @@ def append_gradient_clip_ops(param_grads):
     for p, g in param_grads:
         if g is None:
             continue
-        with p.block.program._optimized_guard([p, g]), framework.name_scope(
-            'gradient_clip'
+        with (
+            p.block.program._optimized_guard([p, g]),
+            framework.name_scope('gradient_clip'),
         ):
             clip_attr = getattr(p, 'gradient_clip_attr', None)
             if clip_attr is None:
@@ -1463,8 +1569,9 @@ def append_gradient_clip_ops(param_grads):
     for p, g in param_grads:
         if g is None:
             continue
-        with p.block.program._optimized_guard([p, g]), framework.name_scope(
-            'gradient_clip'
+        with (
+            p.block.program._optimized_guard([p, g]),
+            framework.name_scope('gradient_clip'),
         ):
             param, new_grad = clip_attr._create_operators(param=p, grad=g)
             param_new_grad_name_dict[param.name] = new_grad.name

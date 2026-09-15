@@ -11,6 +11,7 @@ limitations under the License. */
 
 #include "paddle/phi/backends/onednn/onednn_reuse.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/full_kernel.h"
 
 namespace phi {
 
@@ -19,8 +20,13 @@ void ReshapeGradKernel(const Context& dev_ctx,
                        const DenseTensor& x,
                        const DenseTensor& out_grad,
                        DenseTensor* x_grad) {
+  if ((x_grad && x_grad->numel() == 0) || out_grad.numel() == 0) {
+    Full<T, Context>(dev_ctx, x_grad->dims(), 0, x_grad);
+    return;
+  }
+
   auto out_grad_vec_dims = out_grad.dims().size() != 0
-                               ? common::vectorize(out_grad.dims())
+                               ? vectorize(out_grad.dims())
                                : std::vector<int64_t>{1};
 
   auto out_grad_type = funcs::ToOneDNNDataType(out_grad.dtype());
@@ -28,8 +34,9 @@ void ReshapeGradKernel(const Context& dev_ctx,
   funcs::ReorderOneDNNHandler reorder_handler(
       out_grad_vec_dims, out_grad.dtype(), out_grad_type, dev_ctx.GetEngine());
 
-  auto reorder_src_memory_p = reorder_handler.AcquireSrcMemory(
-      out_grad.mem_desc(), funcs::to_void_cast(out_grad.data<T>()));
+  auto reorder_src_memory_p =
+      reorder_handler.AcquireSrcMemory(phi::funcs::GetOneDNNMemDesc(out_grad),
+                                       funcs::to_void_cast(out_grad.data<T>()));
   auto reorder_dst_memory_p = reorder_handler.AcquireDstMemory(
       x_grad,
       funcs::GetPlainOneDNNFormat(out_grad_vec_dims.size()),
@@ -42,7 +49,7 @@ void ReshapeGradKernel(const Context& dev_ctx,
   astream.wait();
 
   auto grad_shape = x.dims().size() == 0 ? std::vector<int64_t>{1}
-                                         : phi::vectorize<int64_t>(x.dims());
+                                         : vectorize<int64_t>(x.dims());
   reorder_dst_memory_p->get_desc().reshape(grad_shape);
 }
 
@@ -53,4 +60,4 @@ PD_REGISTER_KERNEL(reshape_grad,
                    ONEDNN,
                    phi::ReshapeGradKernel,
                    float,
-                   phi::dtype::bfloat16) {}
+                   phi::bfloat16) {}

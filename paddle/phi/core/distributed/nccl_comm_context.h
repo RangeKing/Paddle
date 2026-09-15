@@ -22,10 +22,13 @@
 #include <hip/hip_runtime.h>
 #endif
 
+#include <unordered_map>
+
 #include "paddle/common/macros.h"
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/backends/gpu/gpu_decls.h"
 #include "paddle/phi/core/distributed/comm_context.h"
+#include "paddle/phi/core/distributed/nccl_config.h"
 
 #if defined(PADDLE_WITH_RCCL)
 #include "paddle/phi/backends/dynload/rccl.h"
@@ -39,15 +42,23 @@ namespace distributed {
 
 class NCCLCommContext final : public CommContext {
  public:
-  NCCLCommContext(int rank,
-                  int size,
-                  ncclUniqueId nccl_id,
-                  int nccl_comm_init_option = 0);
+  NCCLCommContext(
+      int rank,
+      int size,
+      ncclUniqueId nccl_id,
+      int nccl_comm_init_option = 0,
+      std::shared_ptr<phi::distributed::NCCLConfig> nccl_config_ptr = nullptr);
   ~NCCLCommContext() override = default;
 
   int GetNcclVersion();
 
   ncclComm_t GetNcclComm();
+
+  void CreateNCCLComm(
+      ncclUniqueId nccl_id,
+      std::shared_ptr<phi::distributed::NCCLConfig> nccl_config_ptr = nullptr);
+
+  void DestroyNCCLComm();
 
   gpuStream_t GetStream();
 
@@ -66,37 +77,37 @@ class NCCLCommContext final : public CommContext {
 
   void SetDevContext(std::unique_ptr<phi::GPUContext>&& dev_ctx);
 
-  void Broadcast(phi::DenseTensor* out_tensor,
-                 const phi::DenseTensor& in_tensor,
+  void Broadcast(DenseTensor* out_tensor,
+                 const DenseTensor& in_tensor,
                  int root,
                  gpuStream_t stream);
 
-  void Send(const phi::DenseTensor& in_tensor,
+  void Send(const DenseTensor& in_tensor,
             const int64_t& count,
             const int& peer,
             gpuStream_t stream);
 
-  void Recv(phi::DenseTensor* out_tensor,
+  void Recv(DenseTensor* out_tensor,
             const int64_t& count,
             const int& peer,
             gpuStream_t stream);
 
-  void ReduceScatter(phi::DenseTensor* out_tensor,
-                     const phi::DenseTensor& in_tensor,
+  void ReduceScatter(DenseTensor* out_tensor,
+                     const DenseTensor& in_tensor,
                      ncclRedOp_t reduce_type,
                      gpuStream_t stream);
 
-  void AllGather(phi::DenseTensor* out_tensor,
-                 const phi::DenseTensor& in_tensor,
+  void AllGather(DenseTensor* out_tensor,
+                 const DenseTensor& in_tensor,
                  gpuStream_t stream);
 
-  void AllReduce(phi::DenseTensor* out_tensor,
-                 const phi::DenseTensor& in_tensor,
+  void AllReduce(DenseTensor* out_tensor,
+                 const DenseTensor& in_tensor,
                  ncclRedOp_t reduce_type,
                  gpuStream_t stream);
 
-  void Reduce(phi::DenseTensor* out_tensor,
-              const phi::DenseTensor& in_tensor,
+  void Reduce(DenseTensor* out_tensor,
+              const DenseTensor& in_tensor,
               ncclRedOp_t reduce_type,
               int root,
               gpuStream_t stream);
@@ -104,6 +115,41 @@ class NCCLCommContext final : public CommContext {
   void GroupStart();
 
   void GroupEnd();
+
+  // Registers a device buffer as a NCCL symmetric memory window, which is what
+  // makes the zero-SM paths (NCCL_CTA_POLICY_ZERO) usable, and returns the
+  // window handle as an opaque pointer. Registration is collective: every rank
+  // must register buffers of the same size in the same order, and a single
+  // collective call must have either all of its buffers registered or none.
+  // `ptr` and `size` must be aligned to kNCCLWindowAlignment. Repeated calls
+  // for the same `ptr` return the cached handle; returns nullptr when the
+  // loaded NCCL provides no window API.
+  void* RegisterWindow(void* ptr, size_t size, int win_flags);
+
+  // Deregisters a previously registered buffer. No-op for unknown pointers.
+  void DeregisterWindow(void* ptr);
+
+  // Deregisters every window owned by this communicator, before it is
+  // destroyed.
+  void DeregisterAllWindows();
+
+  // True when [ptr, ptr + size) lies inside a window registered here, i.e. when
+  // a collective over that buffer may take a symmetric-memory path.
+  bool IsRegistered(const void* ptr, size_t size) const;
+
+  // True when the loaded NCCL provides the single-call all-to-all, the only
+  // all-to-all entry point that can reach the zero-SM path. A group of
+  // Send/Recv calls always runs a point-to-point device kernel instead.
+  bool IsAllToAllAvailable() const;
+
+  // Symmetric all-to-all: rank j receives in_tensor[i * count, (i + 1) * count)
+  // from rank i, so every rank must contribute and receive the same count.
+  // Only call it when IsAllToAllAvailable() is true.
+  void AllToAll(DenseTensor* out_tensor,
+                const DenseTensor& in_tensor,
+                gpuStream_t stream);
+
+  static constexpr size_t kNCCLWindowAlignment = 4096;
 
 #if NCCL_VERSION_CODE >= 21100
   // Creates a new reduction operator which pre-multiplies input values by a
@@ -132,6 +178,21 @@ class NCCLCommContext final : public CommContext {
 
   // used for compute wait comm, comm_stream-->event-->compute_stream
   std::shared_ptr<std::remove_pointer<phi::gpuEvent_t>::type> comm_event_;
+
+  int nranks;
+  int myrank;
+  int param;
+
+  // A registered window: its NCCL handle and the byte range it covers, the
+  // range being what lets IsRegistered() accept a slice of a registered buffer.
+  struct RegisteredWindow {
+    void* handle{nullptr};
+    size_t size{0};
+  };
+
+  // Keyed by buffer pointer, so that registration is idempotent and every
+  // window can be released before the communicator is destroyed.
+  std::unordered_map<void*, RegisteredWindow> windows_;
 };
 
 }  // namespace distributed

@@ -43,7 +43,7 @@ def shard_tensor(x, process_mesh=None, shard_spec=None):
             current process mesh cannot be found. Default: None.
         shard_spec (list, optional): a list to describe the sharding mapping between `x` and `process_mesh`,
             which means the dimension `i` of `x` is split across the dimension `shard_spec[i]` of `process_mesh`,
-            where `None` means that tensor dimension is not split. For example, given a tensor wih
+            where `None` means that tensor dimension is not split. For example, given a tensor with
             the shape [6, 12] and a process mesh with the shape [2, 3] and the dimension names ["x", "y"]:
                 If `shard_spec=["x", "y"]`, each shard of the tensor will have a shape [3, 4];
                 If `shard_spec=["y", "x"]`, each shard of the tensor will have a shape [2, 6];
@@ -59,7 +59,7 @@ def shard_tensor(x, process_mesh=None, shard_spec=None):
         Tensor: the tensor `x` annotated with sharding information.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env:DISTRIBUTED)
             >>> import paddle
@@ -73,17 +73,17 @@ def shard_tensor(x, process_mesh=None, shard_spec=None):
     """
 
     if process_mesh is not None:
-        assert isinstance(
-            process_mesh, core.ProcessMesh
-        ), f"Argument process_mesh {process_mesh} is not an instance of ProcessMesh"
+        assert isinstance(process_mesh, core.ProcessMesh), (
+            f"Argument process_mesh {process_mesh} is not an instance of ProcessMesh"
+        )
     else:
         process_mesh = get_current_process_mesh()
-        assert (
-            process_mesh is not None
-        ), "Specify the process mesh argument or use ProcessMesh context manager first."
-    assert isinstance(
-        shard_spec, list
-    ), f"Argument shard_spec {shard_spec} is not an instance of list"
+        assert process_mesh is not None, (
+            "Specify the process mesh argument or use ProcessMesh context manager first."
+        )
+    assert isinstance(shard_spec, list), (
+        f"Argument shard_spec {shard_spec} is not an instance of list"
+    )
     if isinstance(x, str):
         x = (
             paddle.static.default_main_program()
@@ -100,9 +100,22 @@ def shard_tensor(x, process_mesh=None, shard_spec=None):
     else:
         tensor_shape = serial_tensor.shape
     if shard_spec is not None:
-        assert verify_shard_spec(
-            shard_spec, tensor_shape, process_mesh
-        ), f"For tensor {serial_tensor.name}, shard_spec {shard_spec} is invalid with tensor_shape {tensor_shape} and process_mesh {process_mesh}."
+        valid_dims = (
+            process_mesh.get_dim_names()
+            if hasattr(process_mesh, "get_dim_names")
+            else process_mesh.dim_names
+        )
+        for i, dim in enumerate(shard_spec):
+            if dim is not None and (
+                not isinstance(dim, str) or dim not in valid_dims
+            ):
+                raise ValueError(
+                    f"Invalid shard_spec at index {i}: '{dim}' "
+                    f"is not a valid dimension name in process_mesh {valid_dims}."
+                )
+        assert verify_shard_spec(shard_spec, tensor_shape, process_mesh), (
+            f"For tensor {serial_tensor.name}, shard_spec {shard_spec} is invalid with tensor_shape {tensor_shape} and process_mesh {process_mesh}."
+        )
         dist_tensor.dist_attr.dims_mapping = convert_to_dims_mapping(
             shard_spec, process_mesh
         )
@@ -147,7 +160,7 @@ def shard_op(
         Outputs of `op`, each of which is annotated with sharding information.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.distributed.fleet import auto
@@ -155,23 +168,25 @@ def shard_op(
             >>> x = paddle.ones([4, 6])
             >>> y = paddle.zeros([4, 6])
             >>> mesh = auto.ProcessMesh([[0, 1], [2, 3]], dim_names=["x", "y"])
-            >>> dist_add = auto.shard_op(paddle.add,
-            ...                          mesh,
-            ...                          in_shard_specs=[["x", "y"], ["y", None]],
-            ...                          out_shard_specs=[[None, "x"]])
+            >>> dist_add = auto.shard_op(
+            ...     paddle.add,
+            ...     mesh,
+            ...     in_shard_specs=[["x", "y"], ["y", None]],
+            ...     out_shard_specs=[[None, "x"]],
+            ... )
             >>> dist_add(x, y)
 
     """
 
     if process_mesh is not None:
-        assert isinstance(
-            process_mesh, ProcessMesh
-        ), f"Argument process_mesh {process_mesh} is not an instance of ProcessMesh"
+        assert isinstance(process_mesh, ProcessMesh), (
+            f"Argument process_mesh {process_mesh} is not an instance of ProcessMesh"
+        )
     else:
         process_mesh = get_current_process_mesh()
-        assert (
-            process_mesh is not None
-        ), "Specify the process mesh argument or use ProcessMesh context manager first."
+        assert process_mesh is not None, (
+            "Specify the process mesh argument or use ProcessMesh context manager first."
+        )
     in_dims_mappings = []
     if in_shard_specs is not None:
         assert all(
@@ -330,7 +345,7 @@ def get_mesh() -> paddle.distributed.ProcessMesh:
         mesh (paddle.distributed.ProcessMesh): the global mesh.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> import paddle.distributed as dist
@@ -356,7 +371,7 @@ def set_mesh(mesh: paddle.distributed.ProcessMesh) -> None:
         None
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> import paddle.distributed as dist

@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "paddle/phi/kernels/shuffle_channel_grad_kernel.h"
 #include "paddle/phi/backends/gpu/gpu_primitives.h"
 #include "paddle/phi/core/dense_tensor.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/gpu/shuffle_channel.h"
-
 namespace phi {
 
 template <typename T, typename Context>
@@ -40,7 +40,7 @@ void ShuffleChannelGradOpCUDAKernel(const Context& dev_ctx,
 
   int blocks = NumBlocks(out_grad.numel());
   int threads = kNumCUDAThreads;
-  int count = num * group_column * group_row * sp_sz;
+  int64_t count = num * group_column * group_row * sp_sz;
 
   ShuffleChannel<T><<<blocks, threads, 0, dev_ctx.stream()>>>(count,
                                                               feature_map_size,

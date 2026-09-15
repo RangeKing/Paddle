@@ -22,12 +22,12 @@
 namespace phi {
 
 template <typename T, typename Context>
-void SendURecvGradKernel(const Context& ctx,
+void SendURecvGradKernel(const Context& dev_ctx,
                          const DenseTensor& x,
                          const DenseTensor& src_index,
                          const DenseTensor& dst_index,
-                         const paddle::optional<DenseTensor>& out,
-                         const paddle::optional<DenseTensor>& dst_count,
+                         const optional<DenseTensor>& out,
+                         const optional<DenseTensor>& dst_count,
                          const DenseTensor& out_grad,
                          const std::string& reduce_op,
                          DenseTensor* x_grad);

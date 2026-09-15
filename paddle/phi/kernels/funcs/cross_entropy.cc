@@ -20,19 +20,16 @@ limitations under the License. */
 namespace phi {
 namespace funcs {
 
-using Tensor = phi::DenseTensor;
-template <typename T,
-          int MajorType = Eigen::RowMajor,
-          typename IndexType = Eigen::DenseIndex>
-using EigenMatrix = phi::EigenMatrix<T, MajorType, IndexType>;
+template <typename T, int MajorType = Eigen::RowMajor>
+using EigenMatrix = EigenMatrix<T, MajorType>;
 
 template <typename T>
 struct HardLabelCrossEntropyCPUFunctorImpl {
-  HardLabelCrossEntropyCPUFunctorImpl(phi::DenseTensor* out,
-                                      const phi::DenseTensor* prob,
-                                      const phi::DenseTensor* labels,
+  HardLabelCrossEntropyCPUFunctorImpl(DenseTensor* out,
+                                      const DenseTensor* prob,
+                                      const DenseTensor* labels,
                                       const int ignore_index,
-                                      const int axis_dim)
+                                      const int64_t axis_dim)
       : out_(out),
         prob_(prob),
         labels_(labels),
@@ -41,17 +38,19 @@ struct HardLabelCrossEntropyCPUFunctorImpl {
 
   template <typename U>
   void apply() const {
-    const int batch_size = prob_->dims()[0];
-    const int num_classes = prob_->dims()[1];
-    const int num_remain = num_classes / axis_dim_;
+    int64_t batch_size = prob_->dims()[0];
+
+    int64_t num_classes = prob_->dims()[1];
+
+    const int64_t num_remain = num_classes / axis_dim_;
 
     const T* prob_data = prob_->template data<T>();
     T* loss_data = out_->template data<T>();
 
     const auto* label_data = labels_->template data<U>();
-    for (int i = 0; i < batch_size; ++i) {
-      for (int j = 0; j < num_remain; j++) {
-        int lbl = static_cast<int>(label_data[i * num_remain + j]);  // NOLINT
+    for (int64_t i = 0; i < batch_size; ++i) {
+      for (int64_t j = 0; j < num_remain; j++) {
+        int64_t lbl = static_cast<int64_t>(label_data[i * num_remain + j]);
         if (lbl != ignore_index_) {
           PADDLE_ENFORCE_GE(lbl,
                             0,
@@ -67,51 +66,57 @@ struct HardLabelCrossEntropyCPUFunctorImpl {
                   "label value should less than the shape of axis dimension "
                   "when label value(%f) not equal to ignore_index(%f), But "
                   "received label value as %ld and shape of axis dimension "
-                  "is %d",
+                  "is %ld",
                   lbl,
                   ignore_index_,
                   lbl,
                   axis_dim_));
         }
-        int index = i * num_classes + lbl * num_remain + j;
-        int loss_idx = i * num_remain + j;
+        int64_t index = i * num_classes + lbl * num_remain + j;
+        int64_t loss_idx = i * num_remain + j;
         loss_data[loss_idx] =
             lbl == ignore_index_
                 ? 0
-                : -phi::funcs::TolerableValue<T>()(std::log(prob_data[index]));
+                : -funcs::TolerableValue<T>()(std::log(prob_data[index]));
       }
     }
   }
 
  private:
-  phi::DenseTensor* out_;
-  const phi::DenseTensor* prob_;
-  const phi::DenseTensor* labels_;
+  DenseTensor* out_;
+  const DenseTensor* prob_;
+  const DenseTensor* labels_;
   const int ignore_index_;
-  const int axis_dim_;
+  const int64_t axis_dim_;
 };
 
 template <typename DeviceContext, typename T>
 void CrossEntropyFunctor<DeviceContext, T>::operator()(
-    const DeviceContext& ctx,
-    phi::DenseTensor* out,
-    const phi::DenseTensor* prob,
-    const phi::DenseTensor* labels,
+    const DeviceContext& dev_ctx,
+    DenseTensor* out,
+    const DenseTensor* prob,
+    const DenseTensor* labels,
     const bool softLabel,
     const int ignore_index,
-    const int axis_dim) {
+    const int64_t axis_dim) {
   if (softLabel) {
+    // TODO(large-tensor): Eigen::DSizes not support int64
+    PADDLE_ENFORCE_LE_INT_MAX(prob->dims()[0], "prob->dims()[0]");
+    PADDLE_ENFORCE_LE_INT_MAX(prob->dims()[1], "prob->dims()[1]");
+    PADDLE_ENFORCE_LE_INT_MAX(axis_dim, "axis_dim");
     const int batch_size = static_cast<const int>(prob->dims()[0]);
     const int num_classes = static_cast<const int>(prob->dims()[1]);
-    const int num_remain = num_classes / axis_dim;
+    const int axis_dim_int = static_cast<int>(axis_dim);
+    const int num_remain = num_classes / axis_dim_int;
 
-    Eigen::DSizes<int, 3> batch_axis_remain(batch_size, axis_dim, num_remain);
+    Eigen::DSizes<int, 3> batch_axis_remain(
+        batch_size, axis_dim_int, num_remain);
     auto in = EigenMatrix<T>::From(*prob);
     auto lbl = EigenMatrix<T>::From(*labels);
     auto loss = EigenMatrix<T>::From(*out);
 
-    loss.device(*ctx.eigen_device()) =
-        -((lbl * in.log().unaryExpr(phi::funcs::TolerableValue<T>()))
+    loss.device(*dev_ctx.eigen_device()) =
+        -((lbl * in.log().unaryExpr(funcs::TolerableValue<T>()))
               .reshape(batch_axis_remain)
               .sum(Eigen::DSizes<int, 1>(1)));
   } else {
@@ -121,8 +126,8 @@ void CrossEntropyFunctor<DeviceContext, T>::operator()(
   }
 }
 
-template class CrossEntropyFunctor<phi::CPUContext, float>;
-template class CrossEntropyFunctor<phi::CPUContext, double>;
+template class CrossEntropyFunctor<CPUContext, float>;
+template class CrossEntropyFunctor<CPUContext, double>;
 
 }  // namespace funcs
 }  // namespace phi

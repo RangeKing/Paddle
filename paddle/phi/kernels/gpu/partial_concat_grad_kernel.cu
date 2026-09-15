@@ -11,10 +11,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
+#include "paddle/phi/kernels/gpu/partial_concat_grad_kernel.h"
 #include "paddle/phi/backends/gpu/gpu_context.h"
 
-#include "paddle/phi/common/float16.h"
+#include "paddle/phi/backends/gpu/cuda/cuda_graph_with_memory_pool.h"
 #include "paddle/phi/common/memory_utils.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/core/tensor_utils.h"
@@ -34,7 +34,9 @@ __global__ void ConcatPartialGradCUDAKernel(T **in,
                                             int64_t start_index,
                                             int64_t out_batch_len,
                                             int64_t part_length) {
-  int id = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t id =
+      static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x) +
+      static_cast<int64_t>(threadIdx.x);
   while (id < all_length) {
     int64_t bs_id = id / out_batch_len;
     int64_t bs_index = id % out_batch_len;
@@ -76,7 +78,7 @@ void PartialConcatGradOpCUDAKernel(const Context &dev_ctx,
   auto &place = *dev_ctx.eigen_device();
   for (size_t i = 0; i < outs.size(); ++i) {
     dev_ctx.template Alloc<T>(outs[i]);
-    auto dxt = phi::EigenVector<T>::Flatten(*outs[i]);
+    auto dxt = EigenVector<T>::Flatten(*outs[i]);
     dxt.device(place) = dxt.constant(static_cast<T>(0));
   }
 
@@ -107,11 +109,15 @@ void PartialConcatGradOpCUDAKernel(const Context &dev_ctx,
       out_data.size() * sizeof(T *),
       phi::Stream(reinterpret_cast<phi::StreamId>(dev_ctx.stream())));
 
+  size_t nbytes_out = out_data.size() * sizeof(T *);
+  const void *stable_out = backends::gpu::RestoreHostMemIfCapturingCUDAGraph(
+      reinterpret_cast<uint8_t *>(const_cast<T **>(out_data.data())),
+      nbytes_out);
   phi::memory_utils::Copy(dev_ctx.GetPlace(),
                           tmp_out_array->ptr(),
-                          phi::CPUPlace(),
-                          reinterpret_cast<void *>(out_data.data()),
-                          out_data.size() * sizeof(T *),
+                          CPUPlace(),
+                          stable_out,
+                          nbytes_out,
                           dev_ctx.stream());
 
   T **out_grad_data = reinterpret_cast<T **>(tmp_out_array->ptr());
@@ -136,6 +142,6 @@ PD_REGISTER_KERNEL(partial_concat_grad,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::float16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::float16,
+                   phi::complex64,
+                   phi::complex128) {}

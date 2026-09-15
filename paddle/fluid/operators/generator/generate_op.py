@@ -100,9 +100,9 @@ def process_scalar(op_item, scalar_configs):
         for attr_item in op_item['attrs']:
             if attr_item['name'] in scalar_configs:
                 attr_type = attr_item['typename']
-                assert (
-                    attr_type in scalar_map
-                ), f"{op_item['name']}'s scalar in op_compat.yaml is error, the data_type of {attr_item['name']} is expected to be one of Scalar, Scalar(float), Scalar(int) or Scalar(int64_t), but now is {attr_type}."
+                assert attr_type in scalar_map, (
+                    f"{op_item['name']}'s scalar in op_compat.yaml is error, the data_type of {attr_item['name']} is expected to be one of Scalar, Scalar(float), Scalar(int) or Scalar(int64_t), but now is {attr_type}."
+                )
 
                 scalar_config = scalar_configs[attr_item['name']]
                 attr_item['is_support_tensor'] = (
@@ -135,9 +135,9 @@ def process_int_array(op_item, int_array_configs):
         for attr_item in op_item['attrs']:
             if attr_item['name'] in int_array_configs:
                 attr_type = attr_item['typename']
-                assert (
-                    attr_item['typename'] == "IntArray"
-                ), f"{op_item['name']}'s int_array in op_compat.yaml is error, the data_type of {attr_item['name']} is expected to be one of IntArray, but now is {attr_type}."
+                assert attr_item['typename'] == "IntArray", (
+                    f"{op_item['name']}'s int_array in op_compat.yaml is error, the data_type of {attr_item['name']} is expected to be one of IntArray, but now is {attr_type}."
+                )
 
                 int_array_config = int_array_configs[attr_item['name']]
                 attr_item['is_support_tensor'] = (
@@ -309,7 +309,7 @@ def add_compat_name(op_fluid_map_list, forward_op_dict, backward_op_dict):
         if new_op_name != op_name:
             forward_op_item['op_name'] = op_name
 
-        # add complex promote infomation
+        # add complex promote information
         if "complex_promote" in op_args:
             forward_op_item["complex_promote"] = op_args["complex_promote"]
             if has_backward:
@@ -498,9 +498,9 @@ def parse_drop_empty_grad(op_fluid_list: list, bw_op_dict: dict):
                                 'drop_empty_grad'
                             ] = False
                             bws_has_out_grad = True
-                assert (
-                    bws_has_out_grad
-                ), f'''{bw_names} with {op_comp_map['drop_empty_grad']} is not existed in output_dict '''
+                assert bws_has_out_grad, (
+                    f'''{bw_names} with {op_comp_map['drop_empty_grad']} is not existed in output_dict '''
+                )
 
 
 def parse_get_expected_kerneltype(

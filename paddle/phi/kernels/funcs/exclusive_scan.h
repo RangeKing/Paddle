@@ -14,16 +14,9 @@
 
 #pragma once
 
-#ifdef __NVCC__
-#include "cub/cub.cuh"
-#endif
-#ifdef __HIPCC__
-#include <hipcub/hipcub.hpp>
-namespace cub = hipcub;
-#endif
-
 #include <thrust/device_ptr.h>
 #include <thrust/iterator/reverse_iterator.h>
+#include "paddle/phi/kernels/funcs/cub.h"
 
 #include "paddle/phi/common/memory_utils.h"
 #include "paddle/phi/common/type_traits.h"
@@ -43,7 +36,7 @@ static void CubExclusiveScan(InputIterator x_iter,
                              size_t n,
                              T init,
                              BinaryOp op,
-                             const phi::GPUContext &dev_ctx) {
+                             const GPUContext &dev_ctx) {
   phi::Allocator::AllocationPtr allocation;
   void *temp_storage = nullptr;
   size_t temp_storage_bytes = 0;
@@ -133,7 +126,7 @@ static __global__ void ExclusiveScanInnerDimCUDAKernel(
   size_t block_row = static_cast<size_t>(blockIdx.x * kThreadNumY);
   size_t block_row_stride = static_cast<size_t>(gridDim.x * kThreadNumY);
   for (; block_row < num_rows; block_row += block_row_stride) {
-    size_t row = block_row + threadIdx.y;
+    size_t row = block_row + static_cast<size_t>(threadIdx.y);
     T block_total = init;
 
     const T *row_x = x + row * row_size;
@@ -186,7 +179,7 @@ static __global__ void ExclusiveScanInnerDimCUDAKernel(
 
       for (size_t s = kThreadNumX, d = 1; s >= 1; s >>= 1, d <<= 1) {
         if (row < num_rows && threadIdx.x < s) {
-          size_t offset = (2 * threadIdx.x + 1) * d - 1;
+          size_t offset = (2 * static_cast<size_t>(threadIdx.x) + 1) * d - 1;
           row_buf[offset + d] = op(row_buf[offset], row_buf[offset + d]);
         }
         __syncthreads();
@@ -194,7 +187,7 @@ static __global__ void ExclusiveScanInnerDimCUDAKernel(
 
       for (size_t s = 2, d = kThreadNumX / 2; d >= 1; s <<= 1, d >>= 1) {
         if (row < num_rows && threadIdx.x < s - 1) {
-          size_t offset = 2 * (threadIdx.x + 1) * d - 1;
+          size_t offset = 2 * (static_cast<size_t>(threadIdx.x) + 1) * d - 1;
           row_buf[offset + d] = op(row_buf[offset], row_buf[offset + d]);
         }
         __syncthreads();
@@ -218,7 +211,7 @@ static void ExclusiveScanInnerDim(const T *x,
                                   T init,
                                   BinaryOp op,
                                   bool reverse,
-                                  const phi::GPUContext &dev_ctx) {
+                                  const GPUContext &dev_ctx) {
   constexpr size_t kThreadNumX = 16;
   constexpr size_t kThreadNumY = 32;
 
@@ -253,7 +246,7 @@ void ExclusiveScan(const T *x,
                    T init,
                    BinaryOp op,
                    bool reverse,
-                   const phi::GPUContext &dev_ctx) {
+                   const GPUContext &dev_ctx) {
   if (outer_dim == 0 || mid_dim == 0 || inner_dim == 0) return;
 
   if (outer_dim == 1 && inner_dim == 1) {
@@ -266,8 +259,7 @@ void ExclusiveScan(const T *x,
       CubExclusiveScan(x, y, mid_dim, init, op, dev_ctx);
     }
   } else if (inner_dim != 1) {
-    phi::funcs::ForRange<phi::GPUContext> for_range(dev_ctx,
-                                                    outer_dim * inner_dim);
+    funcs::ForRange<GPUContext> for_range(dev_ctx, outer_dim * inner_dim);
     if (reverse) {
       for_range(
           ExclusiveScanOuterOrMidDimFunctor<T, BinaryOp, /*kReverse=*/true>(

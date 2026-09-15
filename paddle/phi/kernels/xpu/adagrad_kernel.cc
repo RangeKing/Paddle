@@ -19,23 +19,23 @@
 namespace phi {
 
 template <typename T, typename Context>
-void AdagradDenseKernel(const Context& ctx,
+void AdagradDenseKernel(const Context& dev_ctx,
                         const DenseTensor& param,
                         const DenseTensor& grad,
                         const DenseTensor& moment,
                         const DenseTensor& learning_rate,
-                        const paddle::optional<DenseTensor>& master_param,
+                        const optional<DenseTensor>& master_param,
                         float epsilon_t,
                         bool multi_precision,
                         DenseTensor* param_out_tensor,
                         DenseTensor* moment_out_tensor,
                         DenseTensor* master_param_outs) {
-  ctx.template Alloc<T>(param_out_tensor);
-  ctx.template Alloc<T>(moment_out_tensor);
+  dev_ctx.template Alloc<T>(param_out_tensor);
+  dev_ctx.template Alloc<T>(moment_out_tensor);
 
   T epsilon = static_cast<T>(epsilon_t);
 
-  int r = xpu::adagrad(ctx.x_context(),
+  int r = xpu::adagrad(dev_ctx.x_context(),
                        param.data<T>(),
                        grad.data<T>(),
                        moment.data<T>(),

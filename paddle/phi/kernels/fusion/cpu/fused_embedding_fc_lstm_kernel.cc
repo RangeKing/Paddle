@@ -18,27 +18,43 @@
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/funcs/blas/blas.h"
 #include "paddle/phi/kernels/funcs/cpu_vec.h"
+#include "paddle/phi/kernels/funcs/eigen/common.h"
 #include "paddle/phi/kernels/funcs/sequence2batch.h"
 #include "paddle/utils/optional.h"
 
 namespace phi {
+
+template <typename T>
+inline void EigenVecMul(int n, const T* x, const T* y, T* z) {
+  Eigen::Map<Eigen::Matrix<T, Eigen::Dynamic, 1>> z_map(z, n);
+  Eigen::Map<const Eigen::Matrix<T, Eigen::Dynamic, 1>> x_map(x, n);
+  Eigen::Map<const Eigen::Matrix<T, Eigen::Dynamic, 1>> y_map(y, n);
+  z_map = x_map.array() * y_map.array();
+}
+
+template <typename T>
+inline void VecAdd(int n, const T* x, const T* y, T* z) {
+  for (int i = 0; i < n; ++i) {
+    z[i] = x[i] + y[i];
+  }
+}
 
 #define OP_PARAM                                                             \
   dev_ctx, ids_in, embeddings_in, weight_h_in, bias_in, h0_in, c0_in,        \
       use_peepholes, is_reverse, use_seq, gate_activation, cell_activation,  \
       candidate_activation, hidden_out, cell_out, xx_out, batched_input_out, \
       batched_hidden_out, batched_cell_out, reordered_h0_out, reordered_c0_out
-#define OP_PARAM_DECLARE                                                     \
-  const Context &dev_ctx, const DenseTensor &ids_in,                         \
-      const DenseTensor &embeddings_in, const DenseTensor &weight_h_in,      \
-      const DenseTensor &bias_in, const paddle::optional<DenseTensor>&h0_in, \
-      const paddle::optional<DenseTensor>&c0_in, bool use_peepholes,         \
-      bool is_reverse, bool use_seq, const std::string &gate_activation,     \
-      const std::string &cell_activation,                                    \
-      const std::string &candidate_activation, DenseTensor *hidden_out,      \
-      DenseTensor *cell_out, DenseTensor *xx_out,                            \
-      DenseTensor *batched_input_out, DenseTensor *batched_hidden_out,       \
-      DenseTensor *batched_cell_out, DenseTensor *reordered_h0_out,          \
+#define OP_PARAM_DECLARE                                                      \
+  const Context &dev_ctx, const DenseTensor &ids_in,                          \
+      const DenseTensor &embeddings_in, const DenseTensor &weight_h_in,       \
+      const DenseTensor &bias_in, const optional<DenseTensor>&h0_in,          \
+      const optional<DenseTensor>&c0_in, bool use_peepholes, bool is_reverse, \
+      bool use_seq, const std::string &gate_activation,                       \
+      const std::string &cell_activation,                                     \
+      const std::string &candidate_activation, DenseTensor *hidden_out,       \
+      DenseTensor *cell_out, DenseTensor *xx_out,                             \
+      DenseTensor *batched_input_out, DenseTensor *batched_hidden_out,        \
+      DenseTensor *batched_cell_out, DenseTensor *reordered_h0_out,           \
       DenseTensor *reordered_c0_out
 
 template <typename T, typename Context>
@@ -50,12 +66,12 @@ class FusedEmbeddingFCLSTMKernel {
   auto& act_cell_str = cell_activation;                                      \
   auto& act_cand_str = candidate_activation;                                 \
   if (phi::backends::cpu::MayIUse(phi::backends::cpu::avx)) {                \
-    phi::funcs::VecActivations<T, phi::backends::cpu::avx> act_functor;      \
+    funcs::VecActivations<T, phi::backends::cpu::avx> act_functor;           \
     act_gate = act_functor(act_gate_str);                                    \
     act_cell = act_functor(act_cell_str);                                    \
     act_cand = act_functor(act_cand_str);                                    \
   } else {                                                                   \
-    phi::funcs::VecActivations<T, phi::backends::cpu::isa_any> act_functor;  \
+    funcs::VecActivations<T, phi::backends::cpu::isa_any> act_functor;       \
     act_gate = act_functor(act_gate_str);                                    \
     act_cell = act_functor(act_cell_str);                                    \
     act_cand = act_functor(act_cand_str);                                    \
@@ -88,7 +104,7 @@ class FusedEmbeddingFCLSTMKernel {
   /* diagonal weight*/                                            \
   const T* wc_data = bias->data<T>() + D4;                        \
   /* for peephole only*/                                          \
-  phi::DenseTensor checked_cell;                                  \
+  DenseTensor checked_cell;                                       \
   T* checked_cell_data = nullptr;                                 \
   if (use_peepholes) {                                            \
     /* w_ic * Ct-1, w_fc * Ct-1  ; w_oc * Ct => ih*/              \
@@ -113,23 +129,23 @@ class FusedEmbeddingFCLSTMKernel {
             D4)
 
 // gates: W_ch, W_ih, W_fh, W_oh
-#define GET_Ct(ct_1, gates, ct)                   \
-  /* C_t = C_t-1 * fgated + cand_gated * igated*/ \
-  act_cand(D, gates, gates);                      \
-  blas.VMUL(D, gates, gates + D, gates + D);      \
-  blas.VMUL(D, ct_1, gates + D2, gates + D2);     \
-  blas.VADD(D, gates + D, gates + D2, ct)
+#define GET_Ct(ct_1, gates, ct)                    \
+  /* C_t = C_t-1 * fgated + cand_gated * igated*/  \
+  act_cand(D, gates, gates);                       \
+  EigenVecMul<T>(D, gates, gates + D, gates + D);  \
+  EigenVecMul<T>(D, ct_1, gates + D2, gates + D2); \
+  VecAdd<T>(D, gates + D, gates + D2, ct)
 
 #define GET_Ht(ct, gates, ht)        \
   /* H_t = act_cell(C_t) * ogated */ \
   act_cell(D, ct, gates + D2);       \
-  blas.VMUL(D, gates + D2, gates + D3, ht)
+  EigenVecMul<T>(D, gates + D2, gates + D3, ht)
 
 #define GET_Ct_NOH0C0(gates, ct)     \
   /* C_t = igated * cgated*/         \
   act_gate(D, gates + D, gates + D); \
   act_cand(D, gates, gates);         \
-  blas.VMUL(D, gates, gates + D, ct)
+  EigenVecMul<T>(D, gates, gates + D, ct)
 
 #define COMPUTE_CtHt_NOH0C0(gates, ct, ht) \
   GET_Ct_NOH0C0(gates, ct);                \
@@ -139,8 +155,8 @@ class FusedEmbeddingFCLSTMKernel {
 #define COMPUTE_CtHt_PEEPHOLE_NOH0C0(gates, ct, ht) \
   GET_Ct_NOH0C0(gates, ct);                         \
   /* get outgated, put W_oc * C_t on igated */      \
-  blas.VMUL(D, wc_data + D2, ct, gates + D);        \
-  blas.VADD(D, gates + D, gates + D3, gates + D3);  \
+  EigenVecMul<T>(D, wc_data + D2, ct, gates + D);   \
+  VecAdd<T>(D, gates + D, gates + D3, gates + D3);  \
   act_gate(D, gates + D3, gates + D3);              \
   GET_Ht(ct, gates, ht)
 
@@ -149,17 +165,17 @@ class FusedEmbeddingFCLSTMKernel {
   GET_Ct(ct_1, gates, ct);                \
   GET_Ht(ct, gates, ht)
 
-#define COMPUTE_CtHt_PEEPHOLE(gates, ct_1, ct, ht)        \
-  /* get fgated and igated*/                              \
-  blas.VMUL(D, wc_data, ct_1, checked_cell_data);         \
-  blas.VMUL(D, wc_data + D, ct_1, checked_cell_data + D); \
-  blas.VADD(D2, checked_cell_data, gates + D, gates + D); \
-  act_gate(D2, gates + D, gates + D);                     \
-  GET_Ct(ct_1, gates, ct);                                \
-  /* get ogated*/                                         \
-  blas.VMUL(D, wc_data + D2, ct, gates + D);              \
-  blas.VADD(D, gates + D, gates + D3, gates + D3);        \
-  act_gate(D, gates + D3, gates + D3);                    \
+#define COMPUTE_CtHt_PEEPHOLE(gates, ct_1, ct, ht)             \
+  /* get fgated and igated*/                                   \
+  EigenVecMul<T>(D, wc_data, ct_1, checked_cell_data);         \
+  EigenVecMul<T>(D, wc_data + D, ct_1, checked_cell_data + D); \
+  VecAdd<T>(D2, checked_cell_data, gates + D, gates + D);      \
+  act_gate(D2, gates + D, gates + D);                          \
+  GET_Ct(ct_1, gates, ct);                                     \
+  /* get ogated*/                                              \
+  EigenVecMul<T>(D, wc_data + D2, ct, gates + D);              \
+  VecAdd<T>(D, gates + D, gates + D3, gates + D3);             \
+  act_gate(D, gates + D3, gates + D3);                         \
   GET_Ht(ct, gates, ht)
 
   void SeqCompute(OP_PARAM_DECLARE) const {
@@ -177,7 +193,7 @@ class FusedEmbeddingFCLSTMKernel {
     T* xx_data = dev_ctx.template Alloc<T>(xx);
     T* h_out_data = dev_ctx.template Alloc<T>(hidden_out);
     T* c_out_data = dev_ctx.template Alloc<T>(cell_out);
-    auto blas = phi::funcs::GetBlas<Context, T>(dev_ctx);
+    auto blas = funcs::GetBlas<Context, T>(dev_ctx);
 
     for (int64_t i = 0; i < ids_numel; ++i) {
       PADDLE_ENFORCE_LT(
@@ -288,8 +304,8 @@ class FusedEmbeddingFCLSTMKernel {
     dev_ctx.template Alloc<T>(hidden_out);
     dev_ctx.template Alloc<T>(cell_out);
 
-    phi::funcs::DenseTensor2BatchFunctor<Context, T> to_batch;
-    auto blas = phi::funcs::GetBlas<Context, T>(dev_ctx);
+    funcs::DenseTensor2BatchFunctor<Context, T> to_batch;
+    auto blas = funcs::GetBlas<Context, T>(dev_ctx);
 
     for (int64_t i = 0; i < ids_numel; ++i) {
       PADDLE_ENFORCE_LT(
@@ -340,8 +356,8 @@ class FusedEmbeddingFCLSTMKernel {
       for (int i = 0; i < max_bs; ++i) {
         GET_Ct_NOH0C0(cur_in_data, cur_c_out_data);
         if (use_peepholes) {
-          blas.VMUL(D, wc_data + D2, cur_c_out_data, cur_in_data + D);
-          blas.VADD(D, cur_in_data + D, cur_in_data + D3, cur_in_data + D3);
+          EigenVecMul<T>(D, wc_data + D2, cur_c_out_data, cur_in_data + D);
+          VecAdd<T>(D, cur_in_data + D, cur_in_data + D3, cur_in_data + D3);
         }
         act_gate(D, cur_in_data + D3, cur_in_data + D3);
         GET_Ht(cur_c_out_data, cur_in_data, cur_h_out_data);
@@ -410,7 +426,7 @@ class FusedEmbeddingFCLSTMKernel {
 #undef MOVE_ONE_BATCH
 #undef DEFINE_CUR
 
-    phi::funcs::Batch2DenseTensorFunctor<Context, T> to_seq;
+    funcs::Batch2DenseTensorFunctor<Context, T> to_seq;
     batched_h_out->set_lod(batched_lod);
     to_seq(dev_ctx, *batched_h_out, hidden_out);
     batched_c_out->set_lod(batched_lod);

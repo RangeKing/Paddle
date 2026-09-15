@@ -13,12 +13,14 @@
 // limitations under the License.
 
 #include "paddle/phi/kernels/embedding_kernel.h"
+#include "paddle/common/enforce.h"
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/backends/gpu/gpu_info.h"
 #include "paddle/phi/common/data_type.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/funcs/eigen/eigen_function.h"
 #include "paddle/phi/kernels/funcs/embedding_util.h"
+
 namespace phi {
 
 template <typename T, typename IdT, bool PaddingFlag>
@@ -30,7 +32,9 @@ __global__ void EmbeddingFW(T *output,
                             const int64_t D,
                             const int64_t padding_idx) {
   int idx = threadIdx.x;
-  int idy = blockIdx.x + threadIdx.y * gridDim.x;
+  int64_t idy =
+      static_cast<int64_t>(blockIdx.x) +
+      static_cast<int64_t>(threadIdx.y) * static_cast<int64_t>(gridDim.x);
 
   while (idy < K) {
     auto id = static_cast<int64_t>(ids[idy]);
@@ -46,7 +50,7 @@ __global__ void EmbeddingFW(T *output,
     }
     T *out = output + idy * D;
     const T *tab = table + id * D;
-    for (int i = idx; i < D; i += blockDim.x) {
+    for (int64_t i = idx; i < D; i += blockDim.x) {
       if (PaddingFlag) {
         if (id == padding_idx)
           out[i] = static_cast<T>(0);
@@ -79,6 +83,12 @@ struct EmbeddingCUDAFunctor {
     size_t D = weight_.dims()[1];
     size_t K = input_.numel();
 
+    if (K > 0 && N == 0) {
+      PADDLE_THROW(common::errors::InvalidArgument(
+          "The first dimension of Input(Weight) in OP(embedding) must be "
+          "greater than 0 when Input(Ids) is not empty."));
+    }
+
     const int gridx = 2 * dev_ctx_.GetSMCount();
     dim3 threads(256, 4);
     dim3 grids(gridx, 1);
@@ -98,7 +108,7 @@ struct EmbeddingCUDAFunctor {
   }
 
  private:
-  const phi::GPUContext &dev_ctx_;
+  const GPUContext &dev_ctx_;
   const DenseTensor &input_;
   const DenseTensor &weight_;
   DenseTensor *out_;
@@ -106,19 +116,19 @@ struct EmbeddingCUDAFunctor {
 };
 
 template <typename T, typename Context>
-void EmbeddingKernel(const Context &ctx,
+void EmbeddingKernel(const Context &dev_ctx,
                      const DenseTensor &input,
                      const DenseTensor &weight,
                      int64_t padding_idx,
                      DenseTensor *out) {
   EmbeddingCUDAFunctor<T, Context> functor(
-      ctx, input, weight, padding_idx, out);
+      dev_ctx, input, weight, padding_idx, out);
 
-  if (input.dtype() == phi::DataType::INT32) {
+  if (input.dtype() == DataType::INT32) {
     functor.template apply<int32_t>();
-  } else if (input.dtype() == phi::DataType::INT64) {
+  } else if (input.dtype() == DataType::INT64) {
     functor.template apply<int64_t>();
-  } else if (input.dtype() == phi::DataType::INT16) {
+  } else if (input.dtype() == DataType::INT16) {
     functor.template apply<int16_t>();
   } else {
     PADDLE_THROW(common::errors::Unimplemented(
@@ -135,7 +145,7 @@ PD_REGISTER_KERNEL(embedding,
                    float,
                    double,
                    int8_t,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::complex64,
+                   phi::complex128) {}

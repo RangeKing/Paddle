@@ -24,7 +24,6 @@ class CumsumOpConverter : public OpConverter {
   void operator()(const framework::proto::OpDesc& op,
                   const framework::Scope& scope,
                   bool test_mode) override {
-#if IS_TRT_VERSION_GE(7220)
     VLOG(3) << "convert a cumsum op to tensorrt layer";
     framework::OpDesc op_desc(op, nullptr);
     std::string input_x_name = op_desc.Input("X").front();
@@ -130,7 +129,7 @@ class CumsumOpConverter : public OpConverter {
                   newDims,
                   ("cumsum: reshape: (Output(" + output_name + ")").c_str());
 
-      // creat ZeroTensor
+      // create ZeroTensor
       std::vector<float> zero_vec{0.f};
       auto zero = Add1DConstantLayer(zero_vec);
       auto cast = TRT_ENGINE_ADD_LAYER(engine_, Identity, *zero);
@@ -161,9 +160,6 @@ class CumsumOpConverter : public OpConverter {
       loopOut->setInput(1, *tripLimit);
       ReplenishLayerAndOutput(loopOut, "cumsum", {output_name}, test_mode);
     }
-#else
-    VLOG(3) << "Cumsum is not supported when TensorRT < 7.2.2";
-#endif
   }
 };
 

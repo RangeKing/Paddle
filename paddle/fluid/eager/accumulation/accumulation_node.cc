@@ -32,15 +32,15 @@ static void CopyOrAddTensor(paddle::Tensor* tensor,
                             const paddle::Tensor& t,
                             bool is_fake_empty) {
   if (is_fake_empty) {
-    VLOG(3) << "Move Tensor ptr: " << t.impl();
+    VLOG(3) << "CopyOrAddTensor: Move Copy Tensor ptr: " << t.impl();
     *tensor = t;
   } else {
     if (!tensor->defined() || !tensor->initialized()) {
       // Simply copy tensor->impl
-      VLOG(3) << "Move Tensor ptr: " << t.impl();
+      VLOG(3) << "CopyOrAddTensor: Move Copy Tensor ptr: " << t.impl();
       *tensor = t;
     } else {
-      VLOG(3) << "Add Tensor ptr: " << t.impl()
+      VLOG(3) << "CopyOrAddTensor: Add Tensor ptr: " << t.impl()
               << " with Tensor ptr: " << tensor->impl();
       // Accumulation
       if (LIKELY(t.is_dense_tensor())) {
@@ -65,8 +65,12 @@ static void CopyOrAddTensor(paddle::Tensor* tensor,
                 *reinterpret_cast<phi::DenseTensor*>(tensor->impl().get()),
                 *reinterpret_cast<phi::DenseTensor*>(t.impl().get()),
                 reinterpret_cast<phi::DenseTensor*>(tensor->impl().get()));
-          } else {
+          } else if (t.initialized() && tensor->initialized()) {
             paddle::imperative::TensorAdd<paddle::Tensor>(t, tensor);
+          } else {
+            PADDLE_THROW(common::errors::PreconditionNotMet(
+                "DenseTensor 't' and 'tensor' should be "
+                "both initialized when accumulating gradient."));
           }
         } else {
           // TODO(jiabin): Support Other TensorBase later
@@ -154,15 +158,17 @@ GradNodeAccumulation::operator()(
                          kSlotSmallVectorSize>& grads,  // NOLINT
     bool create_graph,
     bool is_new_grad) {
-  VLOG(3) << "Running AD API Grad: GradNodeAccumulation";
+  VLOG(3) << "\n==========================Running_AD_API_Grad: "
+             "GradNodeAccumulation==========================";
+  VLOG(4) << "GradNodeAccumulation Ptr  " << this;
   PADDLE_ENFORCE(grads.size() == 1,
                  common::errors::Fatal(
-                     "GradNodeAccumulation should take exactly 1 grad tensor"
+                     "GradNodeAccumulation should take exactly 1 grad tensor. "
                      "However received: %d slot.",
                      grads.size()));
   PADDLE_ENFORCE(grads[0].size() == 1,
                  common::errors::Fatal(
-                     "GradNodeAccumulation should take exactly 1 grad tensor"
+                     "GradNodeAccumulation should take exactly 1 grad tensor. "
                      "However received: %d in slot %d .",
                      grads[0].size(),
                      0));
@@ -179,7 +185,7 @@ GradNodeAccumulation::operator()(
   if (!weak_grad_.expired() && !is_new_grad) {
     auto grad = weak_grad_.lock();
     if (grad_out.defined() &&
-        (grad_out.is_dist_tensor() || grad_out.initialized())) {
+        (grad_out.is_dist_tensor() || grad_out.has_allocation())) {
       CopyOrAddTensor(grad.get(), grad_out, is_fake_empty_);
     }
     // else { do nothing since there is no valid value in grad out tensor }
@@ -191,23 +197,24 @@ GradNodeAccumulation::operator()(
     ApplyReduceHooks();
   }
 
-  VLOG(3) << "Finish AD API Grad: GradNodeAccumulation";
-  if (VLOG_IS_ON(4)) {
-    const char* INPUT_PRINT_TEMPLATE = "{ Input: [%s], Output: [%s] } ";
+  VLOG(3) << "\n==========================Finish_AD_API_Grad: "
+             "GradNodeAccumulation==========================";
+  if (VLOG_IS_ON(6)) {
+    const char* INPUT_PRINT_TEMPLATE = "{ Input: [%s], \nOutput: [%s] } ";
 
     std::string input_str = "";
     std::string output_str = "";
 
-    const char* TENSOR_OUT_GRAD_TEMPLATE = "(grads[0][0], [%s]), ";
+    const char* TENSOR_OUT_GRAD_TEMPLATE = "(\ngrads[0][0], [%s]), ";
     std::string input_out_grad_str = paddle::string::Sprintf(
         TENSOR_OUT_GRAD_TEMPLATE, egr::EagerUtils::TensorStr(grads[0][0]));
     input_str += input_out_grad_str;
-    const char* TENSOR_X_GRAD_TEMPLATE = "(grad_out, [%s]), ";
+    const char* TENSOR_X_GRAD_TEMPLATE = "(\ngrad_out, [%s]), ";
     std::string output_x_grad_str = paddle::string::Sprintf(
         TENSOR_X_GRAD_TEMPLATE, egr::EagerUtils::TensorStr(grad_out));
     output_str += output_x_grad_str;
-    VLOG(6) << "gradnode_ptr = " << this;
-    VLOG(4) << paddle::string::Sprintf(
+
+    VLOG(6) << paddle::string::Sprintf(
         INPUT_PRINT_TEMPLATE, input_str, output_str);
   }
   return {{grad_out}};

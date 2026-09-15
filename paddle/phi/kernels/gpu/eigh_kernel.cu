@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef PADDLE_WITH_HIP
-// HIP not support cusolver
-
 #include "paddle/phi/kernels/eigh_kernel.h"
 
 #include "paddle/phi/common/data_type.h"
@@ -40,21 +37,24 @@ void EighKernel(const Context& dev_ctx,
     return;
   }
   bool is_lower = (uplo == "L");
-  phi::funcs::MatrixEighFunctor<Context, T> functor;
+  funcs::MatrixEighFunctor<Context, T> functor;
   functor(dev_ctx, x, out_w, out_v, is_lower, true);
 }
 
 }  // namespace phi
-
-PD_REGISTER_KERNEL(eigh,  // cuda_only
+#ifdef PADDLE_WITH_HIP
+PD_REGISTER_KERNEL(eigh, GPU, ALL_LAYOUT, phi::EighKernel, float, double) {
+  kernel->OutputAt(0).SetDataType(phi::dtype::ToReal(kernel_key.dtype()));
+}
+#else
+PD_REGISTER_KERNEL(eigh,
                    GPU,
                    ALL_LAYOUT,
                    phi::EighKernel,
                    float,
                    double,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {
+                   phi::complex64,
+                   phi::complex128) {
   kernel->OutputAt(0).SetDataType(phi::dtype::ToReal(kernel_key.dtype()));
 }
-
-#endif  // not PADDLE_WITH_HIP
+#endif

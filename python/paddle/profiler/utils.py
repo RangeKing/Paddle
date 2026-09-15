@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import functools
+import logging
 import sys
 from contextlib import ContextDecorator, contextmanager
 from typing import TYPE_CHECKING
@@ -55,7 +56,7 @@ class RecordEvent(ContextDecorator):
             purpose, and it is better not to specify this parameter.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
             :name: code-example1
 
             >>> import paddle
@@ -109,7 +110,7 @@ class RecordEvent(ContextDecorator):
 
         Examples:
 
-            .. code-block:: python
+            .. code-block:: pycon
                 :name: code-example2
 
                 >>> import paddle
@@ -127,9 +128,7 @@ class RecordEvent(ContextDecorator):
         if self.event_type not in _AllowedEventTypeList:
             warn(
                 "Only TracerEvent Type in [{}, {}, {}, {}, {}, {},{}]\
-                  can be recorded.".format(
-                    *_AllowedEventTypeList
-                )
+                  can be recorded.".format(*_AllowedEventTypeList)
             )
             self.event = None
         else:
@@ -141,7 +140,7 @@ class RecordEvent(ContextDecorator):
 
         Examples:
 
-            .. code-block:: python
+            .. code-block:: pycon
                 :name: code-example3
 
                 >>> import paddle
@@ -169,17 +168,18 @@ def load_profiler_result(filename: str) -> _ProfilerResult:
         ``ProfilerResult`` object, which stores profiling data.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env:GPU)
             >>> import paddle.profiler as profiler
             >>> import paddle
             >>> paddle.device.set_device('gpu')
             >>> with profiler.Profiler(
-            ...         targets=[profiler.ProfilerTarget.CPU, profiler.ProfilerTarget.GPU],
-            ...         scheduler = (3, 10)) as p:
+            ...     targets=[profiler.ProfilerTarget.CPU, profiler.ProfilerTarget.GPU],
+            ...     scheduler=(3, 10),
+            ... ) as p:
             ...     for iter in range(10):
-            ...         #train()
+            ...         # train()
             ...         p.step()
             >>> p.export('test_export_protobuf.pb', format='pb')
             >>> profiler_result = profiler.load_profiler_result('test_export_protobuf.pb')
@@ -223,7 +223,7 @@ def _nvprof_range(iter_id, start, end, exit_after_prof=True):
     """
     A range profiler interface (not public yet).
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> model = Model()
@@ -271,6 +271,9 @@ def job_schedule_profiler_range(iter_id, start, end, exit_after_prof=True):
 def switch_job_schedule_profiler(
     model, iter_id, start, end, exit_after_prof=True
 ):
+    logging.info(
+        f"Schedule Profiler start at step {start} and end at step {end}"
+    )
     with job_schedule_profiler_range(
         iter_id, start, end, exit_after_prof
     ) as status:

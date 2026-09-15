@@ -15,8 +15,8 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from functools import wraps
-from typing import Callable, Union
 
 import numpy as np
 
@@ -190,14 +190,16 @@ def to_pir_pt_test(fn):
             original_flag_value = get_flags(pt_flag)[pt_flag]
             if os.environ.get('FLAGS_use_stride_kernel', False):
                 return
-            with static.scope_guard(static.Scope()):
-                with static.program_guard(static.Program()):
-                    with EnvironmentVariableGuard(ENV_ENABLE_PIR_WITH_PT, True):
-                        try:
-                            set_flags({pt_flag: True})
-                            ir_outs = fn(*args, **kwargs)
-                        finally:
-                            set_flags({pt_flag: original_flag_value})
+            with (
+                static.scope_guard(static.Scope()),
+                static.program_guard(static.Program()),
+                EnvironmentVariableGuard(ENV_ENABLE_PIR_WITH_PT, True),
+            ):
+                try:
+                    set_flags({pt_flag: True})
+                    ir_outs = fn(*args, **kwargs)
+                finally:
+                    set_flags({pt_flag: original_flag_value})
         return ir_outs
 
     return impl
@@ -223,7 +225,7 @@ def compare_legacy_with_pt(fn):
 
 
 FuncType = Callable[[], bool]
-PlaceType = Union[paddle.CPUPlace, paddle.CUDAPlace, str]
+PlaceType = paddle.CPUPlace | paddle.CUDAPlace | str
 
 
 def convert_place(place: PlaceType) -> str:

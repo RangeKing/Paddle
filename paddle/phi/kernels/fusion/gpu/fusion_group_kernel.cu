@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "paddle/phi/kernels/fusion/gpu/fusion_group_kernel.h"
 #include "glog/logging.h"
 
 #include "paddle/phi/backends/device_code.h"
@@ -22,20 +23,19 @@
 namespace phi {
 namespace fusion {
 
-template <typename DeviceContext>
-static void MutableMultiTypeData(std::vector<phi::DenseTensor*>* var,
+template <typename Context>
+static void MutableMultiTypeData(std::vector<DenseTensor*>* var,
                                  const std::vector<int>& data_type,
-                                 const DeviceContext& dev_ctx) {
+                                 const Context& dev_ctx) {
   for (size_t i = 0; i < var->size(); i++) {
-    if (data_type[i] == phi::TransToProtoVarType(phi::DataType::FLOAT32)) {
+    DataType dtype = TransToPhiDataType(data_type[i]);
+    if (dtype == DataType::FLOAT32) {
       dev_ctx.template Alloc<float>((*var)[i],
                                     (*var)[i]->numel() * sizeof(float));
-    } else if (data_type[i] ==
-               phi::TransToProtoVarType(phi::DataType::FLOAT16)) {
-      dev_ctx.template Alloc<phi::dtype::float16>(
-          (*var)[i], (*var)[i]->numel() * sizeof(phi::dtype::float16));
-    } else if (data_type[i] ==
-               phi::TransToProtoVarType(phi::DataType::FLOAT64)) {
+    } else if (dtype == DataType::FLOAT16) {
+      dev_ctx.template Alloc<float16>((*var)[i],
+                                      (*var)[i]->numel() * sizeof(float16));
+    } else if (dtype == DataType::FLOAT64) {
       dev_ctx.template Alloc<double>((*var)[i],
                                      (*var)[i]->numel() * sizeof(double));
     }
@@ -65,25 +65,23 @@ void FusionGroupKernel(const Context& dev_ctx,
     args.push_back(&n);
     std::vector<const void*> ptrs(num_ins + num_outs);
     for (size_t i = 0; i < num_ins; ++i) {
-      if (inputs_dtype[i] == phi::TransToProtoVarType(phi::DataType::FLOAT16)) {
-        ptrs[i] = ins[i]->data<phi::dtype::float16>();
-      } else if (inputs_dtype[i] ==
-                 phi::TransToProtoVarType(phi::DataType::FLOAT32)) {
+      DataType input_dtype = TransToPhiDataType(inputs_dtype[i]);
+      if (input_dtype == DataType::FLOAT16) {
+        ptrs[i] = ins[i]->data<float16>();
+      } else if (input_dtype == DataType::FLOAT32) {
         ptrs[i] = ins[i]->data<float>();
-      } else if (inputs_dtype[i] ==
-                 phi::TransToProtoVarType(phi::DataType::FLOAT64)) {
+      } else if (input_dtype == DataType::FLOAT64) {
         ptrs[i] = ins[i]->data<double>();
       }
       args.push_back(&ptrs[i]);
     }
     for (size_t j = 0; j < num_outs; ++j) {
-      if (outs_dtype[j] == phi::TransToProtoVarType(phi::DataType::FLOAT16)) {
-        ptrs[num_ins + j] = outs[j]->data<phi::dtype::float16>();
-      } else if (outs_dtype[j] ==
-                 phi::TransToProtoVarType(phi::DataType::FLOAT32)) {
+      DataType out_dtype = TransToPhiDataType(outs_dtype[j]);
+      if (out_dtype == DataType::FLOAT16) {
+        ptrs[num_ins + j] = outs[j]->data<float16>();
+      } else if (out_dtype == DataType::FLOAT32) {
         ptrs[num_ins + j] = outs[j]->data<float>();
-      } else if (outs_dtype[j] ==
-                 phi::TransToProtoVarType(phi::DataType::FLOAT64)) {
+      } else if (out_dtype == DataType::FLOAT64) {
         ptrs[num_ins + j] = outs[j]->data<double>();
       }
       args.push_back(&ptrs[num_ins + j]);
@@ -101,6 +99,6 @@ PD_REGISTER_KERNEL(fusion_group,
                    phi::fusion::FusionGroupKernel,
                    float,
                    double,
-                   phi::dtype::float16) {
+                   phi::float16) {
   kernel->OutputAt(0).SetDataType(phi::DataType::UNDEFINED);
 }

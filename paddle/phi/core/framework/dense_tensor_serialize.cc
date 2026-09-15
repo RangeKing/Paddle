@@ -19,15 +19,15 @@
 namespace phi {
 
 void SerializeToStream(std::ostream &os,
-                       const phi::DenseTensor &tensor,
-                       const phi::DeviceContext &dev_ctx) {
+                       const DenseTensor &tensor,
+                       const DeviceContext &dev_ctx) {
   constexpr uint32_t kCurTensorVersion = 0;
   {  // the 1st field, uint32_t version for DenseTensor
     os.write(reinterpret_cast<const char *>(&kCurTensorVersion),
              sizeof(kCurTensorVersion));
   }
   {
-    // the 2st field, LoD information
+    // the 2nd field, LoD information
     // uint64_t lod_level
     // uint64_t lod_level_1 size in byte.
     // int*     lod_level_1 data
@@ -37,34 +37,34 @@ void SerializeToStream(std::ostream &os,
     os.write(reinterpret_cast<const char *>(&size), sizeof(size));
 
     for (auto &each : lod) {
-      size = each.size() * sizeof(phi::LegacyLoD::value_type::value_type);
+      size = each.size() * sizeof(LegacyLoD::value_type::value_type);
       os.write(reinterpret_cast<const char *>(&size), sizeof(size));
       os.write(reinterpret_cast<const char *>(each.data()),
                static_cast<std::streamsize>(size));
     }
   }
-  // the 3st field, Tensor
-  TensorToStream(os, static_cast<phi::DenseTensor>(tensor), dev_ctx);
+  // the 3rd field, Tensor
+  TensorToStream(os, static_cast<DenseTensor>(tensor), dev_ctx);
 }
 
-void SerializeToStream(std::ostream &os, const phi::DenseTensor &tensor) {
-  phi::DeviceContextPool &pool = phi::DeviceContextPool::Instance();
-  const phi::DeviceContext *dev_ctx = nullptr;
+void SerializeToStream(std::ostream &os, const DenseTensor &tensor) {
+  DeviceContextPool &pool = DeviceContextPool::Instance();
+  const DeviceContext *dev_ctx = nullptr;
   auto place = tensor.place();
   dev_ctx = pool.Get(place);
   SerializeToStream(os, tensor, *dev_ctx);
 }
 
-void DeserializeFromStream(std::istream &os, phi::DenseTensor *tensor) {
-  phi::DeviceContextPool &pool = phi::DeviceContextPool::Instance();
-  const phi::DeviceContext *dev_ctx = nullptr;
-  dev_ctx = pool.Get(phi::CPUPlace());
+void DeserializeFromStream(std::istream &os, DenseTensor *tensor) {
+  DeviceContextPool &pool = DeviceContextPool::Instance();
+  const DeviceContext *dev_ctx = nullptr;
+  dev_ctx = pool.Get(CPUPlace());
   DeserializeFromStream(os, tensor, *dev_ctx);
 }
 
 void DeserializeFromStream(std::istream &is,
-                           phi::DenseTensor *tensor,
-                           const phi::DeviceContext &dev_ctx,
+                           DenseTensor *tensor,
+                           const DeviceContext &dev_ctx,
                            const size_t &seek,
                            const std::vector<int64_t> &shape) {
   {
@@ -81,20 +81,20 @@ void DeserializeFromStream(std::istream &is,
             version));
   }
   {
-    // the 2st field, LoD information
+    // the 2nd field, LoD information
     uint64_t lod_level = 0;
     is.read(reinterpret_cast<char *>(&lod_level), sizeof(lod_level));
     auto &lod = *tensor->mutable_lod();
     lod.resize(lod_level);
   }
-  // the 3st filed, Tensor
+  // the 3rd field, Tensor
   TensorFromStream(
-      is, static_cast<phi::DenseTensor *>(tensor), dev_ctx, seek, shape);
+      is, static_cast<DenseTensor *>(tensor), dev_ctx, seek, shape);
 }
 
 void DeserializeFromStream(std::istream &is,
-                           phi::DenseTensor *tensor,
-                           const phi::DeviceContext &dev_ctx) {
+                           DenseTensor *tensor,
+                           const DeviceContext &dev_ctx) {
   {
     // the 1st field, unit32_t version for DenseTensor
     uint32_t version = 0;
@@ -109,7 +109,7 @@ void DeserializeFromStream(std::istream &is,
             version));
   }
   {
-    // the 2st field, LoD information
+    // the 2nd field, LoD information
     uint64_t lod_level = 0;
     is.read(reinterpret_cast<char *>(&lod_level), sizeof(lod_level));
     auto &lod = *tensor->mutable_lod();
@@ -117,14 +117,22 @@ void DeserializeFromStream(std::istream &is,
     for (uint64_t i = 0; i < lod_level; ++i) {
       uint64_t size = 0;
       is.read(reinterpret_cast<char *>(&size), sizeof(size));
+      PADDLE_ENFORCE_EQ(
+          size % sizeof(size_t),
+          0U,
+          common::errors::InvalidArgument(
+              "Deserialize to tensor failed, the LoD level size in bytes "
+              "(%llu) must be a multiple of %zu.",
+              size,
+              sizeof(size_t)));
       std::vector<size_t> tmp(size / sizeof(size_t));
       is.read(reinterpret_cast<char *>(tmp.data()),
               static_cast<std::streamsize>(size));
       lod[i] = tmp;
     }
   }
-  // the 3st filed, Tensor
-  TensorFromStream(is, static_cast<phi::DenseTensor *>(tensor), dev_ctx);
+  // the 3rd field, Tensor
+  TensorFromStream(is, static_cast<DenseTensor *>(tensor), dev_ctx);
 }
 
 }  // namespace phi

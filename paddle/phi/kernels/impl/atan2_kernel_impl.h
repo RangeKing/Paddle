@@ -18,6 +18,7 @@
 #include "paddle/phi/core/device_context.h"
 #include "paddle/phi/kernels/atan2_kernel.h"
 #include "paddle/phi/kernels/broadcast_tensors_kernel.h"
+#include "paddle/phi/kernels/funcs/common_shape.h"
 #include "paddle/phi/kernels/funcs/for_range.h"
 
 namespace phi {
@@ -71,38 +72,39 @@ struct Atan2Functor<double> {
 };
 
 template <typename T, typename Context>
-void Atan2Kernel(const Context& ctx,
+void Atan2Kernel(const Context& dev_ctx,
                  const DenseTensor& x,
                  const DenseTensor& y,
                  DenseTensor* out) {
-  if (x.numel() == 0 || y.numel() == 0) {
-    std::vector<int64_t> out_dims_array = common::vectorize(out->dims());
-    std::replace(out_dims_array.begin(), out_dims_array.end(), -1, 0);
-    out->Resize(common::make_ddim(out_dims_array));
-    ctx.template Alloc<typename Atan2Out<T>::type>(out);
-    return;
-  }
+  dev_ctx.template Alloc<typename Atan2Out<T>::type>(out);
+  if (out->numel() == 0) return;
 
-  const auto* x_data = x.data<T>();
-  const auto* y_data = y.data<T>();
+  if (x.dims() == y.dims()) {
+    const auto numel = out->numel();
+    const auto* x_data = x.data<T>();
+    const auto* y_data = y.data<T>();
 
-  DenseTensor x_broadcasted, y_broadcasted;
-  if (x.dims() != y.dims()) {
+    auto* out_data = out->data<typename Atan2Out<T>::type>();
+    funcs::ForRange<Context> for_range(dev_ctx, numel);
+    Atan2Functor<T> functor(x_data, y_data, out_data, numel);
+    for_range(functor);
+  } else {
+    DenseTensor b_x, b_y;
+    // Calculate broadcasted dims
+    b_x.Resize(out->dims());
+    b_y.Resize(out->dims());
     std::vector<const DenseTensor*> inputs = {&x, &y};
-    std::vector<DenseTensor*> outputs = {&x_broadcasted, &y_broadcasted};
-    for (auto* tensor : outputs) {
-      tensor->Resize(out->dims());
-    }
-    BroadcastTensorsKernel<T, Context>(ctx, inputs, outputs);
-    x_data = x_broadcasted.data<T>();
-    y_data = y_broadcasted.data<T>();
-  }
+    std::vector<DenseTensor*> outputs = {&b_x, &b_y};
+    BroadcastTensorsKernel<T, Context>(dev_ctx, inputs, outputs);
 
-  auto* out_data = ctx.template Alloc<typename Atan2Out<T>::type>(out);
-  const auto numel = out->numel();
-  phi::funcs::ForRange<Context> for_range(ctx, numel);
-  phi::Atan2Functor<T> functor(x_data, y_data, out_data, numel);
-  for_range(functor);
+    const auto numel = out->numel();
+    const auto* x_data = b_x.data<T>();
+    const auto* y_data = b_y.data<T>();
+    auto* out_data = out->data<typename Atan2Out<T>::type>();
+    funcs::ForRange<Context> for_range(dev_ctx, numel);
+    Atan2Functor<T> functor(x_data, y_data, out_data, numel);
+    for_range(functor);
+  }
 }
 
 }  // namespace phi

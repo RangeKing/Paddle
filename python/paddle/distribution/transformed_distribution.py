@@ -17,6 +17,7 @@ import typing
 from typing import TYPE_CHECKING
 
 from paddle.distribution import distribution, independent, transform
+from paddle.utils.decorator_utils import param_one_alias
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -36,15 +37,15 @@ class TransformedDistribution(distribution.Distribution):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> paddle.seed(2023)
             >>> from paddle.distribution import transformed_distribution
 
             >>> d = transformed_distribution.TransformedDistribution(
-            ...     paddle.distribution.Normal(0., 1.),
-            ...     [paddle.distribution.AffineTransform(paddle.to_tensor(1.), paddle.to_tensor(2.))]
+            ...     paddle.distribution.Normal(0.0, 1.0),
+            ...     [paddle.distribution.AffineTransform(paddle.to_tensor(1.0), paddle.to_tensor(2.0))],
             ... )
 
             >>> # doctest: +SKIP('random sample')
@@ -106,6 +107,7 @@ class TransformedDistribution(distribution.Distribution):
             ],
         )
 
+    @param_one_alias(["shape", "sample_shape"])
     def sample(self, shape: Sequence[int] = []) -> Tensor:
         """Sample from ``TransformedDistribution``.
 
@@ -120,6 +122,7 @@ class TransformedDistribution(distribution.Distribution):
             x = t.forward(x)
         return x
 
+    @param_one_alias(["shape", "sample_shape"])
     def rsample(self, shape: Sequence[int] = []) -> Tensor:
         """Reparameterized sample from ``TransformedDistribution``.
 

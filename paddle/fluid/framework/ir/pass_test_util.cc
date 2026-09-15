@@ -34,10 +34,10 @@ OpDesc* CreateOp(ProgramDesc* prog,
                  const std::string& op_type_name,
                  const std::vector<InOutVarNamePair>& inputs,
                  const std::vector<InOutVarNamePair>& outputs,
-                 bool use_mkldnn) {
+                 bool use_onednn) {
   auto* op = prog->MutableBlock(0)->AppendOp();
   op->SetType(op_type_name);
-  op->SetAttr("use_mkldnn", use_mkldnn);
+  op->SetAttr("use_onednn", use_onednn);
 
   for (const auto& input : inputs) {
     op->SetInput(input.first, {input.second});
@@ -178,12 +178,12 @@ bool RunPassAndAssert(Graph* graph,
 
 template <typename T>
 void InitDenseTensorHolder(const Scope& scope,
-                           const phi::Place& place,
+                           const Place& place,
                            const std::string& var_name,
                            const std::vector<int64_t>& dims,
                            const T* data) {
   auto var = scope.FindLocalVar(var_name);
-  auto tensor = var->GetMutable<phi::DenseTensor>();
+  auto tensor = var->GetMutable<DenseTensor>();
   auto* tensor_mem_ptr =
       tensor->mutable_data<T>(common::make_ddim(dims), place);
   if (data != nullptr) {
@@ -195,17 +195,17 @@ void InitDenseTensorHolder(const Scope& scope,
 
 // Instantiate for below data types.
 template void InitDenseTensorHolder<float>(const Scope&,
-                                           const phi::Place&,
+                                           const Place&,
                                            const std::string&,
                                            const std::vector<int64_t>&,
                                            const float*);
 template void InitDenseTensorHolder<int>(const Scope&,
-                                         const phi::Place&,
+                                         const Place&,
                                          const std::string&,
                                          const std::vector<int64_t>&,
                                          const int*);
 template void InitDenseTensorHolder<double>(const Scope&,
-                                            const phi::Place&,
+                                            const Place&,
                                             const std::string&,
                                             const std::vector<int64_t>&,
                                             const double*);

@@ -20,6 +20,7 @@
 #include "paddle/phi/kernels/elementwise_add_kernel.h"
 #include "paddle/phi/kernels/empty_kernel.h"
 #include "paddle/phi/kernels/expand_kernel.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/blas/blas.h"
 #include "paddle/phi/kernels/funcs/common_shape.h"
 #include "paddle/phi/kernels/funcs/complex_functors.h"
@@ -27,7 +28,6 @@
 #include "paddle/phi/kernels/funcs/matrix_reduce.h"
 #include "paddle/phi/kernels/funcs/tril_triu_compute.h"
 #include "paddle/phi/kernels/transpose_kernel.h"
-
 namespace phi {
 
 template <typename T, typename Context>
@@ -39,6 +39,21 @@ void CholeskySolveGradKernel(const Context& dev_ctx,
                              bool upper,
                              DenseTensor* dx,
                              DenseTensor* dy) {
+  if (dout.numel() == 0) {
+    if (dx) {
+      dev_ctx.template Alloc<T>(dx);
+      if (dx->numel() != 0) {
+        Full<T, Context>(dev_ctx, dx->dims(), 0, dx);
+      }
+    }
+    if (dy) {
+      dev_ctx.template Alloc<T>(dy);
+      if (dy->numel() != 0) {
+        Full<T, Context>(dev_ctx, dy->dims(), 0, dy);
+      }
+    }
+    return;
+  }
   // get broadcast dim
   std::vector<int64_t> x_bst_dims_vec;
   std::vector<int64_t> y_bst_dims_vec;
@@ -48,11 +63,11 @@ void CholeskySolveGradKernel(const Context& dev_ctx,
   IntArray y_bst_dims(y_bst_dims_vec);
 
   // Tensor broadcast to temp 'y_bst'
-  DenseTensor y_bst = phi::Empty<T, Context>(dev_ctx, y_bst_dims);
+  DenseTensor y_bst = Empty<T, Context>(dev_ctx, y_bst_dims);
   ExpandKernel<T, Context>(dev_ctx, y, y_bst_dims, &y_bst);
 
   // reuse forward to calculate dx_bst, which is broad_cast of dx
-  DenseTensor dx_bst = phi::Empty<T, Context>(dev_ctx, x_bst_dims);
+  DenseTensor dx_bst = Empty<T, Context>(dev_ctx, x_bst_dims);
   CholeskySolveKernel<T, Context>(dev_ctx, dout, y_bst, upper, &dx_bst);
 
   // get 'dx' according to 'dx_bst'
@@ -68,51 +83,51 @@ void CholeskySolveGradKernel(const Context& dev_ctx,
 
   // calculate out's conjugate for complex
   DenseTensor out_conj = Conj<T, Context>(dev_ctx, out);
-  out_conj = phi::TransposeLast2Dim<T>(dev_ctx, out_conj);
+  out_conj = TransposeLast2Dim<T>(dev_ctx, out_conj);
 
-  DenseTensor commonterm = phi::Empty<T, Context>(dev_ctx, y_bst_dims);
-  auto blas = phi::funcs::GetBlas<Context, T>(dev_ctx);
+  DenseTensor commonterm = Empty<T, Context>(dev_ctx, y_bst_dims);
+  auto blas = funcs::GetBlas<Context, T>(dev_ctx);
   blas.MatMul(dx_bst,
-              phi::funcs::CreateMatrixDescriptor(dx_bst.dims(), 0, false),
+              funcs::CreateMatrixDescriptor(dx_bst.dims(), 0, false),
               out_conj,
-              phi::funcs::CreateMatrixDescriptor(out_conj.dims(), 0, false),
+              funcs::CreateMatrixDescriptor(out_conj.dims(), 0, false),
               static_cast<T>(1),
               &commonterm,
               static_cast<T>(0));
 
   // calculate commonterm's conjugate for complex
   DenseTensor commonterm_conj = Conj<T, Context>(dev_ctx, commonterm);
-  commonterm_conj = phi::TransposeLast2Dim<T>(dev_ctx, commonterm_conj);
+  commonterm_conj = TransposeLast2Dim<T>(dev_ctx, commonterm_conj);
 
-  phi::AddKernel<T>(dev_ctx, commonterm, commonterm_conj, &commonterm);
+  AddKernel<T>(dev_ctx, commonterm, commonterm_conj, &commonterm);
 
-  DenseTensor dy_bst = phi::Empty<T, Context>(dev_ctx, y_bst_dims);
+  DenseTensor dy_bst = Empty<T, Context>(dev_ctx, y_bst_dims);
   if (upper) {
     blas.MatMul(y_bst,
-                phi::funcs::CreateMatrixDescriptor(y_bst.dims(), 0, false),
+                funcs::CreateMatrixDescriptor(y_bst.dims(), 0, false),
                 commonterm,
-                phi::funcs::CreateMatrixDescriptor(commonterm.dims(), 0, false),
+                funcs::CreateMatrixDescriptor(commonterm.dims(), 0, false),
                 static_cast<T>(-1),
                 &dy_bst,
                 static_cast<T>(0));
   } else {
     blas.MatMul(commonterm,
-                phi::funcs::CreateMatrixDescriptor(commonterm.dims(), 0, false),
+                funcs::CreateMatrixDescriptor(commonterm.dims(), 0, false),
                 y_bst,
-                phi::funcs::CreateMatrixDescriptor(y_bst.dims(), 0, false),
+                funcs::CreateMatrixDescriptor(y_bst.dims(), 0, false),
                 static_cast<T>(-1),
                 &dy_bst,
                 static_cast<T>(0));
   }
 
   // get upper or lower of 'dy_bst'
-  DenseTensor dy_bst_upper = phi::Empty<T, Context>(dev_ctx, y_bst_dims);
+  DenseTensor dy_bst_upper = Empty<T, Context>(dev_ctx, y_bst_dims);
 
   int y_bst_ndim = y_bst_dims_vec.size();
   const auto H = y_bst_dims_vec[y_bst_ndim - 2];
   const auto W = y_bst_dims_vec[y_bst_ndim - 1];
-  phi::funcs::ForRange<Context> y_for_range(dev_ctx, dy_bst.numel());
-  phi::funcs::TrilTriuCompute<T> tril_triu_functor(
+  funcs::ForRange<Context> y_for_range(dev_ctx, dy_bst.numel());
+  funcs::TrilTriuCompute<T> tril_triu_functor(
       dy_bst.data<T>(), 0, !upper, H, W, dy_bst_upper.data<T>());
   y_for_range(tril_triu_functor);
 

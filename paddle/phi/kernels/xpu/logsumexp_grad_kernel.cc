@@ -27,6 +27,10 @@ void LogsumexpGradKernel(const Context& dev_ctx,
                          bool keepdim,
                          bool reduce_all,
                          DenseTensor* dx) {
+  if (dx && dx->numel() == 0) {
+    dev_ctx.template Alloc<T>(dx);
+    return;
+  }
   using XPUType = typename XPUTypeTrait<T>::Type;
   xpu::ctx_guard RAII_GUARD(dev_ctx.x_context());
   reduce_all = recompute_reduce_all(x, axis_in, reduce_all);
@@ -36,7 +40,7 @@ void LogsumexpGradKernel(const Context& dev_ctx,
   auto dy_data = reinterpret_cast<const XPUType*>(dy.data<T>());
   auto dx_data = reinterpret_cast<XPUType*>(dev_ctx.template Alloc<T>(dx));
 
-  std::vector<int64_t> xdims = common::vectorize<int64_t>(x.dims());
+  std::vector<int64_t> xdims = vectorize<int64_t>(x.dims());
   std::vector<int64_t> ydims = xdims;
 
   if (reduce_all) {
@@ -88,5 +92,5 @@ PD_REGISTER_KERNEL(logsumexp_grad,
                    ALL_LAYOUT,
                    phi::LogsumexpGradKernel,
                    float,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}

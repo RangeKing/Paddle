@@ -34,7 +34,7 @@ class OrthogonalStrategy:
         The instance of strategy.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env: DISTRIBUTED)
             >>> import paddle
@@ -43,7 +43,14 @@ class OrthogonalStrategy:
             >>> from paddle.distributed.fleet.base.orthogonal_strategy import OrthogonalStrategy
 
             >>> dist.init_parallel_env()
-            >>> strategy = OrthogonalStrategy([("dp", 2, DPGroup), ("mp", 2, MPGroup), ("pp", 2, PPGroup)], fused_strategy_dict={"check": ["mp", "pp"]})
+            >>> strategy = OrthogonalStrategy(
+            ...     [
+            ...         ("dp", 2, DPGroup),
+            ...         ("mp", 2, MPGroup),
+            ...         ("pp", 2, PPGroup),
+            ...     ],
+            ...     fused_strategy_dict={"check": ["mp", "pp"]},
+            ... )
 
     """
 
@@ -98,9 +105,9 @@ class OrthogonalStrategy:
         Returns:
             An instance of specific strategy group.
         """
-        assert (
-            name in self._list_of_strategy_name
-        ), f"Strategy group {name} is not created."
+        assert name in self._list_of_strategy_name, (
+            f"Strategy group {name} is not created."
+        )
         return self._name_to_group_dict[name]
 
     def fused_strategy_group(self, name):
@@ -113,9 +120,9 @@ class OrthogonalStrategy:
         Returns:
             (StrategyGroupBase): An instance of strategy group.
         """
-        assert (
-            name in self._name_to_fused_group_dict
-        ), f"Fused strategy group {name} is not created."
+        assert name in self._name_to_fused_group_dict, (
+            f"Fused strategy group {name} is not created."
+        )
         return self._name_to_fused_group_dict[name]
 
     def rank_in_strategy(self, name):
@@ -128,9 +135,9 @@ class OrthogonalStrategy:
         Returns:
             (Integer): Local rank in specific strategy.
         """
-        assert (
-            name in self._list_of_strategy_name
-        ), f"Strategy group {name} is not created."
+        assert name in self._list_of_strategy_name, (
+            f"Strategy group {name} is not created."
+        )
         return self._name_to_group_dict[name].group.rank
 
     def _check_valid_strategy(self):
@@ -141,15 +148,15 @@ class OrthogonalStrategy:
             lambda x, y: x * y, self._list_of_degree
         )
 
-        assert num_of_ranks == len(
-            self._strategy_rank_list
-        ), f"There are total {len(self._strategy_rank_list)} ranks, but need {num_of_ranks} ranks in this strategy."
+        assert num_of_ranks == len(self._strategy_rank_list), (
+            f"There are total {len(self._strategy_rank_list)} ranks, but need {num_of_ranks} ranks in this strategy."
+        )
 
         for fused_strategy in self._fused_strategy_dict.values():
             for strategy in fused_strategy:
-                assert (
-                    strategy in self._list_of_strategy_name
-                ), f"Can not fuse strategy {strategy} without defined previous."
+                assert strategy in self._list_of_strategy_name, (
+                    f"Can not fuse strategy {strategy} without defined previous."
+                )
 
     def _create_fused_group(self):
         for name in self._fused_strategy_dict:

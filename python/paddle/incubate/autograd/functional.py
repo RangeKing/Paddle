@@ -15,20 +15,19 @@
 from __future__ import annotations
 
 import typing
-from typing import TYPE_CHECKING, Callable, TypeVar, overload
+from typing import TYPE_CHECKING, TypeVar, overload
 
 import paddle
 from paddle.base import framework
 from paddle.incubate.autograd import primapi, utils
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-    from typing import Tuple
+    from collections.abc import Callable, Sequence
 
     from paddle import Tensor
     from paddle._typing import TensorOrTensors
 
-    _OutputT = TypeVar("_OutputT", Tensor, Tuple[Tensor, ...])
+    _OutputT = TypeVar("_OutputT", Tensor, tuple[Tensor, ...])
 
 
 @overload
@@ -72,13 +71,12 @@ def vjp(func, xs, v=None):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
             >>> def func(x):
             ...     return paddle.matmul(x, x)
-            ...
             >>> x = paddle.ones(shape=[2, 2], dtype='float32')
             >>> _, vjp_result = paddle.incubate.autograd.vjp(func, x)
             >>> print(vjp_result)
@@ -148,13 +146,12 @@ def jvp(func, xs, v=None):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
             >>> def func(x):
             ...     return paddle.matmul(x, x)
-            ...
             >>> x = paddle.ones(shape=[2, 2], dtype='float32')
             >>> _, jvp_result = paddle.incubate.autograd.jvp(func, x)
             >>> print(jvp_result)
@@ -258,14 +255,13 @@ class Jacobian:
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
             >>> def func(x, y):
             ...     return paddle.matmul(x, y)
-            ...
-            >>> x = paddle.to_tensor([[1., 2.], [3., 4.]])
+            >>> x = paddle.to_tensor([[1.0, 2.0], [3.0, 4.0]])
             >>> J = paddle.incubate.autograd.Jacobian(func, [x, x])
             >>> print(J[:, :])
             Tensor(shape=[4, 8], dtype=float32, place=Place(cpu), stop_gradient=False,
@@ -335,13 +331,12 @@ class Hessian:
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
             >>> def reducer(x):
             ...     return paddle.sum(x * x)
-            ...
             >>> x = paddle.rand([2, 2])
             >>> h = paddle.incubate.autograd.Hessian(reducer, x)
             >>> print(h[:])
@@ -441,9 +436,9 @@ class _Jacobian:
             0 if isinstance(idx, int) else slice(0, lazy_axis_size, 1)
         )
         return (
-            indexes[: self._lazy_axis]
-            + (shifted_lazy_axis_idx,)
-            + indexes[self._lazy_axis + 1 :]
+            *indexes[: self._lazy_axis],
+            shifted_lazy_axis_idx,
+            *indexes[self._lazy_axis + 1 :],
         )
 
     def __getitem__(self, indexes):
@@ -671,14 +666,13 @@ def _separate(xs):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.incubate.autograd.functional import _separate
 
             >>> def func(x, y):
             ...     return x * y
-            ...
             >>> x = paddle.ones((1,))
             >>> x.stop_gradient = False
 
@@ -720,8 +714,7 @@ def _check_inputs(func, xs, v=None):
         xs, (framework.Variable, typing.Sequence, paddle.pir.Value)
     ):
         raise TypeError(
-            f"Expected 'xs' is a Tensor|Sequence[Tensor],"
-            f"but got {type(xs)}."
+            f"Expected 'xs' is a Tensor|Sequence[Tensor], but got {type(xs)}."
         )
     if isinstance(xs, typing.Sequence) and not all(
         isinstance(x, (framework.Variable, paddle.pir.Value)) for x in xs

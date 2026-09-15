@@ -14,9 +14,19 @@
 
 #pragma once
 #ifdef PADDLE_WITH_CUDA
-#include "paddle/common/errors.h"
 #include "paddle/phi/backends/dynload/cusolver.h"
 #endif  // PADDLE_WITH_CUDA
+#ifdef PADDLE_WITH_HIP
+// thrust/device_vector.h requires hipcc
+// (rocThrust 7.0+ pulls in rocprim)
+#ifdef __HIPCC__
+#include <thrust/device_vector.h>
+#endif
+#include "paddle/phi/backends/dynload/rocsolver.h"
+#endif  // PADDLE_WITH_HIP
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
+#include "paddle/common/errors.h"
+#endif
 #include "paddle/phi/backends/cpu/cpu_context.h"
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/common/memory_utils.h"
@@ -27,7 +37,7 @@
 namespace phi {
 namespace funcs {
 
-inline int64_t GetBatchSize(const phi::DDim &dims) {
+inline int64_t GetBatchSize(const DDim &dims) {
   int64_t batch_size = 1;
   auto dim_size = dims.size();
   for (int i = 0; i < dim_size - 2; ++i) {
@@ -41,7 +51,7 @@ static void CheckEighResult(const int batch, const int info) {
       info,
       0,
       common::errors::PreconditionNotMet(
-          "For batch [%d]: the [%d] off-diagonal elements of an intermediate"
+          "For batch [%d]: the [%d] off-diagonal elements of an intermediate "
           "tridiagonal form did not converge to zero",
           batch,
           info));
@@ -90,9 +100,8 @@ inline void syevjBatched_bufferSize<double>(
 }
 
 template <>
-inline void syevjBatched_bufferSize<phi::dtype::complex<float>, float>(
-    CUDASOLVER_SYEVJ_BATCHED_BUFFERSIZE_ARGTYPES(phi::dtype::complex<float>,
-                                                 float)) {
+inline void syevjBatched_bufferSize<phi::complex64, float>(
+    CUDASOLVER_SYEVJ_BATCHED_BUFFERSIZE_ARGTYPES(phi::complex64, float)) {
   PADDLE_ENFORCE_GPU_SUCCESS(dynload::cusolverDnCheevjBatched_bufferSize(
       handle,
       jobz,
@@ -107,9 +116,8 @@ inline void syevjBatched_bufferSize<phi::dtype::complex<float>, float>(
 }
 
 template <>
-inline void syevjBatched_bufferSize<phi::dtype::complex<double>, double>(
-    CUDASOLVER_SYEVJ_BATCHED_BUFFERSIZE_ARGTYPES(phi::dtype::complex<double>,
-                                                 double)) {
+inline void syevjBatched_bufferSize<phi::complex128, double>(
+    CUDASOLVER_SYEVJ_BATCHED_BUFFERSIZE_ARGTYPES(phi::complex128, double)) {
   PADDLE_ENFORCE_GPU_SUCCESS(dynload::cusolverDnZheevjBatched_bufferSize(
       handle,
       jobz,
@@ -149,8 +157,8 @@ inline void syevjBatched<double>(CUDASOLVER_SYEVJ_BATCHED_ARGTYPES(double,
 }
 
 template <>
-inline void syevjBatched<phi::dtype::complex<float>, float>(
-    CUDASOLVER_SYEVJ_BATCHED_ARGTYPES(phi::dtype::complex<float>, float)) {
+inline void syevjBatched<phi::complex64, float>(
+    CUDASOLVER_SYEVJ_BATCHED_ARGTYPES(phi::complex64, float)) {
   PADDLE_ENFORCE_GPU_SUCCESS(
       dynload::cusolverDnCheevjBatched(handle,
                                        jobz,
@@ -167,8 +175,8 @@ inline void syevjBatched<phi::dtype::complex<float>, float>(
 }
 
 template <>
-inline void syevjBatched<phi::dtype::complex<double>, double>(
-    CUDASOLVER_SYEVJ_BATCHED_ARGTYPES(phi::dtype::complex<double>, double)) {
+inline void syevjBatched<phi::complex128, double>(
+    CUDASOLVER_SYEVJ_BATCHED_ARGTYPES(phi::complex128, double)) {
   PADDLE_ENFORCE_GPU_SUCCESS(dynload::cusolverDnZheevjBatched(
       handle,
       jobz,
@@ -185,12 +193,12 @@ inline void syevjBatched<phi::dtype::complex<double>, double>(
 }
 #endif
 
-#ifdef PADDLE_WITH_CUDA
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
 static void CheckEighResult(const GPUContext &dev_ctx,
                             const int64_t batch_size,
                             int *info) {
   std::vector<int> error_info(batch_size);
-  memory_utils::Copy(phi::CPUPlace(),
+  memory_utils::Copy(CPUPlace(),
                      error_info.data(),
                      dev_ctx.GetPlace(),
                      info,
@@ -231,14 +239,14 @@ struct MatrixEighFunctor<CPUContext, T> {
     DenseTensor input_trans;
     // lapack is a column-major storage, transpose make the input to
     // have a continuous memory layout
-    input_trans = phi::TransposeLast2Dim<T>(dev_ctx, input);
+    input_trans = TransposeLast2Dim<T>(dev_ctx, input);
     T *input_vector = input_trans.data<T>();
 
     auto dims = input.dims();
     int dim_size = dims.size();
     int64_t batch_size = GetBatchSize(dims);
 
-    int vector_stride = dims[dim_size - 1] * dims[dim_size - 2];
+    int64_t vector_stride = dims[dim_size - 1] * dims[dim_size - 2];
     int values_stride = dims[dim_size - 1];
     char uplo = is_lower ? 'L' : 'U';
     char jobz = has_vectors ? 'V' : 'N';
@@ -257,19 +265,19 @@ struct MatrixEighFunctor<CPUContext, T> {
 
     int info = 0;
     // Call lapackEigh to get the optimal size of work data
-    phi::funcs::lapackEigh<T, ValueType>(jobz,
-                                         uplo,
-                                         n,
-                                         input_vector,
-                                         lda,
-                                         out_value,
-                                         &lwork_opt,
-                                         lwork,
-                                         &rwork_opt,
-                                         lrwork,
-                                         &iwork_opt,
-                                         liwork,
-                                         &info);
+    funcs::lapackEigh<T, ValueType>(jobz,
+                                    uplo,
+                                    n,
+                                    input_vector,
+                                    lda,
+                                    out_value,
+                                    &lwork_opt,
+                                    lwork,
+                                    &rwork_opt,
+                                    lrwork,
+                                    &iwork_opt,
+                                    liwork,
+                                    &info);
     lwork = std::max<int>(1, static_cast<int>(lwork_opt));
     liwork = std::max<int>(1, iwork_opt);
 
@@ -277,38 +285,38 @@ struct MatrixEighFunctor<CPUContext, T> {
     ValueType *rwork_data = nullptr;
 
     // complex type
-    if (input.type() == phi::DataType::COMPLEX64 ||
-        input.type() == phi::DataType::COMPLEX128) {
+    if (input.type() == DataType::COMPLEX64 ||
+        input.type() == DataType::COMPLEX128) {
       lrwork = std::max<int>(1, static_cast<int>(rwork_opt));
 
-      rwork_tensor.Resize(common::make_ddim({lrwork}));
+      rwork_tensor.Resize({lrwork});
       rwork_data = dev_ctx.template Alloc<ValueType>(&rwork_tensor);
     }
 
     DenseTensor iwork_tensor, work_tensor;
 
-    iwork_tensor.Resize(common::make_ddim({liwork}));
+    iwork_tensor.Resize({liwork});
     int *iwork_data = dev_ctx.template Alloc<int>(&iwork_tensor);
 
-    work_tensor.Resize(common::make_ddim({lwork}));
+    work_tensor.Resize({lwork});
     T *work_data = dev_ctx.template Alloc<T>(&work_tensor);
 
     for (auto i = 0; i < batch_size; i++) {
       auto *value_data = out_value + i * values_stride;
       auto *input_data = input_vector + i * vector_stride;
-      phi::funcs::lapackEigh<T, ValueType>(jobz,
-                                           uplo,
-                                           n,
-                                           input_data,
-                                           lda,
-                                           value_data,
-                                           work_data,
-                                           lwork,
-                                           rwork_data,
-                                           lrwork,
-                                           iwork_data,
-                                           liwork,
-                                           &info);
+      funcs::lapackEigh<T, ValueType>(jobz,
+                                      uplo,
+                                      n,
+                                      input_data,
+                                      lda,
+                                      value_data,
+                                      work_data,
+                                      lwork,
+                                      rwork_data,
+                                      lrwork,
+                                      iwork_data,
+                                      liwork,
+                                      &info);
       CheckEighResult(i, info);
     }
     if (has_vectors) {
@@ -317,11 +325,143 @@ struct MatrixEighFunctor<CPUContext, T> {
                                   "When has_vectors is true,"
                                   "the eigenvectors needs to be calculated, "
                                   "so the eigenvectors must be provided."));
-      input_trans = phi::TransposeLast2Dim<T>(dev_ctx, input_trans);
+      input_trans = TransposeLast2Dim<T>(dev_ctx, input_trans);
       eigen_vectors->ShareDataWith(input_trans);
     }
   }
 };
+
+// HIP code using thrust::device_vector requires hipcc
+// (rocThrust 7.0+ pulls in rocprim)
+#if defined(PADDLE_WITH_HIP) && defined(__HIPCC__)
+#define ROCSOLVER_SYEVJ_BATCHED_ARGTYPES(scalar_t, value_t)            \
+  solverHandle_t handle, rocblas_esort esort, rocblas_evect evect,     \
+      rocblas_fill uplo, int n, scalar_t *const A[], int lda,          \
+      const scalar_t abstol, scalar_t *residual, const int max_sweeps, \
+      int *n_sweeps, value_t *W, const int strideW, int *info,         \
+      const int batch_count
+
+template <class scalar_t, class value_t = scalar_t>
+void syevjBatched(ROCSOLVER_SYEVJ_BATCHED_ARGTYPES(scalar_t, value_t)) {
+  PADDLE_THROW(common::errors::InvalidArgument(
+      "syevjBatched: not implemented for %s", typeid(scalar_t).name()));
+}
+
+template <>
+inline void syevjBatched<float>(ROCSOLVER_SYEVJ_BATCHED_ARGTYPES(float,
+                                                                 float)) {
+  PADDLE_ENFORCE_GPU_SUCCESS(dynload::rocsolver_ssyevj_batched(handle,
+                                                               esort,
+                                                               evect,
+                                                               uplo,
+                                                               n,
+                                                               A,
+                                                               lda,
+                                                               abstol,
+                                                               residual,
+                                                               max_sweeps,
+                                                               n_sweeps,
+                                                               W,
+                                                               strideW,
+                                                               info,
+                                                               batch_count));
+}
+
+template <>
+inline void syevjBatched<double>(ROCSOLVER_SYEVJ_BATCHED_ARGTYPES(double,
+                                                                  double)) {
+  PADDLE_ENFORCE_GPU_SUCCESS(dynload::rocsolver_dsyevj_batched(handle,
+                                                               esort,
+                                                               evect,
+                                                               uplo,
+                                                               n,
+                                                               A,
+                                                               lda,
+                                                               abstol,
+                                                               residual,
+                                                               max_sweeps,
+                                                               n_sweeps,
+                                                               W,
+                                                               strideW,
+                                                               info,
+                                                               batch_count));
+}
+
+template <typename T>
+struct MatrixEighFunctor<GPUContext, T> {
+ public:
+  void operator()(const GPUContext &dev_ctx,
+                  const DenseTensor &input,
+                  DenseTensor *eigen_values,
+                  DenseTensor *eigen_vectors,
+                  bool is_lower,
+                  bool has_vectors) {
+    using ValueType = phi::dtype::Real<T>;
+
+    auto &dims = input.dims();
+    int dim_size = dims.size();
+    int64_t batch_size = GetBatchSize(dims);
+    int last_dim = dims[dim_size - 1];
+    int lda = std::max<int>(1, last_dim);
+    auto vector_stride = dims[dim_size - 1] * dims[dim_size - 2];
+    auto values_stride = dims[dim_size - 1];
+
+    rocblas_fill uplo = is_lower ? rocblas_fill_lower : rocblas_fill_upper;
+    rocblas_evect evect =
+        has_vectors ? rocblas_evect_original : rocblas_evect_none;
+
+    ValueType *out_value = dev_ctx.template Alloc<ValueType>(eigen_values);
+    DenseTensor input_trans = TransposeLast2Dim<T>(dev_ctx, input);
+    T *input_vector = input_trans.data<T>();
+
+    auto handle = dev_ctx.cusolver_dn_handle();
+
+    size_t total_bytes = sizeof(T) * batch_size + sizeof(int) * batch_size * 2;
+    auto info = phi::memory_utils::Alloc(
+        dev_ctx.GetPlace(),
+        total_bytes,
+        phi::Stream(reinterpret_cast<phi::StreamId>(dev_ctx.stream())));
+    auto *residual_ptr = reinterpret_cast<T *>(info->ptr());
+    auto *info_ptr = reinterpret_cast<int *>(residual_ptr + batch_size);
+    auto *n_sweeps_ptr = reinterpret_cast<int *>(info_ptr + batch_size);
+
+    std::vector<T *> output_ptrs;
+    for (int i = 0; i < batch_size; i++) {
+      output_ptrs.emplace_back(input_vector + i * vector_stride);
+    }
+    thrust::device_vector<T *> dev_output_ptrs(output_ptrs.begin(),
+                                               output_ptrs.end());
+
+    syevjBatched<T>(handle,
+                    rocblas_esort_ascending,
+                    evect,
+                    uplo,
+                    last_dim,
+                    thrust::raw_pointer_cast(dev_output_ptrs.data()),
+                    lda,
+                    0,
+                    residual_ptr,
+                    100,  // 100 max_sweeps default
+                    n_sweeps_ptr,
+                    out_value,
+                    values_stride,
+                    info_ptr,
+                    batch_size);
+
+    CheckEighResult(dev_ctx, batch_size, info_ptr);
+
+    if (has_vectors) {
+      PADDLE_ENFORCE_NOT_NULL(eigen_vectors,
+                              common::errors::InvalidArgument(
+                                  "When has_vectors is true,"
+                                  "the eigenvectors needs to be calculated,"
+                                  "so the eigenvectors must be provided."));
+      input_trans = TransposeLast2Dim<T>(dev_ctx, input_trans);
+      eigen_vectors->ShareDataWith(input_trans);
+    }
+  }
+};
+#endif
 
 #ifdef PADDLE_WITH_CUDA
 
@@ -354,7 +494,7 @@ struct MatrixEighFunctor<GPUContext, T> {
         has_vectors ? CUSOLVER_EIG_MODE_VECTOR : CUSOLVER_EIG_MODE_NOVECTOR;
 
     ValueType *out_value = dev_ctx.template Alloc<ValueType>(eigen_values);
-    DenseTensor input_trans = phi::TransposeLast2Dim<T>(dev_ctx, input);
+    DenseTensor input_trans = TransposeLast2Dim<T>(dev_ctx, input);
     T *input_vector = input_trans.data<T>();
 
     // Precision loss will occur in some cases while using
@@ -362,8 +502,8 @@ struct MatrixEighFunctor<GPUContext, T> {
     // well in Paddle(cuda10.2)
     use_cusolver_syevj_batched = (use_cusolver_syevj_batched) &&
                                  (batch_size > 1) &&
-                                 (input.dtype() != phi::DataType::COMPLEX128);
-    bool use_cusolver_syevj = (input.dtype() == phi::DataType::FLOAT32 &&
+                                 (input.dtype() != DataType::COMPLEX128);
+    bool use_cusolver_syevj = (input.dtype() == DataType::FLOAT32 &&
                                last_dim >= 32 && last_dim <= 512);
     auto handle = dev_ctx.cusolver_dn_handle();
 
@@ -467,8 +607,7 @@ struct MatrixEighFunctor<GPUContext, T> {
                                   "When has_vectors is true,"
                                   "the eigenvectors needs to be calculated,"
                                   "so the eigenvectors must be provided."));
-      //   input_trans = dito.Transpose(input_trans);
-      input_trans = phi::TransposeLast2Dim<T>(dev_ctx, input_trans);
+      input_trans = TransposeLast2Dim<T>(dev_ctx, input_trans);
       eigen_vectors->ShareDataWith(input_trans);
     }
   }

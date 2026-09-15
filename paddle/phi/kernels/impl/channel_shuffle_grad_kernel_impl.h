@@ -31,6 +31,9 @@ void ChannelShuffleGradKernel(const Context& dev_ctx,
   auto* dout = &out_grad;
   auto* dx = x_grad;
   dev_ctx.template Alloc<T>(dx);
+  if (dx && dx->numel() == 0) {
+    return;
+  }
   bool channel_last = (data_format == "NHWC");
   const auto& do_dims = dout->dims();
   const auto& dx_dims = dx->dims();
@@ -50,7 +53,7 @@ void ChannelShuffleGradKernel(const Context& dev_ctx,
   } else {
     o.Resize({dx_dims[0], dx_dims[1], dx_dims[2], groups, dx_dims[3] / groups});
   }
-  phi::funcs::Transpose<Context, T, 5> trans;
+  funcs::Transpose<Context, T, 5> trans;
   trans(dev_ctx, t, &o, axis);
   dx->Resize(dx_dims);
 }

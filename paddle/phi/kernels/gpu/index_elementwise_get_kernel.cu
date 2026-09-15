@@ -1,0 +1,215 @@
+// Copyright (c) 2025 PaddlePaddle Authors. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include "paddle/phi/kernels/index_elementwise_get_kernel.h"
+#include <cstdio>
+
+#include "paddle/phi/backends/gpu/gpu_context.h"
+#include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/funcs/index_elementwise.cu.h"
+#include "paddle/phi/kernels/funcs/stride_utils.h"
+
+namespace phi {
+template <typename T, typename OffsetT = uint32_t>
+void GPUIndexElementwiseGetKernel(const GPUContext& dev_ctx,
+                                  const DenseTensor& input,
+                                  const std::vector<const DenseTensor*>& index,
+                                  const std::vector<int64_t>& input_dims,
+                                  const std::vector<int64_t>& input_strides,
+                                  const std::vector<int64_t>& index_dims,
+                                  const std::vector<int64_t>& index_stride,
+                                  const int64_t slice_offset,
+                                  DenseTensor* output) {
+  int64_t numel = 0;
+  int64_t num_indices = 0;
+  std::vector<int64_t> shape_tmp;
+  std::vector<int64_t> stride_tmp;
+  funcs::cal_shape_stride(index_dims, &num_indices, &shape_tmp, &stride_tmp);
+
+  auto index_ptrs = funcs::GetIndexDataPtrs<int64_t>(index);
+
+  auto sizes = std::array<int64_t, DDim::kMaxRank>{};
+  auto strides = std::array<int64_t, DDim::kMaxRank>{};
+
+  for (int64_t i = 0; i < num_indices; i++) {
+    sizes[i] = index_dims[i];
+    strides[i] = index_stride[i];
+  }
+
+  std::array<int64_t*, 3> strides_array;
+  std::vector<int64_t> desired_shape;
+  std::array<std::vector<int64_t>, 3> strides_vec;
+
+  funcs::IndexGetStride<3>(input_dims,
+                           input_strides,
+                           phi::SizeOf(input.dtype()),
+                           std::vector<int64_t>(),
+                           std::vector<int64_t>(),
+                           phi::SizeOf(input.dtype()),
+                           shape_tmp,
+                           stride_tmp,
+                           phi::SizeOf(index[0]->dtype()),
+                           &desired_shape,
+                           &strides_array,
+                           &numel,
+                           strides_vec);
+  auto offset_calc = funcs::make_offset_calculator_put<3, false, OffsetT>(
+      desired_shape, strides_array);
+
+  const int64_t N = output->numel();
+  constexpr int nt = 128;
+  constexpr int vt = 4;
+  const dim3 block(nt);
+  const int64_t grid_x = (N + block.x * vt - 1) / (block.x * vt);
+  const int64_t max_grid_dim = dev_ctx.GetCUDAMaxGridDimSize()[0];
+  const dim3 grid(std::min(max_grid_dim, grid_x));
+  auto stream = dev_ctx.stream();
+
+  using dtype = funcs::OpaqueType<sizeof(T)>;
+
+  const char* in_ptr =
+      reinterpret_cast<const char*>(input.data<T>()) + slice_offset;
+  char* out_ptr = reinterpret_cast<char*>(output->data<T>());
+
+  if (grid_x <= max_grid_dim) {
+    funcs::index_elementwise_with_tensor_kernel<nt, vt>
+        <<<grid, block, 0, stream>>>(N, [=] __device__(int64_t idx) {
+          if (idx < N) {
+            const auto offsets = offset_calc.get(idx);
+            char* const out_data = out_ptr + offsets[0];
+            const char* const in_data = in_ptr + offsets[1];
+
+            int64_t offset = 0;
+#pragma unroll
+            for (int64_t i = 0; i < num_indices; i++) {
+              int64_t index =
+                  *reinterpret_cast<int64_t*>(index_ptrs[i] + offsets[2]);
+              if (index < 0) {
+                index += sizes[i];
+              }
+              offset += index * strides[i];
+            }
+
+            *reinterpret_cast<dtype*>(out_data) =
+                *reinterpret_cast<const dtype*>(in_data + offset);
+          }
+        });
+  } else {
+    const int64_t chunks = (grid_x + max_grid_dim - 1) / max_grid_dim;
+    for (int64_t chunk = 0; chunk < chunks; ++chunk) {
+      const int64_t start_idx = chunk * max_grid_dim * nt * vt;
+      const int64_t end_idx = std::min((chunk + 1) * max_grid_dim * nt * vt, N);
+      const int64_t chunk_size = end_idx - start_idx;
+      const int64_t chunk_grid_x = (chunk_size + nt * vt - 1) / (nt * vt);
+      const dim3 chunk_grid(std::min(chunk_grid_x, max_grid_dim));
+
+      funcs::index_elementwise_with_tensor_kernel<nt, vt>
+          <<<chunk_grid, block, 0, stream>>>(
+              chunk_size, [=] __device__(int64_t local_idx) {
+                const int64_t idx = start_idx + local_idx;
+                if (idx < N) {
+                  const auto offsets = offset_calc.get(idx);
+                  char* const out_data = out_ptr + offsets[0];
+                  const char* const in_data = in_ptr + offsets[1];
+
+                  int64_t offset = 0;
+#pragma unroll
+                  for (int64_t i = 0; i < num_indices; i++) {
+                    int64_t index =
+                        *reinterpret_cast<int64_t*>(index_ptrs[i] + offsets[2]);
+                    if (index < 0) {
+                      index += sizes[i];
+                    }
+                    offset += index * strides[i];
+                  }
+
+                  *reinterpret_cast<dtype*>(out_data) =
+                      *reinterpret_cast<const dtype*>(in_data + offset);
+                }
+              });
+    }
+  }
+}
+
+template <typename T, typename Context>
+void IndexElementwiseGetKernel(const Context& dev_ctx,
+                               const DenseTensor& x,
+                               const std::vector<const DenseTensor*>& index,
+                               const std::vector<int64_t>& input_dims,
+                               const std::vector<int64_t>& input_strides,
+                               const std::vector<int64_t>& index_dims,
+                               const std::vector<int64_t>& index_stride,
+                               const int64_t slice_offset,
+                               const bool accumulate,
+                               const bool is_combined,
+                               DenseTensor* out) {
+  const auto& index_type = index[0]->dtype();
+  PADDLE_ENFORCE_EQ(index_type == DataType::INT64,
+                    true,
+                    common::errors::InvalidArgument(
+                        "Index holds the wrong type, it holds [%s], but "
+                        "desires to be [%s].",
+                        index_type,
+                        DataType::INT64));
+
+  auto out_dims = out->dims();
+  if (out_dims.size() > 0) {
+    std::vector<int64_t> output_dims(input_dims);
+    out->Resize(output_dims);
+  }
+
+  dev_ctx.template Alloc<T>(out);
+  if (out->numel() == 0) return;
+
+  if (funcs::IsInUint32Range(x.numel() * sizeof(T), out->numel() * sizeof(T))) {
+    GPUIndexElementwiseGetKernel<T>(dev_ctx,
+                                    x,
+                                    index,
+                                    input_dims,
+                                    input_strides,
+                                    index_dims,
+                                    index_stride,
+                                    slice_offset,
+                                    out);
+  } else {
+    GPUIndexElementwiseGetKernel<T, uint64_t>(dev_ctx,
+                                              x,
+                                              index,
+                                              input_dims,
+                                              input_strides,
+                                              index_dims,
+                                              index_stride,
+                                              slice_offset,
+                                              out);
+  }
+}
+
+}  // namespace phi
+
+PD_REGISTER_KERNEL(index_elementwise_get,
+                   GPU,
+                   ALL_LAYOUT,
+                   phi::IndexElementwiseGetKernel,
+                   bool,
+                   float,
+                   double,
+                   int,
+                   int8_t,
+                   int64_t,
+                   int16_t,
+                   uint8_t,
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::complex64,
+                   phi::complex128) {}

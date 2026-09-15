@@ -14,8 +14,10 @@
 
 #pragma once
 
+#include <type_traits>
+
 #include "paddle/common/macros.h"
-#include "paddle/phi/common/complex.h"
+#include "paddle/phi/common/amp_type_traits.h"
 #include "paddle/phi/kernels/funcs/eigen/common.h"
 #include "paddle/phi/kernels/funcs/eigen/eigen_function.h"
 namespace phi {
@@ -142,8 +144,25 @@ struct MeanGradFunctor {
                   DX* dx,
                   DY* dy,
                   const Dim& dim,
-                  int size) {
-    dx->device(place) = dy->broadcast(dim) / dx->constant(size);
+                  // The reduced element count comes from numel(), so it needs
+                  // 64 bits: an `int` parameter silently keeps the low 32 bits
+                  // and a tensor with 2^32 elements would divide by zero.
+                  int64_t size) {
+    using Scalar = typename DX::Scalar;
+    if constexpr (std::is_same_v<Scalar, dtype::float16> ||
+                  std::is_same_v<Scalar, dtype::bfloat16>) {
+      // torch computes mean_backward as `sum_backward(grad) / n` and runs the
+      // division with float32 as the opmath type, so the element count keeps
+      // its exact value and the result is rounded exactly once. Dividing inside
+      // fp16/bf16 would round the count first -- bf16 cannot represent 1156 or
+      // 3000 -- and lose up to one ULP in every element of dx.
+      using MPType = typename phi::dtype::MPTypeTrait<Scalar>::Type;
+      dx->device(place) = (dy->broadcast(dim).template cast<MPType>() /
+                           static_cast<MPType>(size))
+                              .template cast<Scalar>();
+    } else {
+      dx->device(place) = dy->broadcast(dim) / dx->constant(size);
+    }
   }
 };
 
@@ -308,6 +327,12 @@ struct AMaxOrAMinGradFunctor {
           mask.sum(axis).reshape(dy->dimensions()).broadcast(dim);
       return;
     }
+
+    if (rank == 0) {
+      dx->device(place) = dy->broadcast(dim) * mask;
+      return;
+    }
+
     // axis is list, HANDLE_AXIS_DIM(broadcast_dim_size, rank)
     HANDLE_AXIS_DIM(3, 2);
     HANDLE_AXIS_DIM(4, 2);

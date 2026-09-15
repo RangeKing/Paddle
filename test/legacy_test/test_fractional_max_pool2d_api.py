@@ -15,7 +15,12 @@
 import unittest
 
 import numpy as np
-from op_test import check_out_dtype
+from op_test import (
+    check_out_dtype,
+    get_device,
+    get_device_place,
+    is_custom_device,
+)
 
 import paddle
 import paddle.nn.functional as F
@@ -163,9 +168,11 @@ class TestFractionalMaxPool2DAPI(unittest.TestCase):
 
     def test_static_graph(self):
         for use_cuda in (
-            [False, True] if core.is_compiled_with_cuda() else [False]
+            [False, True]
+            if (core.is_compiled_with_cuda() or is_custom_device())
+            else [False]
         ):
-            place = paddle.CUDAPlace(0) if use_cuda else paddle.CPUPlace()
+            place = get_device_place() if use_cuda else paddle.CPUPlace()
             paddle.enable_static()
             x = paddle.static.data(
                 name="x", shape=[2, 3, 7, 7], dtype="float32"
@@ -216,9 +223,11 @@ class TestFractionalMaxPool2DAPI(unittest.TestCase):
 
     def test_static_graph_return_mask(self):
         for use_cuda in (
-            [False, True] if core.is_compiled_with_cuda() else [False]
+            [False, True]
+            if (core.is_compiled_with_cuda() or is_custom_device())
+            else [False]
         ):
-            place = paddle.CUDAPlace(0) if use_cuda else paddle.CPUPlace()
+            place = get_device_place() if use_cuda else paddle.CPUPlace()
             paddle.enable_static()
             x = paddle.static.data(
                 name="x", shape=[2, 3, 7, 7], dtype="float32"
@@ -292,10 +301,12 @@ class TestFractionalMaxPool2DAPI(unittest.TestCase):
 
     def test_dynamic_graph(self):
         for use_cuda in (
-            [False, True] if core.is_compiled_with_cuda() else [False]
+            [False, True]
+            if (core.is_compiled_with_cuda() or is_custom_device())
+            else [False]
         ):
             place, device = (
-                (paddle.CUDAPlace(0), 'gpu')
+                (get_device_place(), get_device())
                 if use_cuda
                 else (paddle.CPUPlace(), 'cpu')
             )
@@ -332,6 +343,14 @@ class TestFractionalMaxPool2DAPI(unittest.TestCase):
                 x=x, output_size=[3, None], random_u=0.6
             )
 
+            # test param_two_alias(["x", "input"], ["return_mask", "return_indices"])
+            out_8 = paddle.nn.functional.fractional_max_pool2d(
+                input=x,
+                output_size=[3, None],
+                random_u=0.6,
+                return_indices=False,
+            )
+
             np.testing.assert_allclose(out_1.numpy(), self.res_1_np)
             np.testing.assert_allclose(out_2.numpy(), self.res_2_np)
             np.testing.assert_allclose(out_3.numpy(), self.res_3_np)
@@ -339,6 +358,7 @@ class TestFractionalMaxPool2DAPI(unittest.TestCase):
             np.testing.assert_allclose(out_5.numpy(), self.res_5_np)
             np.testing.assert_allclose(out_6.numpy(), self.res_6_np)
             np.testing.assert_allclose(out_7.numpy(), self.res_7_np)
+            np.testing.assert_allclose(out_8.numpy(), self.res_7_np)
 
 
 class TestFractionalMaxPool2DClassAPI(unittest.TestCase):
@@ -367,9 +387,11 @@ class TestFractionalMaxPool2DClassAPI(unittest.TestCase):
 
     def test_static_graph(self):
         for use_cuda in (
-            [False, True] if core.is_compiled_with_cuda() else [False]
+            [False, True]
+            if (core.is_compiled_with_cuda() or is_custom_device())
+            else [False]
         ):
-            place = paddle.CUDAPlace(0) if use_cuda else paddle.CPUPlace()
+            place = get_device_place() if use_cuda else paddle.CPUPlace()
             paddle.enable_static()
             x = paddle.static.data(
                 name="x", shape=[2, 3, 7, 7], dtype="float32"
@@ -415,10 +437,12 @@ class TestFractionalMaxPool2DClassAPI(unittest.TestCase):
 
     def test_dynamic_graph(self):
         for use_cuda in (
-            [False, True] if core.is_compiled_with_cuda() else [False]
+            [False, True]
+            if (core.is_compiled_with_cuda() or is_custom_device())
+            else [False]
         ):
             place, device = (
-                (paddle.CUDAPlace(0), 'gpu')
+                (get_device_place(), get_device())
                 if use_cuda
                 else (paddle.CPUPlace(), 'cpu')
             )
@@ -452,11 +476,28 @@ class TestFractionalMaxPool2DClassAPI(unittest.TestCase):
             )
             out_5 = fractional_max_pool(x=x)
 
+            # test param_one_alias(["x", "input"])
+            fractional_max_pool = paddle.nn.FractionalMaxPool2D(
+                kernel_size=[2, 2], output_size=[3, 3], random_u=0.6
+            )
+            out_6 = fractional_max_pool(input=x)
+
+            # test param_one_alias(["return_mask", "return_indices"])
+            fractional_max_pool = paddle.nn.FractionalMaxPool2D(
+                kernel_size=[2, 2],
+                output_size=[3, 3],
+                random_u=0.6,
+                return_indices=False,
+            )
+            out_7 = fractional_max_pool(x=x)
+
             np.testing.assert_allclose(out_1.numpy(), self.res_1_np)
             np.testing.assert_allclose(out_2.numpy(), self.res_2_np)
             np.testing.assert_allclose(out_3.numpy(), self.res_3_np)
             np.testing.assert_allclose(out_4.numpy(), self.res_4_np)
             np.testing.assert_allclose(out_5.numpy(), self.res_5_np)
+            np.testing.assert_allclose(out_6.numpy(), self.res_5_np)
+            np.testing.assert_allclose(out_7.numpy(), self.res_5_np)
 
 
 class TestOutDtype(unittest.TestCase):
@@ -474,10 +515,12 @@ class TestOutDtype(unittest.TestCase):
 class TestFractionalMaxPool2DAPIDtype(unittest.TestCase):
     def test_dtypes(self):
         for use_cuda in (
-            [False, True] if core.is_compiled_with_cuda() else [False]
+            [False, True]
+            if (core.is_compiled_with_cuda() or is_custom_device())
+            else [False]
         ):
             place, device = (
-                (paddle.CUDAPlace(0), 'gpu')
+                (get_device_place(), get_device())
                 if use_cuda
                 else (paddle.CPUPlace(), 'cpu')
             )
@@ -510,10 +553,12 @@ class TestFractionalMaxPool2DAPIDtype(unittest.TestCase):
 class TestFractionalMaxPool2DAPIRandomU(unittest.TestCase):
     def test_none_random_u(self):
         for use_cuda in (
-            [False, True] if core.is_compiled_with_cuda() else [False]
+            [False, True]
+            if (core.is_compiled_with_cuda() or is_custom_device())
+            else [False]
         ):
             place, device = (
-                (paddle.CUDAPlace(0), 'gpu')
+                (get_device_place(), get_device())
                 if use_cuda
                 else (paddle.CPUPlace(), 'cpu')
             )
@@ -531,10 +576,12 @@ class TestFractionalMaxPool2DAPIRandomU(unittest.TestCase):
 
     def test_error_random_u(self):
         for use_cuda in (
-            [False, True] if core.is_compiled_with_cuda() else [False]
+            [False, True]
+            if (core.is_compiled_with_cuda() or is_custom_device())
+            else [False]
         ):
             place, device = (
-                (paddle.CUDAPlace(0), 'gpu')
+                (get_device_place(), get_device())
                 if use_cuda
                 else (paddle.CPUPlace(), 'cpu')
             )
@@ -572,10 +619,12 @@ class TestFractionalMaxPool2DAPIRandomU(unittest.TestCase):
 class TestFractionalMaxPool2DAPIErrorOutputSize(unittest.TestCase):
     def test_error_output_size(self):
         for use_cuda in (
-            [False, True] if core.is_compiled_with_cuda() else [False]
+            [False, True]
+            if (core.is_compiled_with_cuda() or is_custom_device())
+            else [False]
         ):
             place, device = (
-                (paddle.CUDAPlace(0), 'gpu')
+                (get_device_place(), get_device())
                 if use_cuda
                 else (paddle.CPUPlace(), 'cpu')
             )
@@ -594,6 +643,41 @@ class TestFractionalMaxPool2DAPIErrorOutputSize(unittest.TestCase):
                 res_np = paddle.nn.functional.fractional_max_pool2d(
                     x=x_np, kernel_size=2, output_size=[6, 6], random_u=0.2
                 )
+
+
+class TestFractionalMaxPool2DAPI_ZeroSize(unittest.TestCase):
+    def setUp(self):
+        np.random.seed(2023)
+        self.x_np = np.random.random([2, 0, 7, 7]).astype("float32")
+        self.res_1_np = fractional_pool2d_forward(
+            x=self.x_np, output_size=[3, 3], random_u=0.3
+        )
+
+    def test_dynamic_graph(self):
+        for use_cuda in (
+            [False, True]
+            if (core.is_compiled_with_cuda() or is_custom_device())
+            else [False]
+        ):
+            place, device = (
+                (get_device_place(), get_device())
+                if use_cuda
+                else (paddle.CPUPlace(), 'cpu')
+            )
+            paddle.disable_static(place=place)
+            paddle.set_device(device)
+
+            x = paddle.to_tensor(self.x_np)
+            x.stop_gradient = False
+
+            out_1 = paddle.nn.functional.fractional_max_pool2d(
+                x=x, return_mask=False, output_size=[3, 3], random_u=0.3
+            )
+
+            np.testing.assert_allclose(out_1.numpy(), self.res_1_np)
+            loss = paddle.sum(out_1)
+            loss.backward()
+            np.testing.assert_allclose(x.grad.shape, x.shape)
 
 
 if __name__ == '__main__':

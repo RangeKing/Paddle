@@ -28,13 +28,17 @@ void DiagonalGradKernel(const Context& dev_ctx,
                         int axis1,
                         int axis2,
                         DenseTensor* in_grad) {
+  if (in_grad->numel() == 0) {
+    dev_ctx.template Alloc<T>(in_grad);
+    return;
+  }
   const auto* dout = &out_grad;
   const T* dout_data = dout->data<T>();
-  auto dout_dim = common::vectorize(dout->dims());
+  auto dout_dim = vectorize(dout->dims());
 
   auto* dx = in_grad;
   T* dx_data = dev_ctx.template Alloc<T>(dx);
-  auto dx_dim = common::vectorize(dx->dims());
+  auto dx_dim = vectorize(dx->dims());
   auto dx_dim_size = dx_dim.size();
 
   const int64_t offset_ = offset;
@@ -92,5 +96,5 @@ PD_REGISTER_KERNEL(diagonal_grad,
                    int,
                    int64_t,
                    bool,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::complex64,
+                   phi::complex128) {}

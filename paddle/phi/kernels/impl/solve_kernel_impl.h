@@ -23,8 +23,6 @@ limitations under the License. */
 
 namespace phi {
 
-using Tensor = DenseTensor;
-
 // check the input other is vector_case or not
 static inline bool is_vector_rhs(const DenseTensor& input,
                                  const DenseTensor& other) {
@@ -32,8 +30,8 @@ static inline bool is_vector_rhs(const DenseTensor& input,
   auto y_dim = other.dims();
   auto x_dim_size = x_dim.size();
   auto y_dim_size = y_dim.size();
-  std::vector<int64_t> x_dims_vec = common::vectorize(x_dim);
-  std::vector<int64_t> y_dims_vec = common::vectorize(y_dim);
+  std::vector<int64_t> x_dims_vec = vectorize(x_dim);
+  std::vector<int64_t> y_dims_vec = vectorize(y_dim);
 
   std::vector<int64_t>::const_iterator f = x_dims_vec.begin();
   std::vector<int64_t>::const_iterator l = x_dims_vec.end() - 1;
@@ -76,20 +74,11 @@ static std::vector<int64_t> get_broadcast_batch_portion(
   return batchPortion;
 }
 
-static inline std::vector<int> convert_to_int_vec(std::vector<int64_t> a) {
-  std::vector<int> ret;
-  for (size_t i = 0; i < a.size(); i++) {
-    ret.emplace_back(static_cast<int>(a[i]));
-  }
-
-  return ret;
-}
-
 // broadcast the batch dimensions of tensor x and tensor y.
 static inline std::tuple<std::vector<int64_t>, std::vector<int64_t>>
-get_broadcast_dims(const Tensor& x, const Tensor& y) {
-  std::vector<int64_t> x_dims_vec = common::vectorize(x.dims());
-  std::vector<int64_t> y_dims_vec = common::vectorize(y.dims());
+get_broadcast_dims(const DenseTensor& x, const DenseTensor& y) {
+  std::vector<int64_t> x_dims_vec = vectorize(x.dims());
+  std::vector<int64_t> y_dims_vec = vectorize(y.dims());
   std::vector<int64_t>::const_iterator f1 = x_dims_vec.begin();
   std::vector<int64_t>::const_iterator l1 = x_dims_vec.end() - 2;
   std::vector<int64_t> x_dims_vec_cut(f1, l1);
@@ -118,43 +107,43 @@ static void linalg_solve(const Context& dev_ctx,
                          const DenseTensor& y,
                          DenseTensor* out) {
   dev_ctx.template Alloc<T>(out);
-  phi::funcs::MatrixSolveFunctor<Context, T> mat_solve;
+  funcs::MatrixSolveFunctor<Context, T> mat_solve;
 
   // input y can be vector or matrix
   // but need to be unsqueezed if y is a vector
   bool is_vector = false;
   is_vector = is_vector_rhs(x, y);
 
-  Tensor tmp_y;
+  DenseTensor tmp_y;
   if (is_vector) {
     dev_ctx.Alloc(&tmp_y, y.dtype());
 
-    phi::Unsqueeze<T, Context>(dev_ctx, y, {-1}, &tmp_y, nullptr);
+    Unsqueeze<T, Context>(dev_ctx, y, {-1}, &tmp_y, nullptr);
   } else {
     tmp_y.Resize(y.dims());
     dev_ctx.Alloc(&tmp_y, y.dtype());
 
-    phi::Copy(dev_ctx, y, dev_ctx.GetPlace(), false, &tmp_y);
+    Copy(dev_ctx, y, dev_ctx.GetPlace(), false, &tmp_y);
   }
 
-  Tensor tmp_x;
+  DenseTensor tmp_x;
   tmp_x.Resize(x.dims());
   dev_ctx.Alloc(&tmp_x, x.dtype());
-  phi::Copy(dev_ctx, x, dev_ctx.GetPlace(), false, &tmp_x);
+  Copy(dev_ctx, x, dev_ctx.GetPlace(), false, &tmp_x);
 
   std::vector<int64_t> x_broadcast_dims;
   std::vector<int64_t> y_broadcast_dims;
   std::tie(x_broadcast_dims, y_broadcast_dims) =
       get_broadcast_dims(tmp_x, tmp_y);
 
-  Tensor tmp_x_bc;
+  DenseTensor tmp_x_bc;
 
-  phi::ExpandAsKernel<T, Context>(
-      dev_ctx, tmp_x, nullptr, convert_to_int_vec(x_broadcast_dims), &tmp_x_bc);
+  ExpandAsKernel<T, Context>(
+      dev_ctx, tmp_x, nullptr, x_broadcast_dims, &tmp_x_bc);
 
-  Tensor tmp_y_bc;
-  phi::ExpandAsKernel<T, Context>(
-      dev_ctx, tmp_y, nullptr, convert_to_int_vec(y_broadcast_dims), &tmp_y_bc);
+  DenseTensor tmp_y_bc;
+  ExpandAsKernel<T, Context>(
+      dev_ctx, tmp_y, nullptr, y_broadcast_dims, &tmp_y_bc);
 
   auto x_dim = x.dims();
   auto y_dim = y.dims();
@@ -165,11 +154,11 @@ static void linalg_solve(const Context& dev_ctx,
     out->Resize(tmp_y_bc.dims());  // out.unsqueeze(-1)
     mat_solve(dev_ctx, tmp_x_bc, tmp_y_bc, out);
 
-    Tensor out_tmp;
+    DenseTensor out_tmp;
     out_tmp.Resize(out->dims());
     out_tmp = *out;
 
-    phi::Squeeze<T, Context>(dev_ctx, out_tmp, {-1}, out);
+    Squeeze<T, Context>(dev_ctx, out_tmp, {-1}, out);
   } else {
     PADDLE_ENFORCE_EQ(
         x_dim[x_dim_size - 1],
@@ -195,6 +184,40 @@ void SolveKernel(const Context& dev_ctx,
                  const DenseTensor& x,
                  const DenseTensor& y,
                  DenseTensor* out) {
+  if (x.numel() == 0 || y.numel() == 0) {
+    auto x_dims = x.dims();
+    auto y_dims = y.dims();
+    std::vector<int64_t> out_dims;
+    if (y_dims.size() == 1) {
+      out_dims =
+          std::vector<int64_t>(x_dims.Get(), x_dims.Get() + x_dims.size() - 2);
+      out_dims.push_back(y_dims[y_dims.size() - 1]);
+    } else {
+      // broadcast
+      std::vector<int> x_shape(x_dims.Get(), x_dims.Get() + x_dims.size() - 2);
+      std::vector<int> y_shape(y_dims.Get(), y_dims.Get() + y_dims.size() - 2);
+      auto x_it = x_shape.rbegin();
+      auto y_it = y_shape.rbegin();
+      while (x_it != x_shape.rend() || y_it != y_shape.rend()) {
+        int x_dim = (x_it != x_shape.rend()) ? *x_it : 1;
+        int y_dim = (y_it != y_shape.rend()) ? *y_it : 1;
+        if (x_dim == 0 || y_dim == 0) {
+          out_dims.push_back(0);
+        } else {
+          out_dims.push_back(std::max(x_dim, y_dim));
+        }
+        if (x_it != x_shape.rend()) ++x_it;
+        if (y_it != y_shape.rend()) ++y_it;
+      }
+      std::reverse(out_dims.begin(), out_dims.end());
+      out_dims.insert(out_dims.end(),
+                      y_dims.Get() + y_dims.size() - 2,
+                      y_dims.Get() + y_dims.size());
+    }
+    out->Resize(out_dims);
+    dev_ctx.template Alloc<T>(out);
+    return;
+  }
   linalg_solve<Context, T>(dev_ctx, x, y, out);
 }
 

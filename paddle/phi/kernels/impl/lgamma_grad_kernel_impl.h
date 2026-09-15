@@ -24,10 +24,15 @@ struct LgammaGradFunctor {
       : dout_(dout), x_(x), output_(output), numel_(numel) {}
 
   HOSTDEVICE void operator()(int64_t idx) const {
-    using MT = typename phi::dtype::MPTypeTrait<T>::Type;
+    using MT = typename MPTypeTrait<T>::Type;
     const MT mp_dout = static_cast<MT>(dout_[idx]);
     const MT mp_x = static_cast<MT>(x_[idx]);
-    output_[idx] = static_cast<T>(mp_dout * Eigen::numext::digamma(mp_x));
+    MT eigen_out = Eigen::numext::digamma(mp_x);
+    constexpr MT mp_inf = std::numeric_limits<MT>::infinity();
+    MT mp_out = mp_x == static_cast<MT>(0)
+                    ? (std::signbit(mp_x) ? mp_inf : -mp_inf)
+                    : eigen_out;
+    output_[idx] = static_cast<T>(mp_dout * mp_out);
   }
 
  private:
@@ -36,6 +41,7 @@ struct LgammaGradFunctor {
   T* output_;
   int64_t numel_;
 };
+
 template <typename T, typename Context>
 void LgammaGradKernel(const Context& dev_ctx,
                       const DenseTensor& x,
@@ -46,7 +52,10 @@ void LgammaGradKernel(const Context& dev_ctx,
   auto* x_data = x.data<T>();
   auto* dx_data =
       dev_ctx.template Alloc<T>(d_x, static_cast<size_t>(numel * sizeof(T)));
-  phi::funcs::ForRange<Context> for_range(dev_ctx, numel);
+  if (d_x && d_x->numel() == 0) {
+    return;
+  }
+  funcs::ForRange<Context> for_range(dev_ctx, numel);
   LgammaGradFunctor<T> functor(dout_data, x_data, dx_data, numel);
   for_range(functor);
 }

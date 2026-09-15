@@ -14,7 +14,7 @@
 
 # repo: llm_sub_graphs
 # model: chatglm2
-# api:paddle.nn.functional.input.embedding||method:transpose||api:paddle.tensor.creation.ones||api:paddle.tensor.creation.tril||method:astype||api:paddle.tensor.creation.ones||method:astype||method:__and__||api:paddle.tensor.creation.arange||method:__truediv__||method:__rpow__||method:__rtruediv__||api:paddle.tensor.creation.arange||api:paddle.tensor.math.outer||method:astype||api:paddle.tensor.ops.cos||api:paddle.tensor.ops.sin||api:paddle.tensor.manipulation.stack||method:__getitem__||method:transpose
+# api:paddle.nn.functional.input.embedding||method:transpose||api:paddle.tensor.creation.ones||api:paddle.tensor.creation.tril||method:astype||api:paddle.tensor.creation.ones||method:astype||method:__and__||api:paddle.tensor.creation.arange||method:__truediv__||method:__rpow__||method:__rtruediv__||api:paddle.tensor.creation.arange||api:paddle.tensor.math.outer||method:astype||api:paddle.cos||api:paddle.sin||api:paddle.tensor.manipulation.stack||method:__getitem__||method:transpose
 import unittest
 
 import numpy as np
@@ -58,8 +58,8 @@ class LayerCase(paddle.nn.Layer):
         var_13 = paddle.tensor.creation.arange(0, 1024, dtype='float32')
         var_14 = paddle.tensor.math.outer(var_13, var_12)
         var_15 = var_14.astype('float32')
-        var_16 = paddle.tensor.ops.cos(var_15)
-        var_17 = paddle.tensor.ops.sin(var_15)
+        var_16 = paddle.cos(var_15)
+        var_17 = paddle.sin(var_15)
         var_18 = paddle.tensor.manipulation.stack([var_16, var_17], axis=-1)
         var_19 = var_18[(None, slice(None, 1024, None))]
         var_20 = var_19.transpose([1, 0, 2, 3])
@@ -85,15 +85,14 @@ class TestLayer(unittest.TestCase):
 
     def train(self, net, to_static, with_prim=False, with_cinn=False):
         if to_static:
-            paddle.set_flags({'FLAGS_prim_all': with_prim})
+            paddle.base.core._set_prim_all_enabled(with_prim)
             if with_cinn:
-                build_strategy = paddle.static.BuildStrategy()
-                build_strategy.build_cinn_pass = True
-                net = paddle.jit.to_static(
-                    net, build_strategy=build_strategy, full_graph=True
+                assert with_prim, (
+                    "with_cinn=True but with_prim=False is unsupported"
                 )
+                net = paddle.jit.to_static(net, backend="CINN", full_graph=True)
             else:
-                net = paddle.jit.to_static(net, full_graph=True)
+                net = paddle.jit.to_static(net, backend=None, full_graph=True)
         paddle.seed(123)
         outs = net(*self.inputs)
         return outs

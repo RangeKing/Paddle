@@ -90,6 +90,30 @@ function(copy_part_of_third_party TARGET DST)
           COMMENT "striping libiomp5.so\nstriping libmklml_intel.so")
       endif()
     endif()
+  elseif(${CBLAS_PROVIDER} STREQUAL HML)
+    set(dst_dir "${DST}/third_party/install/hml")
+    message(STATUS "[HML] Start copying HML third_party files to ${dst_dir}")
+    if(WIN32)
+      copy(
+        ${TARGET}
+        SRCS ${HML_LIB} ${HML_INC_DIR}
+        DSTS ${dst_dir}/lib ${dst_dir})
+    else()
+      message(STATUS "[HML] HML_LIB: ${HML_LIB}")
+      message(STATUS "[HML] HML_INC_DIR: ${HML_INC_DIR}")
+      copy(
+        ${TARGET}
+        SRCS ${HML_LIB} ${HML_INC_DIR}
+        DSTS ${dst_dir}/lib ${dst_dir})
+      if(WITH_STRIP)
+        add_custom_command(
+          TARGET ${TARGET}
+          POST_BUILD
+          COMMAND strip -s ${dst_dir}/lib/libhml_rt.so
+          COMMENT "striping libhml_rt.so")
+      endif()
+    endif()
+    message(STATUS "[HML] Finished copying HML third_party files to ${dst_dir}")
   elseif(${CBLAS_PROVIDER} STREQUAL EXTERN_OPENBLAS)
     set(dst_dir "${DST}/third_party/install/openblas")
     if(WIN32)
@@ -216,6 +240,10 @@ function(copy_part_of_third_party TARGET DST)
       ${TARGET}
       SRCS ${FLASHATTN_INCLUDE_DIR} ${FLASHATTN_V3_LIBRARIES}
       DSTS ${dst_dir} ${dst_dir}/lib)
+    copy(
+      ${TARGET}
+      SRCS ${FLASHATTN_INCLUDE_DIR} ${FLASHMASK_V2_LIBRARIES}
+      DSTS ${dst_dir} ${dst_dir}/lib)
   endif()
 
   if(NOT PROTOBUF_FOUND OR WIN32)
@@ -284,6 +312,11 @@ copy(
   DSTS ${PADDLE_INFERENCE_INSTALL_DIR}/paddle/lib)
 
 if(WIN32)
+  set(paddle_phi_libs ${PADDLE_BINARY_DIR}/paddle/phi/phi*)
+  copy(
+    inference_lib_dist
+    SRCS ${paddle_phi_libs}
+    DSTS ${PADDLE_INFERENCE_INSTALL_DIR}/paddle/lib)
   if(WITH_STATIC_LIB)
     set(paddle_inference_lib
         $<TARGET_FILE_DIR:paddle_inference>/libpaddle_inference.lib
@@ -361,6 +394,10 @@ copy(
   DSTS ${PADDLE_INFERENCE_INSTALL_DIR}/paddle/include/paddle/phi/core/)
 copy(
   inference_lib_dist
+  SRCS ${PADDLE_SOURCE_DIR}/paddle/phi/core/ddim.h
+  DSTS ${PADDLE_INFERENCE_INSTALL_DIR}/paddle/include/paddle/phi/core/)
+copy(
+  inference_lib_dist
   SRCS ${PADDLE_SOURCE_DIR}/paddle/utils/string/*.h
   DSTS ${PADDLE_INFERENCE_INSTALL_DIR}/paddle/include/paddle/utils/string/)
 copy(
@@ -398,10 +435,6 @@ copy(
   SRCS ${PADDLE_SOURCE_DIR}/paddle/extension.h
   DSTS ${PADDLE_INFERENCE_INSTALL_DIR}/paddle/include/paddle/)
 
-copy(
-  inference_lib_dist
-  SRCS ${PADDLE_SOURCE_DIR}/paddle/pir/include/core/parser/*.h
-  DSTS ${PADDLE_INFERENCE_INSTALL_DIR}/paddle/include/paddle/pir/core/parser/)
 copy(
   inference_lib_dist
   SRCS ${PADDLE_SOURCE_DIR}/paddle/pir/include/core/*.h

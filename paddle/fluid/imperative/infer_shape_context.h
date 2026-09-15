@@ -224,9 +224,9 @@ class DygraphInferShapeContext : public framework::InferShapeContext {
                       common::errors::PreconditionNotMet(
                           "The type of %s and %s is not the same.", in, out));
 
-    if (in_var->IsType<phi::DenseTensor>()) {
-      auto& in_lod_tensor = in_var->Get<phi::DenseTensor>();
-      auto* out_lod_tensor = out_var->GetMutable<phi::DenseTensor>();
+    if (in_var->IsType<DenseTensor>()) {
+      auto& in_lod_tensor = in_var->Get<DenseTensor>();
+      auto* out_lod_tensor = out_var->GetMutable<DenseTensor>();
       out_lod_tensor->Resize(in_lod_tensor.dims());
     } else {
       auto& in_sele_rows = in_var->Get<phi::SelectedRows>();
@@ -250,7 +250,7 @@ class DygraphInferShapeContext : public framework::InferShapeContext {
 
   bool IsRuntime() const override { return true; }
 
-  bool IsRunMKLDNNKernel() const override {
+  bool IsRunONEDNNKernel() const override {
     return (op_kernel_key_ &&
             (op_kernel_key_->layout() == phi::DataLayout::ONEDNN));
   }
@@ -441,8 +441,8 @@ class DygraphInferShapeContext : public framework::InferShapeContext {
     PADDLE_ENFORCE_NOT_NULL(var,
                             common::errors::PreconditionNotMet(
                                 "Input variable should not be null"));
-    if (var->IsType<phi::DenseTensor>()) {
-      return var->Get<phi::DenseTensor>().dims();
+    if (var->IsType<DenseTensor>()) {
+      return var->Get<DenseTensor>().dims();
     } else if (var->IsType<phi::SelectedRows>()) {
       return var->Get<phi::SelectedRows>().GetCompleteDims();
     } else {
@@ -460,13 +460,14 @@ class DygraphInferShapeContext : public framework::InferShapeContext {
   }
 
   void SetDim(framework::Variable* var, const DDim& dim) {
-    if (var->IsType<phi::DenseTensor>()) {
-      var->GetMutable<phi::DenseTensor>()->Resize(dim);
+    if (var->IsType<DenseTensor>()) {
+      var->GetMutable<DenseTensor>()->Resize(dim);
     } else if (var->IsType<phi::SelectedRows>()) {
       var->GetMutable<phi::SelectedRows>()->set_height(dim[0]);
     } else {
       PADDLE_THROW(common::errors::PermissionDenied(
-          "Variable type_id %s, expect DenseTensor/SelectedRows."));
+          "Variable type_id %s, expect DenseTensor/SelectedRows.",
+          framework::ToTypeName(var->Type())));
     }
   }
 

@@ -48,42 +48,48 @@ class GradientMergeOptimizer:
             the default value is `True`
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
-        >>> import paddle
-        >>> import numpy as np
-        >>> paddle.enable_static()
+            >>> import paddle
+            >>> import numpy as np
+            >>> paddle.enable_static()
 
-        >>> def gen_data(batch_size):
-        ...     return {"x": np.random.random(size=(batch_size, 32)).astype('float32'),
-        ...             "y": np.random.random(size=(batch_size, 1)).astype('int64')}
+            >>> def gen_data(batch_size):
+            ...     return {
+            ...         "x": np.random.random(size=(batch_size, 32)).astype('float32'),
+            ...         "y": np.random.random(size=(batch_size, 1)).astype('int64'),
+            ...     }
 
-        >>> def mlp(input_x, input_y, hid_dim=128, label_dim=2):
-        ...     fc_1 = paddle.static.nn.fc(x=input_x, size=hid_dim)
-        ...     prediction = paddle.static.nn.fc(x=[fc_1], size=label_dim, activation='softmax')
-        ...     cost = paddle.nn.functional.cross_entropy(
-        ...         input=prediction, label=input_y,
-        ...         reduction='none', use_softmax=False
-        ...     )
-        ...     sum_cost = paddle.mean(cost)
-        ...     return sum_cost, fc_1, prediction
+            >>> def mlp(input_x, input_y, hid_dim=128, label_dim=2):
+            ...     fc_1 = paddle.static.nn.fc(x=input_x, size=hid_dim)
+            ...     prediction = paddle.static.nn.fc(x=[fc_1], size=label_dim, activation='softmax')
+            ...     cost = paddle.nn.functional.cross_entropy(
+            ...         input=prediction,
+            ...         label=input_y,
+            ...         reduction='none',
+            ...         use_softmax=False,
+            ...     )
+            ...     sum_cost = paddle.mean(cost)
+            ...     return sum_cost, fc_1, prediction
 
-        >>> input_x = paddle.static.data(name="x", shape=[-1,32], dtype='float32')
-        >>> input_y = paddle.static.data(name="y", shape=[-1,1], dtype='int64')
-        >>> cost, fc_1, pred = mlp(input_x, input_y)
-        >>> sgd = paddle.optimizer.Adam(learning_rate=0.01)
-        >>> sgd = paddle.incubate.optimizer.GradientMergeOptimizer(sgd, k_steps=4, avg=True)
-        >>> sgd.minimize(cost)
+            >>> input_x = paddle.static.data(name="x", shape=[-1, 32], dtype='float32')
+            >>> input_y = paddle.static.data(name="y", shape=[-1, 1], dtype='int64')
+            >>> cost, fc_1, pred = mlp(input_x, input_y)
+            >>> sgd = paddle.optimizer.Adam(learning_rate=0.01)
+            >>> sgd = paddle.incubate.optimizer.GradientMergeOptimizer(sgd, k_steps=4, avg=True)
+            >>> sgd.minimize(cost)
 
-        >>> place = paddle.CPUPlace()
-        >>> exe = paddle.static.Executor(place)
-        >>> exe.run(paddle.static.default_startup_program())
+            >>> place = paddle.CPUPlace()
+            >>> exe = paddle.static.Executor(place)
+            >>> exe.run(paddle.static.default_startup_program())
 
-        >>> for i in range(10):
-        ...     cost_val = exe.run(feed=gen_data(32),
-        ...                program=paddle.static.default_main_program(),
-        ...                fetch_list=[cost.name])
-        ...     print("step=%d, cost=%f" % (i, cost_val[0]))
+            >>> for i in range(10):
+            ...     cost_val = exe.run(
+            ...         feed=gen_data(32),
+            ...         program=paddle.static.default_main_program(),
+            ...         fetch_list=[cost.name],
+            ...     )
+            ...     print("step=%d, cost=%f" % (i, cost_val[0]))
     """
 
     GRAD_MERGE_COND_NAME = "grad_merge_cond_name"
@@ -97,9 +103,9 @@ class GradientMergeOptimizer:
             )
 
         assert inner_optimizer is not None, "inner optimizer can not be None"
-        assert (
-            isinstance(k_steps, int) and k_steps > 0
-        ), "k_steps should be a positive integer"
+        assert isinstance(k_steps, int) and k_steps > 0, (
+            "k_steps should be a positive integer"
+        )
 
         self.inner_optimizer = inner_optimizer
         self.k_steps = k_steps
@@ -122,12 +128,12 @@ class GradientMergeOptimizer:
         callbacks=None,
     ):
         assert isinstance(loss, Variable), "The loss should be an Variable."
-        assert (
-            parameter_list is None
-        ), "The parameter_list should be None when using GradientMergeOptimizer"
-        assert (
-            no_grad_set is None
-        ), "The no_grad_set should be None when using GradientMergeOptimizer"
+        assert parameter_list is None, (
+            "The parameter_list should be None when using GradientMergeOptimizer"
+        )
+        assert no_grad_set is None, (
+            "The no_grad_set should be None when using GradientMergeOptimizer"
+        )
 
         params_grads = self.inner_optimizer.backward(
             loss, startup_program=startup_program
@@ -152,18 +158,18 @@ class GradientMergeOptimizer:
     def _remove_op_role_var(self, param, grad):
         op_maker = core.op_proto_and_checker_maker
         op = grad.op
-        assert self._is_the_backward_op(
-            op
-        ), f'grad.op={op} is not the backward op which produces the grad={grad.name}'
+        assert self._is_the_backward_op(op), (
+            f'grad.op={op} is not the backward op which produces the grad={grad.name}'
+        )
 
         block = grad.block
         var_attr = op.all_attrs()[op_maker.kOpRoleVarAttrName()]
-        assert (
-            param.name in var_attr
-        ), f'when using GradientMergeOptimizer, param={param.name} must be in var_attr={var_attr}'
-        assert (
-            grad.name in var_attr
-        ), f'when using GradientMergeOptimizer, grad={param.name} must be in var_attr={var_attr}'
+        assert param.name in var_attr, (
+            f'when using GradientMergeOptimizer, param={param.name} must be in var_attr={var_attr}'
+        )
+        assert grad.name in var_attr, (
+            f'when using GradientMergeOptimizer, grad={param.name} must be in var_attr={var_attr}'
+        )
 
         # remove (param, grad) from op_role_var
         var_attr.remove(param.name)
@@ -252,9 +258,9 @@ class GradientMergeOptimizer:
         # TODO(mapingshuo) support sparse embedding
         # step1: remove grad.op's op_role_var
         for param, grad in params_grads:
-            assert (
-                param.type != core.VarDesc.VarType.SELECTED_ROWS
-            ), "SELECTED_ROWS is not supported in GradientMergeOptimizer for now"
+            assert param.type != core.VarDesc.VarType.SELECTED_ROWS, (
+                "SELECTED_ROWS is not supported in GradientMergeOptimizer for now"
+            )
 
             self._remove_op_role_var(param, grad)
 

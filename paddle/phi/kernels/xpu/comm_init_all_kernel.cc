@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "paddle/phi/kernels/comm_init_all_kernel.h"
 #include <string>
 #include "glog/logging.h"
 #include "paddle/phi/core/kernel_registry.h"
@@ -30,7 +31,7 @@ void CommInitAllKernel(const Context& dev_ctx,
   std::vector<int> devices = devices_input;
 
   if (devices.empty()) {
-    int count = phi::backends::xpu::GetXPUDeviceCount();
+    int count = backends::xpu::GetXPUDeviceCount();
     for (int i = 0; i < count; ++i) {
       devices.push_back(i);
     }
@@ -39,7 +40,7 @@ void CommInitAllKernel(const Context& dev_ctx,
   if (devices.size() > 1) {
     std::vector<phi::Place> place_list_;
     for (size_t i = 0; i < devices.size(); ++i) {
-      auto p = phi::XPUPlace(devices[i]);
+      auto p = XPUPlace(devices[i]);
       place_list_.push_back(p);
     }
 

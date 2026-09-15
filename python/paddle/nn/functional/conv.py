@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import paddle
 from paddle import _C_ops, _legacy_C_ops, get_flags, in_dynamic_mode, pir
 from paddle.base.framework import _global_flags, in_dynamic_or_pir_mode
 from paddle.device import (
@@ -25,6 +26,7 @@ from paddle.device import (
 )
 from paddle.tensor.manipulation import reshape
 from paddle.tensor.math import _add_with_axis
+from paddle.utils.decorator_utils import param_one_alias
 
 from ...base.data_feeder import check_dtype, check_variable_and_dtype
 from ...base.layer_helper import LayerHelper
@@ -130,6 +132,80 @@ def _update_padding_nd(padding, channel_last, num_dims):
     return padding, padding_algorithm
 
 
+_MEMORY_FORMAT_CONTIGUOUS = 0
+_MEMORY_FORMAT_CHANNELS_LAST = 1
+_MEMORY_FORMAT_CHANNELS_LAST_3D = 2
+
+
+def _cudnn_conv_suggest_memory_format(
+    input: paddle.Tensor, weight: paddle.Tensor, data_format: str = "NCHW"
+) -> int:
+    # Disable NHWC for float64 input/weight
+    if input.dtype == paddle.float64 or weight.dtype == paddle.float64:
+        return _MEMORY_FORMAT_CONTIGUOUS
+
+    cudnn_version = get_cudnn_version()
+    weight_ndim = weight.ndim
+
+    input_memory_format_is_cl = data_format == "NHWC"
+    weight_memory_format_is_cl = False
+
+    can_use_cudnn_channels_last_2d = (
+        (cudnn_version >= 7603)
+        and (weight_ndim == 4)
+        and (input_memory_format_is_cl or weight_memory_format_is_cl)
+    )
+
+    if can_use_cudnn_channels_last_2d:
+        return _MEMORY_FORMAT_CHANNELS_LAST
+
+    can_use_cudnn_channels_last_3d = (
+        (cudnn_version >= 8005)
+        and (weight_ndim == 5)
+        and (input_memory_format_is_cl or weight_memory_format_is_cl)
+    )
+
+    if can_use_cudnn_channels_last_3d:
+        return _MEMORY_FORMAT_CHANNELS_LAST_3D
+
+    return _MEMORY_FORMAT_CONTIGUOUS
+
+
+def _is_cudnn_supported(
+    x: paddle.Tensor,
+    weight: paddle.Tensor,
+    data_format: str,
+    start_use_cudnn: bool,
+) -> bool:
+    if not start_use_cudnn:
+        return False
+
+    if not (paddle.is_compiled_with_cuda() and x.place.is_gpu_place()):
+        return False
+
+    cudnn_version = get_cudnn_version()
+    is_low_precision = x.dtype in [paddle.bfloat16, paddle.float16]
+
+    # cuDNN Version Specific Bugs (9.8 - 9.14) for 3D Conv
+    if (
+        90800 <= cudnn_version < 91500
+        and _cudnn_conv_suggest_memory_format(x, weight, data_format)
+        == _MEMORY_FORMAT_CONTIGUOUS
+        and is_low_precision
+        and weight.ndim == 5
+    ):
+        kernel_is_trivial = True
+        for k in weight.shape[2:]:
+            if k != 1:
+                kernel_is_trivial = False
+                break
+
+        if not kernel_is_trivial:
+            return False
+
+    return True
+
+
 def _conv_nd(
     x: Tensor,
     weight: Tensor,
@@ -145,8 +221,31 @@ def _conv_nd(
     use_cudnn: bool = True,
     name: str | None = None,
 ) -> Tensor:
-    # Due to the poor performance of NHWC, we transpose the input to NCHW.
+    use_accuracy_compatible = paddle.get_flags(
+        ["FLAGS_use_accuracy_compatible_kernel"]
+    ).get(
+        "FLAGS_use_accuracy_compatible_kernel", False
+    )  # Due to the poor performance of NHWC, we transpose the input to NCHW.
     if in_dynamic_or_pir_mode() and op_type == "conv2d":
+        # TODO: alignment with PyTorch 2.9.1 use_cudnn logic, will remove in future
+        if (
+            in_dynamic_mode()
+            and use_accuracy_compatible
+            and not _is_cudnn_supported(x, weight, data_format, use_cudnn)
+        ):
+            # x = x._use_gpudnn(False)
+            return _C_ops.slow_conv2d_dilated(
+                x,
+                weight,
+                bias,
+                stride,
+                padding,
+                padding_algorithm,
+                dilation,
+                groups,
+                data_format,
+            )
+
         pre_bias = _C_ops.conv2d(
             x,
             weight,
@@ -176,25 +275,57 @@ def _conv_nd(
             return pre_bias
 
     if in_dynamic_or_pir_mode() and op_type == "depthwise_conv2d":
-        pre_bias = _C_ops.depthwise_conv2d(
-            x,
-            weight,
-            stride,
-            padding,
-            padding_algorithm,
-            groups,
-            dilation,
-            data_format,
-        )
-        if bias is not None:
-            new_shape = [1] * len(x.shape)
-            new_shape[channel_dim] = -1
-            bias = bias.reshape(new_shape)
-            return _C_ops.add(pre_bias, bias)
+        if use_accuracy_compatible and is_compiled_with_cuda():
+            return _C_ops.depthwise_conv2d_bias(
+                x,
+                weight,
+                bias,
+                stride,
+                padding,
+                padding_algorithm,
+                groups,
+                dilation,
+                data_format,
+            )
         else:
-            return pre_bias
+            pre_bias = _C_ops.depthwise_conv2d(
+                x,
+                weight,
+                stride,
+                padding,
+                padding_algorithm,
+                groups,
+                dilation,
+                data_format,
+            )
+            if bias is not None:
+                new_shape = [1] * len(x.shape)
+                new_shape[channel_dim] = -1
+                bias = bias.reshape(new_shape)
+                return _C_ops.add(pre_bias, bias)
+            else:
+                return pre_bias
 
     if in_dynamic_or_pir_mode() and op_type == "conv3d":
+        # TODO: alignment with PyTorch 2.9.1 use_cudnn logic, will remove in future
+        if (
+            in_dynamic_mode()
+            and use_accuracy_compatible
+            and not _is_cudnn_supported(x, weight, data_format, use_cudnn)
+        ):
+            # x = x._use_gpudnn(False)
+            return _C_ops.slow_conv3d_dilated(
+                x,
+                weight,
+                bias,
+                stride,
+                padding,
+                padding_algorithm,
+                groups,
+                dilation,
+                data_format,
+            )
+
         pre_bias = _C_ops.conv3d(
             x,
             weight,
@@ -212,6 +343,19 @@ def _conv_nd(
             return _C_ops.add(pre_bias, bias)
         else:
             return pre_bias
+
+    if in_dynamic_or_pir_mode() and op_type == "depthwise_conv3d":
+        return _C_ops.depthwise_conv3d_bias(
+            x,
+            weight,
+            bias,
+            stride,
+            padding,
+            padding_algorithm,
+            groups,
+            dilation,
+            data_format,
+        )
 
     if in_dynamic_mode():
         attrs = (
@@ -271,9 +415,9 @@ def _conv_nd(
                     attrs={'axis': -1},
                 )
             else:
-                assert len(x_shape) > len(
-                    y_shape
-                ), 'The length of pre_bias must greater than the length of bias'
+                assert len(x_shape) > len(y_shape), (
+                    'The length of pre_bias must greater than the length of bias'
+                )
                 padding = len(x_shape) - len(y_shape) - channel_dim
                 bias = reshape(
                     bias, [1] * channel_dim + y_shape + [1] * padding
@@ -290,6 +434,7 @@ def _conv_nd(
     return out
 
 
+@param_one_alias(["x", "input"])
 def conv1d(
     x: Tensor,
     weight: Tensor,
@@ -346,20 +491,27 @@ def conv1d(
 
             L_{out} = \frac{(L_{in} + 2 * padding - (dilation * (L_f - 1) + 1))}{stride} + 1
 
+    .. note::
+        Alias Support: The parameter name ``input`` can be used as an alias for ``x``.
+
     Args:
         x (Tensor): The input is 3-D Tensor with shape [N, C, L], the data type
             of input is float16 or float32 or float64.
+            Alias: ``input``.
         weight (Tensor): The convolution kernel with shape [M, C/g, K], where M is
             the number of output channels, g is the number of groups, K is the kernel's size.
         bias (Tensor, optional): The bias with shape [M,]. Default: None.
         stride (int|list|tuple, optional): The stride size. If stride is a list/tuple, it must
             contain one integers, (stride_size). Default: 1.
-        padding (int|str|tuple|list, optional): The padding size. Padding could be in one of the following forms.
+        padding (int|str|tuple|list, optional): The padding size.
+            Padding could be in one of the following forms.
+
             1. a string in ['valid', 'same'].
             2. an int, which means the feature map is zero paded by size of `padding` on both sides.
             3. a list[int] or tuple[int] whose length is 1, which means the feature map is zero paded by size of `padding[0]` on both sides.
             4. a list[int] or tuple[int] whose length is 2. It has the form  [pad_before, pad_after].
             5. a list or tuple of pairs of ints. It has the form [[pad_before, pad_after], [pad_before, pad_after], ...]. Note that, the batch dimension and channel dimension are also included. Each pair of integers correspond to the amount of padding for a dimension of the input. Padding in batch dimension and channel dimension should be [0, 0] or (0, 0).
+
             The default value is 0.
         dilation (int|list|tuple, optional): The dilation size. If dilation is a list/tuple, it must
             contain one integer, (dilation_size). Default: 1.
@@ -381,20 +533,36 @@ def conv1d(
         same with input.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> import paddle.nn.functional as F
 
-            >>> x = paddle.to_tensor([[[4, 8, 1, 9],
-            ...                        [7, 2, 0, 9],
-            ...                        [6, 9, 2, 6]]], dtype="float32")
-            >>> w = paddle.to_tensor([[[9, 3, 4],
-            ...                        [0, 0, 7],
-            ...                        [2, 5, 6]],
-            ...                       [[0, 3, 4],
-            ...                        [2, 9, 7],
-            ...                        [5, 6, 8]]], dtype="float32")
+            >>> x = paddle.to_tensor(
+            ...     [
+            ...         [
+            ...             [4, 8, 1, 9],
+            ...             [7, 2, 0, 9],
+            ...             [6, 9, 2, 6],
+            ...         ],
+            ...     ],
+            ...     dtype="float32",
+            ... )
+            >>> w = paddle.to_tensor(
+            ...     [
+            ...         [
+            ...             [9, 3, 4],
+            ...             [0, 0, 7],
+            ...             [2, 5, 6],
+            ...         ],
+            ...         [
+            ...             [0, 3, 4],
+            ...             [2, 9, 7],
+            ...             [5, 6, 8],
+            ...         ],
+            ...     ],
+            ...     dtype="float32",
+            ... )
 
             >>> y = F.conv1d(x, w)
             >>> print(y)
@@ -458,6 +626,15 @@ def conv1d(
     dilation = [1, *convert_to_list(dilation, 1, "dilation")]
     from ...tensor.creation import assign as paddle_assign
 
+    # cpu not support float16, need to convert dtype.
+    float16_convert = False
+    if paddle.device.get_device() == "cpu":
+        if weight.dtype == paddle.float16:
+            float16_convert = True
+            weight = weight.astype(x.dtype)
+        if bias is not None and bias.dtype == paddle.float16:
+            float16_convert = True
+            bias = bias.astype(x.dtype)
     weight = paddle_assign(weight)
     weight = unsqueeze(weight, axis=[-2])
 
@@ -475,7 +652,6 @@ def conv1d(
 
     squeeze_axis = -3 if channel_last else -2
     x = unsqueeze(x, axis=[squeeze_axis])
-
     if in_dynamic_or_pir_mode():
         if l_type == 'conv2d':
             out = _C_ops.conv2d(
@@ -530,9 +706,13 @@ def conv1d(
         if bias is not None:
             out = _add_with_axis(out, bias, axis=channel_dim)
     out = squeeze(out, axis=[squeeze_axis])
+    if float16_convert:
+        # out is float16
+        out = out.astype(paddle.float16)
     return out
 
 
+@param_one_alias(["x", "input"])
 def conv2d(
     x: Tensor,
     weight: Tensor,
@@ -595,9 +775,13 @@ def conv2d(
             H_{out}&= \frac{(H_{in} + 2 * paddings[0] - (dilations[0] * (H_f - 1) + 1))}{strides[0]} + 1 \\\\
             W_{out}&= \frac{(W_{in} + 2 * paddings[1] - (dilations[1] * (W_f - 1) + 1))}{strides[1]} + 1
 
+    .. note::
+        Alias Support: The parameter name ``input`` can be used as an alias for ``x``.
+
     Args:
         x (Tensor): The input is 4-D Tensor with shape [N, C, H, W], the data type
             of input is float16 or float32 or float64.
+            Alias: ``input``.
         weight (Tensor): The convolution kernel with shape [M, C/g, kH, kW], where M is
             the number of output channels, g is the number of groups, kH is the filter's
             height, kW is the filter's width.
@@ -636,7 +820,7 @@ def conv2d(
         A Tensor representing the conv2d result, whose data type is the same with input.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> import paddle.nn.functional as F
@@ -647,7 +831,7 @@ def conv2d(
             >>> y_var = F.conv2d(x_var, w_var)
 
             >>> print(y_var.shape)
-            [2, 6, 6, 6]
+            paddle.Size([2, 6, 6, 6])
     """
     # entry checks
     if data_format not in ["NCHW", "NHWC"]:
@@ -688,10 +872,15 @@ def conv2d(
     cudnn_version = get_cudnn_version()
 
     use_cudnn = (
-        True
-        if (is_compiled_with_cuda() and cudnn_version is not None)
-        else False
+        is_compiled_with_cuda()
+        and cudnn_version is not None
+        and not get_flags("FLAGS_conv2d_disable_cudnn")[
+            "FLAGS_conv2d_disable_cudnn"
+        ]
     )
+    use_accuracy_compatible = paddle.get_flags(
+        ["FLAGS_use_accuracy_compatible_kernel"]
+    ).get("FLAGS_use_accuracy_compatible_kernel", False)
 
     # update attrs
     padding, padding_algorithm = _update_padding_nd(padding, channel_last, 2)
@@ -710,7 +899,7 @@ def conv2d(
         else:
             use_cudnn = False
     else:
-        if in_dynamic_mode():
+        if in_dynamic_mode() and not use_accuracy_compatible:
             pre_bias = _C_ops.conv2d(
                 x,
                 weight,
@@ -748,14 +937,6 @@ def conv2d(
             else:
                 return pre_bias
 
-    if (
-        is_compiled_with_cuda()
-        and get_flags("FLAGS_conv2d_disable_cudnn")[
-            "FLAGS_conv2d_disable_cudnn"
-        ]
-    ):
-        use_cudnn = False
-
     return _conv_nd(
         x,
         weight,
@@ -773,6 +954,7 @@ def conv2d(
     )
 
 
+@param_one_alias(["x", "input"])
 def conv1d_transpose(
     x: Tensor,
     weight: Tensor,
@@ -877,13 +1059,13 @@ def conv1d_transpose(
            None by default.
 
     Returns:
-        A  tensor representing the result of 1-D transpose convolution, whose
+        A tensor representing the result of 1-D transpose convolution, whose
         data type is the same with input. And its shape is (num_batches, channels, length)
         when data_format is `"NCL"` and (num_batches, length, channels) when data_format is
         `"NLC"`.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> import paddle.nn.functional as F
@@ -951,8 +1133,7 @@ def conv1d_transpose(
     else:
         if output_padding != 0:
             raise ValueError(
-                'output_padding option is mutually exclusive with '
-                'output_size'
+                'output_padding option is mutually exclusive with output_size'
             )
         if isinstance(output_size, (list, tuple, int)):
             output_size = [*convert_to_list(output_size, 1, 'output_size'), 1]
@@ -1042,6 +1223,7 @@ def conv1d_transpose(
     return out
 
 
+@param_one_alias(["x", "input"])
 def conv2d_transpose(
     x: Tensor,
     weight: Tensor,
@@ -1049,8 +1231,8 @@ def conv2d_transpose(
     stride: Size2 = 1,
     padding: _PaddingSizeMode | Size2 | Size4 | Sequence[Size2] = 0,
     output_padding: Size2 = 0,
-    dilation: Size2 = 1,
     groups: int = 1,
+    dilation: Size2 = 1,
     output_size: Size2 | None = None,
     data_format: DataLayout2D = 'NCHW',
     name: str | None = None,
@@ -1164,7 +1346,7 @@ def conv2d_transpose(
         transposed convolution result.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> import paddle.nn.functional as F
@@ -1175,7 +1357,7 @@ def conv2d_transpose(
             >>> y_var = F.conv2d_transpose(x_var, w_var)
 
             >>> print(y_var.shape)
-            [2, 6, 10, 10]
+            paddle.Size([2, 6, 10, 10])
     """
 
     if data_format not in ['NCHW', 'NHWC']:
@@ -1224,8 +1406,7 @@ def conv2d_transpose(
     else:
         if output_padding != 0:
             raise ValueError(
-                'output_padding option is mutually exclusive with '
-                'output_size'
+                'output_padding option is mutually exclusive with output_size'
             )
         if isinstance(output_size, (list, tuple)):
             if _contain_var(output_size):
@@ -1262,7 +1443,15 @@ def conv2d_transpose(
 
     op_type = 'conv2d_transpose'
     num_filters = weight.shape[1]
-    if num_channels == groups and num_channels != 1 and num_filters == 1:
+    use_accuracy_compatible = paddle.get_flags(
+        ["FLAGS_use_accuracy_compatible_kernel"]
+    ).get("FLAGS_use_accuracy_compatible_kernel", False)
+    if (
+        not use_accuracy_compatible
+        and num_channels == groups
+        and num_channels != 1
+        and num_filters == 1
+    ):
         op_type = 'depthwise_conv2d_transpose'
         use_cudnn = False
 
@@ -1326,9 +1515,9 @@ def conv2d_transpose(
                     attrs={'axis': -1},
                 )
             else:
-                assert len(x_shape) > len(
-                    y_shape
-                ), 'The length of pre_bias must greater than the length of bias'
+                assert len(x_shape) > len(y_shape), (
+                    'The length of pre_bias must greater than the length of bias'
+                )
                 padding = len(x_shape) - len(y_shape) - channel_dim
                 bias = reshape(
                     bias, [1] * channel_dim + y_shape + [1] * padding
@@ -1345,6 +1534,7 @@ def conv2d_transpose(
     return out
 
 
+@param_one_alias(["x", "input"])
 def conv3d(
     x: Tensor,
     weight: Tensor,
@@ -1401,9 +1591,13 @@ def conv3d(
             H_{out}&= \frac{(H_{in} + 2 * paddings[1] - (dilations[1] * (H_f - 1) + 1))}{strides[1]} + 1 \\
             W_{out}&= \frac{(W_{in} + 2 * paddings[2] - (dilations[2] * (W_f - 1) + 1))}{strides[2]} + 1
 
+    .. note::
+        Alias Support: The parameter name ``input`` can be used as an alias for ``x``.
+
     Args:
         x (Tensor): The input is 5-D Tensor with shape [N, C, D, H, W], the data
             type of input is float16 or float32 or float64.
+            Alias: ``input``.
         weight (Tensor): The convolution kernel, a Tensor with shape [M, C/g, kD, kH, kW],
             where M is the number of filters(output channels), g is the number of groups,
             kD, kH, kW are the filter's depth, height and width respectively.
@@ -1445,7 +1639,7 @@ def conv3d(
         convolution and non-linearity activation result.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> import paddle.nn.functional as F
@@ -1456,7 +1650,7 @@ def conv3d(
             >>> y_var = F.conv3d(x_var, w_var)
 
             >>> print(y_var.shape)
-            [2, 6, 6, 6, 6]
+            paddle.Size([2, 6, 6, 6, 6])
     """
     # entry check
     if data_format not in ["NCDHW", "NDHWC"]:
@@ -1493,15 +1687,28 @@ def conv3d(
 
     cudnn_version = get_cudnn_version()
     use_cudnn = (
-        True
-        if (is_compiled_with_cuda() and cudnn_version is not None)
-        else False
+        is_compiled_with_cuda()
+        and cudnn_version is not None
+        and not get_flags("FLAGS_conv3d_disable_cudnn")[
+            "FLAGS_conv3d_disable_cudnn"
+        ]
     )
 
     padding, padding_algorithm = _update_padding_nd(padding, channel_last, 3)
     stride = convert_to_list(stride, 3, 'stride')
     dilation = convert_to_list(dilation, 3, 'dilation')
     op_type = "conv3d"
+    use_accuracy_compatible = paddle.get_flags(
+        ["FLAGS_use_accuracy_compatible_kernel"]
+    ).get("FLAGS_use_accuracy_compatible_kernel", False)
+    if (
+        use_accuracy_compatible
+        and is_compiled_with_cuda()
+        and num_channels == groups
+        and num_channels != 1
+        and num_filters % num_channels == 0
+    ):
+        op_type = 'depthwise_conv3d'
 
     return _conv_nd(
         x,
@@ -1520,6 +1727,7 @@ def conv3d(
     )
 
 
+@param_one_alias(["x", "input"])
 def conv3d_transpose(
     x: Tensor,
     weight: Tensor,
@@ -1648,7 +1856,7 @@ def conv3d_transpose(
         variable storing transposed convolution and non-linearity activation result.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> import paddle.nn.functional as F
@@ -1659,7 +1867,7 @@ def conv3d_transpose(
             >>> y_var = F.conv3d_transpose(x_var, w_var)
 
             >>> print(y_var.shape)
-            [2, 6, 10, 10, 10]
+            paddle.Size([2, 6, 10, 10, 10])
     """
     # entry checks
     if data_format not in ["NCDHW", "NDHWC"]:
@@ -1698,8 +1906,7 @@ def conv3d_transpose(
     else:
         if output_padding != 0:
             raise ValueError(
-                'output_padding option is mutually exclusive with '
-                'output_size'
+                'output_padding option is mutually exclusive with output_size'
             )
         if isinstance(output_size, (list, tuple, int)):
             output_size = convert_to_list(output_size, 3, 'output_size')

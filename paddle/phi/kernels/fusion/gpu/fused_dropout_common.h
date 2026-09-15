@@ -51,12 +51,12 @@ namespace fusion {
  * 1D blocks: blockDim.x = cols
  * 2D grids: gridDim.y = rows
  */
-inline phi::backends::gpu::GpuLaunchConfig Get1DBlocksAnd2DGrids(
-    const phi::GPUContext &ctx,
-    const uint32_t rows,
-    const uint32_t cols,
+inline backends::gpu::GpuLaunchConfig Get1DBlocksAnd2DGrids(
+    const GPUContext &dev_ctx,
+    const uint64_t rows,
+    const uint64_t cols,
     const int vec_size) {
-  const uint32_t tmp_cols = cols / vec_size;
+  const uint64_t tmp_cols = cols / static_cast<uint64_t>(vec_size);
   // NOTE(wangxi): We set max_block_size to 512, for `FusedResidualDropoutBias`
   // needs too many register resources. If data_type is float16, CUDA
   // error(701) will occur when block_size is 1024. Which error is
@@ -64,22 +64,25 @@ inline phi::backends::gpu::GpuLaunchConfig Get1DBlocksAnd2DGrids(
   // occur because it did not have appropriate resources.
   // Of course, this kernel can be optimized later to reduce the use
   // of registers.
-  int threads = std::max(static_cast<uint32_t>(32),
-                         std::min(tmp_cols,
-                                  static_cast<uint32_t>(std::min(
-                                      ctx.GetMaxThreadsPerBlock(), 512))));
-  const auto blocks_x =
-      std::max(static_cast<uint32_t>(1), (tmp_cols + threads - 1) / threads);
-  int blocks_y = std::max(static_cast<uint32_t>(1), rows);
+  const uint64_t threads =
+      std::max(static_cast<uint64_t>(32),
+               std::min(tmp_cols,
+                        static_cast<uint64_t>(
+                            std::min(dev_ctx.GetMaxThreadsPerBlock(), 512))));
+  const uint64_t blocks_x = std::min(
+      static_cast<uint64_t>(65536),
+      std::max(static_cast<uint64_t>(1), (tmp_cols + threads - 1) / threads));
+  uint64_t blocks_y = std::max(static_cast<uint64_t>(1), rows);
   int blocks_z = 1;
-  if (blocks_y > 65536) {
+  if (blocks_y >= 65536) {
     blocks_z = 1024;
     blocks_y = (blocks_y + blocks_z - 1) / blocks_z;
+    blocks_y = blocks_y >= 65536 ? 65535 : blocks_y;
   }
-  phi::backends::gpu::GpuLaunchConfig config;
-  config.block_per_grid.x = blocks_x;
-  config.block_per_grid.y = blocks_y;
-  config.block_per_grid.z = blocks_z;
+  backends::gpu::GpuLaunchConfig config;
+  config.block_per_grid.x = static_cast<uint32_t>(blocks_x);
+  config.block_per_grid.y = static_cast<uint32_t>(blocks_y);
+  config.block_per_grid.z = static_cast<uint32_t>(blocks_z);
   config.thread_per_block.x = threads;
   return config;
 }
@@ -123,9 +126,9 @@ __forceinline__ __device__ void RandVec<8>(GPURAND(StatePhilox4_32_10_t) *
 }
 
 template <typename T>
-inline void SetZero(const phi::GPUContext &ctx, T *ptr, const size_t size) {
+inline void SetZero(const GPUContext &dev_ctx, T *ptr, const size_t size) {
   PADDLE_ENFORCE_GPU_SUCCESS(
-      GPU(MemsetAsync)(ptr, 0, size * sizeof(T), ctx.stream()));
+      GPU(MemsetAsync)(ptr, 0, size * sizeof(T), dev_ctx.stream()));
 }
 
 /**
@@ -159,7 +162,7 @@ inline __device__ void CalculateDBias(const T *tmp_sum,
   int reduce_num_pre_thread = (BlockSizeX * VecSize + 31) / 32;
   // reduce 32 to 1
   for (int i = 0; i < reduce_num_pre_thread; i++) {
-    sum[i] = phi::funcs::WarpReduceSum(sum[i]);
+    sum[i] = funcs::WarpReduceSum(sum[i]);
   }
 
   // save sum to dbias

@@ -38,8 +38,8 @@ __global__ void add_bias_grad_kernel(const T* dout_data,
     int col = idx % out_dim;
     T temp = static_cast<T>(0);
     for (int i = 0; i < ins_num; ++i) {
-      int select_indx = ((row + 1) * i + 1) * col;
-      temp += dout_data[select_indx];
+      int select_index = ((row + 1) * i + 1) * col;
+      temp += dout_data[select_index];
     }
     db_data[idx] += temp;
   }
@@ -86,11 +86,11 @@ void BatchFCGradOpCUDAKernel(const Context& dev_ctx,
   auto& place = *dev_ctx.eigen_device();
   // initialize
   dev_ctx.template Alloc<T>(dx);
-  auto dx_eigen = phi::EigenVector<T>::Flatten(*dx);
+  auto dx_eigen = EigenVector<T>::Flatten(*dx);
   dx_eigen.device(place) = dx_eigen.constant(static_cast<T>(0));
 
   dev_ctx.template Alloc<T>(dw);
-  auto dw_eigen = phi::EigenVector<T>::Flatten(*dw);
+  auto dw_eigen = EigenVector<T>::Flatten(*dw);
   dw_eigen.device(place) = dw_eigen.constant(static_cast<T>(0));
 
   // get data ptr
@@ -101,13 +101,13 @@ void BatchFCGradOpCUDAKernel(const Context& dev_ctx,
   T* dw_data = dw->data<T>();
 
   dev_ctx.template Alloc<T>(db);
-  auto db_eigen = phi::EigenVector<T>::Flatten(*db);
+  auto db_eigen = EigenVector<T>::Flatten(*db);
   db_eigen.device(place) = db_eigen.constant(static_cast<T>(0));
   T* db_data = db->data<T>();
   add_bias_grad<T>(
       dev_ctx.stream(), dout_data, slot_pairs_num, ins_num, out_dim, db_data);
 
-  auto blas = phi::funcs::GetBlas<phi::GPUContext, T>(dev_ctx);
+  auto blas = funcs::GetBlas<GPUContext, T>(dev_ctx);
   T alpha = 1;
   T beta = 0;
 

@@ -53,8 +53,10 @@ struct CombineOpInferSymbolicShapeInterfaceModel
       const auto shape_data_list = [&] {
         symbol::TensorListShapeOrDataDimExprs shape_data_list;
         for (size_t i = 0; i < op->num_operands(); ++i) {
-          PADDLE_ENFORCE_NOT_NULL(
-              op->operand(i).type().dyn_cast<DenseTensorType>(),
+          PADDLE_ENFORCE_EQ(
+              static_cast<bool>(
+                  op->operand(i).type().dyn_cast<DenseTensorType>()),
+              true,
               common::errors::InvalidArgument(
                   "The operand at index %d must be a DenseTensorArray. "
                   "Currently InferSymbolicShape of CombineOp only accepts "
@@ -76,8 +78,10 @@ struct CombineOpInferSymbolicShapeInterfaceModel
       // TODO(ooooo): Actually RankedTensorArrayListShapeOrDataDimExprs is
       // better.
       for (size_t i = 0; i < op->num_operands(); ++i) {
-        PADDLE_ENFORCE_NOT_NULL(
-            op->operand(i).type().dyn_cast<DenseTensorArrayType>(),
+        PADDLE_ENFORCE_EQ(
+            static_cast<bool>(
+                op->operand(i).type().dyn_cast<DenseTensorArrayType>()),
+            true,
             common::errors::InvalidArgument(
                 "The operand at index %d must be a DenseTensorArray. Currently "
                 "InferSymbolicShape of CombineOp only accepts inputs that are "
@@ -100,8 +104,9 @@ struct ConstantOpInferSymbolicShapeInterfaceModel
     : public InferSymbolicShapeInterface::Concept {
   static inline bool InferSymbolicShape(
       pir::Operation* op, pir::InferSymbolicShapeContext* infer_context) {
-    PADDLE_ENFORCE_NOT_NULL(
-        op->result(0).type().dyn_cast<DenseTensorType>(),
+    PADDLE_ENFORCE_EQ(
+        static_cast<bool>(op->result(0).type().dyn_cast<DenseTensorType>()),
+        true,
         common::errors::InvalidArgument(
             "Currently InferSymbolicShape of ConstantOp only support "
             "DenseTensorType result."));
@@ -252,7 +257,7 @@ struct YieldOpInferSymbolicShapeInterfaceModel
 OperatorDialect::OperatorDialect(pir::IrContext* ctx)
     : pir::Dialect(name(), ctx, pir::TypeId::get<OperatorDialect>()) {
   initialize();
-  ctx->GetOrRegisterDialect<::pir::ControlFlowDialect>();
+  ctx->GetOrRegisterDialect<pir::ControlFlowDialect>();
 
   auto info = ctx->GetRegisteredOpInfo(pir::TuplePushOp::name());
   info.AttachInterface(
@@ -324,12 +329,9 @@ void PrintTypeImpl(pir::Type type, std::ostream& os) {
   }
 }
 void PrintAttributeImpl(pir::Attribute attr, std::ostream& os) {
-  os << "(" << attr.dialect().name();
-  os << '.';
   if (auto int_array_attr = attr.dyn_cast<IntArrayAttribute>()) {
     phi::IntArray data = int_array_attr.data();
-    os << "IntArray)"
-       << "[";
+    os << "[";
     const auto& inner_data = data.GetData();
     pir::detail::PrintInterleave(
         inner_data.begin(),
@@ -338,11 +340,11 @@ void PrintAttributeImpl(pir::Attribute attr, std::ostream& os) {
         [&os]() { os << ","; });
     os << "]";
   } else if (auto data_type_attr = attr.dyn_cast<DataTypeAttribute>()) {
-    os << "DataType)" << data_type_attr.data();
+    os << data_type_attr.data();
   } else if (auto place_type_attr = attr.dyn_cast<PlaceAttribute>()) {
-    os << "Place)" << place_type_attr.data();
+    os << place_type_attr.data();
   } else if (auto data_layout_attr = attr.dyn_cast<DataLayoutAttribute>()) {
-    os << "DataLayout)" << data_layout_attr.data();
+    os << data_layout_attr.data();
   } else {
     os << "<#AttrNotImplemented>";
   }
@@ -442,26 +444,6 @@ void OperatorDialect::PrintType(pir::Type type, std::ostream& os) const {
 void OperatorDialect::PrintAttribute(pir::Attribute attr,
                                      std::ostream& os) const {
   PrintAttributeImpl(attr, os);
-}
-
-pir::Attribute OperatorDialect::ParseAttribute(
-    pir::IrParser& parser) {  // NOLINT
-  std::string type_name = parser.ConsumeToken().val_;
-  std::string attribute_name =
-      type_name.substr(type_name.find('.') + 1, std::string::npos);
-  parser.ConsumeAToken(")");
-  if (attribute_name == "IntArray") {
-    return IntArrayAttribute::Parse(parser);
-  } else if (attribute_name == "DataType") {
-    return DataTypeAttribute::Parse(parser);
-  } else if (attribute_name == "Place") {
-    return PlaceAttribute::Parse(parser);
-  } else if (attribute_name == "DataLayout") {
-    return DataLayoutAttribute::Parse(parser);
-  } else {
-    IR_THROW("No function to parse " + attribute_name + " exists!" +
-             parser.GetErrorLocationInfo());
-  }
 }
 
 pir::OpPrintFn OperatorDialect::PrintOperation(const pir::Operation& op) const {
@@ -599,7 +581,7 @@ struct CustomOpInfoInterfaceModel : public OpYamlInfoInterface::Concept {
             "Supported data types include `bool`, `int`, `float`, "
             "`int64_t`, `std::string`, `std::vector<int>`, "
             "`std::vector<float>`, `std::vector<int64_t>`, "
-            "`std::vector<std::string>`, Please check whether "
+            "`std::vector<std::string>`, `void*`, Please check whether "
             "the attribute data type and data type string are matched.",
             attr_type_str));
       }
@@ -643,6 +625,88 @@ struct CustomOpInfoInterfaceModel : public OpYamlInfoInterface::Concept {
   }
 
   CustomOpInfoInterfaceModel() : OpYamlInfoInterface::Concept(GetPirOpInfo) {}
+};
+
+struct PythonOperatorInfoInterfaceModel : public OpYamlInfoInterface::Concept {
+  static OpInfoTuple GetPirOpInfo(const std::string& pir_op_name) {
+    const auto& op_meta =
+        paddle::framework::detail::GetPythonOperatorInfoByPirName(pir_op_name);
+
+    // TODO(DrRyanHuang): we may support py_op's grad op in the future
+    // const auto* grad_op_meta_ptr =
+    //     paddle::framework::detail::GetGradOpInfoByFwdPirName(pir_op_name);
+    std::vector<paddle::dialect::OpInputInfo> inputs_info;
+    std::vector<paddle::dialect::OpAttributeInfo> attributes_info;
+    std::vector<paddle::dialect::OpOutputInfo> outputs_info;
+    std::vector<std::string> param_names;
+
+    // translate input info
+    auto& op_input_names = OpMetaInfoHelper::GetInputs(op_meta);
+    for (const auto& input_name : op_input_names) {
+      param_names.push_back(input_name);
+      // Now, we only support dense tensor as input.
+      inputs_info.push_back(paddle::dialect::OpInputInfo{
+          input_name,
+          /*input_type=*/"paddle::dialect::DenseTensorType",
+          /*optional=*/false,
+          /*no_need_buffer=*/false,
+          /*is_mutable_attribute=*/false,
+          /*with_grad_semantic=*/false});
+    }
+
+    // translate attr info
+    auto& op_attrs = OpMetaInfoHelper::GetAttrs(op_meta);
+    for (const auto& op_attr : op_attrs) {
+      auto attr_name_and_type = paddle::ParseAttrStr(op_attr);
+      // PythonOperator only has void* attr
+      const std::string& attr_name = attr_name_and_type[0];
+      const std::string& attr_type_str = attr_name_and_type[1];
+      PADDLE_ENFORCE_EQ(
+          attr_type_str,
+          "void*",
+          common::errors::InvalidArgument(
+              "PythonOperator only has two void* attributes, which "
+              "are infer_meta_fn_ptr & fn_ptr."));
+      param_names.push_back(attr_name);
+      const std::string& attr_pir_type =
+          CppTypeToAttrTypeMap().at(attr_type_str);
+      attributes_info.emplace_back(attr_name, attr_pir_type, "");
+    }
+
+    // translate output info
+    auto& op_output_names = OpMetaInfoHelper::GetOutputs(op_meta);
+    for (const auto& output_name : op_output_names) {
+      // Now, we only support dense tensor as output.
+      outputs_info.push_back(paddle::dialect::OpOutputInfo{
+          output_name,
+          /*type_name=*/"paddle::dialect::DenseTensorType",
+          /*is_optional=*/false,
+          /*intermediate=*/false});
+    }
+
+    auto& inplace_maps = OpMetaInfoHelper::GetInplaceReverseMap(op_meta);
+    if (!inplace_maps.empty()) {
+      VLOG(3) << "Register Custom Python Operator: op inplace_map: "
+              << string::join_strings(inplace_maps, ',', [](auto& pair) {
+                   return pair.first + ": " + pair.second;
+                 });
+    }
+    std::vector<std::pair<std::string, std::string>> vec_inplace;
+    for (const auto& inplace_map : inplace_maps) {
+      vec_inplace.emplace_back(inplace_map);
+    }
+
+    // we only need kernel params name in run_time_info
+    paddle::dialect::OpRunTimeInfo run_time_info =
+        paddle::dialect::OpRunTimeInfo(
+            "", {}, "", param_names, {}, {}, vec_inplace, {});
+
+    return std::make_tuple(
+        inputs_info, attributes_info, outputs_info, run_time_info, "");
+  }
+
+  PythonOperatorInfoInterfaceModel()
+      : OpYamlInfoInterface::Concept(GetPirOpInfo) {}
 };
 
 struct CustomOpVjpInterfaceModel : public VjpInterface::Concept {
@@ -935,7 +999,7 @@ struct CustomOpVjpInterfaceModel : public VjpInterface::Concept {
         for (size_t j = 0; j < value_num; ++j) {
           auto ddims = phi::make_ddim(output_shapes[value_index]);
           auto dtype = output_dtypes[value_index];
-          phi::DataLayout layout{DataLayout::NCHW};
+          DataLayout layout{DataLayout::NCHW};
           phi::LegacyLoD lod;
           auto type = paddle::dialect::DenseTensorType::get(
               pir::IrContext::Instance(),
@@ -964,7 +1028,7 @@ struct CustomOpVjpInterfaceModel : public VjpInterface::Concept {
       } else {
         auto ddims = phi::make_ddim(output_shapes[value_index]);
         auto dtype = output_dtypes[value_index];
-        phi::DataLayout layout{DataLayout::NCHW};
+        DataLayout layout{DataLayout::NCHW};
         phi::LegacyLoD lod;
         auto out_type = paddle::dialect::DenseTensorType::get(
             pir::IrContext::Instance(),
@@ -1021,14 +1085,14 @@ struct CustomOpVjpInterfaceModel : public VjpInterface::Concept {
       /*
         This function is used to get the index of input that need calculate
         gradient in forward op. For example: forward inputs : TensorA, TensorB,
-        TensorC, TensorD backward outputs: TensorC@Grad, TensorA@Grad So, we
+        TensorC, TensorD backward outputs: TensorC@GRAD, TensorA@GRAD So, we
         only need to calculate gradient of TensorA and TensorC and store them in
         res; In this example, the res size is 2, and the first element of res
-        should store TensorA@Grad, and the second element of res should store
-        TensorC@Grad.
+        should store TensorA@GRAD, and the second element of res should store
+        TensorC@GRAD.
 
-        So, This function will return 1 if we pass TensorC@Grad and return 0 if
-        we pass TensorA@Grad.
+        So, This function will return 1 if we pass TensorC@GRAD and return 0 if
+        we pass TensorA@GRAD.
       */
       size_t gradient_vec_index = 0;
       const auto& fwd_input =
@@ -1164,6 +1228,80 @@ void CustomOpDialect::RegisterCustomOp(const paddle::OpMetaInfo& op_meta) {
                                verify_func);
 }
 
+PythonOperatorDialect::PythonOperatorDialect(pir::IrContext* context)
+    : pir::Dialect(name(), context, pir::TypeId::get<PythonOperatorDialect>()) {
+}
+
+void PythonOperatorDialect::PrintType(pir::Type type, std::ostream& os) const {
+  PrintTypeImpl(type, os);
+}
+
+void PythonOperatorDialect::PrintAttribute(pir::Attribute attr,
+                                           std::ostream& os) const {
+  PrintAttributeImpl(attr, os);
+}
+
+pir::OpPrintFn PythonOperatorDialect::PrintOperation(
+    const pir::Operation& op) const {
+  return nullptr;
+}
+
+void PythonOperatorDialect::RegisterPythonOperator(
+    const paddle::OpMetaInfo& op_meta) {
+  pir::TypeId id = IdManager::Instance().CreateId();
+  std::string op_name = paddle::framework::kPythonOperatorDialectPrefix +
+                        OpMetaInfoHelper::GetOpName(op_meta);
+  std::vector<pir::TypeId> traits;
+
+  auto& inplace_map = OpMetaInfoHelper::GetInplaceMap(op_meta);
+  if (!inplace_map.empty()) {
+    op_name += "_";
+    traits.push_back(pir::TypeId::get<paddle::dialect::InplaceTrait>());
+  }
+
+  char* op_name_c = new char[op_name.size() + 1];
+  snprintf(op_name_c, op_name.size() + 1, "%s", op_name.c_str());
+  op_names_.push_back(op_name_c);
+
+  auto& op_attrs = OpMetaInfoHelper::GetAttrs(op_meta);
+  std::vector<std::string> attr_names;
+  for (const auto& op_attr : op_attrs) {
+    auto attr_name_and_type = paddle::ParseAttrStr(op_attr);
+    auto attr_name = attr_name_and_type[0];
+    attr_names.push_back(attr_name);
+  }
+  const char** attr_name =
+      AttributeManager::Instance().ToCharPointers(attr_names);
+  uint32_t attr_num = attr_names.size();
+
+  std::set<pir::InterfaceValue> interface_values;
+  pir::InterfaceValue op_info_interface =
+      pir::InterfaceValue::Get<OpYamlInfoInterface,
+                               PythonOperatorInfoInterfaceModel>();
+  interface_values.insert(std::move(op_info_interface));
+
+  // TODO(DrRyanHuang): Currently, we do not support vjp for customPyOp.
+  // if (paddle::framework::detail::HasGradOp(op_name)) {
+  //   pir::InterfaceValue vjp_interface =
+  //       pir::InterfaceValue::Get<VjpInterface,
+  //       CustomPyOpVjpInterfaceModel>();
+  //   interface_values.insert(std::move(vjp_interface));
+  // }
+
+  // Currently we set empty verify function and will reset it if it is used in
+  // future.
+  pir::VerifyPtr verify_func = [](pir::Operation* op) {};
+  ir_context()->RegisterOpInfo(this,
+                               id,
+                               op_names_.back(),
+                               std::move(interface_values),
+                               traits,
+                               attr_num,
+                               attr_name,
+                               verify_func,
+                               verify_func);
+}
+
 // customEngineDialect
 
 CustomEngineDialect::CustomEngineDialect(pir::IrContext* context)
@@ -1192,4 +1330,5 @@ pir::OpPrintFn CustomEngineDialect::PrintOperation(
 
 IR_DEFINE_EXPLICIT_TYPE_ID(paddle::dialect::OperatorDialect)
 IR_DEFINE_EXPLICIT_TYPE_ID(paddle::dialect::CustomOpDialect)
+IR_DEFINE_EXPLICIT_TYPE_ID(paddle::dialect::PythonOperatorDialect)
 IR_DEFINE_EXPLICIT_TYPE_ID(paddle::dialect::CustomEngineDialect)

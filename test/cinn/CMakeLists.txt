@@ -20,30 +20,6 @@ foreach(basic_test_name ${BASIC_TEST_NAMES})
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 endforeach()
 
-if(NOT ${WITH_GPU})
-  #    ADD_TEST(NAME test_op_nn
-  #        COMMAND ${CMAKE_COMMAND} -E env PYTHONPATH=${CMAKE_BINARY_DIR}:${CMAKE_BINARY_DIR}/python/cinn:$ENV{PYTHONPATH}
-  #        python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_op_nn.py WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-  #    )
-endif()
-
-#ADD_TEST(NAME test_computation_python
-#    COMMAND ${CMAKE_COMMAND} -E env PYTHONPATH=${CMAKE_BINARY_DIR}:${CMAKE_BINARY_DIR}/python/cinn:$ENV{PYTHONPATH}
-#    python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_computation.py
-#    ${CMAKE_BINARY_DIR}/third_party/naive_mul_model
-#    "${WITH_GPU}" WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-#)
-
-#ADD_TEST(NAME test_cinn_ops_check
-#    COMMAND ${CMAKE_COMMAND} -E env PYTHONPATH=${CMAKE_BINARY_DIR}:${CMAKE_BINARY_DIR}/python/cinn:$ENV{PYTHONPATH}
-#    python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_ops.py "${WITH_GPU}"
-#    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-#)
-
-#ADD_TEST(NAME test_cinn_real_facedet
-#    COMMAND ${CMAKE_COMMAND} -E env PYTHONPATH=${CMAKE_BINARY_DIR}:${CMAKE_BINARY_DIR}/python/cinn:$ENV{PYTHONPATH}
-#    python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_facedet.py "${CMAKE_BINARY_DIR}/third_party/FaceDet" "${WITH_GPU}"
-#    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 if(WITH_GPU)
   file(
     GLOB CINN_OP_TEST
@@ -62,7 +38,7 @@ if(WITH_GPU)
       COMMAND
         ${CMAKE_COMMAND} -E env
         PYTHONPATH=${CMAKE_BINARY_DIR}:${CMAKE_BINARY_DIR}/python:$ENV{PYTHONPATH}
-        python3 ${CMAKE_CURRENT_SOURCE_DIR}/${op_test_name}.py
+        ${PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/${op_test_name}.py
       WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
   endforeach()
 
@@ -84,7 +60,8 @@ if(WITH_GPU)
       COMMAND
         ${CMAKE_COMMAND} -E env
         PYTHONPATH=${CMAKE_BINARY_DIR}:${CMAKE_BINARY_DIR}/python:$ENV{PYTHONPATH}
-        python3 ${CMAKE_CURRENT_SOURCE_DIR}/${op_mapper_test_name}.py
+        ${PYTHON_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/${op_mapper_test_name}.py
       WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
   endforeach()
 
@@ -108,7 +85,7 @@ if(WITH_GPU)
       COMMAND
         ${CMAKE_COMMAND} -E env
         PYTHONPATH=${CMAKE_BINARY_DIR}:${CMAKE_BINARY_DIR}/python:$ENV{PYTHONPATH}
-        python3 ${CMAKE_CURRENT_SOURCE_DIR}/${pass_test_name}.py
+        ${PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/${pass_test_name}.py
       WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
   endforeach()
 
@@ -128,7 +105,7 @@ if(WITH_GPU)
       COMMAND
         ${CMAKE_COMMAND} -E env
         PYTHONPATH=${CMAKE_BINARY_DIR}:${CMAKE_BINARY_DIR}/python/:$ENV{PYTHONPATH}
-        python3 ${CMAKE_CURRENT_SOURCE_DIR}/${runtime_test_name}.py
+        ${PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/${runtime_test_name}.py
       WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
   endforeach()
 
@@ -144,7 +121,7 @@ if(WITH_GPU)
       COMMAND
         ${CMAKE_COMMAND} -E env
         PYTHONPATH=${CMAKE_BINARY_DIR}:${CMAKE_BINARY_DIR}/python/:$ENV{PYTHONPATH}
-        python3 ${CMAKE_CURRENT_SOURCE_DIR}/${ir_test_name}.py
+        ${PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/${ir_test_name}.py
       WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
   endforeach()
 

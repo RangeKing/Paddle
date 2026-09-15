@@ -14,8 +14,6 @@
 
 #include "paddle/phi/kernels/gather_kernel.h"
 
-#include "paddle/phi/common/bfloat16.h"
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/funcs/gather.cu.h"
 
@@ -27,21 +25,22 @@ void GatherKernel(const Context& dev_ctx,
                   const DenseTensor& index,
                   const Scalar& axis,
                   DenseTensor* out) {
+  if (out && out->numel() == 0) {
+    dev_ctx.template Alloc<T>(out);
+    return;
+  }
   const auto& index_type = index.dtype();
   auto axis_v = axis.to<int>();
   if (axis_v < 0) {
     axis_v += static_cast<int>(x.dims().size());
   }
   if (axis_v != 0) {
-    if (index_type == phi::DataType::INT32) {
-      phi::funcs::GatherV2CUDAFunction<T, int32_t>(
-          &x, &index, axis_v, out, dev_ctx);
-    } else if (index_type == phi::DataType::INT64) {
-      phi::funcs::GatherV2CUDAFunction<T, int64_t>(
-          &x, &index, axis_v, out, dev_ctx);
-    } else if (index_type == phi::DataType::INT16) {
-      phi::funcs::GatherV2CUDAFunction<T, int16_t>(
-          &x, &index, axis_v, out, dev_ctx);
+    if (index_type == DataType::INT32) {
+      funcs::GatherV2CUDAFunction<T, int32_t>(&x, &index, axis_v, out, dev_ctx);
+    } else if (index_type == DataType::INT64) {
+      funcs::GatherV2CUDAFunction<T, int64_t>(&x, &index, axis_v, out, dev_ctx);
+    } else if (index_type == DataType::INT16) {
+      funcs::GatherV2CUDAFunction<T, int16_t>(&x, &index, axis_v, out, dev_ctx);
     }
     return;
   }
@@ -49,12 +48,12 @@ void GatherKernel(const Context& dev_ctx,
   dev_ctx.template Alloc<T>(out);
 
   if (x.numel() == 0) return;
-  if (index_type == phi::DataType::INT32) {
-    phi::funcs::GPUGather<T, int>(dev_ctx, x, index, out);
-  } else if (index_type == phi::DataType::INT64) {
-    phi::funcs::GPUGather<T, int64_t>(dev_ctx, x, index, out);
-  } else if (index_type == phi::DataType::INT16) {
-    phi::funcs::GPUGather<T, int16_t>(dev_ctx, x, index, out);
+  if (index_type == DataType::INT32) {
+    funcs::GPUGather<T, int>(dev_ctx, x, index, out);
+  } else if (index_type == DataType::INT64) {
+    funcs::GPUGather<T, int64_t>(dev_ctx, x, index, out);
+  } else if (index_type == DataType::INT16) {
+    funcs::GPUGather<T, int16_t>(dev_ctx, x, index, out);
   } else {
     PADDLE_THROW(common::errors::InvalidArgument(
         "The data type of Input(Index) of gather "
@@ -76,7 +75,7 @@ PD_REGISTER_KERNEL(gather,
                    bool,
                    uint8_t,
                    int8_t,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::complex64,
+                   phi::complex128) {}

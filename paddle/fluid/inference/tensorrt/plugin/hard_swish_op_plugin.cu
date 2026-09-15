@@ -57,15 +57,9 @@ __global__ void hard_swish_kernel(float threshold,
 
 int HardSwishPlugin::enqueue(int batch_size,
                              const void *const *inputs,
-#if IS_TRT_VERSION_LT(8000)
-                             void **outputs,
-                             void *,
-                             cudaStream_t stream) {
-#else
                              void *const *outputs,
                              void *,
                              cudaStream_t stream) TRT_NOEXCEPT {
-#endif
   const auto &input_dims = this->getInputDims(0);
   int num = batch_size;
   for (int i = 0; i < input_dims.nbDims; i++) {
@@ -85,8 +79,6 @@ int HardSwishPlugin::enqueue(int batch_size,
 
   return cudaGetLastError() != cudaSuccess;
 }
-
-#if IS_TRT_VERSION_GE(6000)
 
 nvinfer1::DimsExprs HardSwishPluginDynamic::getOutputDimensions(
     int output_index,
@@ -142,7 +134,7 @@ bool HardSwishPluginDynamic::supportsFormatCombination(
   PADDLE_ENFORCE_NOT_NULL(
       in_out,
       common::errors::InvalidArgument(
-          "The input of swish plugin shoule not be nullptr."));
+          "The input of swish plugin should not be nullptr."));
 
   PADDLE_ENFORCE_LT(
       pos,
@@ -162,7 +154,7 @@ bool HardSwishPluginDynamic::supportsFormatCombination(
   // output
   return in.type == prev.type && in.format == prev.format;
 }
-#endif
+
 }  // namespace plugin
 }  // namespace tensorrt
 }  // namespace inference

@@ -191,12 +191,12 @@ def get_test_info_and_generated_test_path(
 
 
 def check_auto_parallel_info(op_test):
-    assert hasattr(
-        op_test, 'python_api'
-    ), "If you want to check auto parallel, please set python_api in setUp function."
-    assert hasattr(
-        op_test, 'placements'
-    ), "If you want to check auto parallel, please set placements in setUp function."
+    assert hasattr(op_test, 'python_api'), (
+        "If you want to check auto parallel, please set python_api in setUp function."
+    )
+    assert hasattr(op_test, 'placements'), (
+        "If you want to check auto parallel, please set placements in setUp function."
+    )
 
 
 def dump_test_info(
@@ -351,14 +351,14 @@ def convert_input_dims_map_to_placements(
     return placements_map
 
 
-# TODO: This method has been implementd in
+# TODO: This method has been implemented in
 # paddle/phi/core/distributed/auto_parallel/placement_types.h, bind it
 # python and it's logic.
 def placements_to_dims_map(placements: list, tensor_ndim: int) -> tuple[int]:
     r = [-1] * tensor_ndim
     for i, placement in enumerate(placements):
         if placement.is_shard():
-            shard_dim = cast(dist.Shard, placement).get_dim()
+            shard_dim = cast("dist.Shard", placement).get_dim()
             if r[shard_dim] > -1:
                 raise ValueError(
                     f"Tensor dim {shard_dim} is already sharded on mesh dim {r[shard_dim]},"
@@ -401,7 +401,7 @@ def dims_map_to_placements(
         if m >= 0:
             placement = placements[m]
             if placement.is_shard():
-                placement = cast(dist.Shard, placement)
+                placement = cast("dist.Shard", placement)
                 raise RuntimeError(
                     f"DeviceMesh dimension can't be mapped to two dimension of the same tensor: {i} and {placement.dim}"
                 )
@@ -427,7 +427,7 @@ class AutoParallelForwardChecker:
     def __init__(
         self,
         op_type,
-        pthon_api,
+        python_api,
         dtype,
         placements_map,
         inputs,
@@ -440,7 +440,7 @@ class AutoParallelForwardChecker:
         self.checker_name = "AutoParallelForwardChecker"
         self.init_checker(
             op_type,
-            pthon_api,
+            python_api,
             dtype,
             placements_map,
             inputs,
@@ -454,7 +454,7 @@ class AutoParallelForwardChecker:
     def init_checker(
         self,
         op_type,
-        pthon_api,
+        python_api,
         dtype,
         placements_map,
         inputs,
@@ -465,7 +465,7 @@ class AutoParallelForwardChecker:
         python_out_sig=None,
     ):
         self.op_type = op_type
-        self.public_python_api = pthon_api
+        self.public_python_api = python_api
         self.dtype = np.dtype(dtype)
         self.placements_map = placements_map
         self.inputs = inputs
@@ -666,7 +666,7 @@ class AutoParallelGradChecker(AutoParallelForwardChecker):
     def __init__(
         self,
         op_type,
-        pthon_api,
+        python_api,
         dtype,
         placements_map,
         inputs,
@@ -682,7 +682,7 @@ class AutoParallelGradChecker(AutoParallelForwardChecker):
     ):
         super().__init__(
             op_type,
-            pthon_api,
+            python_api,
             dtype,
             placements_map,
             inputs,
@@ -769,9 +769,9 @@ class AutoParallelGradChecker(AutoParallelForwardChecker):
         return eager_vs
 
     def get_output_dict(self, np_outputs, api_outputs, outputs_sig):
-        assert len(api_outputs) <= len(
-            outputs_sig
-        ), f"forward api outputs length must be the less than or equal to KernelSignature outputs,but receive {len(api_outputs)} and {len(outputs_sig)}"
+        assert len(api_outputs) <= len(outputs_sig), (
+            f"forward api outputs length must be the less than or equal to KernelSignature outputs,but receive {len(api_outputs)} and {len(outputs_sig)}"
+        )
         output_dict = {}
         for i in range(len(api_outputs)):
             output_name = outputs_sig[i]
@@ -843,7 +843,7 @@ class AutoParallelGradChecker(AutoParallelForwardChecker):
                 xs.append(inputs_dict[self.inputs_to_check])
             vs = self.gen_eager_grad_outputs()
             no_grad_vars = self.gen_no_grad_set(
-                var_dict={**inputs_dict, **outputs_dict}
+                var_dict=inputs_dict | outputs_dict
             )
             grad_res = paddle.grad(
                 ys, xs, vs, allow_unused=True, no_grad_vars=no_grad_vars

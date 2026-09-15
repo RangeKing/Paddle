@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 import paddle
 from paddle import _C_ops
+from paddle.utils.decorator_utils import param_one_alias
 
 from ...base.data_feeder import check_variable_and_dtype
 from ...base.layer_helper import LayerHelper
@@ -137,9 +138,9 @@ class WeightNorm:
 
         # support dim is negative number, (dim = -1) == (dim = None)
         weight_dim = len(layer._parameters[name].shape)
-        assert (
-            dim < weight_dim and dim >= -1 * weight_dim
-        ), "dim must set between [-R, R), R means the dimension of weight."
+        assert dim < weight_dim and dim >= -1 * weight_dim, (
+            "dim must set between [-R, R), R means the dimension of weight."
+        )
         if dim != -1:
             dim = (dim + weight_dim) % weight_dim
 
@@ -175,6 +176,7 @@ class WeightNorm:
         setattr(layer, self.name, self.compute_weight(layer))
 
 
+@param_one_alias(["layer", "module"])
 def weight_norm(layer: Layer, name: str = 'weight', dim: int = 0) -> Layer:
     r"""
     Applies weight normalization to a parameter according to the
@@ -195,6 +197,7 @@ def weight_norm(layer: Layer, name: str = 'weight', dim: int = 0) -> Layer:
 
     Parameters:
         layer(Layer): Layer of paddle, which has weight.
+            Alias: ``module``.
         name(str, optional): Name of the weight parameter. Default: 'weight'.
         dim(int, optional): Dimension over which to compute the norm. Dim is a non-negative number
               which is less than the rank of weight Tensor. For Example, dim can be chosen from 0,
@@ -205,7 +208,7 @@ def weight_norm(layer: Layer, name: str = 'weight', dim: int = 0) -> Layer:
         Origin layer with weight norm hook.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
           >>> from paddle.nn import Conv2D
           >>> from paddle.nn.utils import weight_norm
@@ -213,9 +216,9 @@ def weight_norm(layer: Layer, name: str = 'weight', dim: int = 0) -> Layer:
           >>> conv = Conv2D(3, 5, 3)
           >>> wn = weight_norm(conv)
           >>> print(conv.weight_g.shape)
-          [5]
+          paddle.Size([5])
           >>> print(conv.weight_v.shape)
-          [5, 3, 3, 3]
+          paddle.Size([5, 3, 3, 3])
     """
     WeightNorm.apply(layer, name, dim)
     return layer
@@ -233,7 +236,7 @@ def remove_weight_norm(layer: Layer, name: str = 'weight') -> Layer:
         Layer, the origin layer without weight norm
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.nn import Conv2D

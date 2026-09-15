@@ -29,7 +29,7 @@ class ClipGradFunctor {
  public:
   explicit ClipGradFunctor(const T min, const T max) : min_(min), max_(max) {}
   HOSTDEVICE T operator()(const T x, const T y) const {
-    return (y > min_ && y < max_) ? x : static_cast<T>(0);
+    return (y >= min_ && y <= max_) ? x : static_cast<T>(0);
   }
 
  private:
@@ -52,13 +52,13 @@ void ClipGradKernel(const Context& dev_ctx,
   std::vector<DenseTensor*> outs = {x_grad};
   auto functor = ClipGradFunctor<T>(min_, max_);
   dev_ctx.template Alloc<T>(x_grad);
-  phi::funcs::ElementwiseKernel<T>(dev_ctx, ins, &outs, functor);
+  funcs::ElementwiseKernel<T>(dev_ctx, ins, &outs, functor);
 #else
   int64_t numel = out_grad.numel();
   auto* d_x_data = dev_ctx.template Alloc<T>(x_grad);
   const T* d_out_data = out_grad.data<T>();
   const T* x_data = x.data<T>();
-  phi::Transform<Context> trans;
+  Transform<Context> trans;
   trans(dev_ctx,
         d_out_data,
         d_out_data + numel,

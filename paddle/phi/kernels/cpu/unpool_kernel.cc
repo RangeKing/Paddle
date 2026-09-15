@@ -30,7 +30,7 @@ void Unpool(const Context& dev_ctx,
             DenseTensor* out) {
   T* output_data = dev_ctx.template Alloc<T>(out);
   if (output_data) {
-    phi::funcs::SetConstant<Context, T> set_zero;
+    funcs::SetConstant<Context, T> set_zero;
     set_zero(dev_ctx, out, static_cast<T>(0));
   }
   const int batch_size = static_cast<int>(x.dims()[0]);
@@ -39,8 +39,8 @@ void Unpool(const Context& dev_ctx,
   const int output_channels = static_cast<int>(out->dims()[1]);
   const int output_height = static_cast<int>(out->dims()[2]);
   const int output_width = static_cast<int>(out->dims()[3]);
-  int input_feasize = input_height * input_width;
-  int output_feasize = output_height * output_width;
+  int64_t input_feasize = static_cast<int64_t>(input_height) * input_width;
+  int64_t output_feasize = static_cast<int64_t>(output_height) * output_width;
   const T* input_data = x.data<T>();
   const IndT* indices_data = indices.data<IndT>();
   for (int b = 0; b < batch_size; ++b) {
@@ -77,8 +77,12 @@ void UnpoolKernel(const Context& dev_ctx,
                   const IntArray& output_size UNUSED,
                   const std::string& data_format UNUSED,
                   DenseTensor* out) {
+  if (out && out->numel() == 0) {
+    dev_ctx.template Alloc<T>(out);
+    return;
+  }
   const auto& indices_type = indices.dtype();
-  if (indices_type == phi::DataType::INT32) {
+  if (indices_type == DataType::INT32) {
     Unpool<T, int, Context>(dev_ctx, x, indices, out);
   } else {
     Unpool<T, int64_t, Context>(dev_ctx, x, indices, out);
@@ -92,7 +96,7 @@ void Unpool3d(const Context& dev_ctx,
               DenseTensor* out) {
   T* output_data = dev_ctx.template Alloc<T>(out);
   if (output_data) {
-    phi::funcs::SetConstant<Context, T> set_zero;
+    funcs::SetConstant<Context, T> set_zero;
     set_zero(dev_ctx, out, static_cast<T>(0));
   }
   const int batch_size = static_cast<int>(x.dims()[0]);
@@ -103,8 +107,10 @@ void Unpool3d(const Context& dev_ctx,
   const int output_depth = static_cast<int>(out->dims()[2]);
   const int output_height = static_cast<int>(out->dims()[3]);
   const int output_width = static_cast<int>(out->dims()[4]);
-  int input_feasize = input_depth * input_height * input_width;
-  int output_feasize = output_depth * output_height * output_width;
+  int64_t input_feasize =
+      static_cast<int64_t>(input_depth) * input_height * input_width;
+  int64_t output_feasize =
+      static_cast<int64_t>(output_depth) * output_height * output_width;
   const T* input_data = x.data<T>();
   const IndT* indices_data = indices.data<IndT>();
   for (int b = 0; b < batch_size; ++b) {
@@ -142,8 +148,12 @@ void Unpool3dKernel(const Context& dev_ctx,
                     const std::vector<int>& output_size UNUSED,
                     const std::string& data_format UNUSED,
                     DenseTensor* out) {
+  if (out && out->numel() == 0) {
+    dev_ctx.template Alloc<T>(out);
+    return;
+  }
   const auto& indices_type = indices.dtype();
-  if (indices_type == phi::DataType::INT32) {
+  if (indices_type == DataType::INT32) {
     Unpool3d<T, int, Context>(dev_ctx, x, indices, out);
   } else {
     Unpool3d<T, int64_t, Context>(dev_ctx, x, indices, out);

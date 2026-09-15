@@ -16,10 +16,13 @@
 
 #include "paddle/phi/common/amp_type_traits.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/elementwise_base.h"
 #include "paddle/phi/kernels/funcs/p_norm_utils.h"
 #include "paddle/phi/kernels/funcs/reduce_function.h"
 #include "paddle/phi/kernels/gpu/reduce.h"
+
+#include "paddle/phi/kernels/activation_kernel.h"
 
 namespace phi {
 template <typename T>
@@ -40,13 +43,13 @@ struct AbsFunctor {
 
 template <typename T>
 struct UnsignedPowFunctor {
-  HOSTDEVICE explicit inline UnsignedPowFunctor(float porder) {
+  HOSTDEVICE explicit inline UnsignedPowFunctor(double porder) {
     this->porder = porder;
   }
   HOSTDEVICE inline T operator()(const T x) const {
     return static_cast<T>(inline_pow(inline_abs(x), static_cast<T>(porder)));
   }
-  float porder;
+  double porder;
 };
 
 #ifndef _WIN32
@@ -79,7 +82,7 @@ struct FabsCubicFunctor {
 template <typename T, typename Context>
 void PNormKernel(const Context& dev_ctx,
                  const DenseTensor& x,
-                 float porder,
+                 double porder,
                  int axis,
                  float epsilon,
                  bool keepdim,
@@ -93,59 +96,47 @@ void PNormKernel(const Context& dev_ctx,
   std::vector<int> reduce_axis =
       funcs::details::GetReduceDim(axis_dims, xdim.size(), asvector);
 
-  for (int i = 0; i < xdim.size(); i++) {
-    PADDLE_ENFORCE_LT(0,
-                      xdim[i],
-                      errors::InvalidArgument(
-                          "The dims of Input(X) should be greater than 0."));
+  if (x.numel() == 0) {
+    if (out->numel() > 0) {
+      std::vector<int64_t> vec_dims = vectorize(out->dims());
+      Full<T, Context>(dev_ctx, IntArray(vec_dims), static_cast<T>(0), out);
+    }
+    return;
   }
 
-  using MT = typename dtype::MPTypeTrait<T>::Type;
   if (porder == 0) {
-    phi::funcs::ReduceKernel<T, T, kps::AddFunctor, NonzeroFunctor<T>>(
-        dev_ctx, *in_x, out_norm, NonzeroFunctor<T>(), reduce_axis);
+    funcs::ReduceGpuKernel<T, T, kps::L0NormOps>(
+        dev_ctx, *in_x, out_norm, reduce_axis);
   } else if (porder == INFINITY) {
-    phi::funcs::ReduceKernel<T, T, kps::MaxFunctor, AbsFunctor<T>>(
-        dev_ctx, *in_x, out_norm, AbsFunctor<T>(), reduce_axis);
+    funcs::ReduceGpuKernel<T, T, kps::AbsMaxOps>(
+        dev_ctx, *in_x, out_norm, reduce_axis);
   } else if (porder == -INFINITY) {
-    phi::funcs::ReduceKernel<T, T, kps::MinFunctor, AbsFunctor<T>>(
-        dev_ctx, *in_x, out_norm, AbsFunctor<T>(), reduce_axis);
+    funcs::ReduceGpuKernel<T, T, kps::AbsMinOps>(
+        dev_ctx, *in_x, out_norm, reduce_axis);
   } else {
 #ifdef _WIN32
-    phi::funcs::ReduceKernel<T, T, kps::AddFunctor, UnsignedPowFunctor<T>>(
+    funcs::ReduceKernel<T, T, kps::AddFunctor, UnsignedPowFunctor<T>>(
         dev_ctx, *in_x, out_norm, UnsignedPowFunctor<T>(porder), reduce_axis);
 
     const DenseTensor* tmp_norm = out_norm;
     std::vector<const DenseTensor*> ins = {tmp_norm};
     std::vector<DenseTensor*> outs = {out_norm};
-    phi::funcs::ElementwiseKernel<T>(
+    funcs::ElementwiseKernel<T>(
         dev_ctx, ins, &outs, UnsignedPowFunctor<T>(1. / porder));
 #else
     if (porder == 1.0) {
       // fast 1-norm
-      phi::funcs::ReduceKernel<T, T, kps::AddFunctor, FabsFunctor<T>>(
-          dev_ctx, *in_x, out_norm, FabsFunctor<T>(), reduce_axis);
+      funcs::ReduceGpuKernel<T, T, kps::L1NormOps>(
+          dev_ctx, *in_x, out_norm, reduce_axis);
     } else if (porder == 2.0) {
       // fast 2-norm
-      phi::funcs::ReduceKernel<T, T, kps::AddFunctor, SquareFunctor<T>>(
-          dev_ctx, *in_x, out_norm, SquareFunctor<T>(), reduce_axis);
-    } else if (porder == 3.0) {
-      // fast 3-norm
-      phi::funcs::ReduceKernel<T, T, kps::AddFunctor, FabsCubicFunctor<T>>(
-          dev_ctx, *in_x, out_norm, FabsCubicFunctor<T>(), reduce_axis);
+      funcs::ReduceGpuKernel<T, T, kps::L2NormOps>(
+          dev_ctx, *in_x, out_norm, reduce_axis);
     } else {
       // vanilla norm
-      phi::funcs::ReduceKernel<T, T, kps::AddFunctor, UnsignedPowFunctor<T>>(
-          dev_ctx, *in_x, out_norm, UnsignedPowFunctor<T>(porder), reduce_axis);
-    }
-
-    if (porder != 1.0) {
-      // save computation when porder is 1.0
-      const DenseTensor* tmp_norm = out_norm;
-      std::vector<const DenseTensor*> ins = {tmp_norm};
-      std::vector<DenseTensor*> outs = {out_norm};
-      phi::funcs::ElementwiseKernel<T>(
-          dev_ctx, ins, &outs, UnsignedPowFunctor<T>(1. / porder));
+      using MT = typename MPTypeTrait<T>::Type;
+      funcs::ReduceGpuKernel<T, T, kps::GenericPNormOps>(
+          dev_ctx, *in_x, out_norm, reduce_axis, porder);
     }
 #endif
   }
@@ -158,5 +149,5 @@ PD_REGISTER_KERNEL(p_norm,
                    phi::PNormKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}

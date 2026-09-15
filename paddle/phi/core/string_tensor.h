@@ -30,8 +30,9 @@ class pstring;
 /// metadata are set unchanged.
 class StringTensorUtils;
 
-class StringTensor : public TensorBase,
-                     public TypeInfoTraits<TensorBase, StringTensor> {
+class PADDLE_API StringTensor
+    : public TensorBase,
+      public TypeInfoTraits<TensorBase, StringTensor> {
  public:
   /// \brief Construct a string tensor and allocate space.
   /// \param a The allocator used to allocate space.
@@ -43,7 +44,7 @@ class StringTensor : public TensorBase,
   /// \param meta The meta data of string tensor.
   StringTensor(Allocator* a, StringTensorMeta&& meta);
 
-  StringTensor(const std::shared_ptr<phi::Allocation>& holder,
+  StringTensor(const std::shared_ptr<Allocation>& holder,
                const StringTensorMeta& meta);
 
   /// \brief Because string tensor is a resource handle, we provide a default
@@ -111,6 +112,12 @@ class StringTensor : public TensorBase,
 
   StringTensor& Resize(const DDim& dims);
 
+  StringTensor& Resize(const std::initializer_list<int64_t> dims);
+
+  StringTensor& Resize(const std::vector<int64_t>& dims);
+
+  StringTensor& Resize(const std::vector<int>& dims);
+
   /// \brief Returns the actual storage size occupied by tensor, may be larger
   /// than its shape dims.
   /// \return The actual storage size occupied by tensor.
@@ -129,15 +136,14 @@ class StringTensor : public TensorBase,
                      DataType dtype,
                      size_t requested_size = 0,
                      bool fake_alloc = false) override;
-  dtype::pstring* mutable_data(const phi::Place& place,
-                               size_t requested_size = 0);
+  dtype::pstring* mutable_data(const Place& place, size_t requested_size = 0);
 
  private:
   friend class StringTensorUtils;
 
  private:
   StringTensorMeta meta_;
-  std::shared_ptr<phi::Allocation> holder_;
+  std::shared_ptr<Allocation> holder_;
   void init_holder();
 };
 

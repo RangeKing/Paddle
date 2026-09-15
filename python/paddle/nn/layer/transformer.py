@@ -70,9 +70,9 @@ def _convert_param_attr_to_list(param_attr, n):
         list: A list composed of each including cell's `param_attr`.
     """
     if isinstance(param_attr, (list, tuple)):
-        assert (
-            len(param_attr) == n
-        ), f"length of param_attr should be {n} when it is a list/tuple"
+        assert len(param_attr) == n, (
+            f"length of param_attr should be {n} when it is a list/tuple"
+        )
         param_attrs = []
         for attr in param_attr:
             if isinstance(attr, bool):
@@ -131,7 +131,7 @@ def _convert_attention_mask(attn_mask: Tensor, dtype: DTypeLike) -> Tensor:
 
 class MultiHeadAttention(Layer):
     """
-    Attention mapps queries and a set of key-value pairs to outputs, and
+    Attention maps queries and a set of key-value pairs to outputs, and
     Multi-Head Attention performs multiple parallel attention to jointly attending
     to information from different representation subspaces.
 
@@ -159,7 +159,7 @@ class MultiHeadAttention(Layer):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -170,7 +170,7 @@ class MultiHeadAttention(Layer):
             >>> multi_head_attn = paddle.nn.MultiHeadAttention(128, 2)
             >>> output = multi_head_attn(query, None, None, attn_mask=attn_mask)
             >>> print(output.shape)
-            [2, 4, 128]
+            paddle.Size([2, 4, 128])
     """
 
     Cache = collections.namedtuple("Cache", ["k", "v"])
@@ -198,12 +198,10 @@ class MultiHeadAttention(Layer):
         super().__init__()
 
         assert embed_dim > 0, (
-            "Expected embed_dim to be greater than 0, "
-            f"but received {embed_dim}"
+            f"Expected embed_dim to be greater than 0, but received {embed_dim}"
         )
         assert num_heads > 0, (
-            "Expected num_heads to be greater than 0, "
-            f"but received {num_heads}"
+            f"Expected num_heads to be greater than 0, but received {num_heads}"
         )
 
         self.embed_dim = embed_dim
@@ -214,9 +212,9 @@ class MultiHeadAttention(Layer):
         self.need_weights = need_weights
 
         self.head_dim = embed_dim // num_heads
-        assert (
-            self.head_dim * num_heads == self.embed_dim
-        ), "embed_dim must be divisible by num_heads"
+        assert self.head_dim * num_heads == self.embed_dim, (
+            "embed_dim must be divisible by num_heads"
+        )
 
         self.q_proj = Linear(
             embed_dim, embed_dim, weight_attr, bias_attr=bias_attr
@@ -569,9 +567,9 @@ class TransformerEncoderLayer(Layer):
     """
     TransformerEncoderLayer is composed of two sub-layers which are self (multi-head)
     attention and feedforward network. Before and after each sub-layer, pre-process
-    and post-precess would be applied on the input and output accordingly. If
-    `normalize_before` is True, pre-process is layer normalization and post-precess
-    includes dropout, residual connection. Otherwise, no pre-process and post-precess
+    and post-process would be applied on the input and output accordingly. If
+    `normalize_before` is True, pre-process is layer normalization and post-process
+    includes dropout, residual connection. Otherwise, no pre-process and post-process
     includes dropout, residual connection, layer normalization.
 
     Parameters:
@@ -579,7 +577,7 @@ class TransformerEncoderLayer(Layer):
         nhead (int): The number of heads in multi-head attention(MHA).
         dim_feedforward (int): The hidden layer size in the feedforward network(FFN).
         dropout (float, optional): The dropout probability used in pre-process
-            and post-precess of MHA and FFN sub-layer. Default 0.1
+            and post-process of MHA and FFN sub-layer. Default 0.1
         activation (str, optional): The activation function in the feedforward
             network. Default relu.
         attn_dropout (float, optional): The dropout probability used
@@ -589,8 +587,8 @@ class TransformerEncoderLayer(Layer):
             activation.  If None, use the value of `dropout`. Default None
         normalize_before (bool, optional): Indicate whether to put layer normalization
             into preprocessing of MHA and FFN sub-layers. If True, pre-process is layer
-            normalization and post-precess includes dropout, residual connection.
-            Otherwise, no pre-process and post-precess includes dropout, residual
+            normalization and post-process includes dropout, residual connection.
+            Otherwise, no pre-process and post-process includes dropout, residual
             connection, layer normalization. Default False
         weight_attr(ParamAttr|list|tuple, optional): To specify the weight parameter property.
             If it is a list/tuple, `weight_attr[0]` would be used as `weight_attr` for
@@ -610,7 +608,7 @@ class TransformerEncoderLayer(Layer):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.nn import TransformerEncoderLayer
@@ -622,7 +620,7 @@ class TransformerEncoderLayer(Layer):
             >>> encoder_layer = TransformerEncoderLayer(128, 2, 512)
             >>> enc_output = encoder_layer(enc_input, attn_mask)
             >>> print(enc_output.shape)
-            [2, 4, 128]
+            paddle.Size([2, 4, 128])
     """
 
     activation: Layer
@@ -649,10 +647,10 @@ class TransformerEncoderLayer(Layer):
         super().__init__()
 
         assert d_model > 0, (
-            "Expected d_model to be greater than 0, " f"but received {d_model}"
+            f"Expected d_model to be greater than 0, but received {d_model}"
         )
         assert nhead > 0, (
-            "Expected nhead to be greater than 0, " f"but received {nhead}"
+            f"Expected nhead to be greater than 0, but received {nhead}"
         )
         assert dim_feedforward > 0, (
             "Expected dim_feedforward to be greater than 0, "
@@ -797,10 +795,13 @@ class TransformerEncoder(Layer):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
-            >>> from paddle.nn import TransformerEncoderLayer, TransformerEncoder
+            >>> from paddle.nn import (
+            ...     TransformerEncoderLayer,
+            ...     TransformerEncoder,
+            ... )
 
             >>> # encoder input: [batch_size, src_len, d_model]
             >>> enc_input = paddle.rand((2, 4, 128))
@@ -810,7 +811,7 @@ class TransformerEncoder(Layer):
             >>> encoder = TransformerEncoder(encoder_layer, 2)
             >>> enc_output = encoder(enc_input, attn_mask)
             >>> print(enc_output.shape)
-            [2, 4, 128]
+            paddle.Size([2, 4, 128])
     """
 
     num_layers: int
@@ -929,10 +930,10 @@ class TransformerDecoderLayer(Layer):
     """
     TransformerDecoderLayer is composed of three sub-layers which are decoder
     self (multi-head) attention, decoder-encoder cross attention and feedforward
-    network. Before and after each sub-layer, pre-process and post-precess would
+    network. Before and after each sub-layer, pre-process and post-process would
     be applied on the input and output accordingly. If `normalize_before` is True,
-    pre-process is layer normalization and post-precess includes dropout, residual
-    connection. Otherwise, no pre-process and post-precess includes dropout, residual
+    pre-process is layer normalization and post-process includes dropout, residual
+    connection. Otherwise, no pre-process and post-process includes dropout, residual
     connection, layer normalization.
 
     Parameters:
@@ -940,7 +941,7 @@ class TransformerDecoderLayer(Layer):
         nhead (int): The number of heads in multi-head attention(MHA).
         dim_feedforward (int): The hidden layer size in the feedforward network(FFN).
         dropout (float, optional): The dropout probability used in pre-process
-            and post-precess of MHA and FFN sub-layer. Default 0.1
+            and post-process of MHA and FFN sub-layer. Default 0.1
         activation (str, optional): The activation function in the feedforward
             network. Default relu.
         attn_dropout (float, optional): The dropout probability used
@@ -950,8 +951,8 @@ class TransformerDecoderLayer(Layer):
             activation.  If None, use the value of `dropout`. Default None
         normalize_before (bool, optional): Indicate whether to put layer normalization
             into preprocessing of MHA and FFN sub-layers. If True, pre-process is layer
-            normalization and post-precess includes dropout, residual connection.
-            Otherwise, no pre-process and post-precess includes dropout, residual
+            normalization and post-process includes dropout, residual connection.
+            Otherwise, no pre-process and post-process includes dropout, residual
             connection, layer normalization. Default False
         weight_attr (ParamAttr|list|tuple|None, optional): To specify the weight parameter property.
             If it is a list/tuple, `weight_attr[0]` would be used as `weight_attr` for
@@ -974,7 +975,7 @@ class TransformerDecoderLayer(Layer):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.nn import TransformerDecoderLayer
@@ -988,12 +989,9 @@ class TransformerDecoderLayer(Layer):
             >>> # cross attention mask: [batch_size, n_head, tgt_len, src_len]
             >>> cross_attn_mask = paddle.rand((2, 2, 4, 6))
             >>> decoder_layer = TransformerDecoderLayer(128, 2, 512)
-            >>> output = decoder_layer(dec_input,
-            ...                        enc_output,
-            ...                        self_attn_mask,
-            ...                        cross_attn_mask)
+            >>> output = decoder_layer(dec_input, enc_output, self_attn_mask, cross_attn_mask)
             >>> print(output.shape)
-            [2, 4, 128]
+            paddle.Size([2, 4, 128])
     """
 
     normalize_before: bool
@@ -1020,10 +1018,10 @@ class TransformerDecoderLayer(Layer):
         super().__init__()
 
         assert d_model > 0, (
-            "Expected d_model to be greater than 0, " f"but received {d_model}"
+            f"Expected d_model to be greater than 0, but received {d_model}"
         )
         assert nhead > 0, (
-            "Expected nhead to be greater than 0, " f"but received {nhead}"
+            f"Expected nhead to be greater than 0, but received {nhead}"
         )
         assert dim_feedforward > 0, (
             "Expected dim_feedforward to be greater than 0, "
@@ -1224,10 +1222,13 @@ class TransformerDecoder(Layer):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
-            >>> from paddle.nn import TransformerDecoderLayer, TransformerDecoder
+            >>> from paddle.nn import (
+            ...     TransformerDecoderLayer,
+            ...     TransformerDecoder,
+            ... )
 
             >>> # decoder input: [batch_size, tgt_len, d_model]
             >>> dec_input = paddle.rand((2, 4, 128))
@@ -1239,12 +1240,9 @@ class TransformerDecoder(Layer):
             >>> cross_attn_mask = paddle.rand((2, 2, 4, 6))
             >>> decoder_layer = TransformerDecoderLayer(128, 2, 512)
             >>> decoder = TransformerDecoder(decoder_layer, 2)
-            >>> output = decoder(dec_input,
-            ...                  enc_output,
-            ...                  self_attn_mask,
-            ...                  cross_attn_mask)
+            >>> output = decoder(dec_input, enc_output, self_attn_mask, cross_attn_mask)
             >>> print(output.shape)
-            [2, 4, 128]
+            paddle.Size([2, 4, 128])
     """
 
     num_layers: int
@@ -1440,7 +1438,7 @@ class Transformer(Layer):
 
     Users can configure the model architecture with corresponding parameters.
     Note the usage of `normalize_before` representing where to apply layer
-    normalization (in pre-process or post-precess of multi-head attention or FFN),
+    normalization (in pre-process or post-process of multi-head attention or FFN),
     and some transformer like models are different on this, such as
     `BERT <https://arxiv.org/abs/1810.04805>`_ and `GPT2 <https://d4mucfpksywv.cloudfront.net/better-language-models/language-models.pdf>`_ .
     The default architecture here places layer normalization in post-process and
@@ -1454,7 +1452,7 @@ class Transformer(Layer):
         num_decoder_layers (int, optional): The number of layers in decoder. Default 6
         dim_feedforward (int, optional): The hidden layer size in the feedforward network(FFN). Default 2048
         dropout (float, optional): The dropout probability used in pre-process
-            and post-precess of MHA and FFN sub-layer. Default 0.1
+            and post-process of MHA and FFN sub-layer. Default 0.1
         activation (str, optional): The activation function in the feedforward
             network. Default relu.
         attn_dropout (float, optional): The dropout probability used
@@ -1464,8 +1462,8 @@ class Transformer(Layer):
             activation.  If None, use the value of `dropout`. Default None
         normalize_before (bool, optional): Indicate whether to put layer normalization
             into preprocessing of MHA and FFN sub-layers. If True, pre-process is layer
-            normalization and post-precess includes dropout, residual connection.
-            Otherwise, no pre-process and post-precess includes dropout, residual
+            normalization and post-process includes dropout, residual connection.
+            Otherwise, no pre-process and post-process includes dropout, residual
             connection, layer normalization. Default False
         weight_attr(ParamAttr|list|tuple|None, optional): To specify the weight parameter property.
             If it is a list/tuple, the length of `weight_attr` could be 1, 2 or 3. If it is 3,
@@ -1500,7 +1498,7 @@ class Transformer(Layer):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.nn import Transformer
@@ -1516,13 +1514,15 @@ class Transformer(Layer):
             >>> # memory_mask: [batch_size, n_head, tgt_len, src_len]
             >>> cross_attn_mask = paddle.rand((2, 2, 6, 4))
             >>> transformer = Transformer(128, 2, 4, 4, 512)
-            >>> output = transformer(enc_input,
-            ...                      dec_input,
-            ...                      enc_self_attn_mask,
-            ...                      dec_self_attn_mask,
-            ...                      cross_attn_mask)
+            >>> output = transformer(
+            ...     enc_input,
+            ...     dec_input,
+            ...     enc_self_attn_mask,
+            ...     dec_self_attn_mask,
+            ...     cross_attn_mask,
+            ... )
             >>> print(output.shape)
-            [2, 6, 128]
+            paddle.Size([2, 6, 128])
     """
 
     encoder: Layer
@@ -1550,10 +1550,10 @@ class Transformer(Layer):
         super().__init__()
 
         assert d_model > 0, (
-            "Expected d_model to be greater than 0, " f"but received {d_model}"
+            f"Expected d_model to be greater than 0, but received {d_model}"
         )
         assert nhead > 0, (
-            "Expected nhead to be greater than 0, " f"but received {nhead}"
+            f"Expected nhead to be greater than 0, but received {nhead}"
         )
         assert dim_feedforward > 0, (
             "Expected dim_feedforward to be greater than 0, "
@@ -1722,14 +1722,17 @@ class Transformer(Layer):
             Tensor, generated square mask according to the given length. The shape is [length, length].
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> from paddle.nn.layer.transformer import Transformer
                 >>> length = 5
                 >>> d_model, n_head, dim_feedforward = 8, 4, 64
                 >>> transformer_paddle = Transformer(
-                ...     d_model, n_head, dim_feedforward=dim_feedforward)
+                ...     d_model,
+                ...     n_head,
+                ...     dim_feedforward=dim_feedforward,
+                ... )
                 >>> mask = transformer_paddle.generate_square_subsequent_mask(length)
                 >>> print(mask)
                 Tensor(shape=[5, 5], dtype=float32, place=Place(cpu), stop_gradient=True,

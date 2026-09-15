@@ -39,7 +39,7 @@ class WriteToArrayOp : public ArrayOp {
                const phi::Place &place) const override {
     auto *x = scope.FindVar(Input("X"));
     if (x == nullptr) return;
-    auto &x_tensor = x->Get<phi::DenseTensor>();
+    auto &x_tensor = x->Get<DenseTensor>();
     size_t offset = GetOffset(scope, place);
     auto *out = scope.FindVar(Output("Out"))->GetMutable<phi::TensorArray>();
     if (offset >= out->size()) {
@@ -75,7 +75,7 @@ class WriteToArrayOpProtoMaker : public framework::OpProtoAndCheckerMaker {
     AddComment(R"DOC(
 WriteToArray Operator.
 
-This operator writes a phi::DenseTensor to a phi::DenseTensor array.
+This operator writes a DenseTensor to a DenseTensor array.
 
 Assume $T$ is phi::DenseTensor, $i$ is the subscript of the array, and $A$ is the array. The
 equation is
@@ -157,17 +157,17 @@ class ReadFromArrayOp : public ArrayOp {
             "Output(Out) of ReadFromArrayOp is not found."));
     size_t offset = GetOffset(scope, place);
     if (offset < x_array.size()) {
-      auto *out_tensor = out->GetMutable<phi::DenseTensor>();
+      auto *out_tensor = out->GetMutable<DenseTensor>();
       phi::DeviceContextPool &pool = phi::DeviceContextPool::Instance();
       auto &dev_ctx = *pool.Get(place);
       framework::TensorCopy(x_array[offset], place, dev_ctx, out_tensor);
       out_tensor->set_lod(x_array[offset].lod());
     } else {
       VLOG(10) << "offset " << offset << " >= " << x_array.size();
-      // set grad of the writed tensor to 0 when used as write_to_array_grad
+      // set grad of the written tensor to 0 when used as write_to_array_grad
       auto *fw_var = scope.FindVar(Input("X_W"));
       if (fw_var == nullptr) return;
-      auto &fw_var_tensor = fw_var->Get<phi::DenseTensor>();
+      auto &fw_var_tensor = fw_var->Get<DenseTensor>();
 
       framework::AttributeMap attrs;
       attrs["dtype"] = framework::TransToProtoVarType(fw_var_tensor.dtype());
@@ -177,7 +177,7 @@ class ReadFromArrayOp : public ArrayOp {
       auto zero_op = framework::OpRegistry::CreateOp(
           "fill_constant", {}, {{"Out", {Output("Out")}}}, attrs);
       zero_op->Run(scope, place);
-      auto *out_tensor = out->GetMutable<phi::DenseTensor>();
+      auto *out_tensor = out->GetMutable<DenseTensor>();
       out_tensor->set_lod(fw_var_tensor.lod());
     }
   }
@@ -191,14 +191,14 @@ class ReadFromArrayProtoMaker : public framework::OpProtoAndCheckerMaker {
              "(Tensor) the subscript index in tensor array. The number of "
              "element should be 1");
     AddInput("X_W",
-             "(Tensor) the writed tensor when used as the grad op of "
+             "(Tensor) the written tensor when used as the grad op of "
              "write_to_array. We use this to fill zero gradient.")
         .AsDispensable();
     AddOutput("Out", "(phi::DenseTensor) the tensor will be read from.");
     AddComment(R"DOC(
 ReadFromArray Operator.
 
-Read a phi::DenseTensor from a phi::DenseTensor Array.
+Read a DenseTensor from a DenseTensor Array.
 
 Assume $T$ is phi::DenseTensor, $i$ is the subscript of the array, and $A$ is the array. The
 equation is

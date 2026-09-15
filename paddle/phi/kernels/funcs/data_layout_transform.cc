@@ -19,14 +19,10 @@
 #include "paddle/common/layout.h"
 #include "paddle/phi/backends/context_pool.h"
 #include "paddle/phi/backends/onednn/onednn_context.h"
-#include "paddle/phi/common/bfloat16.h"
-#include "paddle/phi/common/place.h"
-#include "paddle/phi/core/dense_tensor.h"
-
-#ifdef PADDLE_WITH_DNNL
 #include "paddle/phi/backends/onednn/onednn_helper.h"
 #include "paddle/phi/backends/onednn/onednn_reuse.h"
-#endif
+#include "paddle/phi/common/place.h"
+#include "paddle/phi/core/dense_tensor.h"
 
 namespace phi::funcs {
 
@@ -54,9 +50,9 @@ void* GetDataFromTensor(const DenseTensor& tensor,
 // reference dense tensor and a target layout. For 0-D tensor case, we will
 // construct a 1-D memory descriptor with shape [1], since oneDNN didn't support
 // 0-D now.
-dnnl::memory::desc make_memory_desc(const phi::DenseTensor& ref_tensor,
-                                    phi::DataLayout target_layout) {
-  auto ref_dims = common::vectorize<int64_t>(ref_tensor.dims());
+dnnl::memory::desc make_memory_desc(const DenseTensor& ref_tensor,
+                                    DataLayout target_layout) {
+  auto ref_dims = vectorize<int64_t>(ref_tensor.dims());
   auto ref_type = ToOneDNNDataType(ref_tensor.dtype());
   PADDLE_ENFORCE_NE(ref_type,
                     OneDNNDataType::undef,
@@ -83,11 +79,11 @@ void TransDataLayoutFromOneDNN(DataLayout in_layout,
   auto& pool = DeviceContextPool::Instance();
   auto* dev_ctx = dynamic_cast<OneDNNContext*>(pool.Get(place));
   auto& cpu_engine = dev_ctx->GetEngine();
-  auto in_dims = common::vectorize<int64_t>(in.dims());
+  auto in_dims = vectorize<int64_t>(in.dims());
 
   auto md_dims = !in_dims.empty() ? in_dims : std::vector<int64_t>{1};
   const auto src_mem_desc =
-      !in_dims.empty() ? in.mem_desc()
+      !in_dims.empty() ? phi::funcs::GetOneDNNMemDesc(in)
                        : dnnl::memory::desc(md_dims,
                                             ToOneDNNDataType(in.dtype()),
                                             dnnl::memory::format_tag::x);
@@ -95,21 +91,23 @@ void TransDataLayoutFromOneDNN(DataLayout in_layout,
   dnnl::memory::desc out_mem_desc = make_memory_desc(in, out_layout);
 
   // output tensor has the same dims as input. Reorder don't change dims
-  out->set_mem_desc(out_mem_desc);
+  phi::funcs::SetOneDNNMemDesc(out, out_mem_desc);
   out->Resize(in.dims());
 
   // Note(0x45f): Using initialized() to support slice Tensors
   // with shapes like [0, 0, 0].
-  if (in.initialized() && ((in.mem_desc() != out->mem_desc()) || always_copy)) {
-    auto in_tz = common::vectorize<int64_t>(in.dims());
+  if (in.initialized() && ((phi::funcs::GetOneDNNMemDesc(in) !=
+                            phi::funcs::GetOneDNNMemDesc(*out)) ||
+                           always_copy)) {
+    auto in_tz = vectorize<int64_t>(in.dims());
     auto in_type = ToOneDNNDataType(in.dtype());
     void* in_data = GetDataFromTensor(in, in_type);
 
     ReorderOneDNNHandler handler(in_tz, in.dtype(), in_type, cpu_engine);
 
     auto reorder_src_memory_p = handler.AcquireSrcMemory(src_mem_desc, in_data);
-    auto reorder_dst_memory_p =
-        handler.AcquireDstMemory(out, out->mem_desc(), place);
+    auto reorder_dst_memory_p = handler.AcquireDstMemory(
+        out, phi::funcs::GetOneDNNMemDesc(*out), place);
     auto reorder_p =
         handler.AcquireReorder(reorder_dst_memory_p, reorder_src_memory_p);
 
@@ -123,7 +121,7 @@ void TransDataLayoutFromOneDNN(DataLayout in_layout,
   // As MKL-DNN description was in NCHW and paddle is expecting NHWC
   MatchShapeToLayout(out, in_layout, out_layout);
 
-  out->set_layout(DataLayout::kNCHW);
+  out->set_layout(DataLayout::NCHW);
   VLOG(10) << "out->layout: " << out->layout() << " in->dims: " << in.dims()
            << " out->dims: " << out->dims();
 }

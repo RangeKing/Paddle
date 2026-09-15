@@ -17,47 +17,56 @@
 #include "paddle/phi/backends/cpu/cpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/core/tensor_utils.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/gather.h"
 #include "paddle/phi/kernels/funcs/scatter.h"
-
 namespace phi {
 
 template <typename T, typename Context>
-void ScatterGradKernel(const Context &ctx,
+void ScatterGradKernel(const Context &dev_ctx,
                        const DenseTensor &index,
                        const DenseTensor &updates UNUSED,
                        const DenseTensor &out_grad,
                        bool overwrite UNUSED,
                        DenseTensor *x_grad,
                        DenseTensor *updates_grad) {
+  if (out_grad.numel() == 0) {
+    if (x_grad) {
+      dev_ctx.template Alloc<T>(x_grad);
+    }
+    if (updates_grad) {
+      Full<T, Context>(dev_ctx, updates_grad->dims(), 0, updates_grad);
+    }
+    return;
+  }
   const auto &index_type = index.dtype();
   bool index_type_match =
-      index_type == phi::DataType::INT32 || index_type == phi::DataType::INT64;
+      index_type == DataType::INT32 || index_type == DataType::INT64;
   PADDLE_ENFORCE_EQ(index_type_match,
                     true,
                     common::errors::InvalidArgument(
                         "scatter_op index holds the wrong type, it holds [%s],"
                         "but desires to be [%s] or [%s]",
                         index_type,
-                        phi::DataType::INT32,
-                        phi::DataType::INT64));
+                        DataType::INT32,
+                        DataType::INT64));
 
   if (x_grad) {
-    phi::Copy(ctx, out_grad, ctx.GetPlace(), false, x_grad);
-    if (index_type == phi::DataType::INT32) {
-      phi::funcs::CPUScatterGradForX<T, int32_t>(ctx, index, x_grad);
+    Copy(dev_ctx, out_grad, dev_ctx.GetPlace(), false, x_grad);
+    if (index_type == DataType::INT32) {
+      funcs::CPUScatterGradForX<T, int32_t>(dev_ctx, index, x_grad);
     } else {
-      phi::funcs::CPUScatterGradForX<T, int64_t>(ctx, index, x_grad);
+      funcs::CPUScatterGradForX<T, int64_t>(dev_ctx, index, x_grad);
     }
   }
 
   if (updates_grad) {
-    ctx.template Alloc<T>(updates_grad);
+    dev_ctx.template Alloc<T>(updates_grad);
     // Gradient by Gather: dUpdates = dO[Ids]
-    if (index_type == phi::DataType::INT32) {
-      phi::funcs::CPUGather<T, int32_t>(ctx, out_grad, index, updates_grad);
+    if (index_type == DataType::INT32) {
+      funcs::CPUGather<T, int32_t>(dev_ctx, out_grad, index, updates_grad);
     } else {
-      phi::funcs::CPUGather<T, int64_t>(ctx, out_grad, index, updates_grad);
+      funcs::CPUGather<T, int64_t>(dev_ctx, out_grad, index, updates_grad);
     }
   }
 }

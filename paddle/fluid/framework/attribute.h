@@ -106,7 +106,7 @@ struct ExtractAttribute<int64_t> {
       int val = PADDLE_GET_CONST(int, attr);
       attr = static_cast<int64_t>(val);
     } else if (attr.type() == typeid(float)) {  // NOLINT
-      int val = PADDLE_GET_CONST(float, attr);
+      float val = PADDLE_GET_CONST(float, attr);
       attr = static_cast<int64_t>(val);
     }
     int64_t* attr_value = nullptr;
@@ -166,6 +166,9 @@ struct ExtractAttribute<float> {
       attr = static_cast<float>(val);
     } else if (attr.type() == typeid(int64_t)) {  // NOLINT
       int64_t val = PADDLE_GET_CONST(int64_t, attr);
+      attr = static_cast<float>(val);
+    } else if (attr.type() == typeid(double)) {  // NOLINT
+      double val = PADDLE_GET_CONST(double, attr);
       attr = static_cast<float>(val);
     }
     float* attr_value = nullptr;
@@ -349,13 +352,14 @@ class AttrReader {
   const AttributeMap* default_attrs_;
 };
 
-paddle::experimental::Scalar MakeScalarFromProto(const proto::Scalar& v);
+PADDLE_API paddle::experimental::Scalar MakeScalarFromProto(
+    const proto::Scalar& v);
 TEST_API proto::Scalar MakeScalarProto(const paddle::experimental::Scalar& v);
 TEST_API paddle::experimental::Scalar MakeScalarFromAttribute(
     const Attribute& v);
 TEST_API std::vector<paddle::experimental::Scalar> MakeScalarsFromAttribute(
     const Attribute& v);
-void CanonicalizeScalarAttrs(const proto::OpProto& op_proto,
-                             AttributeMap* attrs);
+PADDLE_API void CanonicalizeScalarAttrs(const proto::OpProto& op_proto,
+                                        AttributeMap* attrs);
 }  // namespace framework
 }  // namespace paddle

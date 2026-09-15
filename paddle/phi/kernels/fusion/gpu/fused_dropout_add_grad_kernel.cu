@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "paddle/common/enforce.h"
 #include "paddle/phi/core/dense_tensor.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/fusion/gpu/fused_dropout_add_utils.h"
@@ -77,7 +78,7 @@ struct NoMaskBwFunctor {
                                     const T2* rand,
                                     int num) const {
     static constexpr int kCount =
-        phi::funcs::uniform_distribution<T2>::kReturnsCount;
+        funcs::uniform_distribution<T2>::kReturnsCount;
 #pragma unroll
     for (int i = 0; i < kCount; i++) {
       dst[i + kCount] = src_val[i];
@@ -102,7 +103,7 @@ __global__ void VectorizedDropoutBackward(
     Functor functor) {
   size_t idx = static_cast<size_t>(BLOCK_ID_X * BLOCK_NUM_X);
   static constexpr int kCount =
-      phi::funcs::uniform_distribution<float>::kReturnsCount;
+      funcs::uniform_distribution<float>::kReturnsCount;
   size_t stride = BLOCK_NUM_X * GRID_NUM_X * kCount;
 #ifdef PADDLE_WITH_HIP
   hiprandStatePhilox4_32_10_t state;
@@ -117,7 +118,7 @@ __global__ void VectorizedDropoutBackward(
   float rands[kCount];
   T x_y[kCount * 2];
 
-  using Rand = phi::funcs::uniform_distribution<float>;
+  using Rand = funcs::uniform_distribution<float>;
   using Cast = kps::IdentityFunctor<T>;
 
   int deal_size = BLOCK_NUM_X * kCount;
@@ -194,8 +195,13 @@ void FusedDropoutAddGradKernel(const Context& dev_ctx,
       return;
     }
     auto random_prop = GetRandomCudaProp(numel, dev_ctx);
-    size_t grid_size = random_prop[0];
-    size_t block_size = random_prop[1];
+    size_t grid_size_64 = random_prop[0];
+    size_t block_size_64 = random_prop[1];
+    PADDLE_ENFORCE_LE_UINT32_MAX(grid_size_64, "fused_dropout_add_grad grid.x");
+    PADDLE_ENFORCE_LE_UINT32_MAX(block_size_64,
+                                 "fused_dropout_add_grad block.x");
+    uint32_t grid_size = static_cast<uint32_t>(grid_size_64);
+    uint32_t block_size = static_cast<uint32_t>(block_size_64);
     size_t offset = random_prop[2];
     size_t main_offset = random_prop[3];
     auto functor = upscale_in_train
@@ -204,9 +210,9 @@ void FusedDropoutAddGradKernel(const Context& dev_ctx,
 
     // we assume seed/offset is same across iterations
     // seed_offset_data should preserved by cudaGraph pool
-    const phi::GPUContext* dev_ctx_p = &dev_ctx;
+    const GPUContext* dev_ctx_p = &dev_ctx;
     auto parameterSetter = [offset, dev_ctx_p, seed_offset](
-                               phi::backends::gpu::gpuKernelParams& params) {
+                               backends::gpu::gpuKernelParams& params) {
       const auto* seed_offset_data = seed_offset.data<int64_t>();
       const uint64_t seed_data = static_cast<uint64_t>(seed_offset_data[0]);
       const uint64_t increment = static_cast<uint64_t>(seed_offset_data[1]);
@@ -217,7 +223,7 @@ void FusedDropoutAddGradKernel(const Context& dev_ctx,
                << ", increment = " << increment;
     };
 
-    phi::backends::gpu::CUDAGraphNodeLauncher::gpuKernelCallback_t
+    backends::gpu::CUDAGraphNodeLauncher::gpuKernelCallback_t
         cudaKernelCallback = [=](unsigned int id) {
           void* functionPtr = reinterpret_cast<void*>(
               &(VectorizedDropoutBackward<T, NoMaskBwFunctor<T, float>>));
@@ -244,7 +250,7 @@ void FusedDropoutAddGradKernel(const Context& dev_ctx,
                   functor);
           return cudaFunc;
         };
-    phi::backends::gpu::CUDAGraphNodeLauncher::Instance().KernelNodeLaunch(
+    backends::gpu::CUDAGraphNodeLauncher::Instance().KernelNodeLaunch(
         parameterSetter, cudaKernelCallback);
 
     VLOG(10) << "NON_CUDA_GRAPH seed = " << seed_data
@@ -261,7 +267,7 @@ PD_REGISTER_KERNEL(fused_dropout_add_grad,
                    phi::fusion::FusedDropoutAddGradKernel,
                    float,
                    double,
-                   phi::dtype::bfloat16,
-                   phi::dtype::float16) {
+                   phi::bfloat16,
+                   phi::float16) {
   kernel->InputAt(0).SetBackend(phi::Backend::CPU);  // seed_offset
 }

@@ -31,7 +31,7 @@ void FullBatchSizeLikeKernel(const Context& dev_ctx,
     // set the correct batch size for the DenseTensor.
     auto odims = out->dims();
     odims[out_batch_size_dim] = static_cast<int>(x.lod().back().size()) - 1;
-    FullKernel<T, Context>(dev_ctx, common::vectorize(odims), val, dtype, out);
+    FullKernel<T, Context>(dev_ctx, vectorize(odims), val, dtype, out);
   }
   FullLikeKernel<T, Context>(dev_ctx, x, val, dtype, out);
 }
@@ -59,8 +59,8 @@ PD_REGISTER_KERNEL(full_batch_size_like,
                    int,
                    int64_t,
                    bool,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {
+                   phi::float16,
+                   phi::bfloat16) {
   kernel->InputAt(0).SetBackend(phi::Backend::ALL_BACKEND);
 }
 #endif

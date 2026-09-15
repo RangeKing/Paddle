@@ -16,10 +16,6 @@ typedef SSIZE_T ssize_t;
 #endif
 
 #include <Python.h>
-// Avoid a problem with copysign defined in pyconfig.h on Windows.
-#ifdef copysign
-#undef copysign
-#endif
 
 #include "paddle/fluid/eager/grad_node_info.h"
 #include "paddle/fluid/eager/hooks.h"
@@ -66,11 +62,12 @@ static T PyObjectCast(PyObject* obj) {
   }
 }
 
-int TensorDtype2NumpyDtype(phi::DataType dtype);
+int TensorDtype2NumpyDtype(DataType dtype);
 
 bool PyObject_CheckStr(PyObject* obj);
 bool PyObject_CheckIRValue(PyObject* obj);
 bool PyObject_CheckIRVectorOfValue(PyObject* obj);
+bool PyObject_CheckIRVectorOfValueOrLong(PyObject* obj);
 bool CastPyArg2AttrBoolean(PyObject* obj, ssize_t arg_pos);
 int CastPyArg2AttrInt(PyObject* obj, ssize_t arg_pos);
 int64_t CastPyArg2AttrLong(PyObject* obj, ssize_t arg_pos);
@@ -80,14 +77,14 @@ double CastPyArg2AttrDouble(PyObject* obj, ssize_t arg_pos);
 std::string CastPyArg2AttrString(PyObject* obj, ssize_t arg_pos);
 std::shared_ptr<imperative::VarBase> CastPyArg2VarBase(PyObject* obj,
                                                        ssize_t arg_pos);
-std::vector<paddle::Tensor> CastPyArg2VectorOfTensor(
+std::vector<Tensor> CastPyArg2VectorOfTensor(
     PyObject* obj,
     ssize_t arg_pos,
     const phi::distributed::ProcessMesh* mesh = nullptr);
-phi::Place CastPyArg2Place(PyObject* obj, ssize_t arg_pos);
-phi::DenseTensor CastPyArg2FrameworkTensor(PyObject* obj, ssize_t arg_pos);
-std::vector<phi::DenseTensor> CastPyArg2VectorOfTensorBase(PyObject* obj,
-                                                           ssize_t arg_pos);
+Place CastPyArg2Place(PyObject* obj, ssize_t arg_pos);
+DenseTensor CastPyArg2FrameworkTensor(PyObject* obj, ssize_t arg_pos);
+std::vector<DenseTensor> CastPyArg2VectorOfTensorBase(PyObject* obj,
+                                                      ssize_t arg_pos);
 std::vector<int> CastPyArg2VectorOfInt(PyObject* obj, size_t arg_pos);
 std::vector<int64_t> CastPyArg2VectorOfInt64(PyObject* obj, size_t arg_pos);
 std::vector<size_t> CastPyArg2VectorOfSize_t(PyObject* obj, size_t arg_pos);
@@ -104,6 +101,11 @@ std::vector<pir::Value> CastPyArg2VectorOfValue(PyObject* obj,
                                                 const std::string& op_type,
                                                 size_t arg_pos,
                                                 bool dispensable = false);
+std::vector<pir::Value> CastPyArg2VectorOfValueOrLong(
+    PyObject* obj,
+    const std::string& op_type,
+    size_t arg_pos,
+    bool dispensable = false);
 paddle::optional<std::vector<pir::Value>> CastPyArg2OptionalVectorOfValue(
     PyObject* obj,
     const std::string& op_type,
@@ -119,6 +121,7 @@ std::vector<std::string> CastPyArg2VectorOfString(PyObject* obj,
 std::shared_ptr<jit::Function> CastPyArg2JitFunction(PyObject* obj,
                                                      ssize_t arg_pos);
 void SetPythonStack();
+std::string GetPythonStack();
 
 PyObject* ToPyObject(int value);
 PyObject* ToPyObject(uint32_t value);
@@ -129,10 +132,20 @@ PyObject* ToPyObject(float value);
 PyObject* ToPyObject(double value);
 PyObject* ToPyObject(const char* value);
 PyObject* ToPyObject(const std::string& value);
-PyObject* ToPyObject(const paddle::Tensor& value,
+PyObject* ToPyObject(const Tensor& value,
                      PyObject* args,
                      const std::map<ssize_t, ssize_t>& inplace_var_idx_map);
 PyObject* ToPyObject(PyObject* args, ssize_t arg_idx);
+PyObject* ToPyObject(
+    const Tensor& value,
+    PyObject* args,
+    PyObject* kwargs,
+    const std::map<ssize_t, ssize_t>& inplace_var_idx_map,
+    const std::map<ssize_t, std::vector<std::string>>& inplace_var_name_map);
+PyObject* ToPyObject(PyObject* args,
+                     PyObject* kwargs,
+                     ssize_t arg_idx,
+                     std::vector<std::string> arg_names);
 PyObject* ToPyObject(const std::vector<bool>& value);
 PyObject* ToPyObject(const std::vector<int>& value);
 PyObject* ToPyObject(const std::vector<int64_t>& value);
@@ -140,21 +153,21 @@ PyObject* ToPyObject(const std::vector<size_t>& value);
 PyObject* ToPyObject(const std::vector<float>& value);
 PyObject* ToPyObject(const std::vector<double>& value);
 PyObject* ToPyObject(const std::vector<std::vector<size_t>>& value);
-PyObject* ToPyObject(const std::vector<paddle::Tensor>& value,
+PyObject* ToPyObject(const std::vector<Tensor>& value,
                      bool return_py_none_if_not_initialize = false);
-PyObject* ToPyObject(const std::vector<std::vector<paddle::Tensor>>& value,
+PyObject* ToPyObject(const std::vector<std::vector<Tensor>>& value,
                      bool return_py_none_if_not_initialize = false);
-PyObject* ToPyObject(const phi::Place& value);
+PyObject* ToPyObject(const Place& value);
 PyObject* ToPyObject(const phi::DenseTensor* value);
 PyObject* ToPyObject(const phi::distributed::DistTensor* value);
 PyObject* ToPyObject(const phi::distributed::TensorDistAttr* value);
 PyObject* ToPyObject(const phi::distributed::ProcessMesh* value);
 PyObject* ToPyObject(const phi::distributed::Placements& value);
 PyObject* ToPyObject(const phi::SelectedRows* value);
+PADDLE_API PyObject* ToPyObject(const DataType& dtype);
 PyObject* ToPyObject(const paddle::framework::proto::VarType::Type& dtype);
 PyObject* ToPyObject(const paddle::framework::proto::VarType& type);
-PyObject* ToPyObject(const phi::DataType& dtype);
-PyObject* ToPyObject(const std::vector<phi::DataType>& dtypes);
+PyObject* ToPyObject(const std::vector<DataType>& dtypes);
 PyObject* ToPyObject(const void* value);
 PyObject* ToPyObject(const std::unordered_map<int, int>& value);
 PyObject* ToPyObject(
@@ -177,7 +190,7 @@ class PyTensorHook : public egr::TensorHook {
     Py_DECREF(py_func_);
   }
 
-  paddle::Tensor operator()(const paddle::Tensor& var) override;
+  Tensor operator()(const Tensor& var) override;
 
  private:
   PyObject* py_func_;
@@ -219,7 +232,7 @@ class PackHook : public egr::PackHookBase {
   ~PackHook();
 
   std::shared_ptr<egr::PyObjectHolderBase> operator()(
-      const paddle::Tensor& tensor) override;
+      const Tensor& tensor) override;
 
   void* operator()(void* py_tensor) override;
 
@@ -233,7 +246,7 @@ class UnPackHook : public egr::UnPackHookBase {
 
   ~UnPackHook();
 
-  paddle::Tensor operator()(
+  Tensor operator()(
       std::shared_ptr<egr::PyObjectHolderBase> packed_value) override;
 
   void* operator()(void* packed_value, void* other) override;
@@ -241,6 +254,27 @@ class UnPackHook : public egr::UnPackHookBase {
  private:
   PyObject* hook_;
 };
+
+#pragma GCC visibility push(hidden)
+class NodePostHook : public egr::NodePostHookBase {
+ public:
+  explicit NodePostHook(py::object hook) : hook_(hook) {}
+
+  ~NodePostHook() {}
+
+  paddle::small_vector<std::vector<Tensor>, egr::kSlotSmallVectorSize>
+  operator()(
+      const paddle::small_vector<std::vector<Tensor>,
+                                 egr::kSlotSmallVectorSize>& grad_outputs,
+      const paddle::small_vector<std::vector<Tensor>,
+                                 egr::kSlotSmallVectorSize>& grad_inputs)
+      override;
+
+ private:
+  py::object hook_;
+};
+#pragma GCC visibility pop
+
 template <typename Tuple, size_t N>
 struct TupleTensorResult {
   static void Run(const Tuple& out, PyObject* result) {
@@ -261,6 +295,27 @@ struct TupleTensorResult {
       PyTuple_SET_ITEM(result, N - 1, ToPyObject(std::get<N - 1>(out)));
     }
   }
+
+  static void Run(
+      const Tuple& out,
+      PyObject* result,
+      PyObject* args,
+      PyObject* kwargs,
+      const std::map<ssize_t, ssize_t>& inplace_var_idx_map,
+      const std::map<ssize_t, std::vector<std::string>>& inplace_var_name_map) {
+    TupleTensorResult<Tuple, N - 1>::Run(
+        out, result, args, kwargs, inplace_var_idx_map, inplace_var_name_map);
+    if (!inplace_var_idx_map.empty() && inplace_var_idx_map.count(N - 1)) {
+      PyTuple_SET_ITEM(result,
+                       N - 1,
+                       ToPyObject(args,
+                                  kwargs,
+                                  inplace_var_idx_map.at(N - 1),
+                                  inplace_var_name_map.at(N - 1)));
+    } else {
+      PyTuple_SET_ITEM(result, N - 1, ToPyObject(std::get<N - 1>(out)));
+    }
+  }
 };
 
 template <typename Tuple>
@@ -275,6 +330,25 @@ struct TupleTensorResult<Tuple, 1> {
                   const std::map<ssize_t, ssize_t>& inplace_var_idx_map) {
     if (!inplace_var_idx_map.empty() && inplace_var_idx_map.count(0)) {
       PyTuple_SET_ITEM(result, 0, ToPyObject(args, inplace_var_idx_map.at(0)));
+    } else {
+      PyTuple_SET_ITEM(result, 0, ToPyObject(std::get<0>(out)));
+    }
+  }
+
+  static void Run(
+      const Tuple& out,
+      PyObject* result,
+      PyObject* args,
+      PyObject* kwargs,
+      const std::map<ssize_t, ssize_t>& inplace_var_idx_map,
+      const std::map<ssize_t, std::vector<std::string>>& inplace_var_name_map) {
+    if (!inplace_var_idx_map.empty() && inplace_var_idx_map.count(0)) {
+      PyTuple_SET_ITEM(result,
+                       0,
+                       ToPyObject(args,
+                                  kwargs,
+                                  inplace_var_idx_map.at(0),
+                                  inplace_var_name_map.at(0)));
     } else {
       PyTuple_SET_ITEM(result, 0, ToPyObject(std::get<0>(out)));
     }
@@ -314,10 +388,42 @@ PyObject* ToPyObject(const std::tuple<Args...>& out,
   return result;
 }
 
+template <typename... Args>
+PyObject* ToPyObject(
+    const std::tuple<Args...>& out,
+    PyObject* args,
+    PyObject* kwargs,
+    const std::map<ssize_t, ssize_t>& inplace_var_idx_map,
+    const std::map<ssize_t, std::vector<std::string>>& inplace_var_name_map) {
+  // For inplace op, directly return the input PyObject of the inplace tensor.
+  // [Parameter]
+  // out: Outputs tuple after executing op.
+  // args: Input PyObject.
+  // kwargs: Input PyObject.
+  // inplace_var_idx_map: Index of Tensors in inplace_map, e.g. {{value_idx,
+  // arg_idx}}.
+  // - value_idx: Index of inplace tensor in outputs tuple. Used to find the
+  // output inplace tensor.
+  // - arg_idx: Index of inplace PyObject in input args. Used to find the input
+  // inplace PyObject.
+  // inplace_var_name_map: Name of Tensors in inplace_map
+  auto len = sizeof...(Args);
+  PyObject* result = PyTuple_New(len);
+
+  TupleTensorResult<decltype(out), sizeof...(Args)>::Run(
+      out, result, args, kwargs, inplace_var_idx_map, inplace_var_name_map);
+
+  return result;
+}
+
 paddle::experimental::Scalar CastPyArg2Scalar(PyObject* obj,
                                               const std::string& op_type,
                                               ssize_t arg_pos);
-
+paddle::experimental::Scalar CastPyArg2Scalar(
+    PyObject* obj,
+    const std::string& op_type,
+    ssize_t arg_pos,
+    paddle::experimental::Scalar default_value);
 paddle::experimental::Scalar CastNumpy2Scalar(PyObject* obj,
                                               const std::string& op_type,
                                               ssize_t arg_pos);
@@ -325,22 +431,42 @@ paddle::experimental::Scalar CastNumpy2Scalar(PyObject* obj,
 std::vector<phi::Scalar> CastPyArg2ScalarArray(PyObject* obj,
                                                const std::string& op_type,
                                                ssize_t arg_pos);
+std::vector<phi::Scalar> CastPyArg2ScalarArray(PyObject* obj,
+                                               const std::string& op_type,
+                                               ssize_t arg_pos,
+                                               std::vector<phi::Scalar>);
 
 paddle::experimental::IntArray CastPyArg2IntArray(PyObject* obj,
                                                   const std::string& op_type,
                                                   ssize_t arg_pos);
+paddle::experimental::IntArray CastPyArg2IntArray(
+    PyObject* obj,
+    const std::string& op_type,
+    ssize_t arg_pos,
+    paddle::experimental::IntArray default_value);
+Place CastPyArg2Place(PyObject* obj,
+                      const std::string& op_type,
+                      ssize_t arg_pos);
+Place CastPyArg2Place(PyObject* obj,
+                      const std::string& op_type,
+                      ssize_t arg_pos,
+                      Place default_place);
 
-paddle::Place CastPyArg2Place(PyObject* obj,
-                              const std::string& op_type,
-                              ssize_t arg_pos);
+DataType CastPyArg2DataType(PyObject* obj,
+                            const std::string& op_type,
+                            ssize_t arg_pos);
+DataType CastPyArg2DataType(PyObject* obj,
+                            const std::string& op_type,
+                            ssize_t arg_pos,
+                            DataType default_value);
 
-paddle::DataType CastPyArg2DataType(PyObject* obj,
+DataType CastPyArg2DataTypeDirectly(PyObject* obj,
                                     const std::string& op_type,
                                     ssize_t arg_pos);
-
-paddle::DataType CastPyArg2DataTypeDirectly(PyObject* obj,
-                                            const std::string& op_type,
-                                            ssize_t arg_pos);
+DataType CastPyArg2DataTypeDirectly(PyObject* obj,
+                                    const std::string& op_type,
+                                    ssize_t arg_pos,
+                                    DataType default_value);
 
 phi::distributed::TensorDistAttr CastPyArg2DistAttr(PyObject* obj,
                                                     ssize_t arg_pos);
@@ -354,7 +480,7 @@ std::vector<phi::distributed::ProcessMesh> CastPyArg2VectorOfProcessMesh(
 phi::distributed::Placements CastPyArg2VectorOfPlacement(PyObject* obj,
                                                          ssize_t arg_pos);
 
-paddle::optional<paddle::Tensor> GetOptionalTensorFromArgs(
+paddle::optional<Tensor> GetOptionalTensorFromArgs(
     const std::string& op_type,
     const std::string& arg_name,
     PyObject* args,
@@ -362,13 +488,25 @@ paddle::optional<paddle::Tensor> GetOptionalTensorFromArgs(
     bool dispensable = false,
     const phi::distributed::ProcessMesh* mesh = nullptr);
 
-paddle::Tensor& GetTensorFromArgs(const std::string& op_type,
-                                  const std::string& arg_name,
-                                  PyObject* args,
-                                  ssize_t arg_idx,
-                                  bool dispensable = false);
+paddle::optional<Tensor> GetOptionalTensorFromArgsOrKWArgs(
+    const std::string& op_type,
+    const std::string& arg_name,
+    PyObject* args,
+    ssize_t arg_idx,
+    PyObject* kwargs,
+    const std::vector<std::string>& keywords,
+    const int nargs,
+    int* remaining_kwargs,
+    bool dispensable = false,
+    const phi::distributed::ProcessMesh* mesh = nullptr);
 
-paddle::optional<std::vector<paddle::Tensor>> GetOptionalTensorListFromArgs(
+Tensor& GetTensorFromArgs(const std::string& op_type,
+                          const std::string& arg_name,
+                          PyObject* args,
+                          ssize_t arg_idx,
+                          bool dispensable = false);
+
+paddle::optional<std::vector<Tensor>> GetOptionalTensorListFromArgs(
     const std::string& op_type,
     const std::string& arg_name,
     PyObject* args,
@@ -376,7 +514,7 @@ paddle::optional<std::vector<paddle::Tensor>> GetOptionalTensorListFromArgs(
     bool dispensable = false,
     const phi::distributed::ProcessMesh* mesh = nullptr);
 
-std::vector<paddle::Tensor> GetTensorListFromArgs(
+std::vector<Tensor> GetTensorListFromArgs(
     const std::string& op_type,
     const std::string& arg_name,
     PyObject* args,
@@ -384,13 +522,25 @@ std::vector<paddle::Tensor> GetTensorListFromArgs(
     bool dispensable = false,
     const phi::distributed::ProcessMesh* mesh = nullptr);
 
-paddle::Tensor* GetTensorPtrFromArgs(const std::string& op_type,
-                                     const std::string& arg_name,
-                                     PyObject* args,
-                                     ssize_t arg_idx,
-                                     bool dispensable = false);
+std::vector<Tensor> GetTensorListFromArgsOrKWArgs(
+    const std::string& op_type,
+    const std::string& arg_name,
+    PyObject* args,
+    ssize_t arg_idx,
+    PyObject* kwargs,
+    const std::vector<std::string>& keywords,
+    const int nargs,
+    int* remaining_kwargs,
+    bool dispensable,
+    const phi::distributed::ProcessMesh* mesh = nullptr);
 
-std::vector<paddle::Tensor*> GetTensorPtrListFromArgs(
+Tensor* GetTensorPtrFromArgs(const std::string& op_type,
+                             const std::string& arg_name,
+                             PyObject* args,
+                             ssize_t arg_idx,
+                             bool dispensable = false);
+
+std::vector<Tensor*> GetTensorPtrListFromArgs(
     const std::string& op_type,
     const std::string& arg_name,
     PyObject* args,
@@ -398,11 +548,11 @@ std::vector<paddle::Tensor*> GetTensorPtrListFromArgs(
     bool dispensable = false,
     const phi::distributed::ProcessMesh* mesh = nullptr);
 
-std::vector<paddle::Tensor*> GetTensorPtrListFromPyObject(PyObject* obj);
+std::vector<Tensor*> GetTensorPtrListFromPyObject(PyObject* obj);
 
-std::vector<paddle::Tensor> GetTensorListFromPyObject(PyObject* obj,
-                                                      bool allow_none = false);
-paddle::Tensor& UnSafeGetTensorFromPyObject(PyObject* obj);
+std::vector<Tensor> GetTensorListFromPyObject(PyObject* obj,
+                                              bool allow_none = false);
+Tensor& UnSafeGetTensorFromPyObject(PyObject* obj);
 
 PyObject* GetEmptyTensorsWithVarDesc(PyObject* self, PyObject* args);
 
@@ -417,6 +567,9 @@ std::vector<paddle::framework::Scope*> GetScopePtrListFromArgs(
     ssize_t arg_idx,
     bool dispensable);
 
+paddle::framework::AttributeMap* GetProgramAttributesMapPtrFromPyArgs(
+    const std::string& op_type, PyObject* args, ssize_t arg_idx);
+
 class eager_gil_scoped_release {
  public:
   eager_gil_scoped_release() { tstate = PyEval_SaveThread(); }
@@ -428,6 +581,49 @@ class eager_gil_scoped_release {
  private:
   PyThreadState* tstate{nullptr};
 };
+
+class TensorListBufferAllocator {
+ private:
+  struct TensorListBuffer {
+    bool is_available;
+    std::vector<Tensor> buffer;
+    TensorListBuffer() = default;
+    explicit TensorListBuffer(ssize_t len) : is_available(true), buffer(len) {}
+  };
+
+  using MapType =
+      std::unordered_multimap<ssize_t, std::unique_ptr<TensorListBuffer>>;
+  using MapIterType = MapType::iterator;
+
+  ssize_t key_;
+  TensorListBuffer* buffer_ptr_ = nullptr;
+  static MapType s_tensor_vector_map_;
+
+ public:
+  explicit TensorListBufferAllocator(ssize_t len);
+  TensorListBufferAllocator(const TensorListBufferAllocator&) = delete;
+  TensorListBufferAllocator& operator=(const TensorListBufferAllocator&) =
+      delete;
+  ~TensorListBufferAllocator();
+  std::vector<Tensor>& GetAllocatedBuffer() const {
+    return buffer_ptr_->buffer;
+  }
+};
+
+std::pair<PyObject*, ssize_t> GetPyArgumentInfo(const std::string& op_type,
+                                                const std::string& arg_name,
+                                                PyObject* args,
+                                                ssize_t arg_idx,
+                                                bool dispensable);
+
+std::vector<Tensor>& GetTensorListFromArgsWithBuffer(
+    const std::string& op_type,
+    const std::string& arg_name,
+    ssize_t arg_idx,
+    const phi::distributed::ProcessMesh* mesh,
+    PyObject* list,
+    ssize_t list_len,
+    const TensorListBufferAllocator& allocator);
 
 /* ------------------ for SetStaticOpArgPreCastHook ----------------------- */
 
@@ -451,5 +647,37 @@ CvtPlacements(phi::distributed::Placements placements, int ndim);
 
 void EagerSetDeviceId();
 
+paddle::optional<Tensor*> GetInputOutTensorFromKwargs(PyObject* kwargs);
+
+paddle::optional<std::tuple<Tensor*, Tensor*>>
+GetPredefinedOutTupleTensorFromKwargs_2(PyObject* kwargs);
+paddle::optional<std::tuple<Tensor*, Tensor*, Tensor*>>
+GetPredefinedOutTupleTensorFromKwargs_3(PyObject* kwargs);
+paddle::optional<std::tuple<Tensor*, Tensor*, Tensor*, Tensor*>>
+GetPredefinedOutTupleTensorFromKwargs_4(PyObject* kwargs);
+paddle::optional<std::tuple<Tensor*, Tensor*, Tensor*, Tensor*, Tensor*>>
+GetPredefinedOutTupleTensorFromKwargs_5(PyObject* kwargs);
+paddle::optional<
+    std::tuple<Tensor*, Tensor*, Tensor*, Tensor*, Tensor*, Tensor*>>
+GetPredefinedOutTupleTensorFromKwargs_6(PyObject* kwargs);
+paddle::optional<
+    std::tuple<Tensor*, Tensor*, Tensor*, Tensor*, Tensor*, Tensor*, Tensor*>>
+GetPredefinedOutTupleTensorFromKwargs_7(PyObject* kwargs);
+
+void Check_PIR_not_support_out(PyObject* kwargs);
+
+std::unordered_map<std::string, std::string> ParseStringDict(PyObject* py_dict);
+
+std::unordered_map<std::string, void*> ParsePythonOpAttrs(PyObject* py_dict);
+/*----------------------for arg parse-----------------------------*/
+Tensor& GetTensorFromArgsOrKWArgs(const std::string& op_type,
+                                  const std::string& arg_name,
+                                  PyObject* args,
+                                  ssize_t arg_idx,
+                                  PyObject* kwargs,
+                                  const std::vector<std::string>& keywords,
+                                  const int nargs,
+                                  int* remaining_kwargs,
+                                  bool dispensable = false);
 }  // namespace pybind
 }  // namespace paddle

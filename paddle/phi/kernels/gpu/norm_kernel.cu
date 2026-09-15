@@ -15,18 +15,11 @@
 #include "paddle/phi/kernels/norm_kernel.h"
 
 #include <algorithm>
-#ifdef __NVCC__
-#include "cub/cub.cuh"
-#endif
-#ifdef __HIPCC__
-#include <hipcub/hipcub.hpp>
-namespace cub = hipcub;
-#endif
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/common/amp_type_traits.h"
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/funcs/common_shape.h"
+#include "paddle/phi/kernels/funcs/cub.h"
 
 namespace phi {
 
@@ -40,18 +33,18 @@ __device__ __forceinline__ double square_root(double x) { return sqrt(x); }
 
 template <typename T, int BlockDim>
 __global__ void Normalize(const T* x,
-                          const int pre,
+                          const int64_t pre,
                           const int axis_n,  // dim in axis
-                          const int post,
+                          const int64_t post,
                           const float eps,
                           T* y,
                           T* out_norm) {
-  using MT = typename phi::dtype::MPTypeTrait<T>::Type;
+  using MT = typename MPTypeTrait<T>::Type;
   typedef cub::BlockReduce<MT, BlockDim> BlockReduce;
   __shared__ typename BlockReduce::TempStorage temp_storage;
-  int num = pre * post;
-  for (int i = blockIdx.x; i < num; i += gridDim.x) {
-    int base = (i / post) * post * axis_n + (i % post);
+  int64_t num = pre * post;
+  for (int64_t i = blockIdx.x; i < num; i += gridDim.x) {
+    int64_t base = (i / post) * post * axis_n + (i % post);
 
     MT sum = 0.0;
     __shared__ MT norm;
@@ -74,7 +67,7 @@ __global__ void Normalize(const T* x,
 }
 
 template <typename T, typename Context>
-void NormKernel(const Context& ctx,
+void NormKernel(const Context& dev_ctx,
                 const DenseTensor& x,
                 int axis,
                 float epsilon,
@@ -99,20 +92,25 @@ void NormKernel(const Context& ctx,
   }
 
   const T* x_ptr = in_x->data<T>();
-  ctx.template Alloc<T>(out_y);
-  ctx.template Alloc<T>(out_norm);
+  dev_ctx.template Alloc<T>(out_y);
+  dev_ctx.template Alloc<T>(out_norm);
 
   T* y = out_y->data<T>();
   T* norm_ptr = out_norm->data<T>();
 
-  int pre, n, post;
+  int64_t pre, n, post;
   funcs::GetPrePostNumel(xdim, axis, &pre, &n, &post);
 
+  // Handle zero-size tensor: skip kernel launch to avoid invalid CUDA config
+  if (pre * post == 0) {
+    return;
+  }
+
   const int block = 512;
-  int max_threads = ctx.GetMaxPhysicalThreadCount();
-  const int max_blocks = std::max(max_threads / block, 1);
+  int max_threads = dev_ctx.GetMaxPhysicalThreadCount();
+  const int64_t max_blocks = std::max(max_threads / block, 1);
   int grid = std::min(max_blocks, pre * post);
-  Normalize<T, block><<<grid, block, 0, ctx.stream()>>>(
+  Normalize<T, block><<<grid, block, 0, dev_ctx.stream()>>>(
       x_ptr, pre, n, post, epsilon, y, norm_ptr);
 }
 
@@ -124,5 +122,5 @@ PD_REGISTER_KERNEL(norm,
                    phi::NormKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}

@@ -25,11 +25,12 @@ namespace phi {
 
 template <typename T, typename Context>
 void RepeatInterleaveWithTensorIndexGradKernel(
-    const Context& ctx,
+    const Context& dev_ctx,
     const DenseTensor& x UNUSED,
     const DenseTensor& repeats_tensor,
     const DenseTensor& out_grad,
     int dim,
+    int64_t output_size UNUSED,
     DenseTensor* x_grad) {
   auto input_dim = x_grad->dims();
   if (dim < 0) {
@@ -49,36 +50,42 @@ void RepeatInterleaveWithTensorIndexGradKernel(
   const auto& index_type = repeats_tensor.dtype();
 
   bool index_type_match =
-      index_type == phi::DataType::INT32 || index_type == phi::DataType::INT64;
+      index_type == DataType::INT32 || index_type == DataType::INT64;
   PADDLE_ENFORCE_EQ(index_type_match,
                     true,
                     common::errors::InvalidArgument(
                         "Input(Repeats) holds the wrong type, it holds %s, but "
                         "desires to be %s or %s",
                         DataTypeToString(index_type),
-                        DataTypeToString(phi::DataType::INT32),
-                        DataTypeToString(phi::DataType::INT64)));
+                        DataTypeToString(DataType::INT32),
+                        DataTypeToString(DataType::INT64)));
 
-  phi::DeviceContextPool::Instance().Get(repeats_tensor.place());
-  if (index_type == phi::DataType::INT32) {
-    phi::funcs::RepeatsTensor2IndexTensor<Context, int>(
-        ctx, repeats_tensor, &index);
-    IndexSelectGradInner<Context, T, int>(ctx, out_grad, index, x_grad, dim);
-  } else if (index_type == phi::DataType::INT64) {
-    phi::funcs::RepeatsTensor2IndexTensor<Context, int64_t>(
-        ctx, repeats_tensor, &index);
+  DeviceContextPool::Instance().Get(repeats_tensor.place());
+  if (index_type == DataType::INT32) {
+    funcs::RepeatsTensor2IndexTensorFunctor<Context, int>()(
+        dev_ctx, repeats_tensor, &index);
+    IndexSelectGradInner<Context, T, int>(
+        dev_ctx, out_grad, index, x_grad, dim);
+  } else if (index_type == DataType::INT64) {
+    funcs::RepeatsTensor2IndexTensorFunctor<Context, int64_t>()(
+        dev_ctx, repeats_tensor, &index);
     IndexSelectGradInner<Context, T, int64_t>(
-        ctx, out_grad, index, x_grad, dim);
+        dev_ctx, out_grad, index, x_grad, dim);
   }
 }
 
 template <typename T, typename Context>
-void RepeatInterleaveGradKernel(const Context& ctx,
+void RepeatInterleaveGradKernel(const Context& dev_ctx,
                                 const DenseTensor& x UNUSED,
                                 const DenseTensor& out_grad,
                                 int repeats,
                                 int dim,
+                                int64_t output_size UNUSED,
                                 DenseTensor* x_grad) {
+  if (x_grad && x_grad->numel() == 0) {
+    dev_ctx.template Alloc<T>(x_grad);
+    return;
+  }
   auto input_dim = x_grad->dims();
   if (dim < 0) {
     dim += input_dim.size();
@@ -90,10 +97,11 @@ void RepeatInterleaveGradKernel(const Context& ctx,
   for (int i = 0; i < x_grad->dims()[dim]; i++) {
     std::fill_n(index_vec.begin() + i * repeats, repeats, i);
   }
-  index.Resize(common::make_ddim({index_size}));
-  phi::TensorFromVector<int>(index_vec, ctx, &index);
+  index.Resize({index_size});
+  TensorFromVector<int>(index_vec, dev_ctx, &index);
   const DenseTensor index_copy = index;
-  IndexSelectGradInner<Context, T, int>(ctx, out_grad, index_copy, x_grad, dim);
+  IndexSelectGradInner<Context, T, int>(
+      dev_ctx, out_grad, index_copy, x_grad, dim);
 }
 }  // namespace phi
 
@@ -105,7 +113,7 @@ PD_REGISTER_KERNEL(repeat_interleave_with_tensor_index_grad,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::bfloat16) {}
+                   phi::bfloat16) {}
 
 PD_REGISTER_KERNEL(repeat_interleave_grad,
                    CPU,
@@ -115,4 +123,4 @@ PD_REGISTER_KERNEL(repeat_interleave_grad,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::bfloat16) {}
+                   phi::bfloat16) {}

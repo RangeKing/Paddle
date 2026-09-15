@@ -14,19 +14,14 @@
 from __future__ import annotations
 
 import copy
+import os
 import warnings
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
-    ContextManager,
-    List,
     Literal,
     Protocol,
-    Set,
-    Tuple,
     TypeVar,
-    Union,
     overload,
 )
 
@@ -45,18 +40,19 @@ from paddle.static.amp.decorator import OptimizerWithMixedPrecision
 from .amp_lists import black_list, white_list
 
 if TYPE_CHECKING:
-    from typing import Generator
-
-    from typing_extensions import TypeAlias, TypeGuard
+    from collections.abc import Callable, Generator
+    from contextlib import AbstractContextManager
+    from typing import TypeAlias, TypeGuard
 
     from paddle import Tensor
+    from paddle._typing import PlaceLike
     from paddle._typing.dtype_like import _DTypeLiteral
     from paddle.nn import Layer
     from paddle.nn.layer.layers import _StateDict
     from paddle.static import Operator, Program
 
     _AmpLevelLiteral = Literal["O0", "OD", "O1", "O2"]
-    _CustomList: TypeAlias = Union[List[str], Tuple[str, ...], Set[str]]
+    _CustomList: TypeAlias = list[str] | tuple[str, ...] | set[str]
 
     class _OptimizerLike(Protocol):
         def minimize(
@@ -67,15 +63,17 @@ if TYPE_CHECKING:
             no_grad_set: set[Tensor],
         ) -> tuple[list[Operator], list[tuple[Tensor, Tensor]]]: ...
 
-        def step(self) -> None: ...
+        def step(
+            self, closure: Callable[[], Tensor] | None
+        ) -> Tensor | None: ...
 
         def set_state_dict(self, state_dict: dict[str, Tensor]) -> None: ...
 
         def clear_grad(self, set_to_zero: bool) -> None: ...
 
 
-_ModelsT = TypeVar("_ModelsT", "Layer", List["Layer"])
-_OptimizersT = TypeVar("_OptimizersT", "_OptimizerLike", List["_OptimizerLike"])
+_ModelsT = TypeVar("_ModelsT", "Layer", list["Layer"])
+_OptimizersT = TypeVar("_OptimizersT", "_OptimizerLike", list["_OptimizerLike"])
 
 
 AMP_RELATED_FLAGS = [
@@ -146,9 +144,7 @@ def _update_list(
     if custom_white_list and custom_black_list:
         for op_name in custom_white_list:
             if op_name in custom_black_list:
-                raise ValueError(
-                    "Custom white list overlap " "custom black list"
-                )
+                raise ValueError("Custom white list overlap custom black list")
     if custom_white_list:
         for op_name in custom_white_list:
             if op_name in _black_list:
@@ -235,6 +231,8 @@ def _is_custom_device_bfloat16_supported() -> bool:
     return (
         place.get_device_type() == 'npu'
         or place.get_device_type() == 'intel_hpu'
+        or place.get_device_type() == 'iluvatar_gpu'
+        or place.get_device_type() == 'metax_gpu'
     )
 
 
@@ -485,13 +483,13 @@ def amp_guard(
              observed in downstream ops. These ops will not be converted to fp16.
         level(str, optional): Auto mixed precision level. Accepted values are "O1" and "O2": O1 represent mixed precision, the input data type of each operator will be casted by white_list and black_list;
              O2 represent Pure fp16, all operators parameters and input data will be casted to fp16, except operators in black_list, don't support fp16 kernel and batchnorm. Default is O1(amp).
-        dtype(str, optional): Whether to use 'float16' or 'bfloat16'. Default is 'float16'.
+        dtype(str|core.DataType, optional): Whether to use 'float16' or 'bfloat16'. Default is 'float16'.
         use_promote(bool, optional): Whether op's dtype is 'float32', accord 'Promote to the Widest' principle, use 'float32' to calculate.
              Only active on 'AMP-02'. Default is True.
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env:GPU)
             >>> import paddle
@@ -505,7 +503,6 @@ def amp_guard(
             >>> # doctest: +SKIP("This has diff in xdoctest env")
             paddle.float16
             >>> # doctest: -SKIP
-            ...
             >>> with paddle.amp.amp_guard(enable=False):
             ...     conv = conv2d(data)
             ...     print(conv.dtype)
@@ -513,9 +510,9 @@ def amp_guard(
             paddle.float32
             >>> # doctest: -SKIP
     """
-    assert (
-        in_dynamic_or_pir_mode()
-    ), "We only support 'amp_guard' in dynamic or pir mode."
+    assert in_dynamic_or_pir_mode(), (
+        "We only support 'amp_guard' in dynamic or pir mode."
+    )
 
     amp_state = locals()
     global _g_amp_state_
@@ -528,6 +525,8 @@ def amp_guard(
         raise ValueError("level should be O0, OD, O1 or O2.")
 
     # check amp_dtype: float16 or bfloat16
+    if isinstance(dtype, paddle.base.core.DataType):
+        dtype = dtype.name
     dtype = dtype.lower()
     if enable:
         if dtype not in ['float16', 'bfloat16']:
@@ -655,6 +654,24 @@ def amp_guard(
             and not amp_global_state().already_register_final_backward_hook
         ):
 
+            def _dtensor_from_local(local_tensor, mesh, placements):
+                global_dims = list(local_tensor.shape)
+                for idx, placement in enumerate(placements):
+                    if placement.is_shard():
+                        global_dims[placement.get_dim()] = (
+                            global_dims[placement.get_dim()] * mesh.shape[idx]
+                        )
+                place = paddle.framework._current_expected_place()
+                place = paddle.framework._get_paddle_place(place)
+
+                return paddle.Tensor(
+                    local_tensor,
+                    dims=global_dims,
+                    process_mesh=mesh,
+                    placements=placements,
+                    place=place,
+                )
+
             def master_grad_hook():
                 # NOTE(lizhiyu): To support semi-auto of dygraph mode, we must
                 # classify the params of model into different classes according to their process_mesh.
@@ -685,7 +702,43 @@ def amp_guard(
 
                 amp_global_state().already_register_final_backward_hook = False
 
-            core.eager._add_backward_final_hook(master_grad_hook)
+            def _update_main_grad_hook(param):
+                @paddle.autograd.no_grad()
+                def param_hook(tmp_grad):
+                    if tmp_grad is not None and tmp_grad._is_initialized():
+                        if param.main_grad is None:
+                            tmp = core.eager.Tensor(
+                                value=tmp_grad._local_value()
+                                .cast(paddle.float32)
+                                .value(),
+                                place=tmp_grad.place,
+                                name="main_grad@" + param.name,
+                            )
+                            param.main_grad = _dtensor_from_local(
+                                tmp,
+                                tmp_grad.process_mesh,
+                                tmp_grad.placements,
+                            )
+                        else:
+                            param.main_grad._local_value().add_(
+                                tmp_grad._local_value()
+                            )
+                        tmp_grad._clear_data()
+
+                return param_hook
+
+            if os.getenv("FLAGS_enable_tensor_fusion") in [
+                "True",
+                "true",
+                "1",
+            ]:
+                for param in amp_global_state().model_parameters:
+                    if not hasattr(param, "main_grad"):
+                        param.main_grad = None
+                        param._register_grad_hook(_update_main_grad_hook(param))
+                os.environ["FLAGS_enable_tensor_fusion"] = "0"
+            else:
+                core.eager._add_backward_final_hook(master_grad_hook)
             amp_global_state().already_register_final_backward_hook = True
 
         if tracer:
@@ -695,18 +748,6 @@ def amp_guard(
 
             # set amp op list
             original_white_list, original_black_list = tracer._get_amp_op_list()
-
-            # TODO(zhangyuqin1998): In auto parallel align mode, ensure lookup_table_v2 runs in FP32.
-            # By default, lookup_table_v2 is in the white_list, and runs in BF16/BF16.
-            # Users can add lookup_table_v2 to the amp_custom_black_list but cannot remove it from the default white_list.
-            # If lookup_table_v2 appears in both the white_list and black_list, AMP will select it in BF16/BF16.
-            # Therefore, in auto parallel align mode, add lookup_table_v2 to the black_list and ensure it is not in the white_list.
-            from paddle.distributed import in_auto_parallel_align_mode
-
-            if in_auto_parallel_align_mode():
-                _black_list.add("lookup_table_v2")
-                if "lookup_table_v2" in _white_list:
-                    _white_list.remove("lookup_table_v2")
             tracer._set_amp_op_list(_white_list, _black_list)
 
             # TODO(zhiqiu) set amp related flags automatically in this guard
@@ -747,12 +788,15 @@ class StateDictHook:
         self._save_dtype = save_dtype
 
     def __call__(self, state_dict: _StateDict) -> None:
-        for key in state_dict:
-            param = state_dict[key]
-            if paddle.is_floating_point(param):
-                param_applied = paddle.cast(param, self._save_dtype)
-                param_applied.name = param.name
-                state_dict[key] = param_applied
+        with paddle.base.framework._dygraph_guard(paddle.base.dygraph.Tracer()):
+            for key in state_dict:
+                param = state_dict[key]
+                if not isinstance(param, paddle.Tensor):
+                    continue
+                if paddle.is_floating_point(param):
+                    param_applied = paddle.cast(param, self._save_dtype)
+                    param_applied.name = param.name
+                    state_dict[key] = param_applied
 
 
 def _set_multi_precision(
@@ -792,7 +836,7 @@ def amp_decorate(
 @overload
 def amp_decorate(
     models: _ModelsT,
-    optimizers: Literal[None] = ...,
+    optimizers: None = ...,
     level: _AmpLevelLiteral = ...,
     dtype: _DTypeLiteral = ...,
     master_weight: bool | None = ...,
@@ -839,7 +883,7 @@ def amp_decorate(
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env:GPU)
             >>> # Demo1: single model and optimizer:
@@ -1015,6 +1059,57 @@ def amp_decorate(
             return models[0]
 
 
+def autocast(
+    device_type: str | None,
+    dtype: _DTypeLiteral = 'float16',
+    enabled: bool = True,
+    cache_enabled: bool = True,
+) -> AbstractContextManager:
+    """
+    Create a context which enables auto-mixed-precision(AMP) of operators executed in dynamic graph mode.
+    If enabled, the input data type (float32, float16 or bfloat16) of each operator is decided
+    by autocast algorithm for better performance.
+
+    Commonly, it is used together with `GradScaler` and `decorator` to achieve Auto-Mixed-Precision in
+    imperative mode.
+
+    Args:
+        device_type(str, optional): Device type.But because the paddle does not distinguish between devices, this parameter does not work
+        enable(bool, optional): Enable auto-mixed-precision or not. Default is True.
+        dtype(str, optional): Whether to use 'float16' or 'bfloat16'. Default is 'float16'.
+        cache_enabled(bool, optional): whether to enable cache or not. Default is True. But this parameter is not used
+
+    Note:
+        paddle.cuda.amp.
+
+    Examples:
+
+        .. code-block:: pycon
+
+            >>> # doctest: +REQUIRES(env:GPU)
+            >>> import paddle
+
+            >>> conv2d = paddle.nn.Conv2D(3, 2, 3, bias_attr=False)
+            >>> data = paddle.rand([10, 3, 32, 32])
+
+            >>> with paddle.amp.auto_cast():
+            ...     conv = conv2d(data)
+            ...     print(conv.dtype)
+            >>> # doctest: +SKIP("This has diff in xdoctest env")
+            paddle.float16
+            >>> # doctest: -SKIP
+
+            >>> with paddle.amp.auto_cast(enable=False):
+            ...     conv = conv2d(data)
+            ...     print(conv.dtype)
+            >>> # doctest: +SKIP("This has diff in xdoctest env")
+            paddle.float32
+            >>> # doctest: -SKIP
+
+    """
+    return auto_cast(enable=enabled, dtype=dtype)
+
+
 def auto_cast(
     enable: bool = True,
     custom_white_list: _CustomList | None = None,
@@ -1022,7 +1117,7 @@ def auto_cast(
     level: _AmpLevelLiteral = 'O1',
     dtype: _DTypeLiteral = 'float16',
     use_promote: bool = True,
-) -> ContextManager:
+) -> AbstractContextManager:
     """
     Create a context which enables auto-mixed-precision(AMP) of operators executed in dynamic graph mode.
     If enabled, the input data type (float32, float16 or bfloat16) of each operator is decided
@@ -1048,7 +1143,7 @@ def auto_cast(
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env:GPU)
             >>> import paddle
@@ -1163,7 +1258,7 @@ def decorate(
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env:GPU)
             >>> # Demo1: single model and optimizer:
@@ -1275,3 +1370,73 @@ def decorate(
             master_grad,
             excluded_layers,
         )
+
+
+def is_autocast_enabled(device_type: PlaceLike | None = None) -> bool:
+    """
+    Check whether auto-mixed-precision is enabled in the current context.
+
+    Args:
+        device_type (PlaceLike, optional): The device type to check. This argument is ignored for all devices sharing the same AMP state in paddlepaddle.
+
+    Returns:
+        bool: True if auto-mixed-precision is enabled, False otherwise.
+
+    Examples:
+        .. code-block:: pycon
+
+            >>> # doctest: +REQUIRES(env:GPU)
+            >>> # Demo1: Check if auto-mixed-precision is enabled by default
+            >>> import paddle
+            >>> paddle.device.set_device('gpu')
+            >>> print(paddle.is_autocast_enabled())
+            False
+
+            >>> # Demo2: Enable auto-mixed-precision and check again
+            >>> with paddle.amp.auto_cast():
+            ...     print(paddle.is_autocast_enabled())
+            True
+    """
+    if in_pir_mode():
+        amp_attrs = core._get_amp_attrs()
+        return amp_attrs._amp_level != AMP_LEVEL.O0
+    else:
+        tracer = _dygraph_tracer()
+        if tracer:
+            return tracer._amp_level != core.AmpLevel.O0
+        return False
+
+
+def get_autocast_dtype(device_type: PlaceLike | None = None) -> _DTypeLiteral:
+    """
+    Get the auto-mixed-precision dtype in the current context if autocast is enabled else default AMP dtype(float16).
+
+    Args:
+        device_type (PlaceLike, optional): The device type to check. This argument is ignored for all devices sharing the same AMP state in paddlepaddle.
+
+    Returns:
+        _DTypeLiteral: The current AMP dtype.
+
+    Examples:
+        .. code-block:: pycon
+
+            >>> # doctest: +REQUIRES(env:GPU)
+            >>> # Demo1: Get default auto-mixed-precision dtype
+            >>> import paddle
+            >>> paddle.device.set_device('gpu')
+            >>> print(paddle.get_autocast_dtype())
+            float16
+
+            >>> # Demo2: Enable auto-mixed-precision and get the dtype
+            >>> with paddle.amp.auto_cast():
+            ...     print(paddle.get_autocast_dtype())
+            float16
+    """
+    if not is_autocast_enabled():
+        return "float16"
+    if in_pir_mode():
+        amp_attrs = core._get_amp_attrs()
+        return amp_attrs._amp_dtype
+    else:
+        tracer = _dygraph_tracer()
+        return tracer._amp_dtype

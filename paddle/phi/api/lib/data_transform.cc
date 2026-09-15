@@ -235,7 +235,7 @@ inline phi::DenseTensor TransDataPlace(const phi::DenseTensor& tensor,
 #endif
 
   // FIXME(zcd): TransDataPlace is used to transform data from GPU to CPU and
-  // the enforced checkings have been done in GetDeviceContext, so the
+  // the enforced checks have been done in GetDeviceContext, so the
   // `dev_ctx->Wait()` is necessary. But `dev_ctx->Wait()` will make the program
   // slow, especially when the number of elements is little, for example,
   // the elements of learning rate are one and it's CPU side.
@@ -701,7 +701,8 @@ static bool ReshardIsNeededWithPartial(
     const phi::distributed::TensorDistAttr& in_dist_attr,
     const phi::distributed::TensorDistAttr& out_dist_attr) {
   return (in_dist_attr.process_mesh() != out_dist_attr.process_mesh() ||
-          in_dist_attr.dims_mapping() != out_dist_attr.dims_mapping() ||
+          in_dist_attr.multi_dims_mapping() !=
+              out_dist_attr.multi_dims_mapping() ||
           in_dist_attr.partial_status() != out_dist_attr.partial_status());
 }
 
@@ -709,7 +710,8 @@ static bool ReshardIsNeeded(
     const phi::distributed::TensorDistAttr& in_dist_attr,
     const phi::distributed::TensorDistAttr& out_dist_attr) {
   return (in_dist_attr.process_mesh() != out_dist_attr.process_mesh() ||
-          in_dist_attr.dims_mapping() != out_dist_attr.dims_mapping());
+          in_dist_attr.multi_dims_mapping() !=
+              out_dist_attr.multi_dims_mapping());
 }
 
 std::string ReshardDebugInfo(
@@ -934,7 +936,14 @@ void ReshardKernelOutputToApiOutput(
     phi::distributed::DistTensor* dist_tensor =
         static_cast<phi::distributed::DistTensor*>(tensor_out.get());
     dist_tensor->unsafe_set_dims(src_tensor->dims());
-    if (ReshardIsNeeded(src_tensor->dist_attr(), dist_tensor->dist_attr())) {
+    // skip_sharding3_output_reshard for sharding stage3 with AMP.
+    bool skip_sharding3_output_reshard =
+        std::getenv("skip_sharding3_output_reshard") &&
+        std::string(std::getenv("skip_sharding3_output_reshard")) == "1" &&
+        src_tensor->dist_attr().is_partial() &&
+        dist_tensor->dist_attr().is_shard();
+    if (!skip_sharding3_output_reshard &&
+        ReshardIsNeeded(src_tensor->dist_attr(), dist_tensor->dist_attr())) {
       auto argument_name = (arg_name.empty() ? "tensor" : arg_name);
       auto tensor_name =
           (dst_tensor->name().empty() ? "None" : src_tensor->name());

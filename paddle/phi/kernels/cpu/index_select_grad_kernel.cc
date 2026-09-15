@@ -17,37 +17,44 @@
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/core/utils/data_type.h"
 #include "paddle/phi/kernels/cpu/index_select_impl.h"
+#include "paddle/phi/kernels/full_kernel.h"
 
 namespace phi {
 
 template <typename T, typename Context>
-void IndexSelectGradKernel(const Context& ctx,
+void IndexSelectGradKernel(const Context& dev_ctx,
                            const DenseTensor& x UNUSED,
                            const DenseTensor& index,
                            const DenseTensor& out_grad,
                            int dim,
                            DenseTensor* x_grad) {
+  // x [3, 4], index [5, 0], out [5, 0]
+  if (out_grad.numel() == 0) {
+    Full<T, Context>(dev_ctx, x.dims(), 0, x_grad);
+    return;
+  }
   if (dim < 0) {
     dim += out_grad.dims().size();
   }
   const auto& index_type = index.dtype();
 
   bool index_type_match =
-      index_type == phi::DataType::INT32 || index_type == phi::DataType::INT64;
+      index_type == DataType::INT32 || index_type == DataType::INT64;
   PADDLE_ENFORCE_EQ(index_type_match,
                     true,
                     common::errors::InvalidArgument(
                         "Input(Index) holds the wrong type, it holds %s, but "
                         "desires to be %s or %s",
                         index_type,
-                        phi::DataType::INT32,
-                        phi::DataType::INT64));
+                        DataType::INT32,
+                        DataType::INT64));
 
-  if (index_type == phi::DataType::INT32) {
-    IndexSelectGradInner<Context, T, int>(ctx, out_grad, index, x_grad, dim);
-  } else if (index_type == phi::DataType::INT64) {
+  if (index_type == DataType::INT32) {
+    IndexSelectGradInner<Context, T, int>(
+        dev_ctx, out_grad, index, x_grad, dim);
+  } else if (index_type == DataType::INT64) {
     IndexSelectGradInner<Context, T, int64_t>(
-        ctx, out_grad, index, x_grad, dim);
+        dev_ctx, out_grad, index, x_grad, dim);
   }
 }
 
@@ -59,8 +66,9 @@ PD_REGISTER_KERNEL(index_select_grad,
                    phi::IndexSelectGradKernel,
                    float,
                    double,
-                   phi::dtype::bfloat16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>,
+                   phi::bfloat16,
+                   phi::complex64,
+                   phi::complex128,
                    int,
-                   int64_t) {}
+                   int64_t,
+                   bool) {}

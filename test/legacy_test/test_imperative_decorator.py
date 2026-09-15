@@ -167,9 +167,11 @@ class TestEnableGradClass(unittest.TestCase):
 
     def test_stop_gradient(self):
         x = paddle.to_tensor([1.0], stop_gradient=False)
-        with paddle.no_grad():
-            with paddle.enable_grad():
-                y = x * 2
+        with (
+            paddle.no_grad(),
+            paddle.enable_grad(),
+        ):
+            y = x * 2
         self.assertTrue(y.stop_gradient is False)
         y.backward()
         self.assertTrue(x.grad is not None)
@@ -241,6 +243,19 @@ class TestSetGradEnabledClass(unittest.TestCase):
         paddle.set_grad_enabled(False)
         y = x * 2
         self.assertTrue(y.stop_gradient is True)
+
+    def test_decorator_keeps_grad_mode(self):
+        paddle.disable_static()
+        paddle.set_grad_enabled(False)
+
+        @paddle.set_grad_enabled(True)
+        def need_enable_grad_func():
+            self.assertTrue(paddle.is_grad_enabled())
+
+        self.assertFalse(paddle.is_grad_enabled())
+        need_enable_grad_func()
+        self.assertFalse(paddle.is_grad_enabled())
+        paddle.set_grad_enabled(True)
 
 
 class TestIsGradEnabledClass(unittest.TestCase):

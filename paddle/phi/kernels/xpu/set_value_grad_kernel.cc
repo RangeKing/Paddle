@@ -41,7 +41,7 @@ inline void GetOffsets(const DDim& big_dim,
   if (small_dim[cur_dim] == big_dim[cur_dim]) {
     GetOffsets(big_dim, small_dim, start_offset, cur_dim + 1, offsets);
   } else {
-    for (int i = 0; i < big_dim[cur_dim]; i++) {
+    for (int64_t i = 0; i < big_dim[cur_dim]; i++) {
       GetOffsets(big_dim, small_dim, start_offset, cur_dim + 1, offsets);
       start_offset[cur_dim] += 1;
     }
@@ -67,7 +67,7 @@ void SetValueGradImpl(const Context& dev_ctx,
           "The input of `set_value_grad`(out_grad) has not been initialized"));
 
   auto in_dims = out_grad.dims();
-  auto in_dims_vector = common::vectorize<int64_t>(in_dims);
+  auto in_dims_vector = vectorize<int64_t>(in_dims);
 
   std::vector<int> decrease_axis_int32(decrease_axes.begin(),
                                        decrease_axes.end());
@@ -88,7 +88,7 @@ void SetValueGradImpl(const Context& dev_ctx,
                              axes.size(),
                              false);
 
-  DDim out_dims(common::make_ddim(out_dims_vector));
+  DDim out_dims(make_ddim(out_dims_vector));
 
   std::vector<int> reverse_vector(starts_local.size(), 0);
   funcs::StridedSliceFunctor(starts_local.data(),
@@ -115,7 +115,7 @@ void SetValueGradImpl(const Context& dev_ctx,
   }
 
   for (size_t axis = 0; axis < axes.size(); axis++) {
-    int axis_index = axes[axis];
+    size_t axis_index = axes[axis];
     starts_indices[axis_index] = starts_local[axis];
     ends_indices[axis_index] = ends_local[axis];
     steps_indices[axis_index] = steps_local[axis];
@@ -139,8 +139,8 @@ void SetValueGradImpl(const Context& dev_ctx,
     }
   }
 
-  phi::funcs::SetConstant<Context, T> set_zero;
-  int r = XPU_SUCCESS;
+  funcs::SetConstant<Context, T> set_zero;
+  int r = 0;
 
   if (x_grad) {
     // Set gradient of `Input`
@@ -159,7 +159,7 @@ void SetValueGradImpl(const Context& dev_ctx,
         reinterpret_cast<const XPUType*>(tmp.data<T>()),
         reinterpret_cast<XPUType*>(x_grad->data<T>()),
         out_dims_vector,
-        common::vectorize<int64_t>(x_grad->dims()),
+        vectorize<int64_t>(x_grad->dims()),
         starts_indices,
         ends_indices,
         steps_indices);
@@ -265,11 +265,11 @@ void SetValueGradImpl(const Context& dev_ctx,
           Full<T>(dev_ctx,
                   {fake_value_grad_dims.Get(), fake_value_grad_dims.size()},
                   static_cast<T>(0));
-      auto value_grad_dims_vec = common::vectorize<int64_t>(value_grad_dims);
+      auto value_grad_dims_vec = vectorize<int64_t>(value_grad_dims);
       // for value is a 0-D Tensor
       if (value_grad_dims.size() == 0) {
-        value_grad_dims_vec = common::vectorize<int64_t>(
-            common::make_ddim(std::vector<int>({1})));
+        value_grad_dims_vec =
+            vectorize<int64_t>(make_ddim(std::vector<int64_t>({1})));
       }
       for (auto offset : offsets) {
         for (int i = 0; i < out_dims_size; i++) {
@@ -279,7 +279,7 @@ void SetValueGradImpl(const Context& dev_ctx,
                        reinterpret_cast<const XPUType*>(tmp.data<T>()),
                        reinterpret_cast<XPUType*>(tmp2.data<T>()),
                        out_dims_vector,
-                       common::vectorize<int64_t>(offset),
+                       vectorize<int64_t>(offset),
                        slice_end);
         PADDLE_ENFORCE_XDNN_SUCCESS(r, "slice");
         r = xpu::broadcast_add(
@@ -314,6 +314,15 @@ void SetValueGradKernel(const Context& dev_ctx,
                         const std::vector<int64_t>& none_axes,
                         DenseTensor* x_grad,
                         DenseTensor* value_grad) {
+  if (out_grad.numel() == 0) {
+    if (x_grad) {
+      Full<T, Context>(dev_ctx, x_grad->dims(), Scalar(0), x_grad);
+    }
+    if (value_grad) {
+      Full<T, Context>(dev_ctx, value_grad->dims(), Scalar(0), value_grad);
+    }
+    return;
+  }
   const int rank = out_grad.dims().size();
 
   switch (rank) {
@@ -426,7 +435,8 @@ PD_REGISTER_KERNEL(set_value_grad,
                    ALL_LAYOUT,
                    phi::SetValueGradKernel,
                    float,
-                   phi::dtype::float16,
+                   phi::float16,
+                   phi::bfloat16,
                    int,
                    int64_t) {}
 
@@ -435,6 +445,7 @@ PD_REGISTER_KERNEL(set_value_with_scalar_grad,
                    ALL_LAYOUT,
                    phi::SetValueWithScalarGradKernel,
                    float,
-                   phi::dtype::float16,
+                   phi::float16,
+                   phi::bfloat16,
                    int,
                    int64_t) {}

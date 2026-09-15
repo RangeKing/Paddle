@@ -16,30 +16,35 @@ limitations under the License. */
 
 #include "paddle/phi/common/place.h"
 #include "paddle/phi/core/memory/allocation/allocator_facade.h"
+#include "paddle/phi/core/memory/mem_visitor.h"
 #include "paddle/phi/core/stream.h"
 
 namespace paddle::memory {
 
-std::shared_ptr<Allocation> AllocShared(const phi::Place& place, size_t size) {
+std::shared_ptr<Allocation> AllocShared(const Place& place, size_t size) {
   return allocation::AllocatorFacade::Instance().AllocShared(place, size);
 }
 
-AllocationPtr Alloc(const phi::Place& place, size_t size) {
+AllocationPtr Alloc(const Place& place, size_t size) {
   return allocation::AllocatorFacade::Instance().Alloc(place, size);
 }
 
-uint64_t Release(const phi::Place& place) {
+uint64_t Release(const Place& place) {
   return allocation::AllocatorFacade::Instance().Release(place);
 }
 
-std::shared_ptr<Allocation> AllocShared(const phi::Place& place,
+size_t Compact(const GPUPlace& place) {
+  return allocation::AllocatorFacade::Instance().Compact(place);
+}
+
+std::shared_ptr<Allocation> AllocShared(const Place& place,
                                         size_t size,
                                         const phi::Stream& stream) {
   return allocation::AllocatorFacade::Instance().AllocShared(
       place, size, stream);
 }
 
-AllocationPtr Alloc(const phi::Place& place,
+AllocationPtr Alloc(const Place& place,
                     size_t size,
                     const phi::Stream& stream) {
   return allocation::AllocatorFacade::Instance().Alloc(place, size, stream);
@@ -56,7 +61,7 @@ void* GetBasePtr(const std::shared_ptr<Allocation>& allocation) {
 }
 
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
-uint64_t Release(const phi::GPUPlace& place, gpuStream_t stream) {
+uint64_t Release(const GPUPlace& place, gpuStream_t stream) {
   return allocation::AllocatorFacade::Instance().Release(place, stream);
 }
 
@@ -76,11 +81,32 @@ gpuStream_t GetStream(const std::shared_ptr<Allocation>& allocation) {
 
 #endif
 
+#ifdef PADDLE_WITH_XPU
+bool RecordStream(std::shared_ptr<Allocation> allocation, XPUStream stream) {
+  return allocation::AllocatorFacade::Instance().RecordStream(allocation,
+                                                              stream);
+}
+#endif
+
 #ifdef PADDLE_WITH_CUSTOM_DEVICE
+uint64_t Release(const CustomPlace& place, phi::stream::stream_t stream) {
+  return allocation::AllocatorFacade::Instance().Release(place, stream);
+}
+
 bool RecordStream(std::shared_ptr<Allocation> allocation,
                   phi::stream::stream_t stream) {
   return allocation::AllocatorFacade::Instance().RecordStream(allocation,
                                                               stream);
+}
+
+void EraseStream(std::shared_ptr<Allocation> allocation,
+                 phi::stream::stream_t stream) {
+  return allocation::AllocatorFacade::Instance().EraseStream(allocation,
+                                                             stream);
+}
+
+phi::stream::stream_t GetStream(const std::shared_ptr<Allocation>& allocation) {
+  return allocation::AllocatorFacade::Instance().GetStream(allocation);
 }
 #endif
 }  // namespace paddle::memory

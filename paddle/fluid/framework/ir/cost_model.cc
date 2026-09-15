@@ -221,15 +221,15 @@ CostData CostModel::ProfileMeasure(
   // TODO(zhhsplendid): support different fetch data
 
   platform::ProfilerState profiler_state;
-  phi::Place place;
+  Place place;
 
   std::string device_lower_case = ToLowerCopy(device);
   if (device_lower_case == "cpu") {
     profiler_state = platform::ProfilerState::kCPU;
-    place = phi::CPUPlace();
+    place = CPUPlace();
   } else if (device_lower_case == "gpu") {
     profiler_state = platform::ProfilerState::kAll;
-    place = phi::GPUPlace();
+    place = GPUPlace();
   } else {
     PADDLE_THROW(common::errors::Unimplemented(
         "Not support %s in CostModel now", device));

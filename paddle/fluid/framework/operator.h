@@ -128,7 +128,7 @@ inline std::string GradOriginalVarName(const std::string& grad_var_name) {
 }
 
 inline bool VarIsTensor(const Variable& var) {
-  return var.IsType<phi::DenseTensor>() || var.IsType<phi::SelectedRows>();
+  return var.IsType<DenseTensor>() || var.IsType<phi::SelectedRows>();
 }
 
 const phi::DenseTensor* GetDenseTensorOrSelectedRowsValueFromVar(
@@ -199,7 +199,7 @@ class RuntimeInferShapeContext : public InferShapeContext {
 
   bool IsRuntime() const override;
 
-  bool IsRunMKLDNNKernel() const override;
+  bool IsRunONEDNNKernel() const override;
 
   // TODO(paddle-dev): Can this be template?
   paddle::small_vector<InferShapeVarPtr, phi::kInputSmallVectorSize>
@@ -398,9 +398,9 @@ class TEST_API OperatorBase {
   VariableNameMap outputs_;
   AttributeMap attrs_;
   // NOTE: runtime_attrs_ contains the attributes which used for dispatching
-  // kernel (use_mkldnn, use_cudnn, ...) or passing additional configuration
+  // kernel (use_onednn, use_cudnn, ...) or passing additional configuration
   // for special heterogeneous kernel (workspace_size_MB, ...).
-  // The attributes in runtime_attrs_ are setted by framework (such as PASS),
+  // The attributes in runtime_attrs_ are set by framework (such as PASS),
   // and not in the python api.
   AttributeMap runtime_attrs_;
 
@@ -422,7 +422,7 @@ class TEST_API OperatorBase {
   virtual void RunImpl(const Scope& scope, const phi::Place& place) const = 0;
 };
 
-class ExecutionContext : public phi::KernelContext {
+class PADDLE_API ExecutionContext : public phi::KernelContext {
  public:
   ExecutionContext(const OperatorBase& op,
                    const Scope& scope,
@@ -494,8 +494,6 @@ class ExecutionContext : public phi::KernelContext {
 
   virtual const std::vector<Variable*> MultiInputVar(
       const std::string& name) const {
-    LogVarUsageIfUnusedVarCheckEnabled(name);
-
     auto it = ctx_.inputs.find(name);
     if (it == ctx_.inputs.end()) {
       return {};
@@ -536,8 +534,6 @@ class ExecutionContext : public phi::KernelContext {
 
   template <typename T>
   const std::vector<const T*> MultiInput(const std::string& name) const {
-    LogVarUsageIfUnusedVarCheckEnabled(name);
-
     auto vars = MultiInputVar(name);
     if (vars.size() == 0) {
       return {};
@@ -593,9 +589,9 @@ class ExecutionContext : public phi::KernelContext {
 #endif
 
   template <typename T, typename DevContext>
-  phi::DenseTensor AllocateTmpTensor(const phi::DDim& dim,
-                                     const DevContext& dev_ctx) const {
-    phi::DenseTensor tmp;
+  DenseTensor AllocateTmpTensor(const phi::DDim& dim,
+                                const DevContext& dev_ctx) const {
+    DenseTensor tmp;
     tmp.Resize(dim);
     dev_ctx.template Alloc<T>(&tmp);
     return tmp;
@@ -646,13 +642,13 @@ class ExecutionArgumentMappingContext : public phi::ArgumentMappingContext {
 
   bool IsDenseTensorInput(const std::string& name) const override {
     const auto* var = ctx_.InputVar(name);
-    return var->IsType<phi::DenseTensor>();
+    return var->IsType<DenseTensor>();
   }
 
   bool IsDenseTensorInputs(const std::string& name) const override {
     auto vars = ctx_.MultiInputVar(name);
     return std::all_of(vars.begin(), vars.end(), [](const Variable* var) {
-      return var->IsType<phi::DenseTensor>();
+      return var->IsType<DenseTensor>();
     });
   }
 
@@ -695,7 +691,7 @@ class ExecutionArgumentMappingContext : public phi::ArgumentMappingContext {
   bool IsDenseTensorOutput(const std::string& name) const override {
     auto vars = ctx_.MultiOutputVar(name);
     return std::all_of(vars.begin(), vars.end(), [](const Variable* var) {
-      return var->IsType<phi::DenseTensor>();
+      return var->IsType<DenseTensor>();
     });
   }
 
@@ -720,12 +716,12 @@ class ExecutionArgumentMappingContext : public phi::ArgumentMappingContext {
 };
 
 template <>
-const std::vector<const phi::DenseTensor*>
-ExecutionContext::MultiInput<phi::DenseTensor>(const std::string& name) const;
+PADDLE_API const std::vector<const phi::DenseTensor*>
+ExecutionContext::MultiInput<DenseTensor>(const std::string& name) const;
 
 template <>
-std::vector<phi::DenseTensor*> ExecutionContext::MultiOutput<phi::DenseTensor>(
-    const std::string& name) const;
+PADDLE_API std::vector<phi::DenseTensor*>
+ExecutionContext::MultiOutput<DenseTensor>(const std::string& name) const;
 
 class OpKernelBase {
  public:
@@ -753,70 +749,67 @@ class OperatorWithKernel : public OperatorBase {
   using OpKernelMap =
       std::unordered_map<OpKernelType, OpKernelFunc, OpKernelType::Hash>;
 
-  OperatorWithKernel(const std::string& type,
-                     const VariableNameMap& inputs,
-                     const VariableNameMap& outputs,
-                     const AttributeMap& attrs);
+  PADDLE_EXP_API OperatorWithKernel(const std::string& type,
+                                    const VariableNameMap& inputs,
+                                    const VariableNameMap& outputs,
+                                    const AttributeMap& attrs);
 
-  virtual ~OperatorWithKernel();
+  PADDLE_API virtual ~OperatorWithKernel();
 
-  static paddle::flat_hash_map<std::string /* op_type */, OpKernelMap>&
-  AllOpKernels() {
-    static paddle::flat_hash_map<std::string, OpKernelMap> g_all_op_kernels;
-    return g_all_op_kernels;
-  }
+  TEST_API static paddle::flat_hash_map<std::string /* op_type */, OpKernelMap>&
+  AllOpKernels();
 
-  bool SupportGPU() const override;
+  PADDLE_API bool SupportGPU() const override;
 
-  bool SupportXPU() const override;
+  PADDLE_API bool SupportXPU() const override;
 
-  bool SupportCustomDevice() const override;
+  PADDLE_API bool SupportCustomDevice() const override;
 
-  bool SupportsMKLDNN(phi::DataType data_type) const;
+  PADDLE_API bool SupportsONEDNN(phi::DataType data_type) const;
 
-  bool SupportsCUDNN(phi::DataType data_type) const;
+  PADDLE_API bool SupportsCUDNN(phi::DataType data_type) const;
 
-  bool SupportsKernelType(const OpKernelType& kernel_type,
-                          const ExecutionContext& exe_ctx) const;
+  PADDLE_API bool SupportsKernelType(const OpKernelType& kernel_type,
+                                     const ExecutionContext& exe_ctx) const;
 
-  bool SupportsCPUBF16() const;
+  PADDLE_API bool SupportsCPUBF16() const;
 
-  bool CanMKLDNNBeUsed(const framework::ExecutionContext& ctx,
-                       phi::DataType data_type) const;
+  PADDLE_API bool CanONEDNNBeUsed(const framework::ExecutionContext& ctx,
+                                  phi::DataType data_type) const;
 
-  bool CanMKLDNNBeUsed(const framework::ExecutionContext& ctx,
-                       proto::VarType::Type data_type) const;
+  PADDLE_API bool CanONEDNNBeUsed(const framework::ExecutionContext& ctx,
+                                  proto::VarType::Type data_type) const;
 
-  bool CanCUDNNBeUsed(const framework::ExecutionContext& ctx,
-                      phi::DataType data_type) const;
+  PADDLE_API bool CanCUDNNBeUsed(const framework::ExecutionContext& ctx,
+                                 phi::DataType data_type) const;
 
-  bool CanCUDNNBeUsed(const framework::ExecutionContext& ctx,
-                      proto::VarType::Type data_type) const;
+  PADDLE_API bool CanCUDNNBeUsed(const framework::ExecutionContext& ctx,
+                                 proto::VarType::Type data_type) const;
 
-  virtual void InferShape(InferShapeContext* ctx) const;
+  PADDLE_API virtual void InferShape(InferShapeContext* ctx) const;
 
   void SetIsRuntimeInferShape(bool x) override {
     all_kernels_must_compute_runtime_shape_ = x;
   }
 
-  void RuntimeInferShape(const Scope& scope,
-                         const phi::Place& place,
-                         const RuntimeContext& ctx) const override;
+  PADDLE_API void RuntimeInferShape(const Scope& scope,
+                                    const phi::Place& place,
+                                    const RuntimeContext& ctx) const override;
 
-  proto::VarType::Type IndicateVarDataType(const ExecutionContext& ctx,
-                                           const std::string& name) const;
+  PADDLE_API proto::VarType::Type IndicateVarDataType(
+      const ExecutionContext& ctx, const std::string& name) const;
 
-  proto::VarType::Type IndicateOrPromoteVarDataTypes(
+  PADDLE_API proto::VarType::Type IndicateOrPromoteVarDataTypes(
       const ExecutionContext& ctx,
       const std::string& name1,
       const std::string& name2) const;
 
-  virtual phi::KernelKey GetExpectedKernelType(
+  PADDLE_API virtual phi::KernelKey GetExpectedKernelType(
       const ExecutionContext& ctx) const;
 
   // change this to public so that in dygraph mode we can call it to check if we
   // need transform data
-  virtual phi::KernelKey GetKernelTypeForVar(
+  PADDLE_API virtual phi::KernelKey GetKernelTypeForVar(
       const std::string& var_name,
       const phi::DenseTensor& tensor,
       const phi::KernelKey& expected_kernel_type) const;
@@ -827,7 +820,7 @@ class OperatorWithKernel : public OperatorBase {
   }
 
   /* member functions for adapting to phi lib */
-  /** In the phi::DenseTensor calculation library, the new Kernel adopts a
+  /** In the DenseTensor calculation library, the new Kernel adopts a
    * clearer and more streamlined design. The arguments of the Kernel and the
    * input and output arguments registered in the original OpMaker do not match
    * in some cases, so we use map to record the arguments required by the
@@ -835,17 +828,18 @@ class OperatorWithKernel : public OperatorBase {
    * the original Op according to the GetExpectedPhiKernelArgs returned
    * arguments.
    */
-  phi::KernelSignature GetExpectedPhiKernelArgs(
+  PADDLE_API phi::KernelSignature GetExpectedPhiKernelArgs(
       const ExecutionContext& ctx) const;
 
   /* member functions for adapting to phi lib */
-  phi::KernelKey ChoosePhiKernel(const ExecutionContext& ctx) const;
+  PADDLE_API phi::KernelKey ChoosePhiKernel(const ExecutionContext& ctx) const;
 
-  void ChooseKernel(const ExecutionContext& ctx) const;
+  PADDLE_API void ChooseKernel(const ExecutionContext& ctx) const;
 
-  void BuildPhiKernelContext(const RuntimeContext& ctx,
-                             phi::DeviceContext* dev_ctx,
-                             phi::KernelContext* phi_kernel_context) const;
+  PADDLE_API void BuildPhiKernelContext(
+      const RuntimeContext& ctx,
+      phi::DeviceContext* dev_ctx,
+      phi::KernelContext* phi_kernel_context) const;
 
   phi::KernelSignature* PhiKernelSignature() const {
     return kernel_signature_.get();
@@ -869,20 +863,21 @@ class OperatorWithKernel : public OperatorBase {
   void SetDnnFallback(bool dnn_fallback) const { dnn_fallback_ = dnn_fallback; }
 
  private:
-  void RunImpl(const Scope& scope, const phi::Place& place) const final;
-  void RunImpl(const Scope& scope,
-               const phi::Place& place,
-               RuntimeContext* runtime_ctx) const;
+  PADDLE_API void RunImpl(const Scope& scope,
+                          const phi::Place& place) const final;
+  PADDLE_API void RunImpl(const Scope& scope,
+                          const phi::Place& place,
+                          RuntimeContext* runtime_ctx) const;
 
   /**
    * Transfer data from scope to a transferred scope. If there is no data need
    * to be transferred, it returns nullptr.
    *
-   * transfered_inplace_vars is a output vector.
+   * transferred_inplace_vars is a output vector.
    */
   Scope* PrepareData(const Scope& scope,
                      const phi::KernelKey& expected_kernel_key,
-                     std::vector<std::string>* transfered_inplace_vars,
+                     std::vector<std::string>* transferred_inplace_vars,
                      RuntimeContext* ctx,
                      const phi::Place& place) const;
 

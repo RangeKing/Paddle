@@ -16,13 +16,14 @@
 #include <type_traits>
 
 #include "paddle/common/errors.h"
-#include "paddle/phi/common/float16.h"
+#include "paddle/phi/backends/gpu/cuda/cuda_graph_with_memory_pool.h"
 #include "paddle/phi/common/memory_utils.h"
 #include "paddle/phi/common/place.h"
 #include "paddle/phi/core/enforce.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/core/tensor_utils.h"
 #include "paddle/phi/kernels/funcs/emb_eltwise_layer_norm_functor.h"
+#include "paddle/phi/kernels/fusion/gpu/fused_embedding_eltwise_layernorm_kernel.h"
 
 namespace phi {
 namespace fusion {
@@ -65,16 +66,22 @@ void EmbeddingEltWiseLayerNormKernel(
     in2s.push_back(reinterpret_cast<uintptr_t>(embs[i]->data<T>()));
   }
 
-  phi::memory_utils::Copy(phi::GPUPlace{},
+  const int64_t* stable_in1s =
+      backends::gpu::RestoreHostMemIfCapturingCUDAGraph(
+          const_cast<int64_t*>(in1s.data()), in1s.size());
+  phi::memory_utils::Copy(GPUPlace{},
                           in_ids_d,
-                          phi::CPUPlace{},
-                          in1s.data(),
+                          CPUPlace{},
+                          stable_in1s,
                           sizeof(int64_t) * input_num,
                           dev_ctx.stream());
-  phi::memory_utils::Copy(phi::GPUPlace{},
+  const int64_t* stable_in2s =
+      backends::gpu::RestoreHostMemIfCapturingCUDAGraph(
+          const_cast<int64_t*>(in2s.data()), in2s.size());
+  phi::memory_utils::Copy(GPUPlace{},
                           in_embs_d,
-                          phi::CPUPlace{},
-                          in2s.data(),
+                          CPUPlace{},
+                          stable_in2s,
                           sizeof(int64_t) * input_num,
                           dev_ctx.stream());
 
@@ -90,12 +97,12 @@ void EmbeddingEltWiseLayerNormKernel(
   auto* scale_d = scale.data<T>();
   auto* output_d = dev_ctx.template Alloc<T>(out, out->numel() * sizeof(T));
 
-  if (std::is_same<T, phi::dtype::float16>::value) {
+  if (std::is_same<T, phi::float16>::value) {
     const half* scale_new = reinterpret_cast<const half*>(scale_d);
     const half* bias_new = reinterpret_cast<const half*>(bias_d);
     half* output_new = reinterpret_cast<half*>(output_d);
 
-    phi::funcs::EmbEltwiseLayerNormFunctor<half> emb_eltwise_layernorm_func;
+    funcs::EmbEltwiseLayerNormFunctor<half> emb_eltwise_layernorm_func;
     emb_eltwise_layernorm_func(batch,
                                seq_len,
                                hidden,
@@ -108,7 +115,7 @@ void EmbeddingEltWiseLayerNormKernel(
                                input_num,
                                dev_ctx.stream());
   } else {
-    phi::funcs::EmbEltwiseLayerNormFunctor<T> emb_eltwise_layernorm_func;
+    funcs::EmbEltwiseLayerNormFunctor<T> emb_eltwise_layernorm_func;
     emb_eltwise_layernorm_func(batch,
                                seq_len,
                                hidden,
@@ -126,13 +133,13 @@ void EmbeddingEltWiseLayerNormKernel(
 }  // namespace fusion
 }  // namespace phi
 
-#if defined(PADDLE_WITH_CUDA) && CUDA_VERSION >= 10000
+#if defined(PADDLE_WITH_CUDA)
 PD_REGISTER_KERNEL(fused_embedding_eltwise_layernorm,
                    GPU,
                    ALL_LAYOUT,
                    phi::fusion::EmbeddingEltWiseLayerNormKernel,
                    float,
-                   phi::dtype::float16) {}
+                   phi::float16) {}
 #else
 PD_REGISTER_KERNEL(fused_embedding_eltwise_layernorm,
                    GPU,

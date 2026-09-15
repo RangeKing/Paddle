@@ -23,14 +23,26 @@
 namespace phi {
 
 template <typename T, typename Context>
-void ExpandKernel(const Context& ctx,
+void ExpandKernel(const Context& dev_ctx,
                   const DenseTensor& x,
                   const IntArray& shape,
                   DenseTensor* out) {
   auto in_dims = x.dims();
   auto expand_shape = shape.GetData();
-  auto vec_in_dims = common::vectorize<int64_t>(in_dims);
+  if (expand_shape.empty()) {
+    *out = x;
+    return;
+  }
+  auto vec_in_dims = vectorize<int64_t>(in_dims);
   auto diff = expand_shape.size() - vec_in_dims.size();
+  PADDLE_ENFORCE_GE(
+      diff,
+      0,
+      common::errors::InvalidArgument(
+          "The rank of the target shape (%d) must be greater than or equal to "
+          "the rank of the input tensor (%d).",
+          expand_shape.size(),
+          vec_in_dims.size()));
   vec_in_dims.insert(vec_in_dims.begin(), diff, 1);
   auto out_shape = vec_in_dims;
   bool has_zero_dim = false;
@@ -43,6 +55,7 @@ void ExpandKernel(const Context& ctx,
               "The expanded size (%d) for non-existing dimensions must be "
               "positive for expand_v2 op.",
               expand_shape[i]));
+      if (expand_shape[i] == 0) has_zero_dim = true;
       out_shape[i] = expand_shape[i];
     } else if (expand_shape[i] == -1) {
       out_shape[i] = vec_in_dims[i];
@@ -72,14 +85,14 @@ void ExpandKernel(const Context& ctx,
     }
   }
 
-  out->Resize(common::make_ddim(out_shape));
-  ctx.template Alloc<T>(out);
+  out->Resize(out_shape);
+  dev_ctx.template Alloc<T>(out);
   if (has_zero_dim) {
     return;
   }
   std::vector<const DenseTensor*> ins = {&x};
   std::vector<DenseTensor*> outs = {out};
-  phi::funcs::BroadcastKernel<T>(ctx, ins, &outs, kps::IdentityFunctor<T>());
+  funcs::BroadcastKernel<T>(dev_ctx, ins, &outs, kps::IdentityFunctor<T>());
 }
 
 }  // namespace phi
@@ -96,7 +109,9 @@ PD_REGISTER_KERNEL(expand,
                    int16_t,
                    uint8_t,
                    int8_t,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::float8_e4m3fn,
+                   phi::float8_e5m2,
+                   phi::complex64,
+                   phi::complex128) {}

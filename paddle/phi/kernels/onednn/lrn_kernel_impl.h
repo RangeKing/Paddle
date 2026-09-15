@@ -20,7 +20,7 @@ namespace phi {
 
 template <typename T, typename Context>
 class LRNOneDNNHandler
-    : public phi::funcs::
+    : public funcs::
           OneDNNHandlerNoCachingT<T, dnnl::lrn_forward, dnnl::lrn_backward> {
  public:
   LRNOneDNNHandler(int n,
@@ -30,9 +30,9 @@ class LRNOneDNNHandler
                    bool is_test,
                    const dnnl::engine onednn_engine,
                    phi::Place cpu_place,
-                   const phi::DenseTensor* input)
+                   const DenseTensor* input)
 
-      : phi::funcs::
+      : funcs::
             OneDNNHandlerNoCachingT<T, dnnl::lrn_forward, dnnl::lrn_backward>(
                 onednn_engine, cpu_place) {
     // MKL-DNN implements LRN in a caffe way:
@@ -49,8 +49,8 @@ class LRNOneDNNHandler
         is_test ? dnnl::prop_kind::forward_inference
                 : dnnl::prop_kind::forward_training,
         dnnl::algorithm::lrn_across_channels,
-        input->mem_desc(),
-        input->mem_desc(),
+        phi::funcs::GetOneDNNMemDesc(*input),
+        phi::funcs::GetOneDNNMemDesc(*input),
         n,
         alpha,
         beta,
@@ -64,10 +64,10 @@ class LRNOneDNNHandler
                    bool is_test,
                    const dnnl::engine onednn_engine,
                    phi::Place cpu_place,
-                   const phi::DenseTensor* in_x,
-                   const phi::DenseTensor* out_grad,
-                   phi::DenseTensor* in_x_grad)
-      : phi::funcs::
+                   const DenseTensor* in_x,
+                   const DenseTensor* out_grad,
+                   DenseTensor* in_x_grad)
+      : funcs::
             OneDNNHandlerNoCachingT<T, dnnl::lrn_forward, dnnl::lrn_backward>(
                 onednn_engine, cpu_place) {
     PADDLE_ENFORCE_EQ(
@@ -83,8 +83,8 @@ class LRNOneDNNHandler
     this->AcquireForwardPrimitiveDescriptor(
         dnnl::prop_kind::forward_training,
         dnnl::algorithm::lrn_across_channels,
-        in_x->mem_desc(),
-        in_x->mem_desc(),
+        phi::funcs::GetOneDNNMemDesc(*in_x),
+        phi::funcs::GetOneDNNMemDesc(*in_x),
         n,
         alpha,
         beta,
@@ -92,17 +92,17 @@ class LRNOneDNNHandler
 
     this->AcquireBackwardPrimitiveDescriptor(
         dnnl::algorithm::lrn_across_channels,
-        out_grad->mem_desc(),
-        out_grad->mem_desc(),
-        in_x->mem_desc(),
+        phi::funcs::GetOneDNNMemDesc(*out_grad),
+        phi::funcs::GetOneDNNMemDesc(*out_grad),
+        phi::funcs::GetOneDNNMemDesc(*in_x),
         n,
         alpha,
         beta,
         k);
   }
 
-  std::shared_ptr<dnnl::memory> AcquireWorkspaceMemory(
-      phi::DenseTensor* workspace, const Context& dev_ctx) {
+  std::shared_ptr<dnnl::memory> AcquireWorkspaceMemory(DenseTensor* workspace,
+                                                       const Context& dev_ctx) {
     T* ptr = dev_ctx.template HostAlloc<T>(
         workspace, this->fwd_pd_->workspace_desc().get_size());
     return this->AcquireMemoryFromPrimitive(this->fwd_pd_->workspace_desc(),
@@ -110,11 +110,11 @@ class LRNOneDNNHandler
   }
 
   std::shared_ptr<dnnl::memory> AcquireBackwardWorkspaceMemory(
-      const phi::DenseTensor* workspace) {
+      const DenseTensor* workspace) {
     const T* workspace_data = workspace->data<T>();
     return this->AcquireMemoryFromPrimitive(
         this->fwd_pd_->workspace_desc(),
-        phi::funcs::to_void_cast<T>(workspace_data));
+        funcs::to_void_cast<T>(workspace_data));
   }
 };
 
@@ -136,11 +136,6 @@ void LRNMKLDNNOpKernel(const Context& dev_ctx,
       is_float_type,
       true,
       common::errors::PreconditionNotMet("DNNL LRN must use float data."));
-  bool eq_place = dev_ctx.GetPlace().GetType() == phi::AllocationType::CPU;
-  PADDLE_ENFORCE_EQ(eq_place,
-                    true,
-                    common::errors::PreconditionNotMet(
-                        "Operator DNNL LRN must use CPUPlace"));
   const auto& onednn_engine = dev_ctx.GetEngine();
 
   auto x = &x_in;
@@ -155,11 +150,11 @@ void LRNMKLDNNOpKernel(const Context& dev_ctx,
   auto lrn_p = handler.AcquireForwardPrimitive();
 
   auto workspace_memory = handler.AcquireWorkspaceMemory(mid, dev_ctx);
-  mid->set_layout(phi::DataLayout::ONEDNN);
+  mid->set_layout(DataLayout::ONEDNN);
 
   auto& astream = OneDNNContext::tls().get_stream();
   if (!workspace_memory->get_desc().is_zero()) {
-    mid->set_mem_desc(workspace_memory->get_desc());
+    phi::funcs::SetOneDNNMemDesc(mid, workspace_memory->get_desc());
     lrn_p->execute(astream,
                    {{DNNL_ARG_SRC, *src_memory},
                     {DNNL_ARG_DST, *dst_memory},
@@ -170,7 +165,7 @@ void LRNMKLDNNOpKernel(const Context& dev_ctx,
   }
   astream.wait();
 
-  out->set_mem_desc(dst_memory->get_desc());
+  phi::funcs::SetOneDNNMemDesc(out, dst_memory->get_desc());
 }
 
 template <typename T, typename Context>
@@ -193,10 +188,6 @@ void LRNMKLDNNGradOpKernel(const Context& dev_ctx,
                     true,
                     common::errors::PreconditionNotMet(
                         "DNNL LRN GradOpKernel must use float data."));
-  PADDLE_ENFORCE_EQ(dev_ctx.GetPlace().GetType() == phi::AllocationType::CPU,
-                    true,
-                    common::errors::PreconditionNotMet(
-                        "Operator DNNL LRNGrad must use CPUPlace"));
 
   auto in_x = &x;
   auto mid = &mid_out;
@@ -231,6 +222,6 @@ void LRNMKLDNNGradOpKernel(const Context& dev_ctx,
                     {DNNL_ARG_WORKSPACE, *workspace}});
   astream.wait();
 
-  in_x_grad->set_mem_desc(diff_src_memory->get_desc());
+  phi::funcs::SetOneDNNMemDesc(in_x_grad, diff_src_memory->get_desc());
 }
 }  // namespace phi

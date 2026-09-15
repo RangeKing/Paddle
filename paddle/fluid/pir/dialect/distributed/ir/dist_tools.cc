@@ -197,7 +197,6 @@ bool HasDistInput(const std::vector<pir::Value>& inputs,
           return true;
         }
       }
-      return false;
     }
   }
   return false;
@@ -271,7 +270,9 @@ void CvtValueToDist(pir::Value value, ProcessMeshAttribute mesh_attr) {
   std::unordered_set<pir::Value> connected_values;
   GetConnectedValues(value, connected_values);
   for (auto value : connected_values) {
-    value.set_type(CvtTypeToDist(value.type(), mesh_attr));
+    if (value.impl()) {
+      value.set_type(CvtTypeToDist(value.type(), mesh_attr));
+    }
   }
 }
 

@@ -24,8 +24,6 @@ limitations under the License. */
 
 namespace phi::distributed {
 
-using phi::distributed::auto_parallel::str_join;
-
 SpmdInfo GatherInferSpmdBase(const DistMetaTensor& x,
                              const DistMetaTensor& index,
                              int axis) {
@@ -34,7 +32,7 @@ SpmdInfo GatherInferSpmdBase(const DistMetaTensor& x,
   // x_dims_mapping_src with the macro
   EXTRACT_SHAPE_AND_DIST_ATTR(x);
   // index may be 0-d tensor, verify it specifically
-  auto index_shape = common::vectorize(index.dims());
+  auto index_shape = vectorize(index.dims());
   int index_ndim = index_shape.size();
   const TensorDistAttr& index_dist_attr_src = index.dist_attr();
   const std::vector<int64_t>& index_dims_mapping_src =
@@ -70,7 +68,7 @@ SpmdInfo GatherInferSpmdBase(const DistMetaTensor& x,
     out_axes[axis] = 'k';
   }
 
-  // Step2: Sharding Propogation
+  // Step2: Sharding Propagation
   // Step2.1: Merge input shardings
   std::vector<int64_t> x_dims_mapping(x_dims_mapping_src);
   if (axis < x_ndim) {
@@ -132,7 +130,7 @@ SpmdInfo GatherInferSpmdReverseBase(const DistMetaTensor& x,
     out_axes[axis] = 'k';
   }
 
-  // Step2: Sharding Propogation
+  // Step2: Sharding Propagation
   // Step2.1: Merge output shardings
   std::unordered_map<std::string, int64_t> axis_to_dim_map =
       ShardingMergeForTensors({{out_axes, out_dims_mapping_src}});
@@ -179,7 +177,7 @@ SpmdInfo GatherGradInferSpmd(const DistMetaTensor& x,
                              const Scalar& axis) {
   EXTRACT_SHAPE_AND_DIST_ATTR(x);
   EXTRACT_SHAPE_AND_DIST_ATTR(out_grad);
-  auto index_shape = common::vectorize(index.dims());
+  auto index_shape = vectorize(index.dims());
   int index_ndim = index_shape.size();
   const TensorDistAttr& index_dist_attr_src = index.dist_attr();
   const std::vector<int64_t>& index_dims_mapping_src =

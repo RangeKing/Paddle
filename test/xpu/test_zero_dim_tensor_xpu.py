@@ -345,7 +345,7 @@ class TestBinaryAPI(unittest.TestCase):
             # 1) x is 0D, y is 0D
             x_np = np.random.randint(-10, 10, [])
             y_np = np.random.randint(-10, 10, [])
-            out_np = eval(f'np.{api.__name__}(x_np, y_np)')
+            out_np = eval(f"np.{api.__name__.lstrip('_')}(x_np, y_np)")
 
             x = paddle.to_tensor(x_np)
             y = paddle.to_tensor(y_np)
@@ -357,7 +357,7 @@ class TestBinaryAPI(unittest.TestCase):
             # 2) x is ND, y is 0D
             x_np = np.random.randint(-10, 10, [3, 5])
             y_np = np.random.randint(-10, 10, [])
-            out_np = eval(f'np.{api.__name__}(x_np, y_np)')
+            out_np = eval(f"np.{api.__name__.lstrip('_')}(x_np, y_np)")
 
             x = paddle.to_tensor(x_np)
             y = paddle.to_tensor(y_np)
@@ -369,7 +369,7 @@ class TestBinaryAPI(unittest.TestCase):
             # 3) x is 0D , y is ND
             x_np = np.random.randint(-10, 10, [])
             y_np = np.random.randint(-10, 10, [3, 5])
-            out_np = eval(f'np.{api.__name__}(x_np, y_np)')
+            out_np = eval(f"np.{api.__name__.lstrip('_')}(x_np, y_np)")
 
             x = paddle.to_tensor(x_np)
             y = paddle.to_tensor(y_np)
@@ -1074,10 +1074,11 @@ class TestSundryAPI(unittest.TestCase):
 
         self.assertEqual(out1.shape, [])
         self.assertEqual(out2.shape, [])
-        self.assertEqual(out1, 0)
-        self.assertEqual(out2, 0)
+        self.assertTrue(np.isnan(out1.numpy()))
+        self.assertTrue(np.isnan(out2.numpy()))
 
         self.assertEqual(x.grad.shape, [])
+        self.assertTrue(np.isnan(x.grad.numpy()))
 
         # 2) x is ND
         x = paddle.rand([3, 5])
@@ -1099,11 +1100,11 @@ class TestSundryAPI(unittest.TestCase):
 
         self.assertEqual(out1.shape, [])
         self.assertEqual(out2.shape, [])
-        self.assertEqual(out1, 0)
-        self.assertEqual(out2, 0)
+        self.assertTrue(np.isnan(out1.numpy()))
+        self.assertTrue(np.isnan(out2.numpy()))
 
         self.assertEqual(x.grad.shape, [])
-        np.testing.assert_allclose(x.grad, 0)
+        self.assertTrue(np.isnan(x.grad.numpy()))
 
         # 2) x is ND
         x = paddle.rand([3, 5])
@@ -1515,6 +1516,22 @@ class TestSundryAPI(unittest.TestCase):
 
         self.assertEqual(out.shape, [2, 3])
         np.testing.assert_array_equal(out.numpy()[1], [1.0, 2.0, 3.0])
+
+    def test_scatter_grad_xpu_index_empty(self):
+        x = paddle.randn([100, 1], dtype='float32')
+        x.stop_gradient = False
+        index = paddle.to_tensor([], dtype='int64')
+        updates = paddle.randn([0, 1], dtype='float32')
+        updates.stop_gradient = False
+        out = paddle.scatter(x, index, updates)
+        out.backward()
+
+        self.assertEqual(x.shape, [100, 1])
+        self.assertEqual(index.shape, [0])
+        self.assertEqual(updates.shape, [0, 1])
+        self.assertEqual(out.shape, [100, 1])
+        self.assertEqual(x.grad.shape, [100, 1])
+        self.assertEqual(updates.grad.shape, [0, 1])
 
     def test_diagflat(self):
         x1 = paddle.rand([])
@@ -2216,6 +2233,22 @@ class TestSundryAPI(unittest.TestCase):
         self.assertEqual(x2.grad.shape, [])
         self.assertEqual(x2.grad.numpy(), 0.25)
 
+    def test_prelu_grad_xpu_zero_batch(self):
+        x = paddle.full([0, 128, 28, 28], 1.0, 'float32')
+        x.stop_gradient = False
+        w = paddle.full([128], 0.25, dtype='float32')
+        w.stop_gradient = False
+
+        out = paddle.nn.functional.prelu(x, w, data_format="NCHW")
+        out.retain_grads()
+        out.backward()
+
+        self.assertEqual(out.shape, [0, 128, 28, 28])
+        self.assertEqual(x.grad.shape, [0, 128, 28, 28])
+        self.assertEqual(out.grad.shape, [0, 128, 28, 28])
+        self.assertEqual(w.grad.shape, [128])
+        self.assertEqual(w.grad.numpy().sum(), 0.0)
+
     def test_while_loop(self):
         def cond(i, x):
             return paddle.less_than(i, eleven)
@@ -2302,6 +2335,29 @@ class TestSundryAPI(unittest.TestCase):
         out1.backward()
 
         self.assertTrue(out1.shape, [2, 3])
+        self.assertTrue(x1.grad.shape, [3, 3, 3])
+
+    def test_compat_slogdet(self):
+        # 2-D input
+        x = paddle.randn([3, 3])
+        x.stop_gradient = False
+        sign, logabsdet = paddle.linalg.slogdet(x)
+        loss = logabsdet.sum()
+        loss.backward()
+
+        self.assertEqual(sign.shape, [])
+        self.assertEqual(logabsdet.shape, [])
+        self.assertTrue(x.grad.shape, [3, 3])
+
+        # 3-D input
+        x1 = paddle.randn([3, 3, 3])
+        x1.stop_gradient = False
+        sign1, logabsdet1 = paddle.linalg.slogdet(x1)
+        loss1 = logabsdet1.sum()
+        loss1.backward()
+
+        self.assertTrue(sign1.shape, [3])
+        self.assertTrue(logabsdet1.shape, [3])
         self.assertTrue(x1.grad.shape, [3, 3, 3])
 
     def test_multi_dot(self):
@@ -2672,6 +2728,39 @@ class TestNoBackwardAPI(unittest.TestCase):
         for i in range(len(res)):
             self.assertEqual(emb.numpy()[i], res[i])
 
+    def test_embedding_alias(self):
+        ids = paddle.full(shape=[], fill_value=1, dtype='int64')
+        w0 = paddle.arange(3, 9).reshape((3, 2)).astype(paddle.float32)
+        w = paddle.to_tensor(w0, stop_gradient=False)
+        emb = paddle.nn.functional.embedding(
+            input=ids, weight=w, sparse=True, name="embedding"
+        )
+        self.assertEqual(emb.shape, [2])
+        res = [5.0, 6.0]
+        for i in range(len(res)):
+            self.assertEqual(emb.numpy()[i], res[i])
+
+    def test_embedding_grad_ids_3_weight_20_32(self):
+        for dtype in ['int32', 'int64']:
+            with self.subTest(dtype=dtype):
+                ids = paddle.to_tensor([], dtype=dtype).reshape([0, 1, 1])
+                w = paddle.randn([20, 32], dtype='float32')
+                w.stop_gradient = False
+                out = paddle.nn.functional.embedding(
+                    input=ids,
+                    weight=w,
+                    padding_idx=None,
+                    max_norm=None,
+                    norm_type=2.0,
+                    sparse=False,
+                    scale_grad_by_freq=False,
+                    name=None,
+                )
+                loss = out.sum()
+                loss.backward()
+                self.assertEqual(out.shape, [0, 1, 1, 32])
+                self.assertEqual(np.count_nonzero(w.grad.numpy()), 0)
+
     def test_one_hot_label(self):
         label = paddle.full(shape=[], fill_value=2, dtype='int64')
         one_hot_label = paddle.nn.functional.one_hot(label, num_classes=4)
@@ -2742,6 +2831,13 @@ class TestNoBackwardAPI(unittest.TestCase):
         d = paddle.eye(10)
         out_d = paddle.linalg.matrix_rank(d, tol=tol_2)
         self.assertEqual(out_d.shape, [2])
+
+
+class TestSwishZeroSizeXPU(unittest.TestCase):
+    def test_swish_zero_size(self):
+        x = paddle.randn([0, 10, 1, 1], dtype='float16')
+        out = F.swish(x)
+        self.assertEqual(out.shape, [0, 10, 1, 1])
 
 
 if __name__ == "__main__":

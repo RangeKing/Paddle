@@ -17,7 +17,6 @@
 #include "glog/logging.h"
 
 #include "paddle/phi/backends/cpu/cpu_context.h"
-#include "paddle/phi/common/complex.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/core/utils/data_type.h"
 #include "paddle/phi/kernels/funcs/complex_functors.h"
@@ -68,18 +67,18 @@ inline void CheckLapackEigResult(const int info, const std::string& name) {
 
 template <typename T, typename Context>
 typename std::enable_if<std::is_floating_point<T>::value>::type LapackEigvals(
-    const Context& ctx,
+    const Context& dev_ctx,
     const DenseTensor& input,
     DenseTensor* output,
     DenseTensor* work,
     DenseTensor* rwork /*unused*/) {
   DenseTensor a;  // will be overwritten when lapackEig exit
-  Copy(ctx, input, input.place(), /*blocking=*/true, &a);
+  Copy(dev_ctx, input, input.place(), /*blocking=*/true, &a);
 
   DenseTensor w;
   int64_t n_dim = input.dims()[1];
-  w.Resize(common::make_ddim({n_dim << 1}));
-  T* w_data = ctx.template Alloc<T>(&w);
+  w.Resize({n_dim << 1});
+  T* w_data = dev_ctx.template Alloc<T>(&w);
 
   int64_t work_mem = static_cast<int64_t>(work->memory_size());
   int64_t required_work_mem = 3 * n_dim * sizeof(T);
@@ -94,20 +93,20 @@ typename std::enable_if<std::is_floating_point<T>::value>::type LapackEigvals(
           work_mem));
 
   int info = 0;
-  phi::funcs::lapackEig<T>('N',
-                           'N',
-                           static_cast<int>(n_dim),
-                           a.template data<T>(),
-                           static_cast<int>(n_dim),
-                           w_data,
-                           nullptr,
-                           1,
-                           nullptr,
-                           1,
-                           work->template data<T>(),
-                           static_cast<int>(work_mem / sizeof(T)),
-                           static_cast<T*>(nullptr),
-                           &info);
+  funcs::lapackEig<T>('N',
+                      'N',
+                      static_cast<int>(n_dim),
+                      a.template data<T>(),
+                      static_cast<int>(n_dim),
+                      w_data,
+                      nullptr,
+                      1,
+                      nullptr,
+                      1,
+                      work->template data<T>(),
+                      static_cast<int>(work_mem / sizeof(T)),
+                      static_cast<T*>(nullptr),
+                      &info);
 
   std::string name = "phi::backend::dynload::dgeev_";
   if (input.dtype() == DataType::FLOAT64) {
@@ -115,7 +114,7 @@ typename std::enable_if<std::is_floating_point<T>::value>::type LapackEigvals(
   }
   CheckLapackEigResult(info, name);
 
-  funcs::ForRange<Context> for_range(ctx, n_dim);
+  funcs::ForRange<Context> for_range(dev_ctx, n_dim);
   funcs::RealImagToComplexFunctor<PaddleCType<T>> functor(
       w_data, w_data + n_dim, output->template data<PaddleCType<T>>(), n_dim);
   for_range(functor);
@@ -124,13 +123,13 @@ typename std::enable_if<std::is_floating_point<T>::value>::type LapackEigvals(
 template <typename T, typename Context>
 typename std::enable_if<std::is_same<T, dtype::complex<float>>::value ||
                         std::is_same<T, dtype::complex<double>>::value>::type
-LapackEigvals(const Context& ctx,
+LapackEigvals(const Context& dev_ctx,
               const DenseTensor& input,
               DenseTensor* output,
               DenseTensor* work,
               DenseTensor* rwork) {
   DenseTensor a;  // will be overwritten when lapackEig exit
-  Copy(ctx, input, input.place(), /*blocking=*/true, &a);
+  Copy(dev_ctx, input, input.place(), /*blocking=*/true, &a);
 
   int64_t work_mem = static_cast<int64_t>(work->memory_size());
   int64_t n_dim = input.dims()[1];
@@ -158,21 +157,20 @@ LapackEigvals(const Context& ctx,
           rwork_mem));
 
   int info = 0;
-  phi::funcs::lapackEig<T, dtype::Real<T>>(
-      'N',
-      'N',
-      static_cast<int>(n_dim),
-      a.template data<T>(),
-      static_cast<int>(n_dim),
-      output->template data<T>(),
-      nullptr,
-      1,
-      nullptr,
-      1,
-      work->template data<T>(),
-      static_cast<int>(work_mem / sizeof(T)),
-      rwork->template data<dtype::Real<T>>(),
-      &info);
+  funcs::lapackEig<T, dtype::Real<T>>('N',
+                                      'N',
+                                      static_cast<int>(n_dim),
+                                      a.template data<T>(),
+                                      static_cast<int>(n_dim),
+                                      output->template data<T>(),
+                                      nullptr,
+                                      1,
+                                      nullptr,
+                                      1,
+                                      work->template data<T>(),
+                                      static_cast<int>(work_mem / sizeof(T)),
+                                      rwork->template data<dtype::Real<T>>(),
+                                      &info);
 
   std::string name = "phi::backend::dynload::cgeev_";
   if (input.dtype() == DataType::COMPLEX128) {
@@ -192,7 +190,7 @@ void SpiltBatchSquareMatrix(const DenseTensor& input,
     flattened_input_dims =
         common::flatten_to_3d(input_dims, last_dim - 1, last_dim);
   } else {
-    flattened_input_dims = common::make_ddim({1, n_dim, n_dim});
+    flattened_input_dims = make_ddim({1, n_dim, n_dim});
   }
 
   DenseTensor flattened_input;
@@ -202,8 +200,13 @@ void SpiltBatchSquareMatrix(const DenseTensor& input,
 }
 
 template <typename T, typename Context>
-void EigvalsKernel(const Context& ctx, const DenseTensor& x, DenseTensor* out) {
-  ctx.template Alloc<PaddleCType<T>>(out);
+void EigvalsKernel(const Context& dev_ctx,
+                   const DenseTensor& x,
+                   DenseTensor* out) {
+  dev_ctx.template Alloc<PaddleCType<T>>(out);
+  if (out && out->numel() == 0) {
+    return;
+  }
 
   std::vector<DenseTensor> x_matrices;
   SpiltBatchSquareMatrix(x, /*->*/ &x_matrices);
@@ -211,7 +214,7 @@ void EigvalsKernel(const Context& ctx, const DenseTensor& x, DenseTensor* out) {
   int64_t n_dim = x_matrices[0].dims()[1];
   int64_t n_batch = static_cast<int64_t>(x_matrices.size());
   DDim out_dims = out->dims();
-  out->Resize(common::make_ddim({n_batch, n_dim}));
+  out->Resize({n_batch, n_dim});
   std::vector<DenseTensor> out_vectors = out->Split(1, 0);
 
   // query workspace size
@@ -235,17 +238,17 @@ void EigvalsKernel(const Context& ctx, const DenseTensor& x, DenseTensor* out) {
 
   DenseTensor work, rwork;
 
-  work.Resize(common::make_ddim({lwork}));
-  ctx.template Alloc<T>(&work);
+  work.Resize({lwork});
+  dev_ctx.template Alloc<T>(&work);
 
   if (IsComplexType(x.dtype())) {
-    rwork.Resize(common::make_ddim({n_dim << 1}));
-    ctx.template Alloc<dtype::Real<T>>(&rwork);
+    rwork.Resize({n_dim << 1});
+    dev_ctx.template Alloc<dtype::Real<T>>(&rwork);
   }
 
   for (int64_t i = 0; i < n_batch; ++i) {
     LapackEigvals<T, Context>(
-        ctx, x_matrices[i], &out_vectors[i], &work, &rwork);
+        dev_ctx, x_matrices[i], &out_vectors[i], &work, &rwork);
   }
   out->Resize(out_dims);
 }
@@ -258,7 +261,7 @@ PD_REGISTER_KERNEL(eigvals,
                    phi::EigvalsKernel,
                    float,
                    double,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {
+                   phi::complex64,
+                   phi::complex128) {
   kernel->OutputAt(0).SetDataType(phi::dtype::ToComplex(kernel_key.dtype()));
 }

@@ -28,11 +28,11 @@ class Scope;
 class CustomKernelInstruction : public InstructionBase {
  public:
   CustomKernelInstruction(size_t id,
-                          const phi::Place& place,
-                          ::pir::Operation* op,
+                          const Place& place,
+                          pir::Operation* op,
                           const ValueExecutionInfo& value_exec_info);
 
-  ::pir::Operation* Operation() const override { return op_; }
+  pir::Operation* Operation() const override { return op_; }
 
   void Run() override;
 
@@ -59,25 +59,25 @@ class CustomKernelInstruction : public InstructionBase {
   std::unordered_map<std::string, int> input_name2id_map_;
   std::unordered_map<std::string, int> vec_input_name2id_map_;
 
-  // use for runing infershape
+  // use for running infershape
   std::vector<std::vector<int64_t>> input_shapes_;
   std::vector<std::vector<std::vector<int64_t>>> vec_input_shapes_;
   std::vector<paddle::any> custom_attrs_;
 
-  // use for runing inferdtype
+  // use for running inferdtype
   std::vector<DataType> input_dtypes_;
   std::vector<std::vector<DataType>> vec_input_dtypes_;
 
   // use for calculate input shapes and dtypes in runtime
-  std::vector<phi::DenseTensor*> input_ptrs_;
-  std::vector<std::vector<phi::DenseTensor*>> vec_input_ptrs_;
+  std::vector<DenseTensor*> input_ptrs_;
+  std::vector<std::vector<DenseTensor*>> vec_input_ptrs_;
 
   // use for update output
-  std::vector<phi::DenseTensor*> cache_out_ptrs_;
+  std::vector<DenseTensor*> cache_out_ptrs_;
 
   std::string custom_op_name_;
 
-  ::pir::Operation* op_{nullptr};  // not owned
+  pir::Operation* op_{nullptr};  // not owned
 
   const paddle::OpMetaInfo* custom_op_meta_;   // not owned
   const ValueExecutionInfo& value_exec_info_;  // not owned

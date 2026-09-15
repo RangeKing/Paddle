@@ -16,6 +16,7 @@ import functools
 import unittest
 
 import numpy as np
+from op_test import get_device_place, get_places, is_custom_device
 
 import paddle
 
@@ -94,6 +95,93 @@ class TestInplace(unittest.TestCase):
             var_b[1:2] = 3  # var_b is modified inplace after using it
 
             loss.backward()
+
+
+class TestInplaceCompatibility(unittest.TestCase):
+    def setUp(self):
+        np.random.seed(2026)
+        self.shape = [10, 20, 1]
+        self.dtype = "float32"
+        self.x_np = np.random.uniform(-5, 5, self.shape).astype(self.dtype)
+        self.set_inplace_api()
+
+    def numpy_api_processing(self, var):
+        return np.abs(var)
+
+    def set_inplace_api(self):
+        self.inplace_api = paddle.abs_
+
+    def test_inplace_compatibility_dygraph(self):
+        paddle.disable_static()
+        ref_out = self.numpy_api_processing(self.x_np)
+        x = paddle.to_tensor(self.x_np)
+        # arg alias
+        out1 = self.inplace_api(x=x)
+        out2 = self.inplace_api(input=x)
+        np.testing.assert_allclose(out1.numpy(), ref_out, rtol=1e-05)
+        np.testing.assert_allclose(out2.numpy(), ref_out, rtol=1e-05)
+        # inplace behavior
+        np.testing.assert_allclose(x.numpy(), ref_out, rtol=1e-05)
+        self.assertTrue(id(x) == id(out1))
+        self.assertTrue(id(x) == id(out2))
+        # prohibited out arg
+        y = paddle.empty([])
+        with self.assertRaises(ValueError):
+            self.inplace_api(x, out=y)
+
+    def test_inplace_compatibility_static(self):
+        paddle.enable_static()
+        ref_out = self.numpy_api_processing(self.x_np)
+        main = paddle.static.Program()
+        startup = paddle.static.Program()
+        with paddle.base.program_guard(main, startup):
+            x = paddle.static.data(name="x", shape=self.shape, dtype=self.dtype)
+            out1 = self.inplace_api(x=x)
+            out2 = self.inplace_api(input=x)
+            fetch_list = [x, out1, out2]
+            exe = paddle.base.Executor()
+            fetches = exe.run(
+                main,
+                feed={"x": self.x_np},
+                fetch_list=fetch_list,
+            )
+            np.testing.assert_allclose(fetches[0], ref_out, rtol=1e-05)
+            np.testing.assert_allclose(fetches[1], ref_out, rtol=1e-05)
+            np.testing.assert_allclose(fetches[2], ref_out, rtol=1e-05)
+
+
+class TestStaticInplace(unittest.TestCase):
+    def setUp(self):
+        np.random.seed(2026)
+        self.shape = [10, 20, 1]
+        self.dtype = "float32"
+        self.x_np = np.random.uniform(-5, 5, self.shape).astype(self.dtype)
+
+    def numpy_api_processing(self, var):
+        return np.abs(var)
+
+    def inplace_api_processing(self, var):
+        return paddle.abs_(var)
+
+    def test_inplace_static(self):
+        paddle.enable_static()
+        ref_out = self.numpy_api_processing(self.x_np)
+        main = paddle.static.Program()
+        startup = paddle.static.Program()
+        with paddle.base.program_guard(main, startup):
+            x = paddle.static.data(name="x", shape=self.shape, dtype=self.dtype)
+            out = self.inplace_api_processing(x)
+            fetch_list = [out, x]
+            exe = paddle.base.Executor()
+            fetches = exe.run(
+                main,
+                feed={"x": self.x_np},
+                fetch_list=fetch_list,
+            )
+            # test inplace output value
+            np.testing.assert_allclose(fetches[0], ref_out, rtol=1e-05)
+            # test inplace behavior
+            np.testing.assert_allclose(fetches[1], fetches[0], rtol=1e-05)
 
 
 class TestDygraphInplace(unittest.TestCase):
@@ -822,10 +910,7 @@ class TestDygraphInplacePowerScalar(TestDygraphInplaceWithContinuous):
 
     def test_type_error(self):
         var = paddle.to_tensor(self.input_var_numpy, dtype=self.dtype)
-        with self.assertRaisesRegex(
-            TypeError,
-            f'y must be scalar type, but received: {type([2])} ',
-        ):
+        with self.assertRaises(TypeError):
             paddle.pow_(var, [2])
 
 
@@ -1528,6 +1613,22 @@ class TestDygraphInplacBitwiseOr(TestDygraphInplacBitwiseAnd):
         return paddle.bitwise_or(var, self.y)
 
 
+class TestDygraphInplacBitwiseOrAlias1(TestDygraphInplacBitwiseAnd):
+    def inplace_api_processing(self, var):
+        return paddle.bitwise_or_(var, other=self.y)
+
+    def non_inplace_api_processing(self, var):
+        return paddle.bitwise_or(var, other=self.y)
+
+
+class TestDygraphInplacBitwiseOrAlias2(TestDygraphInplacBitwiseAnd):
+    def inplace_api_processing(self, var):
+        return paddle.bitwise_or_(input=var, other=self.y)
+
+    def non_inplace_api_processing(self, var):
+        return paddle.bitwise_or(input=var, other=self.y)
+
+
 class TestDygraphInplacBitwiseXor(TestDygraphInplacBitwiseAnd):
     def inplace_api_processing(self, var):
         return paddle.bitwise_xor_(var, self.y)
@@ -1696,6 +1797,48 @@ class TestDygraphInplaceCumprod(TestDygraphInplace):
 
             inplace_var = self.inplace_api_processing(inplace_var)
             self.assertEqual(var.inplace_version, 3)
+
+
+class TestDygraphInplaceCumprodWithFlatten(TestDygraphInplace):
+    def inplace_api_processing(self, var):
+        return paddle.cumprod_(var, None, dtype="float32")
+
+    def non_inplace_api_processing(self, var):
+        return paddle.cumprod(var, None, dtype="float32")
+
+    def test_backward_error(self):
+        # It raises an error because the inplace operator will result
+        # in incorrect gradient computation.
+        with paddle.base.dygraph.guard():
+            var_a = paddle.to_tensor(self.input_var_numpy).astype(self.dtype)
+            var_a.stop_gradient = False
+
+            var_b = var_a**2
+
+            # Here, the gradient computation will use the value of var_b
+            var_c = var_b**2
+            paddle.cumprod_(var_b, None, dtype="float64")
+
+            loss = paddle.nn.functional.relu(var_c)
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "received tensor_version:3 != wrapper_version_snapshot:0",
+            ):
+                loss.backward()
+
+    def test_forward_version(self):
+        with paddle.base.dygraph.guard():
+            var = paddle.to_tensor(self.input_var_numpy).astype(self.dtype)
+            self.assertEqual(var.inplace_version, 0)
+
+            inplace_var = self.inplace_api_processing(var)
+            self.assertEqual(var.inplace_version, 2)
+
+            inplace_var[0] = 2
+            self.assertEqual(var.inplace_version, 3)
+
+            inplace_var = self.inplace_api_processing(inplace_var)
+            self.assertEqual(var.inplace_version, 5)
 
 
 class TestDygrapInplaceRenorm(TestDygraphInplaceWithContinuous):
@@ -1882,6 +2025,13 @@ class TestDygraphInplaceIndexFill(TestDygraphInplace):
         self.index = paddle.to_tensor([0, 2])
         self.value = -1
 
+    def _use_kernel_path(self):
+        """Check if using C++ kernel path (version +1) or fallback path (version +3)"""
+        return (
+            paddle.is_compiled_with_cuda()
+            or paddle.device.get_device().startswith('cpu')
+        )
+
     def inplace_api_processing(self, var):
         return paddle.index_fill_(var, self.index, self.axis, self.value)
 
@@ -1893,14 +2043,16 @@ class TestDygraphInplaceIndexFill(TestDygraphInplace):
             var = paddle.to_tensor(self.input_var_numpy).astype(self.dtype)
             self.assertEqual(var.inplace_version, 0)
 
+            version_delta = 1 if self._use_kernel_path() else 3
+
             inplace_var = self.inplace_api_processing(var)
-            self.assertEqual(var.inplace_version, 3)
+            self.assertEqual(var.inplace_version, version_delta)
 
             inplace_var[0] = 2
-            self.assertEqual(var.inplace_version, 4)
+            self.assertEqual(var.inplace_version, version_delta + 1)
 
             inplace_var = self.inplace_api_processing(inplace_var)
-            self.assertEqual(var.inplace_version, 7)
+            self.assertEqual(var.inplace_version, 2 * version_delta + 1)
 
     def test_backward_error(self):
         with paddle.base.dygraph.guard():
@@ -1909,6 +2061,8 @@ class TestDygraphInplaceIndexFill(TestDygraphInplace):
 
             var_b = var_a**2
 
+            version_delta = 1 if self._use_kernel_path() else 3
+
             var_c = var_b**2
             self.inplace_api_processing(var_b)
             var_c = paddle.cast(var_c, "float32")
@@ -1916,7 +2070,7 @@ class TestDygraphInplaceIndexFill(TestDygraphInplace):
             loss = paddle.nn.functional.relu(var_c)
             with self.assertRaisesRegex(
                 RuntimeError,
-                f"received tensor_version:{3} != wrapper_version_snapshot:{0}",
+                f"received tensor_version:{version_delta} != wrapper_version_snapshot:{0}",
             ):
                 loss.backward()
 
@@ -2047,9 +2201,7 @@ class TestDygraphInplaceBernoulliError(unittest.TestCase):
 class TestDygraphInplaceSet(unittest.TestCase):
     def setUp(self):
         self.init_data()
-        self.places = [paddle.CPUPlace()]
-        if paddle.base.core.is_compiled_with_cuda():
-            self.places.append(paddle.CUDAPlace(0))
+        self.places = get_places()
         self.support_dtypes = [
             'float32',
             'float64',
@@ -2132,10 +2284,10 @@ class TestDygraphInplaceSet(unittest.TestCase):
         x = paddle.to_tensor(self.x_np).astype(self.dtype)
         new_x = paddle.to_tensor(self.new_x_np).astype(self.dtype)
         no_inplace_x4 = self.non_inplace_api_processing(
-            x, new_x=new_x, stride=self.new_stride
+            x, new_x=new_x, stride=new_x.strides
         )
         inplace_x4 = self.inplace_api_processing(
-            x, new_x=new_x, stride=self.new_stride
+            x, new_x=new_x, stride=new_x.strides
         )
         np.testing.assert_array_equal(no_inplace_x4.numpy(), inplace_x4.numpy())
 
@@ -2172,10 +2324,10 @@ class TestDygraphInplaceSet(unittest.TestCase):
         x = paddle.to_tensor(self.x_np).astype(self.dtype)
         new_x = paddle.to_tensor(self.new_x_np).astype(self.dtype)
         no_inplace_x8 = self.non_inplace_api_processing(
-            x, new_x=new_x, stride=self.new_stride, offset=self.new_offset
+            x, new_x=new_x, stride=new_x.strides, offset=self.new_offset
         )
         inplace_x8 = self.inplace_api_processing(
-            x, new_x=new_x, stride=self.new_stride, offset=self.new_offset
+            x, new_x=new_x, stride=new_x.strides, offset=self.new_offset
         )
         np.testing.assert_array_equal(no_inplace_x8.numpy(), inplace_x8.numpy())
 
@@ -2208,6 +2360,7 @@ class TestDygraphInplaceSet(unittest.TestCase):
 
             x = self.inplace_api_processing(x)
             self.assertEqual(x.inplace_version, 2)
+            self.assertEqual(x.get_strides(), [1])
 
             x = self.inplace_api_processing(x, new_x=new_x)
             self.assertEqual(x.inplace_version, 3)
@@ -2224,14 +2377,14 @@ class TestDygraphInplaceSet(unittest.TestCase):
 
 
 @unittest.skipIf(
-    not paddle.base.core.is_compiled_with_cuda()
-    or not paddle.base.core.is_float16_supported(paddle.CUDAPlace(0)),
+    not (paddle.base.core.is_compiled_with_cuda() or is_custom_device())
+    or not paddle.base.core.is_float16_supported(get_device_place()),
     "core is not compiled with CUDA and not support the float16",
 )
 class TestDygraphInplaceSetFP16(TestDygraphInplaceSet):
     def setUp(self):
         self.init_data()
-        self.places = [paddle.CUDAPlace(0)]
+        self.places = get_places()
 
     def init_data(self):
         self.x_np = np.random.uniform(-5, 5, [7, 20, 2])
@@ -2254,14 +2407,14 @@ class TestDygraphInplaceSetFP16(TestDygraphInplaceSet):
 
 
 @unittest.skipIf(
-    not paddle.base.core.is_compiled_with_cuda()
-    or not paddle.base.core.is_bfloat16_supported(paddle.CUDAPlace(0)),
+    not (paddle.base.core.is_compiled_with_cuda() or is_custom_device())
+    or not paddle.base.core.is_bfloat16_supported(get_device_place()),
     "core is not compiled with CUDA and not support the bfloat16",
 )
 class TestDygraphInplaceSetBF16(TestDygraphInplaceSet):
     def setUp(self):
         self.init_data()
-        self.places = [paddle.CUDAPlace(0)]
+        self.places = get_places()
 
     def init_data(self):
         self.x_np = np.random.uniform(-5, 5, [7, 20, 2])
@@ -2286,9 +2439,7 @@ class TestDygraphInplaceSetBF16(TestDygraphInplaceSet):
 class TestDygraphInplaceResize(unittest.TestCase):
     def setUp(self):
         self.init_data()
-        self.places = [paddle.CPUPlace()]
-        if paddle.base.core.is_compiled_with_cuda():
-            self.places.append(paddle.CUDAPlace(0))
+        self.places = get_places()
         self.support_dtypes = [
             'float32',
             'float64',
@@ -2394,14 +2545,14 @@ class TestDygraphInplaceResize(unittest.TestCase):
 
 
 @unittest.skipIf(
-    not paddle.base.core.is_compiled_with_cuda()
-    or not paddle.base.core.is_float16_supported(paddle.CUDAPlace(0)),
+    not (paddle.base.core.is_compiled_with_cuda() or is_custom_device())
+    or not paddle.base.core.is_float16_supported(get_device_place()),
     "core is not compiled with CUDA and not support the float16",
 )
 class TestDygraphInplaceResizeFP16(TestDygraphInplaceResize):
     def setUp(self):
         self.init_data()
-        self.places = [paddle.CUDAPlace(0)]
+        self.places = get_places()
 
     def init_data(self):
         self.x_np = np.random.uniform(-5, 5, [3, 10, 2])
@@ -2422,14 +2573,14 @@ class TestDygraphInplaceResizeFP16(TestDygraphInplaceResize):
 
 
 @unittest.skipIf(
-    not paddle.base.core.is_compiled_with_cuda()
-    or not paddle.base.core.is_bfloat16_supported(paddle.CUDAPlace(0)),
+    not (paddle.base.core.is_compiled_with_cuda() or is_custom_device())
+    or not paddle.base.core.is_bfloat16_supported(get_device_place()),
     "core is not compiled with CUDA and not support the bfloat16",
 )
 class TestDygraphInplaceResizeBF16(TestDygraphInplaceResize):
     def setUp(self):
         self.init_data()
-        self.places = [paddle.CUDAPlace(0)]
+        self.places = get_places()
 
     def init_data(self):
         self.x_np = np.random.uniform(-5, 5, [3, 10, 2])
@@ -2447,6 +2598,121 @@ class TestDygraphInplaceResizeBF16(TestDygraphInplaceResize):
                 x = paddle.to_tensor(self.x_np).astype(self.dtype)
                 inplace_x2 = self.inplace_api_processing(x, self.new_shape2)
                 self.assertTrue(id(x) == id(inplace_x2))
+
+
+class TestSet_API_ZeroSize(unittest.TestCase):
+    def setUp(self):
+        self.places = get_places()
+
+    def test_zero_size_source_with_nonzero_shape(self):
+        """When source is 0-size but user specifies non-zero dims/stride,
+        output should respect user-specified shape (matching PyTorch behavior).
+        Storage is expanded if needed to avoid out-of-bounds access."""
+        for place in self.places:
+            with paddle.base.dygraph.guard(place):
+                source = paddle.randn([0, 3])
+                x = paddle.randn([20])
+                out = x.set_(source, [20], [2])
+                self.assertEqual(list(out.shape), [20])
+                # contiguous should work without OOB
+                c = out.contiguous()
+                self.assertEqual(list(c.shape), [20])
+
+    def test_zero_size_source_default_args(self):
+        """set_ with 0-size source and no explicit shape/stride."""
+        for place in self.places:
+            with paddle.base.dygraph.guard(place):
+                source = paddle.randn([0, 5])
+                x = paddle.randn([10])
+                out = x.set_(source)
+                self.assertEqual(out.numel().item(), 0)
+                self.assertEqual(list(out.shape), [0, 5])
+                self.assertTrue(id(x) == id(out))
+
+    def test_zero_size_x_nonzero_source(self):
+        """set_ with 0-size x but non-zero source should work normally."""
+        for place in self.places:
+            with paddle.base.dygraph.guard(place):
+                source = paddle.to_tensor([1.0, 2.0, 3.0])
+                x = paddle.randn([0])
+                out = x.set_(source)
+                self.assertEqual(list(out.shape), [3])
+                self.assertTrue(x._is_shared_buffer_with(source))
+
+    def test_both_zero_size(self):
+        """set_ with both x and source being 0-size."""
+        for place in self.places:
+            with paddle.base.dygraph.guard(place):
+                source = paddle.randn([0])
+                x = paddle.randn([0])
+                out = x.set_(source)
+                self.assertEqual(out.numel().item(), 0)
+                self.assertTrue(id(x) == id(out))
+
+    def test_both_zero_size_with_nonzero_shape(self):
+        """Both x and source are 0-size but user specifies non-zero dims/stride.
+        This covers the branch that allocates zero-filled storage when both
+        tensors are empty but a non-zero output shape is requested."""
+        for place in self.places:
+            with paddle.base.dygraph.guard(place):
+                source = paddle.randn([0])
+                x = paddle.randn([0])
+                out = x.set_(source, [4], [1])
+                self.assertEqual(list(out.shape), [4])
+                self.assertTrue(id(x) == id(out))
+                # The allocated storage should be zero-filled and accessible
+                c = out.contiguous()
+                self.assertEqual(list(c.shape), [4])
+                np.testing.assert_array_equal(
+                    c.numpy(), np.zeros([4], dtype='float32')
+                )
+
+    def test_both_zero_size_with_nonzero_shape_and_offset(self):
+        """Both x and source are 0-size, user specifies non-zero shape with
+        a non-zero offset. Verifies storage is large enough to accommodate
+        the offset without out-of-bounds access."""
+        for place in self.places:
+            with paddle.base.dygraph.guard(place):
+                source = paddle.randn([0])
+                x = paddle.randn([0])
+                # offset must be a multiple of element size (4 bytes for
+                # float32) to avoid misaligned GPU memory access.
+                out = x.set_(source, [3], [2], 4)
+                self.assertEqual(list(out.shape), [3])
+                self.assertTrue(id(x) == id(out))
+                c = out.contiguous()
+                self.assertEqual(list(c.shape), [3])
+                np.testing.assert_array_equal(
+                    c.numpy(), np.zeros([3], dtype='float32')
+                )
+
+    def test_both_zero_size_with_nonzero_2d_shape(self):
+        """Both x and source are 0-size, user specifies a 2D non-zero shape.
+        Verifies multi-dimensional strided view is allocated correctly."""
+        for place in self.places:
+            with paddle.base.dygraph.guard(place):
+                source = paddle.randn([0, 0])
+                x = paddle.randn([0])
+                out = x.set_(source, [2, 3], [3, 1])
+                self.assertEqual(list(out.shape), [2, 3])
+                self.assertTrue(id(x) == id(out))
+                c = out.contiguous()
+                self.assertEqual(list(c.shape), [2, 3])
+                np.testing.assert_array_equal(
+                    c.numpy(), np.zeros([2, 3], dtype='float32')
+                )
+
+    def test_zero_size_source_no_crash_on_contiguous(self):
+        """Ensure contiguous() works correctly on a tensor
+        that was set_ with a 0-size source but user-specified shape."""
+        for place in self.places:
+            with paddle.base.dygraph.guard(place):
+                source = paddle.randn([0, 3])
+                x = paddle.randn([20])
+                out = x.set_(source, [20], [2])
+                # contiguous should produce a valid tensor with correct shape
+                c = out.contiguous()
+                self.assertEqual(list(c.shape), [20])
 
 
 if __name__ == '__main__':

@@ -25,7 +25,7 @@ void SqueezeGradKernel(const Context& dev_ctx,
                        const DenseTensor& dout,
                        const IntArray& axes UNUSED,
                        DenseTensor* dx) {
-  auto dout_vec_dims = dout.dims().size() != 0 ? common::vectorize(dout.dims())
+  auto dout_vec_dims = dout.dims().size() != 0 ? vectorize(dout.dims())
                                                : std::vector<int64_t>{1};
 
   auto dout_type = funcs::ToOneDNNDataType(dout.dtype());
@@ -34,7 +34,7 @@ void SqueezeGradKernel(const Context& dev_ctx,
       dout_vec_dims, dout.dtype(), dout_type, dev_ctx.GetEngine());
 
   auto reorder_src_memory_p = reorder_handler.AcquireSrcMemory(
-      dout.mem_desc(), funcs::to_void_cast(dout.data<T>()));
+      phi::funcs::GetOneDNNMemDesc(dout), funcs::to_void_cast(dout.data<T>()));
   auto reorder_dst_memory_p = reorder_handler.AcquireDstMemory(
       dx,
       funcs::GetPlainOneDNNFormat(static_cast<int>(dout_vec_dims.size())),
@@ -48,7 +48,7 @@ void SqueezeGradKernel(const Context& dev_ctx,
 
   auto dx_dims = slice_ddim(xshape.dims(), 1, xshape.dims().size());
   dx->Resize(dx_dims);
-  reorder_dst_memory_p->get_desc().reshape(common::vectorize(dx_dims));
+  reorder_dst_memory_p->get_desc().reshape(vectorize(dx_dims));
 }
 
 }  // namespace phi
@@ -58,4 +58,4 @@ PD_REGISTER_KERNEL(squeeze_grad,
                    ONEDNN,
                    phi::SqueezeGradKernel,
                    float,
-                   phi::dtype::bfloat16) {}
+                   phi::bfloat16) {}

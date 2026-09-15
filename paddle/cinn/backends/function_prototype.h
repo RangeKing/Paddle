@@ -14,8 +14,7 @@
 
 #pragma once
 
-#include <absl/container/flat_hash_map.h>
-#include <absl/strings/string_view.h>
+#include <string_view>
 
 #include <memory>
 #include <string>
@@ -23,6 +22,7 @@
 
 #include "paddle/cinn/common/common.h"
 #include "paddle/cinn/ir/ir.h"
+#include "paddle/utils/flat_hash_map.h"
 
 namespace cinn {
 namespace backends {
@@ -84,11 +84,23 @@ struct FunctionProto {
       data_->ret_type = type_of<T>();
       return *this;
     }
+
+    Builder& SetRetType(const common::Type& t) {
+      data_->ret_type = t;
+      return *this;
+    }
+
     template <typename T>
     Builder& AddInputType() {
       data_->readonly_arg_types.push_back(type_of<T>());
       return *this;
     }
+
+    Builder& AddInputType(const common::Type& t) {
+      data_->readonly_arg_types.push_back(t);
+      return *this;
+    }
+
     template <typename T>
     Builder& AddOutputType() {
       data_->mutable_arg_types.push_back(type_of<T>());
@@ -118,14 +130,14 @@ struct FunctionProto {
 
 class FunctionProtoRegistry {
  public:
-  FunctionProto* Register(absl::string_view name, FunctionProto* x);
+  FunctionProto* Register(std::string name, FunctionProto* x);
 
   FunctionProto* Lookup(const std::string& name);
 
   std::string debug_string() const;
 
  private:
-  absl::flat_hash_map<std::string, std::unique_ptr<FunctionProto>> data_;
+  paddle::flat_hash_map<std::string, std::unique_ptr<FunctionProto>> data_;
 };
 
 }  // namespace backends

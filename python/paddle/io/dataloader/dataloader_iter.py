@@ -52,7 +52,7 @@ from .worker import (
 # layers processing) after iterate **the first few data** in
 # distributed launch mode, distributed launch will call
 # terminate() to kill main process on each devices, but thread
-# is still iterating to fullfill blocking queue caches, which
+# is still iterating to fulfill blocking queue caches, which
 # may cause thread error `terminate called without an active
 # exception` for terminate is a strong signal and `__del__`
 # of DataLoader may not be called, so we add a global link to
@@ -97,6 +97,7 @@ class _DataLoaderIterBase:
         self._auto_collate_batch = loader.auto_collate_batch
         self._num_workers = loader.num_workers
         self._use_buffer_reader = loader.use_buffer_reader
+        self._reader_buffer_size = loader.reader_buffer_size
         self._prefetch_factor = loader.prefetch_factor
         self._use_shared_memory = loader.use_shared_memory
         self._timeout = (
@@ -183,8 +184,12 @@ class _DataLoaderIterSingleProcess(_DataLoaderIterBase):
             self._places
         )
 
-        self._init_thread()
         self._shutdown = False
+        try:
+            self._init_thread()
+        except Exception:
+            self._try_shutdown_all()
+            raise
 
         global _loader
         _loader = self
@@ -218,6 +223,7 @@ class _DataLoaderIterSingleProcess(_DataLoaderIterBase):
             self._use_buffer_reader,
             True,
             self._pin_memory,
+            self._reader_buffer_size,
         )
 
         self._thread = threading.Thread(
@@ -373,11 +379,10 @@ class _DataLoaderIterMultiProcess(_DataLoaderIterBase):
         self._resume_worker_cnt = 0
 
         assert self._num_workers > 0, (
-            "Multi-process DataLoader "
-            f"invalid num_workers({self._num_workers})"
+            f"Multi-process DataLoader invalid num_workers({self._num_workers})"
         )
 
-        # subprocess wrokers' result queue
+        # subprocess workers' result queue
         self._data_queue = None
 
         # data get from _data_queue will be reordered by _rcvd_idx
@@ -427,13 +432,17 @@ class _DataLoaderIterMultiProcess(_DataLoaderIterBase):
             (self._worker_shm_buffer_size) * 2 * self._num_workers
         )
 
+        self._shutdown = False
         # init workers and indices queues and put 2 indices in each indices queue
         self._init_workers()
         for _ in range(self._outstanding_capacity):
             self._try_put_indices()
 
-        self._init_thread()
-        self._shutdown = False
+        try:
+            self._init_thread()
+        except Exception:
+            self._try_shutdown_all()
+            raise
 
     def _init_workers(self):
         from paddle.incubate import multiprocessing
@@ -523,6 +532,7 @@ class _DataLoaderIterMultiProcess(_DataLoaderIterBase):
             self._use_buffer_reader,
             True,
             self._pin_memory,
+            self._reader_buffer_size,
         )
 
         self._thread_done_event = threading.Event()
@@ -577,8 +587,10 @@ class _DataLoaderIterMultiProcess(_DataLoaderIterBase):
             self._try_put_indices()
 
     def _shutdown_worker(self, worker_id, shutdown=False):
-        if self._worker_status[worker_id] or (
-            self._persistent_workers and shutdown
+        if worker_id < len(self._worker_status) and (
+            self._worker_status[worker_id]
+            or self._persistent_workers
+            and shutdown
         ):
             self._indices_queues[worker_id].put(None)
             self._worker_status[worker_id] = False
@@ -590,7 +602,7 @@ class _DataLoaderIterMultiProcess(_DataLoaderIterBase):
                 self._clear_and_remove_data_queue()
 
                 # set _workers_done_event should be set before put None
-                # to indices_queue, workers wll exit on reading None from
+                # to indices_queue, workers will exit on reading None from
                 # indices_queue
                 self._workers_done_event.set()
                 for i in range(self._num_workers):
@@ -739,7 +751,7 @@ class _DataLoaderIterMultiProcess(_DataLoaderIterBase):
                 if self._dataset_kind == _DatasetKind.ITER and isinstance(
                     data, _IterableDatasetStopIteration
                 ):
-                    # if a worker get StopIteraion, we shutdown this worker,
+                    # if a worker get StopIteration, we shutdown this worker,
                     # note that this batch indices to trigger StopIteration
                     # is discard, outstanding batch number should be decrease
                     # and another indices should be put for other workers
@@ -775,9 +787,9 @@ class _DataLoaderIterMultiProcess(_DataLoaderIterBase):
                     continue
 
     def _try_put_indices(self):
-        assert (
-            self._batches_outstanding <= self._outstanding_capacity
-        ), "too many indices have been put to queue"
+        assert self._batches_outstanding <= self._outstanding_capacity, (
+            "too many indices have been put to queue"
+        )
         # In multi-process mode for IterableDataset, _try_put_indices will
         # be called both in main process(for our implement has blocking queue,
         # and blocking queue read is in main process) and thread, which may

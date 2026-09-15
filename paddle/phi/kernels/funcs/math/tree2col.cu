@@ -50,22 +50,22 @@ __global__ void tree2col(const T* eta,
   }
 }
 template <typename T>
-class Tree2ColFunctor<phi::GPUContext, T> {
+class Tree2ColFunctor<GPUContext, T> {
  public:
-  void operator()(const phi::GPUContext& context,
-                  const phi::DenseTensor& EdgeSet,
-                  const phi::DenseTensor& node_features,
-                  phi::DenseTensor* patch,
+  void operator()(const GPUContext& dev_ctx,
+                  const DenseTensor& EdgeSet,
+                  const DenseTensor& node_features,
+                  DenseTensor* patch,
                   int max_depth) {
     std::vector<std::vector<int>> tr;
-    auto gpu_place = context.GetPlace();
-    auto cpu_place = phi::CPUPlace();
-    auto stream = context.stream();
+    auto gpu_place = dev_ctx.GetPlace();
+    auto cpu_place = CPUPlace();
+    auto stream = dev_ctx.stream();
     auto feature_dims = node_features.dims();
-    phi::funcs::SetConstant<phi::GPUContext, T> constant;
+    funcs::SetConstant<GPUContext, T> constant;
 
-    phi::DenseTensor EdgeSet_cpu;
-    phi::Copy(context, EdgeSet, cpu_place, false, &EdgeSet_cpu);
+    DenseTensor EdgeSet_cpu;
+    phi::Copy(dev_ctx, EdgeSet, cpu_place, false, &EdgeSet_cpu);
     int64_t feature_size = feature_dims[1];
     size_t patch_elem_size = 3 * static_cast<size_t>(feature_size);
     size_t node_count = 0, patch_count = 0, total_size = 0;
@@ -82,13 +82,13 @@ class Tree2ColFunctor<phi::GPUContext, T> {
     }
 
     size_t patch_size = processing_list.size();
-    phi::DenseTensor node_cpu, node_gpu, eta_cpu, eta_gpu, index_cpu, index_gpu;
+    DenseTensor node_cpu, node_gpu, eta_cpu, eta_gpu, index_cpu, index_gpu;
     node_cpu.Resize({static_cast<int64_t>(total_size)});
-    int* node = context.template Alloc<int>(&node_cpu);
+    int* node = dev_ctx.template Alloc<int>(&node_cpu);
     eta_cpu.Resize({static_cast<int64_t>(total_size * 3)});
-    T* eta = context.template Alloc<T>(&eta_cpu);
+    T* eta = dev_ctx.template Alloc<T>(&eta_cpu);
     index_cpu.Resize({static_cast<int64_t>(patch_size * 2)});
-    int* index = context.template Alloc<int>(&index_cpu);
+    int* index = dev_ctx.template Alloc<int>(&index_cpu);
 
     int idx = 0, index_idx = 0;
     for (auto& tmp : processing_list) {
@@ -102,47 +102,56 @@ class Tree2ColFunctor<phi::GPUContext, T> {
       }
       index[index_idx++] = idx;
     }
-    phi::Copy(context, node_cpu, gpu_place, false, &node_gpu);
-    phi::Copy(context, eta_cpu, gpu_place, false, &eta_gpu);
-    phi::Copy(context, index_cpu, gpu_place, false, &index_gpu);
+    phi::Copy(dev_ctx, node_cpu, gpu_place, false, &node_gpu);
+    phi::Copy(dev_ctx, eta_cpu, gpu_place, false, &eta_gpu);
+    phi::Copy(dev_ctx, index_cpu, gpu_place, false, &index_gpu);
 
-    int elem_size = patch_size * feature_size;
-    int blocks = (elem_size + 1024 - 1) / 1024;
+    PADDLE_ENFORCE_LE_INT_MAX(feature_size, "tree2col kernel feature_size");
+    PADDLE_ENFORCE_LE_INT_MAX(static_cast<int64_t>(patch_size),
+                              "tree2col kernel patch_size");
+    const int feature_size_int = static_cast<int>(feature_size);
+    const int patch_size_int = static_cast<int>(patch_size);
+
+    int64_t elem_size = static_cast<int64_t>(patch_size) * feature_size;
+    int64_t blocks64 = (elem_size + 1024 - 1) / 1024;
+    PADDLE_ENFORCE_LE_INT_MAX(blocks64, "CUDA launch grid blocks");
     int block_x = 512;
-    int block_y = (blocks + 512 - 1) / 512;
+    int64_t block_y64 = (blocks64 + block_x - 1) / block_x;
+    PADDLE_ENFORCE_LE_INT_MAX(block_y64, "CUDA launch grid.y");
+    int block_y = static_cast<int>(block_y64);
     dim3 threads(1024, 1);
     dim3 grid(block_x, block_y);
 
     patch->Resize({static_cast<int64_t>(max_size),
                    static_cast<int64_t>(patch_elem_size)});
-    context.template Alloc<T>(patch);
-    constant(context, patch, 0);
+    dev_ctx.template Alloc<T>(patch);
+    constant(dev_ctx, patch, 0);
     tree2col<T><<<grid, threads, 0, stream>>>(eta_gpu.data<T>(),
                                               node_gpu.data<int>(),
                                               index_gpu.data<int>(),
                                               node_features.data<T>(),
                                               patch->data<T>(),
-                                              feature_size,
-                                              patch_size);
+                                              feature_size_int,
+                                              patch_size_int);
   }
 };
 template <typename T>
-class Col2TreeFunctor<phi::GPUContext, T> {
+class Col2TreeFunctor<GPUContext, T> {
  public:
-  void operator()(const phi::GPUContext& context,
-                  const phi::DenseTensor& EdgeSet,
-                  const phi::DenseTensor& patch_grad,
-                  phi::DenseTensor* embedding_grad,
+  void operator()(const GPUContext& dev_ctx,
+                  const DenseTensor& EdgeSet,
+                  const DenseTensor& patch_grad,
+                  DenseTensor* embedding_grad,
                   int max_depth) {
     std::vector<std::vector<int>> tr;
-    auto gpu_place = context.GetPlace();
-    auto cpu_place = phi::CPUPlace();
-    auto stream = context.stream();
+    auto gpu_place = dev_ctx.GetPlace();
+    auto cpu_place = CPUPlace();
+    auto stream = dev_ctx.stream();
     auto output_dims = patch_grad.dims();
-    phi::funcs::SetConstant<phi::GPUContext, T> constant;
+    funcs::SetConstant<GPUContext, T> constant;
 
-    phi::DenseTensor EdgeSet_cpu;
-    phi::Copy(context, EdgeSet, cpu_place, false, &EdgeSet_cpu);
+    DenseTensor EdgeSet_cpu;
+    phi::Copy(dev_ctx, EdgeSet, cpu_place, false, &EdgeSet_cpu);
     int64_t output_size = output_dims[1];
     size_t patch_elem_size = 3 * static_cast<size_t>(output_size);
     size_t node_count = 0, patch_count = 0;
@@ -167,13 +176,13 @@ class Col2TreeFunctor<phi::GPUContext, T> {
       total_size += tmp.size();
     }
 
-    phi::DenseTensor node_cpu, node_gpu, eta_cpu, eta_gpu, index_cpu, index_gpu;
+    DenseTensor node_cpu, node_gpu, eta_cpu, eta_gpu, index_cpu, index_gpu;
     node_cpu.Resize({static_cast<int64_t>(total_size)});
-    int* node = context.template Alloc<int>(&node_cpu);
+    int* node = dev_ctx.template Alloc<int>(&node_cpu);
     eta_cpu.Resize({static_cast<int64_t>(total_size * 3)});
-    T* eta = context.template Alloc<T>(&eta_cpu);
+    T* eta = dev_ctx.template Alloc<T>(&eta_cpu);
     index_cpu.Resize({static_cast<int64_t>(grad_size * 2)});
-    int* index = context.template Alloc<int>(&index_cpu);
+    int* index = dev_ctx.template Alloc<int>(&index_cpu);
 
     size_t idx = 0, index_idx = 0;
     for (auto& tmp : grad_list) {
@@ -187,35 +196,44 @@ class Col2TreeFunctor<phi::GPUContext, T> {
       }
       index[index_idx++] = idx;
     }
-    phi::Copy(context, node_cpu, gpu_place, false, &node_gpu);
-    phi::Copy(context, eta_cpu, gpu_place, false, &eta_gpu);
-    phi::Copy(context, index_cpu, gpu_place, false, &index_gpu);
+    phi::Copy(dev_ctx, node_cpu, gpu_place, false, &node_gpu);
+    phi::Copy(dev_ctx, eta_cpu, gpu_place, false, &eta_gpu);
+    phi::Copy(dev_ctx, index_cpu, gpu_place, false, &index_gpu);
 
-    int elem_size = output_size * grad_size;
-    int blocks = (elem_size + 1024 - 1) / 1024;
+    PADDLE_ENFORCE_LE_INT_MAX(output_size, "tree2col kernel output_size");
+    PADDLE_ENFORCE_LE_INT_MAX(static_cast<int64_t>(grad_size),
+                              "tree2col kernel grad_size");
+    const int output_size_int = static_cast<int>(output_size);
+    const int grad_size_int = static_cast<int>(grad_size);
+
+    int64_t elem_size = static_cast<int64_t>(output_size) * grad_size;
+    int64_t blocks64 = (elem_size + 1024 - 1) / 1024;
+    PADDLE_ENFORCE_LE_INT_MAX(blocks64, "CUDA launch grid blocks");
     int block_x = 512;
-    int block_y = (blocks + 512 - 1) / 512;
+    int64_t block_y64 = (blocks64 + block_x - 1) / block_x;
+    PADDLE_ENFORCE_LE_INT_MAX(block_y64, "CUDA launch grid.y");
+    int block_y = static_cast<int>(block_y64);
     dim3 threads(1024, 1);
     dim3 grid(block_x, block_y);
 
     embedding_grad->Resize({static_cast<int64_t>(max_size),
                             static_cast<int64_t>(patch_elem_size)});
-    context.template Alloc<T>(embedding_grad);
+    dev_ctx.template Alloc<T>(embedding_grad);
 
-    constant(context, embedding_grad, 0);
+    constant(dev_ctx, embedding_grad, 0);
     tree2col<T><<<grid, threads, 0, stream>>>(eta_gpu.data<T>(),
                                               node_gpu.data<int>(),
                                               index_gpu.data<int>(),
                                               patch_grad.data<T>(),
                                               embedding_grad->data<T>(),
-                                              output_size,
-                                              grad_size);
+                                              output_size_int,
+                                              grad_size_int);
   }
 };
 
-template class Tree2ColFunctor<phi::GPUContext, float>;
-template class Tree2ColFunctor<phi::GPUContext, double>;
-template class Col2TreeFunctor<phi::GPUContext, float>;
-template class Col2TreeFunctor<phi::GPUContext, double>;
+template class Tree2ColFunctor<GPUContext, float>;
+template class Tree2ColFunctor<GPUContext, double>;
+template class Col2TreeFunctor<GPUContext, float>;
+template class Col2TreeFunctor<GPUContext, double>;
 }  // namespace math
 }  // namespace phi

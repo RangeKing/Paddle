@@ -11,7 +11,15 @@ if(WITH_GPU OR WITH_ROCM)
   list(APPEND BACKENDS_SRCS gpu/gpu_context.cc gpu/gpu_info.cc
        gpu/gpu_resources.cc)
   if(WITH_GPU)
-    list(APPEND BACKENDS_SRCS gpu/cuda/cuda_info.cc gpu/cuda/cuda_graph.cc)
+    if(WIN32)
+      nv_library(
+        cuda_graph_lib static
+        SRCS gpu/cuda/cuda_graph.cc
+        DEPS dynload_cuda onednn)
+      list(APPEND BACKENDS_SRCS gpu/cuda/cuda_info.cc)
+    else()
+      list(APPEND BACKENDS_SRCS gpu/cuda/cuda_info.cc gpu/cuda/cuda_graph.cc)
+    endif()
   endif()
   if(WITH_ROCM)
     list(APPEND BACKENDS_SRCS gpu/rocm/rocm_info.cc gpu/rocm/hip_graph.cc)
@@ -19,7 +27,9 @@ if(WITH_GPU OR WITH_ROCM)
 endif()
 
 if(WITH_XPU)
-  list(APPEND BACKENDS_SRCS xpu/xpu_context.cc xpu/xpu_info.cc)
+  list(APPEND BACKENDS_SRCS xpu/xpu_context.cc xpu/xpu_info.cc
+       xpu/enforce_xpu.cc)
+  list(APPEND BACKENDS_SRCS xpu/cuda_graph.cc)
   list(
     APPEND
     BACKENDS_SRCS
@@ -28,7 +38,6 @@ if(WITH_XPU)
     xpu/xpu2_op_list.cc
     xpu/xpu3_op_list.cc
     xpu/xpu_l3_strategy.cc)
-  list(APPEND BACKENDS_DEPS phi_dynload_xpti)
 endif()
 
 if(WITH_ONEDNN)
@@ -41,11 +50,11 @@ list(
   APPEND
   BACKENDS_SRCS
   callback_manager.cc
-  device_guard.cc
   stream.cc
   event.cc
   device_manager.cc
-  context_pool.cc)
+  context_pool.cc
+  c_cuda_graph_lib.h)
 
 if(WITH_GPU
    OR WITH_ROCM
@@ -54,8 +63,15 @@ if(WITH_GPU
 endif()
 
 if(WITH_CUSTOM_DEVICE)
-  list(APPEND BACKENDS_SRCS custom/custom_context.cc custom/custom_device.cc
-       custom/custom_device_op_list.cc)
+  list(
+    APPEND
+    BACKENDS_SRCS
+    custom/custom_context.cc
+    custom/custom_device.cc
+    custom/custom_device_func.cc
+    custom/custom_device_op_list.cc
+    custom/cuda_graph.h
+    custom/cuda_graph.cc)
 endif()
 
 collect_srcs(backends_srcs SRCS ${BACKENDS_SRCS})

@@ -1,6 +1,5 @@
-
 <p align="center">
-<img align="center" src="doc/imgs/logo.png", width=1600>
+<img align="center" src="./doc/imgs/logo.png", width=1600>
 <p>
 
 --------------------------------------------------------------------------------
@@ -10,50 +9,46 @@
 [![Documentation Status](https://img.shields.io/badge/docs-latest-brightgreen.svg?style=flat)](https://paddlepaddle.org.cn/documentation/docs/en/guides/index_en.html)
 [![Documentation Status](https://img.shields.io/badge/中文文档-最新-brightgreen.svg)](https://paddlepaddle.org.cn/documentation/docs/zh/guides/index_cn.html)
 [![Release](https://img.shields.io/github/release/PaddlePaddle/Paddle.svg)](https://github.com/PaddlePaddle/Paddle/releases)
-[![License](https://img.shields.io/badge/license-Apache%202-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache%202-blue.svg)](./LICENSE)
+![X (formerly Twitter) URL](https://img.shields.io/twitter/url?url=https%3A%2F%2Fx.com%2FPaddlePaddle)
 
-欢迎来到 PaddlePaddle GitHub
+欢迎来到 PaddlePaddle GitHub。
 
-飞桨(PaddlePaddle)以百度多年的深度学习技术研究和业务应用为基础，是中国首个自主研发、功能完备、 开源开放的产业级深度学习平台，集深度学习核心训练和推理框架、基础模型库、端到端开发套件和丰富的工具组件于一体。目前，飞桨累计开发者1070万，服务企业23.5万家，基于飞桨开源深度学习平台产生了86万个模型。飞桨助力开发者快速实现AI想法，快速上线AI业务。帮助越来越多的行业完成AI赋能，实现产业智能化升级。
+飞桨(PaddlePaddle)作为中国首个自主研发的深度学习平台，自 2016 年起正式面向专业社区开源。它是一个具备先进技术和丰富功能的产业级平台，涵盖深度学习核心框架、基础模型库、端到端开发套件、工具组件以及服务平台。
+飞桨源于产业实践，并持续专注于产业化。它已被制造、农业、企业服务等众多领域广泛采用，服务超过 2333 万开发者、76 万家企业，生成 110 万个模型。凭借这些优势，飞桨帮助越来越多合作伙伴实现 AI 商业化。
 
 ## 安装
 
-### PaddlePaddle 最新版本: [v2.6](https://github.com/PaddlePaddle/Paddle/tree/release/2.6)
+### PaddlePaddle 最新版本: 3.3
 
-跟进 PaddlePaddle 最新特性请参考我们的[版本说明](https://github.com/PaddlePaddle/Paddle/releases)
+我们的愿景是通过 PaddlePaddle 让每个人都能使用深度学习。
+请参考我们的[版本说明](https://github.com/PaddlePaddle/Paddle/releases)了解 PaddlePaddle 最新特性。
 
-### 安装最新稳定版本
+### 安装最新稳定版本或每日最新构建版本
 
-``` sh
-# CPU
-pip install paddlepaddle
-# GPU
-pip install paddlepaddle-gpu
-```
+安装方法详见官网 [安装说明](https://www.paddlepaddle.org.cn/install/quick)。
 
-更多安装信息详见官网 [安装说明](https://www.paddlepaddle.org.cn/install/quick)
+## **飞桨新一代框架 3.2**
 
-PaddlePaddle用户可领取**免费Tesla V100在线算力资源**，训练模型更高效。**每日登陆即送8小时**，[前往使用免费算力](https://aistudio.baidu.com/aistudio/index)。
+- **动静统一自动并行**
 
-## 四大领先技术
+  只需在单卡基础上进行少量的张量切分标记，飞桨能自动寻找最⾼效的分布式并行策略，大幅度降低了产业开发和训练的成本，使开发者能够更专注于模型和算法的创新。
 
-- **开发便捷的产业级深度学习框架**
+- **大模型训练推一体**
 
-    飞桨深度学习框架采用基于编程逻辑的组网范式，对于普通开发者而言更容易上手，符合他们的开发习惯。同时支持声明式和命令式编程，兼具开发的灵活性和高性能。网络结构自动设计，模型效果超越人类专家。
+  同一套框架支持训练和推理，实现训练、推理代码复用和无缝衔接，为大模型的全流程提供了统一的开发体验和极致的训练效率，为产业提供了极致的开发体验。
 
-- **支持超大规模深度学习模型的训练**
+- **科学计算高阶微分**
 
-    飞桨突破了超大规模深度学习模型训练技术，实现了支持千亿特征、万亿参数、数百节点的开源大规模训练平台，攻克了超大规模深度学习模型的在线学习难题，实现了万亿规模参数模型的实时更新。
-    [查看详情](https://github.com/PaddlePaddle/Fleet)
+  提供高阶自动微分、复数运算、傅里叶变换、编译优化、分布式训练等能力支持，支持数学、力学、材料、气象、生物等领域科学探索，微分方程求解速度大幅提升。
 
-- **支持多端多平台的高性能推理部署工具**
+- **神经网络编译器**
 
-    飞桨不仅广泛兼容第三方开源框架训练的模型部署，并且为不同的场景的生产环境提供了完备的推理引擎，包括适用于高性能服务器及云端推理的原生推理库 [Paddle Inference](https://www.paddlepaddle.org.cn/inference/master/guides/introduction/index_intro.html)，全场景、易用灵活、极致高效的AI推理部署工具，支持云边端部署工具 [FastDeploy](https://github.com/PaddlePaddle/FastDeploy)，针对于移动端、物联网场景的轻量化推理引擎 [Paddle Lite](https://github.com/PaddlePaddle/Paddle-Lite)，以及在浏览器、小程序等环境下使用的前端推理引擎 [Paddle.js](https://www.paddlepaddle.org.cn/paddle/paddlejs)。同时，透过与不同场景下的主流硬件高度适配优化及异构计算的支持, 飞桨的推理性能也领先绝大部分的主流实现。
+  采用框架一体化设计，支持⽣成式模型、科学计算模型等多种模型的高效训练与可变形推理，在计算灵活性与高性能之间提供了良好的平衡点，显著降低性能优化成本。
 
-- **面向产业应用，开源开放覆盖多领域的工业级模型库。**
+- **异构多芯适配**
 
-    飞桨官方支持100多个经过产业实践长期打磨的主流模型，其中包括在国际竞赛中夺得冠军的模型；同时开源开放200多个预训练模型，助力快速的产业应用。
-    [查看详情](https://github.com/PaddlePaddle/models)
+  成熟且完整的多硬件统一适配方案，通过标准化接口屏蔽了不同芯片软件栈开发接口差异，实现可插拔架构。
 
 ## 文档
 
@@ -69,23 +64,11 @@ PaddlePaddle用户可领取**免费Tesla V100在线算力资源**，训练模型
 
 ## 开源社区
 
-- [Github Issues](https://github.com/PaddlePaddle/Paddle/issues)：提交安装/使用问题、报告bug、建议新特性、沟通开发计划等
-- 社区活动：
-
-  - 入门：快乐开源活动（[热身打卡 + 常规赛](https://github.com/PaddlePaddle/Paddle/issues/56689)、[启航计划](https://github.com/PaddlePaddle/Paddle/issues/58497)）
-  - 进阶：飞桨黑客马拉松（[开源贡献个人挑战赛](https://github.com/PaddlePaddle/Paddle/issues/57262)、[大模型应用与创意赛](https://github.com/PaddlePaddle/Paddle/issues/57585)、[飞桨护航计划集训营](https://github.com/PaddlePaddle/Paddle/issues/57264)）
-
-- 社区组织：
-  - 技术交流组织：[飞桨核心框架贡献者俱乐部 PFCC](https://github.com/PaddlePaddle/community/tree/master/pfcc)
-  - 社区治理组织：[飞桨社区开源发展工作组 PPOSDWG](https://github.com/PaddlePaddle/community/tree/master/pposdwg)
-
-- 社区博客：<https://pfcc.blog/>
-
-## 课程
-
-- [服务器部署](https://aistudio.baidu.com/aistudio/course/introduce/19084)：详细介绍高性能服务器端部署实操，包含本地端及服务化Serving部署等
-- [端侧部署](https://aistudio.baidu.com/aistudio/course/introduce/22690)：详细介绍端侧多场景部署实操，从移动端设备、IoT、网页到小程序部署
+- [Github Issues](https://github.com/PaddlePaddle/Paddle/issues)：错误报告、功能请求、安装问题、使用问题等。
+- 我们的许多贡献活动都提供来自经验丰富的社区成员的不同程度的指导，请查看置顶的 issues 中的活动，并考虑参加。
+- 社区博客：[https://pfcc.blog/](https://pfcc.blog/)。
+- 了解更多详情：[Community](https://github.com/PaddlePaddle/community)。
 
 ## 版权和许可证
 
-PaddlePaddle由[Apache-2.0 license](LICENSE)提供
+PaddlePaddle 由 [Apache-2.0 license](./LICENSE) 提供。

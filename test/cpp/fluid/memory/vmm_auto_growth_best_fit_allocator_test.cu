@@ -1,0 +1,156 @@
+// Copyright (c) 2025 PaddlePaddle Authors. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include <iostream>
+#include <memory>
+#include <string>
+
+#include "paddle/phi/core/memory/allocation/cuda_virtual_mem_allocator.h"
+
+// Expose internals for white-box testing.
+#define private public
+#include "paddle/phi/core/memory/allocation/virtual_memory_auto_growth_best_fit_allocator.h"
+#undef private
+
+#include "gtest/gtest.h"
+#include "paddle/common/errors.h"
+#include "paddle/phi/core/memory/memory.h"
+
+namespace paddle {
+namespace memory {
+namespace allocation {
+
+class TestCUDAVirtualMemAllocator : public CUDAVirtualMemAllocator {
+ public:
+  using CUDAVirtualMemAllocator::CUDAVirtualMemAllocator;
+  using CUDAVirtualMemAllocator::FreeImpl;
+};
+
+TEST(test_vmm_allocator, test_mem_stats) {
+  size_t alignment = 256;
+  auto underlying_allocator =
+      std::make_shared<TestCUDAVirtualMemAllocator>(phi::GPUPlace());
+  auto allocation = underlying_allocator->Allocate(1024);
+  EXPECT_GT(DeviceMemoryStatCurrentValue("Reserved", 0), 1024);
+  allocation.reset();
+  EXPECT_EQ(DeviceMemoryStatCurrentValue("Reserved", 0), 0);
+}
+
+class DummyAllocator : public Allocator {
+ public:
+  bool IsAllocThreadSafe() const override { return true; }
+
+ protected:
+  phi::Allocation* AllocateImpl(size_t) override {
+    PADDLE_THROW(common::errors::Unavailable(
+        "DummyAllocator::AllocateImpl should not be called."));
+  }
+  void FreeImpl(phi::Allocation*) override {}
+};
+
+class AlwaysOOMAllocator : public Allocator {
+ public:
+  bool IsAllocThreadSafe() const override { return true; }
+
+ protected:
+  phi::Allocation* AllocateImpl(size_t size) override {
+    PADDLE_THROW_BAD_ALLOC(common::errors::ResourceExhausted(
+        "AlwaysOOMAllocator failed to allocate %zu bytes.", size));
+  }
+  void FreeImpl(phi::Allocation*) override {}
+};
+
+// Expose FreeImpl for testing.
+class ExposedVmmAllocator : public VirtualMemoryAutoGrowthBestFitAllocator {
+ public:
+  using VirtualMemoryAutoGrowthBestFitAllocator::FreeImpl;
+  using VirtualMemoryAutoGrowthBestFitAllocator::
+      VirtualMemoryAutoGrowthBestFitAllocator;
+};
+
+TEST(test_vmm_allocator, free_impl_uses_allocation_block_iterator) {
+  auto underlying = std::make_shared<DummyAllocator>();
+  phi::GPUPlace place(0);
+  ExposedVmmAllocator allocator(underlying, 256, place);
+
+  // Manually construct blocks: [free-prev][used-target][free-next]
+  allocator.all_blocks_.clear();
+  auto prev = allocator.all_blocks_.emplace(
+      allocator.all_blocks_.end(), reinterpret_cast<void*>(0x1000), 1024, true);
+  auto target = allocator.all_blocks_.emplace(allocator.all_blocks_.end(),
+                                              reinterpret_cast<void*>(0x1400),
+                                              2048,
+                                              false);
+  auto next = allocator.all_blocks_.emplace(
+      allocator.all_blocks_.end(), reinterpret_cast<void*>(0x1C00), 4096, true);
+
+  allocator.free_blocks_.clear();
+  allocator.free_blocks_.emplace(std::make_pair(prev->size_, prev->ptr_), prev);
+  allocator.free_blocks_.emplace(std::make_pair(next->size_, next->ptr_), next);
+
+  auto allocation = std::make_unique<BlockAllocation>(target, place);
+
+  EXPECT_NO_THROW(allocator.FreeImpl(allocation.release()));
+  EXPECT_EQ(allocator.all_blocks_.size(), 1UL);
+  EXPECT_EQ(allocator.all_blocks_.front().ptr_,
+            reinterpret_cast<void*>(0x1000));
+  EXPECT_EQ(allocator.all_blocks_.front().size_, 7168UL);
+  EXPECT_TRUE(allocator.all_blocks_.front().is_free_);
+}
+
+TEST(test_vmm_allocator, oom_error_prints_pool_stats) {
+  auto underlying = std::make_shared<AlwaysOOMAllocator>();
+  phi::GPUPlace place(0);
+  ExposedVmmAllocator allocator(underlying, 256, place);
+
+  auto used1 = allocator.all_blocks_.emplace(allocator.all_blocks_.end(),
+                                             reinterpret_cast<void*>(0x1000),
+                                             1UL << 20,
+                                             false);
+  auto free1 = allocator.all_blocks_.emplace(allocator.all_blocks_.end(),
+                                             reinterpret_cast<void*>(0x101000),
+                                             2UL << 20,
+                                             true);
+  auto used2 = allocator.all_blocks_.emplace(allocator.all_blocks_.end(),
+                                             reinterpret_cast<void*>(0x301000),
+                                             1UL << 20,
+                                             false);
+  auto free2 = allocator.all_blocks_.emplace(allocator.all_blocks_.end(),
+                                             reinterpret_cast<void*>(0x401000),
+                                             4UL << 20,
+                                             true);
+
+  allocator.free_blocks_.emplace(std::make_pair(free1->size_, free1->ptr_),
+                                 free1);
+  allocator.free_blocks_.emplace(std::make_pair(free2->size_, free2->ptr_),
+                                 free2);
+
+  try {
+    allocator.Allocate(5UL << 20);
+    FAIL() << "Expected VMM allocator OOM.";
+  } catch (const BadAlloc& ex) {
+    std::string message = ex.what();
+    std::cout << "\n[VMM OOM MESSAGE]\n" << message << std::endl;
+    EXPECT_NE(message.find("VMM allocator stats (pool): "
+                           "total_free=6.000000MB, max_free=4.000000MB."),
+              std::string::npos);
+  }
+
+  static_cast<void>(used1);
+  static_cast<void>(used2);
+}
+
+}  // namespace allocation
+}  // namespace memory
+}  // namespace paddle

@@ -38,7 +38,7 @@ void ConcatGradKernel(const Context& dev_ctx,
 
   int axis = axis_scalar.to<int>();
 
-  auto out_grad_vec_dims = common::vectorize(out_grad.dims());
+  auto out_grad_vec_dims = vectorize(out_grad.dims());
 
   axis = static_cast<int>(funcs::ComputeAxis(axis, out_grad_vec_dims.size()));
 
@@ -48,12 +48,13 @@ void ConcatGradKernel(const Context& dev_ctx,
       funcs::ToOneDNNDataType(out_grad.dtype());
   funcs::ReorderOneDNNHandler reorder_handler(
       out_grad_vec_dims, out_grad.dtype(), out_grad_type, onednn_engine);
-  auto reorder_src_memory_p = reorder_handler.AcquireSrcMemory(
-      out_grad.mem_desc(), funcs::to_void_cast(out_grad.data<T>()));
+  auto reorder_src_memory_p =
+      reorder_handler.AcquireSrcMemory(phi::funcs::GetOneDNNMemDesc(out_grad),
+                                       funcs::to_void_cast(out_grad.data<T>()));
 
   for (auto& grad : x_grad) {
     if (grad && grad->numel() != 0UL) {
-      auto x_grad_vec_dims = common::vectorize(grad->dims());
+      auto x_grad_vec_dims = vectorize(grad->dims());
       auto slice_mem_p = reorder_handler.AcquireSubmemory(
           x_grad_vec_dims, offset, reorder_src_memory_p);
 
@@ -69,16 +70,12 @@ void ConcatGradKernel(const Context& dev_ctx,
 
       offset[axis] += grad->dims()[axis];
 
-      grad->set_mem_desc(reorder_dst_memory_p->get_desc());
+      phi::funcs::SetOneDNNMemDesc(grad, reorder_dst_memory_p->get_desc());
     }
   }
   astream.wait();
 }
 }  // namespace phi
 
-PD_REGISTER_KERNEL(concat_grad,
-                   OneDNN,
-                   ONEDNN,
-                   phi::ConcatGradKernel,
-                   float,
-                   phi::dtype::bfloat16) {}
+PD_REGISTER_KERNEL(
+    concat_grad, OneDNN, ONEDNN, phi::ConcatGradKernel, float, phi::bfloat16) {}

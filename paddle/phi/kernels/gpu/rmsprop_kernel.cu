@@ -20,15 +20,15 @@
 
 namespace phi {
 template <typename T>
-struct RmsFunctor<T, phi::GPUContext> {
-  RmsFunctor(const phi::GPUContext &ctx,
+struct RmsFunctor<T, GPUContext> {
+  RmsFunctor(const GPUContext &dev_ctx,
              const DenseTensor &param,
              const DenseTensor &mean_square,
              const DenseTensor &grad,
              const DenseTensor &moment,
              const DenseTensor &learning_rate,
-             const paddle::optional<DenseTensor> &mean_grad_opt,
-             const paddle::optional<DenseTensor> &master_param,
+             const optional<DenseTensor> &mean_grad_opt,
+             const optional<DenseTensor> &master_param,
              float epsilon_t,
              float decay_t,
              float momentum_t,
@@ -46,11 +46,11 @@ struct RmsFunctor<T, phi::GPUContext> {
     auto &grad_tensor = grad;
     size_t limit = static_cast<size_t>(ms_tensor.numel());
     DenseRmspropGradFunctor<T> grad_func(grad_tensor.data<T>());
-    funcs::ForRange<phi::GPUContext> for_range(ctx, limit);
-    using MPDType = typename phi::dtype::MPTypeTrait<T>::Type;
-    MPDType *master_out_data =
-        multi_precision ? ctx.template Alloc<MPDType>(master_param_outs)
-                        : nullptr;
+    funcs::ForRange<GPUContext> for_range(dev_ctx, limit);
+    using MT = typename MPTypeTrait<T>::Type;
+    MT *master_out_data = multi_precision
+                              ? dev_ctx.template Alloc<MT>(master_param_outs)
+                              : nullptr;
 
     if (centered) {
       auto mg_tensor = mean_grad_opt.get_ptr();
@@ -68,35 +68,34 @@ struct RmsFunctor<T, phi::GPUContext> {
                 "MeanGrad and MeanGradOut must be the same Tensor"));
       }
 
-      for_range(CenteredRmspropFunctor<T, MPDType, DenseRmspropGradFunctor<T>>(
-          ctx.template Alloc<T>(param_out),
-          ctx.template Alloc<MPDType>(mean_square_out),
-          ctx.template Alloc<MPDType>(moment_out),
-          ctx.template Alloc<MPDType>(mean_grad_out),
-          lr_tensor.data<MPDType>(),
+      for_range(CenteredRmspropFunctor<T, MT, DenseRmspropGradFunctor<T>>(
+          dev_ctx.template Alloc<T>(param_out),
+          dev_ctx.template Alloc<MT>(mean_square_out),
+          dev_ctx.template Alloc<MT>(moment_out),
+          dev_ctx.template Alloc<MT>(mean_grad_out),
+          lr_tensor.data<MT>(),
           master_out_data,
-          static_cast<MPDType>(decay_t),
-          static_cast<MPDType>(epsilon_t),
-          static_cast<MPDType>(momentum_t),
+          static_cast<MT>(decay_t),
+          static_cast<MT>(epsilon_t),
+          static_cast<MT>(momentum_t),
           grad_func));
     } else {
-      for_range(
-          UncenteredRmspropFunctor<T, MPDType, DenseRmspropGradFunctor<T>>(
-              ctx.template Alloc<T>(param_out),
-              ctx.template Alloc<MPDType>(mean_square_out),
-              ctx.template Alloc<MPDType>(moment_out),
-              lr_tensor.data<MPDType>(),
-              master_out_data,
-              static_cast<MPDType>(decay_t),
-              static_cast<MPDType>(epsilon_t),
-              static_cast<MPDType>(momentum_t),
-              grad_func));
+      for_range(UncenteredRmspropFunctor<T, MT, DenseRmspropGradFunctor<T>>(
+          dev_ctx.template Alloc<T>(param_out),
+          dev_ctx.template Alloc<MT>(mean_square_out),
+          dev_ctx.template Alloc<MT>(moment_out),
+          lr_tensor.data<MT>(),
+          master_out_data,
+          static_cast<MT>(decay_t),
+          static_cast<MT>(epsilon_t),
+          static_cast<MT>(momentum_t),
+          grad_func));
     }
   }
 };
-template struct RmsFunctor<phi::GPUContext, float>;
-template struct RmsFunctor<phi::GPUContext, double>;
-template struct RmsFunctor<phi::GPUContext, phi::dtype::float16>;
+template struct RmsFunctor<GPUContext, float>;
+template struct RmsFunctor<GPUContext, double>;
+template struct RmsFunctor<GPUContext, float16>;
 }  // namespace phi
 
 PD_REGISTER_KERNEL(rmsprop,
@@ -105,7 +104,7 @@ PD_REGISTER_KERNEL(rmsprop,
                    phi::RmspropDenseKernel,
                    float,
                    double,
-                   phi::dtype::float16) {}
+                   phi::float16) {}
 
 PD_REGISTER_KERNEL(rmsprop_dense_param_sparse_grad,
                    GPU,
@@ -113,4 +112,4 @@ PD_REGISTER_KERNEL(rmsprop_dense_param_sparse_grad,
                    phi::RmspropSparseKernel,
                    float,
                    double,
-                   phi::dtype::float16) {}
+                   phi::float16) {}

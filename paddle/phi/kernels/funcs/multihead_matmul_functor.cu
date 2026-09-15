@@ -15,21 +15,15 @@
 #ifdef PADDLE_WITH_CUDA
 #include <cuda.h>
 #include <cuda_runtime.h>
-
-#include <cub/cub.cuh>  // NOLINT
 #endif
 #ifdef PADDLE_WITH_HIP
 #include <hip/hip_runtime.h>
-
-#include <hipcub/hipcub.hpp>
-namespace cub = hipcub;
 #endif
 
-#include "paddle/phi/kernels/funcs/multihead_matmul_functor.h"
-
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/kernels/funcs/blas/blas.h"
+#include "paddle/phi/kernels/funcs/cub.h"
 #include "paddle/phi/kernels/funcs/math_cuda_utils.h"
+#include "paddle/phi/kernels/funcs/multihead_matmul_functor.h"
 
 namespace phi {
 namespace funcs {
@@ -39,7 +33,7 @@ struct CUDATypeTraits;
 
 template <>
 struct CUDATypeTraits<half> {
-  typedef phi::dtype::float16 TYPE;
+  typedef phi::float16 TYPE;
 };
 
 template <>
@@ -47,7 +41,7 @@ struct CUDATypeTraits<float> {
   typedef float TYPE;
 };
 
-using phi::funcs::operator+;
+using funcs::operator+;
 
 template <typename T>
 __global__ void SoftmaxKernelWithEltadd(T *qk_buf_,
@@ -55,43 +49,42 @@ __global__ void SoftmaxKernelWithEltadd(T *qk_buf_,
                                         const int batch_size,
                                         const int head_num,
                                         const int seq_len,
-                                        const phi::funcs::warp_mask_t mask) {
-  int qk_offset = blockIdx.x * seq_len;
+                                        const funcs::warp_mask_t mask) {
+  int64_t qk_offset = static_cast<int64_t>(blockIdx.x) * seq_len;
   assert(blockDim.x % WARP_SIZE == 0);
 
   float tmp = threadIdx.x < seq_len
                   ? static_cast<float>(qk_buf_[threadIdx.x + qk_offset] +
                                        bias_qk_[threadIdx.x + qk_offset])
                   : -1e20f;
-  float max_val = phi::funcs::BlockReduceMax<float>(tmp, mask);
+  float max_val = funcs::BlockReduceMax<float>(tmp, mask);
 
   float qk_tmp = threadIdx.x < seq_len ? __expf(tmp - max_val) : 0.0f;
-  float sum_val = phi::funcs::BlockReduceSum<float>(qk_tmp, mask);
+  float sum_val = funcs::BlockReduceSum<float>(qk_tmp, mask);
 
   if (threadIdx.x < seq_len)
     qk_buf_[threadIdx.x + qk_offset] = (T)(qk_tmp / sum_val);
 }
 
 template <>
-__global__ void SoftmaxKernelWithEltadd<half>(
-    half *qk_buf_,
-    const half *bias_qk_,
-    const int batch_size,
-    const int head_num,
-    const int seq_len,
-    const phi::funcs::warp_mask_t mask) {
-#if defined(PADDLE_WITH_CUDA) && CUDA_ARCH_FP16_SUPPORTED(__CUDA_ARCH__)
-  int qk_offset = blockIdx.x * seq_len;
+__global__ void SoftmaxKernelWithEltadd<half>(half *qk_buf_,
+                                              const half *bias_qk_,
+                                              const int batch_size,
+                                              const int head_num,
+                                              const int seq_len,
+                                              const funcs::warp_mask_t mask) {
+#if defined(PADDLE_WITH_CUDA)
+  int64_t qk_offset = static_cast<int64_t>(blockIdx.x) * seq_len;
   assert(blockDim.x % WARP_SIZE == 0);
 
   float tmp = threadIdx.x < seq_len
                   ? static_cast<float>(qk_buf_[threadIdx.x + qk_offset] +
                                        bias_qk_[threadIdx.x + qk_offset])
                   : -1e20f;
-  float max_val = phi::funcs::BlockReduceMax<float>(tmp, mask);
+  float max_val = funcs::BlockReduceMax<float>(tmp, mask);
 
   float qk_tmp = threadIdx.x < seq_len ? __expf(tmp - max_val) : 0.0f;
-  float sum_val = phi::funcs::BlockReduceSum<float>(qk_tmp, mask);
+  float sum_val = funcs::BlockReduceSum<float>(qk_tmp, mask);
 
   if (threadIdx.x < seq_len)
     qk_buf_[threadIdx.x + qk_offset] = (half)(qk_tmp / sum_val);
@@ -104,70 +97,66 @@ __global__ void SoftmaxKernelWithEltadd2(T *qk_buf_,
                                          const int batch_size,
                                          const int head_num,
                                          const int seq_len,
-                                         const phi::funcs::warp_mask_t mask) {
-  int qk_offset = blockIdx.x * seq_len;
+                                         const funcs::warp_mask_t mask) {
+  int64_t qk_offset = static_cast<int64_t>(blockIdx.x) * seq_len;
   int idx = threadIdx.x;
   assert(blockDim.x % WARP_SIZE == 0);
 
-  float2 tmp = idx < seq_len
-                   ? phi::funcs::ToFloat2<T>(qk_buf_[idx + qk_offset] +
-                                             bias_qk_[idx + qk_offset])
-                   : make_float2(-1e20f, -1e20f);
-  float max_val = phi::funcs::BlockReduceMax<float>(max(tmp.x, tmp.y), mask);
+  float2 tmp = idx < seq_len ? funcs::ToFloat2<T>(qk_buf_[idx + qk_offset] +
+                                                  bias_qk_[idx + qk_offset])
+                             : make_float2(-1e20f, -1e20f);
+  float max_val = funcs::BlockReduceMax<float>(max(tmp.x, tmp.y), mask);
   float2 qk_tmp = idx < seq_len ? make_float2(__expf(tmp.x - max_val),
                                               __expf(tmp.y - max_val))
                                 : make_float2(0.f, 0.f);
   float sum_val =
-      phi::funcs::BlockReduceSum<float>(qk_tmp.x + qk_tmp.y, mask) + 1e-6f;
+      funcs::BlockReduceSum<float>(qk_tmp.x + qk_tmp.y, mask) + 1e-6f;
 
   if (idx < seq_len) {
     qk_buf_[idx + qk_offset] =
-        phi::funcs::FloatsToPair<T>(qk_tmp.x / sum_val, qk_tmp.y / sum_val);
+        funcs::FloatsToPair<T>(qk_tmp.x / sum_val, qk_tmp.y / sum_val);
   }
 }
 
 template <>
-__global__ void SoftmaxKernelWithEltadd2<half2>(
-    half2 *qk_buf_,
-    const half2 *bias_qk_,
-    const int batch_size,
-    const int head_num,
-    const int seq_len,
-    const phi::funcs::warp_mask_t mask) {
-// operator "+" of half only suppotted after cuda version 10.0
+__global__ void SoftmaxKernelWithEltadd2<half2>(half2 *qk_buf_,
+                                                const half2 *bias_qk_,
+                                                const int batch_size,
+                                                const int head_num,
+                                                const int seq_len,
+                                                const funcs::warp_mask_t mask) {
+// operator "+" of half only supported after cuda version 10.0
 // HIP defined __HIP_NO_HALF_CONVERSIONS__ in hip.cmake
-#if defined(PADDLE_WITH_CUDA) && CUDA_ARCH_FP16_SUPPORTED(__CUDA_ARCH__)
-  int qk_offset = blockIdx.x * seq_len;
+#if defined(PADDLE_WITH_CUDA)
+  int64_t qk_offset = static_cast<int64_t>(blockIdx.x) * seq_len;
   int idx = threadIdx.x;
   assert(blockDim.x % WARP_SIZE == 0);
 
-  float2 tmp = idx < seq_len
-                   ? phi::funcs::ToFloat2<half2>(qk_buf_[idx + qk_offset] +
-                                                 bias_qk_[idx + qk_offset])
-                   : make_float2(-1e20f, -1e20f);
-  float max_val = phi::funcs::BlockReduceMax<float>(max(tmp.x, tmp.y), mask);
+  float2 tmp = idx < seq_len ? funcs::ToFloat2<half2>(qk_buf_[idx + qk_offset] +
+                                                      bias_qk_[idx + qk_offset])
+                             : make_float2(-1e20f, -1e20f);
+  float max_val = funcs::BlockReduceMax<float>(max(tmp.x, tmp.y), mask);
   float2 qk_tmp = idx < seq_len ? make_float2(__expf(tmp.x - max_val),
                                               __expf(tmp.y - max_val))
                                 : make_float2(0.f, 0.f);
   float sum_val =
-      phi::funcs::BlockReduceSum<float>(qk_tmp.x + qk_tmp.y, mask) + 1e-6f;
+      funcs::BlockReduceSum<float>(qk_tmp.x + qk_tmp.y, mask) + 1e-6f;
 
   if (idx < seq_len) {
     qk_buf_[idx + qk_offset] =
-        phi::funcs::FloatsToPair<half2>(qk_tmp.x / sum_val, qk_tmp.y / sum_val);
+        funcs::FloatsToPair<half2>(qk_tmp.x / sum_val, qk_tmp.y / sum_val);
   }
 #endif
 }
 
 template <typename T>
-__global__ void SoftmaxKernelWithEltaddForLarge(
-    T *qk_buf,
-    const T *bias_qk,
-    const int batch_size,
-    const int head_num,
-    const int seq_len,
-    const phi::funcs::warp_mask_t mask) {
-  int qk_offset = blockIdx.x * seq_len;
+__global__ void SoftmaxKernelWithEltaddForLarge(T *qk_buf,
+                                                const T *bias_qk,
+                                                const int batch_size,
+                                                const int head_num,
+                                                const int seq_len,
+                                                const funcs::warp_mask_t mask) {
+  int64_t qk_offset = static_cast<int64_t>(blockIdx.x) * seq_len;
   assert(blockDim.x % WARP_SIZE == 0);
 
   T stride_max = -1e20f;
@@ -179,14 +168,14 @@ __global__ void SoftmaxKernelWithEltaddForLarge(
                            bias_qk[threadIdx.x + i + qk_offset]
                      : stride_max;
   }
-  T max_val = phi::funcs::BlockReduceMax<T>(stride_max, mask);
+  T max_val = funcs::BlockReduceMax<T>(stride_max, mask);
 
   T stride_sum = 0.f;
   for (int i = 0; threadIdx.x + i < seq_len; i += blockDim.x) {
     stride_sum += __expf(qk_buf[threadIdx.x + i + qk_offset] +
                          bias_qk[threadIdx.x + i + qk_offset] - max_val);
   }
-  T sum_val = phi::funcs::BlockReduceSum<T>(stride_sum, mask);
+  T sum_val = funcs::BlockReduceSum<T>(stride_sum, mask);
 
   for (int i = 0; threadIdx.x + i < seq_len; i += blockDim.x) {
     qk_buf[threadIdx.x + i + qk_offset] =
@@ -197,16 +186,14 @@ __global__ void SoftmaxKernelWithEltaddForLarge(
 }
 
 template <>
-__global__ void SoftmaxKernelWithEltaddForLarge(
-    half *qk_buf,
-    const half *bias_qk,
-    const int batch_size,
-    const int head_num,
-    const int seq_len,
-    const phi::funcs::warp_mask_t mask) {
-#if defined(PADDLE_WITH_CUDA) && \
-    (CUDA_ARCH_FP16_SUPPORTED(__CUDA_ARCH__) && CUDA_VERSION >= 10000)
-  int qk_offset = blockIdx.x * seq_len;
+__global__ void SoftmaxKernelWithEltaddForLarge(half *qk_buf,
+                                                const half *bias_qk,
+                                                const int batch_size,
+                                                const int head_num,
+                                                const int seq_len,
+                                                const funcs::warp_mask_t mask) {
+#if defined(PADDLE_WITH_CUDA)
+  int64_t qk_offset = static_cast<int64_t>(blockIdx.x) * seq_len;
   assert(blockDim.x % WARP_SIZE == 0);
 
   float stride_max = -1e20f;
@@ -215,7 +202,7 @@ __global__ void SoftmaxKernelWithEltaddForLarge(
                                    bias_qk[threadIdx.x + i + qk_offset]);
     stride_max = tmp > stride_max ? tmp : stride_max;
   }
-  float max_val = phi::funcs::BlockReduceMax<float>(stride_max, mask);
+  float max_val = funcs::BlockReduceMax<float>(stride_max, mask);
 
   float stride_sum = 0.f;
   for (int i = 0; threadIdx.x + i < seq_len; i += blockDim.x) {
@@ -223,7 +210,7 @@ __global__ void SoftmaxKernelWithEltaddForLarge(
                                    bias_qk[threadIdx.x + i + qk_offset]);
     stride_sum += __expf(tmp - max_val);
   }
-  float sum_val = phi::funcs::BlockReduceSum<float>(stride_sum, mask);
+  float sum_val = funcs::BlockReduceSum<float>(stride_sum, mask);
 
   for (int i = 0; threadIdx.x + i < seq_len; i += blockDim.x) {
     float tmp =
@@ -242,36 +229,35 @@ __global__ void SoftmaxKernelWithEltaddForLarge2(
     const int batch_size,
     const int head_num,
     const int seq_len,
-    const phi::funcs::warp_mask_t mask) {
-  int qk_offset = blockIdx.x * seq_len;
+    const funcs::warp_mask_t mask) {
+  int64_t qk_offset = static_cast<int64_t>(blockIdx.x) * seq_len;
   assert(blockDim.x % WARP_SIZE == 0);
 
   float2 stride_max = make_float2(-1e20f, -1e20f);
   for (int i = 0; threadIdx.x + i < seq_len; i += blockDim.x) {
-    float2 cur = phi::funcs::ToFloat2<T>(qk_buf_[threadIdx.x + i + qk_offset] +
-                                         bias_qk_[threadIdx.x + i + qk_offset]);
+    float2 cur = funcs::ToFloat2<T>(qk_buf_[threadIdx.x + i + qk_offset] +
+                                    bias_qk_[threadIdx.x + i + qk_offset]);
     stride_max.x = max(stride_max.x, cur.x);
     stride_max.y = max(stride_max.y, cur.y);
   }
   float max_val =
-      phi::funcs::BlockReduceMax<float>(max(stride_max.x, stride_max.y), mask);
+      funcs::BlockReduceMax<float>(max(stride_max.x, stride_max.y), mask);
 
   float2 stride_sum = make_float2(0.f, 0.f);
   for (int i = 0; threadIdx.x + i < seq_len; i += blockDim.x) {
-    float2 cur = phi::funcs::ToFloat2<T>(qk_buf_[threadIdx.x + i + qk_offset] +
-                                         bias_qk_[threadIdx.x + i + qk_offset]);
+    float2 cur = funcs::ToFloat2<T>(qk_buf_[threadIdx.x + i + qk_offset] +
+                                    bias_qk_[threadIdx.x + i + qk_offset]);
     stride_sum.x += __expf(cur.x - max_val);
     stride_sum.y += __expf(cur.y - max_val);
   }
 
   float sum_val =
-      phi::funcs::BlockReduceSum<float>(stride_sum.x + stride_sum.y, mask) +
-      1e-6f;
+      funcs::BlockReduceSum<float>(stride_sum.x + stride_sum.y, mask) + 1e-6f;
 
   for (int i = 0; threadIdx.x + i < seq_len; i += blockDim.x) {
-    float2 cur = phi::funcs::ToFloat2<T>(qk_buf_[threadIdx.x + i + qk_offset] +
-                                         bias_qk_[threadIdx.x + i + qk_offset]);
-    qk_buf_[threadIdx.x + i + qk_offset] = phi::funcs::FloatsToPair<T>(
+    float2 cur = funcs::ToFloat2<T>(qk_buf_[threadIdx.x + i + qk_offset] +
+                                    bias_qk_[threadIdx.x + i + qk_offset]);
+    qk_buf_[threadIdx.x + i + qk_offset] = funcs::FloatsToPair<T>(
         __expf(cur.x - max_val) / sum_val, __expf(cur.y - max_val) / sum_val);
   }
 }
@@ -283,44 +269,38 @@ __global__ void SoftmaxKernelWithEltaddForLarge2(
     const int batch_size,
     const int head_num,
     const int seq_len,
-    const phi::funcs::warp_mask_t mask) {
-// operator "+" of half only suppotted after cuda version 10.0
+    const funcs::warp_mask_t mask) {
 // HIP defined __HIP_NO_HALF_CONVERSIONS__ in hip.cmake
-#if defined(PADDLE_WITH_CUDA) && \
-    (CUDA_ARCH_FP16_SUPPORTED(__CUDA_ARCH__) && CUDA_VERSION >= 10000)
+#if defined(PADDLE_WITH_CUDA)
 
-  int qk_offset = blockIdx.x * seq_len;
+  int64_t qk_offset = static_cast<int64_t>(blockIdx.x) * seq_len;
   assert(blockDim.x % WARP_SIZE == 0);
 
   float2 stride_max = make_float2(-1e20f, -1e20f);
   for (int i = 0; threadIdx.x + i < seq_len; i += blockDim.x) {
-    float2 cur =
-        phi::funcs::ToFloat2<half2>(qk_buf_[threadIdx.x + i + qk_offset] +
-                                    bias_qk_[threadIdx.x + i + qk_offset]);
+    float2 cur = funcs::ToFloat2<half2>(qk_buf_[threadIdx.x + i + qk_offset] +
+                                        bias_qk_[threadIdx.x + i + qk_offset]);
     stride_max.x = max(stride_max.x, cur.x);
     stride_max.y = max(stride_max.y, cur.y);
   }
   float max_val =
-      phi::funcs::BlockReduceMax<float>(max(stride_max.x, stride_max.y), mask);
+      funcs::BlockReduceMax<float>(max(stride_max.x, stride_max.y), mask);
 
   float2 stride_sum = make_float2(0.f, 0.f);
   for (int i = 0; threadIdx.x + i < seq_len; i += blockDim.x) {
-    float2 cur =
-        phi::funcs::ToFloat2<half2>(qk_buf_[threadIdx.x + i + qk_offset] +
-                                    bias_qk_[threadIdx.x + i + qk_offset]);
+    float2 cur = funcs::ToFloat2<half2>(qk_buf_[threadIdx.x + i + qk_offset] +
+                                        bias_qk_[threadIdx.x + i + qk_offset]);
     stride_sum.x += __expf(cur.x - max_val);
     stride_sum.y += __expf(cur.y - max_val);
   }
 
   float sum_val =
-      phi::funcs::BlockReduceSum<float>(stride_sum.x + stride_sum.y, mask) +
-      1e-6f;
+      funcs::BlockReduceSum<float>(stride_sum.x + stride_sum.y, mask) + 1e-6f;
 
   for (int i = 0; threadIdx.x + i < seq_len; i += blockDim.x) {
-    float2 cur =
-        phi::funcs::ToFloat2<half2>(qk_buf_[threadIdx.x + i + qk_offset] +
-                                    bias_qk_[threadIdx.x + i + qk_offset]);
-    qk_buf_[threadIdx.x + i + qk_offset] = phi::funcs::FloatsToPair<half2>(
+    float2 cur = funcs::ToFloat2<half2>(qk_buf_[threadIdx.x + i + qk_offset] +
+                                        bias_qk_[threadIdx.x + i + qk_offset]);
+    qk_buf_[threadIdx.x + i + qk_offset] = funcs::FloatsToPair<half2>(
         __expf(cur.x - max_val) / sum_val, __expf(cur.y - max_val) / sum_val);
   }
 #endif
@@ -377,10 +357,11 @@ __global__ void softmax_kernel_with_mask(T *qk_buf_,
   T2 *qk_buf_half2 = reinterpret_cast<T2 *>(qk_buf_);
   const T2 *attr_mask_half2 = (const T2 *)attr_mask;
 
-  for (int seq_id = blockIdx.x; seq_id < seq_len; seq_id += gridDim.x * NUM) {
+  for (int64_t seq_id = static_cast<int64_t>(blockIdx.x); seq_id < seq_len;
+       seq_id += static_cast<int64_t>(gridDim.x) * NUM) {
     T2 data[NUM][ITEMS_PER_THREAD];
 
-    int qk_offset[NUM];
+    int64_t qk_offset[NUM];
 
     __shared__ float s_sum[NUM], s_max[NUM];
     float local_max[NUM];
@@ -390,18 +371,25 @@ __global__ void softmax_kernel_with_mask(T *qk_buf_,
     }
 
     for (int i = 0;
-         blockDim.x * i + threadIdx.x < (seq_len / 2) && i < ITEMS_PER_THREAD;
+         static_cast<int64_t>(blockDim.x) * i + threadIdx.x < (seq_len / 2) &&
+         i < ITEMS_PER_THREAD;
          i++) {
-      int mask_offset[NUM];
+      int64_t mask_offset[NUM];
 #pragma unroll
       for (int j = 0; j < NUM; j++) {
-        qk_offset[j] = ((blockIdx.y * head_num + blockIdx.z) * seq_len +
-                        seq_id + j * gridDim.x) *
-                           (seq_len / 2) +
-                       blockDim.x * i + threadIdx.x;
+        qk_offset[j] =
+            ((static_cast<int64_t>(blockIdx.y) * head_num +
+              static_cast<int64_t>(blockIdx.z)) *
+                 static_cast<int64_t>(seq_len) +
+             seq_id +
+             static_cast<int64_t>(j) * static_cast<int64_t>(gridDim.x)) *
+                static_cast<int64_t>(seq_len / 2) +
+            static_cast<int64_t>(blockDim.x) * i + threadIdx.x;
         mask_offset[j] =
-            (blockIdx.y * seq_len + seq_id + j * gridDim.x) * (seq_len / 2) +
-            blockDim.x * i + threadIdx.x;
+            (static_cast<int64_t>(blockIdx.y) * seq_len + seq_id +
+             static_cast<int64_t>(j) * static_cast<int64_t>(gridDim.x)) *
+                static_cast<int64_t>(seq_len / 2) +
+            static_cast<int64_t>(blockDim.x) * i + threadIdx.x;
       }
 
       T2 mask_val[NUM];
@@ -432,9 +420,9 @@ __global__ void softmax_kernel_with_mask(T *qk_buf_,
     }
 
     if (blockDim.x <= WARP_SIZE) {
-      phi::funcs::WarpReduceMaxV2<float, NUM>(local_max);
+      funcs::WarpReduceMaxV2<float, NUM>(local_max);
     } else {
-      phi::funcs::BlockReduceMaxV2<float, NUM>(local_max);
+      funcs::BlockReduceMaxV2<float, NUM>(local_max);
     }
 
     if (threadIdx.x == 0) {
@@ -452,7 +440,8 @@ __global__ void softmax_kernel_with_mask(T *qk_buf_,
     }
 
     for (int i = 0;
-         blockDim.x * i + threadIdx.x < (seq_len / 2) && i < ITEMS_PER_THREAD;
+         static_cast<int64_t>(blockDim.x) * i + threadIdx.x < (seq_len / 2) &&
+         i < ITEMS_PER_THREAD;
          i++) {
 #pragma unroll
       for (int j = 0; j < NUM; j++) {
@@ -467,9 +456,9 @@ __global__ void softmax_kernel_with_mask(T *qk_buf_,
     }
 
     if (blockDim.x <= WARP_SIZE) {
-      phi::funcs::WarpReduceSumV2<float, NUM>(local_sum);
+      funcs::WarpReduceSumV2<float, NUM>(local_sum);
     } else {
-      phi::funcs::BlockReduceSumV2<float, NUM>(local_sum);
+      funcs::BlockReduceSumV2<float, NUM>(local_sum);
     }
 
     if (threadIdx.x == 0) {
@@ -481,14 +470,19 @@ __global__ void softmax_kernel_with_mask(T *qk_buf_,
     __syncthreads();
 
     for (int i = 0;
-         blockDim.x * i + threadIdx.x < (seq_len / 2) && i < ITEMS_PER_THREAD;
+         static_cast<int64_t>(blockDim.x) * i + threadIdx.x < (seq_len / 2) &&
+         i < ITEMS_PER_THREAD;
          i++) {
 #pragma unroll
       for (int j = 0; j < NUM; j++) {
-        qk_offset[j] = ((blockIdx.y * head_num + blockIdx.z) * seq_len +
-                        seq_id + j * gridDim.x) *
-                           (seq_len / 2) +
-                       blockDim.x * i + threadIdx.x;
+        qk_offset[j] =
+            ((static_cast<int64_t>(blockIdx.y) * head_num +
+              static_cast<int64_t>(blockIdx.z)) *
+                 static_cast<int64_t>(seq_len) +
+             seq_id +
+             static_cast<int64_t>(j) * static_cast<int64_t>(gridDim.x)) *
+                static_cast<int64_t>(seq_len / 2) +
+            static_cast<int64_t>(blockDim.x) * i + threadIdx.x;
       }
 
 #pragma unroll
@@ -514,7 +508,7 @@ __global__ void softmax_kernel_with_mask(T *qk_buf_,
   } while (0)
 
 template <typename T>
-inline void MatmulWithHeadQK(const phi::GPUContext &context,
+inline void MatmulWithHeadQK(const GPUContext &dev_ctx,
                              int head_num,
                              int seq_len,
                              int size_per_head,
@@ -532,8 +526,8 @@ inline void MatmulWithHeadQK(const phi::GPUContext &context,
   CBLAS_TRANSPOSE transB = !k_trans ? CblasNoTrans : CblasTrans;
 
   typedef typename CUDATypeTraits<T>::TYPE run_type;
-  auto blas = phi::funcs::GetBlas<phi::GPUContext, run_type>(context);
-  auto stream = context.stream();
+  auto blas = funcs::GetBlas<GPUContext, run_type>(dev_ctx);
+  auto stream = dev_ctx.stream();
 
   blas.BatchedGEMM(transA,
                    transB,
@@ -545,12 +539,15 @@ inline void MatmulWithHeadQK(const phi::GPUContext &context,
                    reinterpret_cast<run_type *>(k_buf_),
                    static_cast<run_type>(beta),
                    reinterpret_cast<run_type *>(qk_buf_),
-                   batch_size * head_num,
-                   seq_len * size_per_head,
-                   seq_len * size_per_head);
+                   static_cast<int64_t>(batch_size) * head_num,
+                   static_cast<int64_t>(seq_len) * size_per_head,
+                   static_cast<int64_t>(seq_len) * size_per_head);
 
   if (seq_len <= 1024) {
-    int grid = batch_size * head_num * seq_len;
+    int64_t grid_size64 = static_cast<int64_t>(batch_size) * head_num * seq_len;
+    PADDLE_ENFORCE_LE_INT_MAX(
+        grid_size64, "CUDA launch grid batch_size * head_num * seq_len");
+    int grid_size = static_cast<int>(grid_size64);
     int block = seq_len;
 
     // Align block to 32, also limit seq_len to max block size.
@@ -560,7 +557,7 @@ inline void MatmulWithHeadQK(const phi::GPUContext &context,
               ? WARP_SIZE
               : ((seq_len + (2 * WARP_SIZE - 1)) / (2 * WARP_SIZE)) * WARP_SIZE;
       if (std::is_same<T, float>::value) {
-        SoftmaxKernelWithEltadd2<float2><<<grid, block, 0, stream>>>(
+        SoftmaxKernelWithEltadd2<float2><<<grid_size, block, 0, stream>>>(
             reinterpret_cast<float2 *>(qk_buf_),
             reinterpret_cast<const float2 *>(bias_qk),
             batch_size,
@@ -581,7 +578,7 @@ inline void MatmulWithHeadQK(const phi::GPUContext &context,
           SOFTMAX_KERNEL_WITH_MASK(1);
 #endif
         } else {
-          SoftmaxKernelWithEltadd2<__half2><<<grid, block, 0, stream>>>(
+          SoftmaxKernelWithEltadd2<__half2><<<grid_size, block, 0, stream>>>(
               reinterpret_cast<__half2 *>(qk_buf_),
               reinterpret_cast<const __half2 *>(bias_qk),
               batch_size,
@@ -594,21 +591,25 @@ inline void MatmulWithHeadQK(const phi::GPUContext &context,
       block = (seq_len <= WARP_SIZE)
                   ? WARP_SIZE
                   : ((seq_len + WARP_SIZE - 1) / WARP_SIZE) * WARP_SIZE;
-      SoftmaxKernelWithEltadd<T><<<grid, block, 0, stream>>>(
+      SoftmaxKernelWithEltadd<T><<<grid_size, block, 0, stream>>>(
           qk_buf_, bias_qk, batch_size, head_num, seq_len, FINAL_MASK);
     }
   } else {
-    int grid = batch_size * head_num * seq_len;
+    int64_t grid_size64 = static_cast<int64_t>(batch_size) * head_num * seq_len;
+    PADDLE_ENFORCE_LE_INT_MAX(
+        grid_size64, "CUDA launch grid batch_size * head_num * seq_len");
+    int grid_size = static_cast<int>(grid_size64);
     int block = 512;
     if (seq_len % 2 == 0) {
       if (std::is_same<T, float>::value) {
-        SoftmaxKernelWithEltaddForLarge2<float2><<<grid, block, 0, stream>>>(
-            reinterpret_cast<float2 *>(qk_buf_),
-            reinterpret_cast<const float2 *>(bias_qk),
-            batch_size,
-            head_num,
-            seq_len / 2,
-            FINAL_MASK);
+        SoftmaxKernelWithEltaddForLarge2<float2>
+            <<<grid_size, block, 0, stream>>>(
+                reinterpret_cast<float2 *>(qk_buf_),
+                reinterpret_cast<const float2 *>(bias_qk),
+                batch_size,
+                head_num,
+                seq_len / 2,
+                FINAL_MASK);
       } else {
         if (bias_is_mask) {
 #if defined(__HIPCC__) || (defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 700)
@@ -632,24 +633,25 @@ inline void MatmulWithHeadQK(const phi::GPUContext &context,
           }
 #endif
         } else {
-          SoftmaxKernelWithEltaddForLarge2<__half2><<<grid, block, 0, stream>>>(
-              reinterpret_cast<__half2 *>(qk_buf_),
-              reinterpret_cast<const __half2 *>(bias_qk),
-              batch_size,
-              head_num,
-              seq_len / 2,
-              FINAL_MASK);
+          SoftmaxKernelWithEltaddForLarge2<__half2>
+              <<<grid_size, block, 0, stream>>>(
+                  reinterpret_cast<__half2 *>(qk_buf_),
+                  reinterpret_cast<const __half2 *>(bias_qk),
+                  batch_size,
+                  head_num,
+                  seq_len / 2,
+                  FINAL_MASK);
         }
       }
     } else {
-      SoftmaxKernelWithEltaddForLarge<T><<<grid, block, 0, stream>>>(
+      SoftmaxKernelWithEltaddForLarge<T><<<grid_size, block, 0, stream>>>(
           qk_buf_, bias_qk, batch_size, head_num, seq_len, FINAL_MASK);
     }
   }
 }
 
 template <typename T>
-inline void MatmulWithHeadQKV(const phi::GPUContext &context,
+inline void MatmulWithHeadQKV(const GPUContext &dev_ctx,
                               int head_num,
                               int seq_len,
                               int size_per_head,
@@ -661,12 +663,12 @@ inline void MatmulWithHeadQKV(const phi::GPUContext &context,
                               T *dst,
                               T alpha,
                               T beta) {
-  int m = batch_size * seq_len;
-  int k = head_num * size_per_head;
+  int64_t m = static_cast<int64_t>(batch_size) * seq_len;
+  int64_t k = static_cast<int64_t>(head_num) * size_per_head;
 
   typedef typename CUDATypeTraits<T>::TYPE run_type;
-  auto blas = phi::funcs::GetBlas<phi::GPUContext, run_type>(context);
-  auto stream = context.stream();
+  auto blas = funcs::GetBlas<GPUContext, run_type>(dev_ctx);
+  auto stream = dev_ctx.stream();
   CBLAS_TRANSPOSE transA = !qk_trans ? CblasNoTrans : CblasTrans;
   CBLAS_TRANSPOSE transB = !v_trans ? CblasNoTrans : CblasTrans;
 
@@ -680,13 +682,13 @@ inline void MatmulWithHeadQKV(const phi::GPUContext &context,
                    reinterpret_cast<run_type *>(v_buf_),
                    static_cast<run_type>(beta),
                    reinterpret_cast<run_type *>(dst),
-                   batch_size * head_num,
-                   seq_len * seq_len,
-                   seq_len * size_per_head);
+                   static_cast<int64_t>(batch_size) * head_num,
+                   static_cast<int64_t>(seq_len) * seq_len,
+                   static_cast<int64_t>(seq_len) * size_per_head);
 }
 
 template <typename T>
-void MultiheadGPUComputeFunctor<T>::operator()(const phi::GPUContext &dev_ctx,
+void MultiheadGPUComputeFunctor<T>::operator()(const GPUContext &dev_ctx,
                                                int batch,
                                                int seq_len,
                                                int head_num,
@@ -698,7 +700,8 @@ void MultiheadGPUComputeFunctor<T>::operator()(const phi::GPUContext &dev_ctx,
                                                T alpha,
                                                T beta) {
   auto stream = dev_ctx.stream();
-  const int tsize = batch * head_num * seq_len * head_size;
+  const int64_t tsize =
+      static_cast<int64_t>(batch) * head_num * seq_len * head_size;
 
   T *qptr = tptr;
   T *kptr = qptr + tsize;
@@ -733,12 +736,12 @@ void MultiheadGPUComputeFunctor<T>::operator()(const phi::GPUContext &dev_ctx,
                        beta);
 }
 
-template class MultiheadGPUComputeFunctor<float>;
+template class PADDLE_API MultiheadGPUComputeFunctor<float>;
 
-// device function 'operator()' is not supportted until cuda 10.0
+// device function 'operator()' is not supported until cuda 10.0
 // HIP defined __HIP_NO_HALF_CONVERSIONS__ in hip.cmake
-#if defined(PADDLE_WITH_CUDA) && CUDA_VERSION >= 10000
-template class MultiheadGPUComputeFunctor<half>;
+#if defined(PADDLE_WITH_CUDA)
+template class PADDLE_API MultiheadGPUComputeFunctor<half>;
 #endif
 
 }  // namespace funcs

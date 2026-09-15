@@ -21,20 +21,20 @@ template <typename T, typename Context>
 void FusedConv2DKernel(const Context& dev_ctx,
                        const DenseTensor& input,
                        const DenseTensor& filter,
-                       const paddle::optional<DenseTensor>& bias,
-                       const paddle::optional<DenseTensor>& residual_param,
+                       const optional<DenseTensor>& bias,
+                       const optional<DenseTensor>& residual_param,
                        const std::vector<int>& strides,
                        const std::vector<int>& paddings,
                        const std::string& padding_algorithm,
                        const std::vector<int>& dilations,
                        int groups,
                        const std::string& data_format,
-                       const std::string& mkldnn_data_type,
+                       const std::string& onednn_data_type,
                        const std::string& fuse_activation,
                        bool fuse_residual_conn,
                        bool force_fp32_output,
                        DenseTensor* out) {
-  bool is_BFLOAT16 = mkldnn_data_type == "bfloat16";
+  bool is_bfloat16 = onednn_data_type == "bfloat16";
 
   ConvOnednn<T>(dev_ctx,
                 &input,
@@ -48,7 +48,7 @@ void FusedConv2DKernel(const Context& dev_ctx,
                 groups,
                 data_format,
                 true,
-                is_BFLOAT16,
+                is_bfloat16,
                 fuse_activation,
                 fuse_residual_conn,
                 force_fp32_output,
@@ -56,24 +56,23 @@ void FusedConv2DKernel(const Context& dev_ctx,
 }
 
 template <typename T, typename Context>
-void FusedDepthwiseConv2DKernel(
-    const Context& dev_ctx,
-    const DenseTensor& input,
-    const DenseTensor& filter,
-    const paddle::optional<DenseTensor>& bias,
-    const paddle::optional<DenseTensor>& residual_param,
-    const std::vector<int>& strides,
-    const std::vector<int>& paddings,
-    const std::string& padding_algorithm,
-    const std::vector<int>& dilations,
-    int groups,
-    const std::string& data_format,
-    const std::string& mkldnn_data_type,
-    const std::string& fuse_activation,
-    bool fuse_residual_conn,
-    bool force_fp32_output,
-    DenseTensor* out) {
-  bool is_BFLOAT16 = mkldnn_data_type == "bfloat16";
+void FusedDepthwiseConv2DKernel(const Context& dev_ctx,
+                                const DenseTensor& input,
+                                const DenseTensor& filter,
+                                const optional<DenseTensor>& bias,
+                                const optional<DenseTensor>& residual_param,
+                                const std::vector<int>& strides,
+                                const std::vector<int>& paddings,
+                                const std::string& padding_algorithm,
+                                const std::vector<int>& dilations,
+                                int groups,
+                                const std::string& data_format,
+                                const std::string& onednn_data_type,
+                                const std::string& fuse_activation,
+                                bool fuse_residual_conn,
+                                bool force_fp32_output,
+                                DenseTensor* out) {
+  bool is_bfloat16 = onednn_data_type == "bfloat16";
 
   ConvOnednn<T>(dev_ctx,
                 &input,
@@ -87,7 +86,7 @@ void FusedDepthwiseConv2DKernel(
                 groups,
                 data_format,
                 true,
-                is_BFLOAT16,
+                is_bfloat16,
                 fuse_activation,
                 fuse_residual_conn,
                 force_fp32_output,
@@ -98,20 +97,20 @@ template <typename T, typename Context>
 void FusedConv3DKernel(const Context& dev_ctx,
                        const DenseTensor& input,
                        const DenseTensor& filter,
-                       const paddle::optional<DenseTensor>& bias,
-                       const paddle::optional<DenseTensor>& residual_param,
+                       const optional<DenseTensor>& bias,
+                       const optional<DenseTensor>& residual_param,
                        const std::vector<int>& strides,
                        const std::vector<int>& paddings,
                        const std::string& padding_algorithm,
                        const std::vector<int>& dilations,
                        int groups,
                        const std::string& data_format,
-                       const std::string& mkldnn_data_type,
+                       const std::string& onednn_data_type,
                        const std::string& fuse_activation,
                        bool fuse_residual_conn,
                        bool force_fp32_output,
                        DenseTensor* out) {
-  bool is_BFLOAT16 = mkldnn_data_type == "bfloat16";
+  bool is_bfloat16 = onednn_data_type == "bfloat16";
 
   ConvOnednn<T>(dev_ctx,
                 &input,
@@ -125,7 +124,7 @@ void FusedConv3DKernel(const Context& dev_ctx,
                 groups,
                 data_format,
                 true,
-                is_BFLOAT16,
+                is_bfloat16,
                 fuse_activation,
                 fuse_residual_conn,
                 force_fp32_output,
@@ -140,14 +139,14 @@ KernelKey ConvGetKernelTypeForVar(const GetKernelTypeForVarContext* ctx) {
   // Only input require reshaping, weights and
   // bias are having shape in NCHW order
   if ((var_name == "Input") &&
-      (expected_kernel_type.layout() == phi::DataLayout::ONEDNN) &&
-      (tensor.layout() != phi::DataLayout::ONEDNN)) {
+      (expected_kernel_type.layout() == DataLayout::ONEDNN) &&
+      (tensor.layout() != DataLayout::ONEDNN)) {
     auto it = attrs.find("data_format");
     const std::string data_format = PADDLE_GET_CONST(std::string, it->second);
-    auto dl = common::StringToDataLayout(data_format);
+    auto dl = StringToDataLayout(data_format);
     // Some models may have intentionally set "AnyLayout" for conv
     // op. Treat this as NCHW (default data_format value)
-    if (dl != phi::DataLayout::kAnyLayout) {
+    if (dl != DataLayout::ANY) {
       return phi::KernelKey(tensor.place(), dl, expected_kernel_type.dtype());
     }
   }
@@ -162,7 +161,7 @@ PD_REGISTER_KERNEL(fused_conv2d,
                    ONEDNN,
                    phi::fusion::FusedConv2DKernel,
                    float,
-                   phi::dtype::bfloat16,
+                   phi::bfloat16,
                    uint8_t,
                    int8_t) {
   kernel->get_kerneltype_forvar_fn_ = phi::fusion::ConvGetKernelTypeForVar;

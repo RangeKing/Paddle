@@ -111,7 +111,7 @@ def tril_matrix_to_vec(mat: Tensor, diag: int = 0) -> Tensor:
     out_shape = mat.shape[:-2]
     n = mat.shape[-1]
     if diag < -n or diag >= n:
-        raise ValueError(f"diag ({diag}) provided is outside [{-n}, {n-1}].")
+        raise ValueError(f"diag ({diag}) provided is outside [{-n}, {n - 1}].")
 
     rows, cols = paddle.meshgrid(paddle.arange(n), paddle.arange(n))
     tril_mask = diag + rows >= cols
@@ -137,7 +137,7 @@ class LKJCholesky(distribution.Distribution):
         sample_method (str, optional): The sampling method to use, either "onion" or "cvine". Default is "onion".
 
     Example:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -145,7 +145,7 @@ class LKJCholesky(distribution.Distribution):
             >>> lkj = paddle.distribution.LKJCholesky(dim=dim)
             >>> sample = lkj.sample()
             >>> sample.shape
-            [3, 3]
+            paddle.Size([3, 3])
     """
 
     concentration: Tensor

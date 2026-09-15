@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License. */
 
 #pragma once
-
+#include <vector>
 #include "paddle/common/exception.h"
 #include "paddle/phi/common/bfloat16.h"
 #include "paddle/phi/common/complex.h"
@@ -275,6 +275,16 @@ inline std::string DataTypeToString(const DataType& dtype) {
       PD_THROW("Invalid enum data type `", static_cast<int>(dtype), "`.");
   }
 }
+inline std::string DataTypeToString(const std::vector<DataType>& dtypes) {
+  std::string dtype_str;
+  for (size_t i = 0; i < dtypes.size(); ++i) {
+    dtype_str += DataTypeToString(dtypes[i]);
+    if (i != dtypes.size() - 1) {
+      dtype_str += ", ";
+    }
+  }
+  return dtype_str;
+}
 
 inline DataType StringToDataType(const std::string& dtype) {
   if (dtype == "Undefined(ALL_DTYPE)") {
@@ -283,6 +293,8 @@ inline DataType StringToDataType(const std::string& dtype) {
     return DataType::BOOL;
   } else if (dtype == "int8") {
     return DataType::INT8;
+  } else if (dtype == "float8_e4m3fn") {
+    return DataType::FLOAT8_E4M3FN;
   } else if (dtype == "uint8") {
     return DataType::UINT8;
   } else if (dtype == "int16") {
@@ -314,6 +326,20 @@ inline DataType StringToDataType(const std::string& dtype) {
   } else {
     PD_THROW("Invalid enum data type `", dtype, "`.");
   }
+}
+
+inline bool IsFloatingType(const DataType& type) {
+  return (type == DataType::FLOAT16 || type == DataType::BFLOAT16 ||
+          type == DataType::FLOAT32 || type == DataType::FLOAT64 ||
+          type == DataType::FLOAT8_E4M3FN || type == DataType::FLOAT8_E5M2);
+}
+
+inline bool IsIntegerType(const DataType& type) {
+  return (type == DataType::INT8 || type == DataType::INT16 ||
+          type == DataType::INT32 || type == DataType::INT64 ||
+          type == DataType::UINT8 || type == DataType::UINT16 ||
+          type == DataType::UINT32 || type == DataType::UINT64 ||
+          type == DataType::BOOL);
 }
 
 }  // namespace phi

@@ -34,7 +34,7 @@ from paddle.distributed.fleet.meta_optimizers.common import OpRole
 from paddle.distributed.passes.pass_base import new_pass
 from paddle.distributed.passes.pass_utils import (
     _split_program_into_forward_backward_optimize,
-    set_pir_skip_gc_vars,
+    set_skip_gc_vars,
 )
 from paddle.framework import (
     IrGraph,
@@ -80,8 +80,7 @@ from .utils import set_all_ops_op_role
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
-
-    from typing_extensions import TypeAlias
+    from typing import TypeAlias
 
     from paddle import Tensor
     from paddle._typing import PlaceLike
@@ -119,7 +118,7 @@ class Engine:
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> import paddle.vision.transforms as T
@@ -136,20 +135,18 @@ class Engine:
             >>> model = paddle.vision.models.LeNet()
             >>> loss = paddle.nn.CrossEntropyLoss()
             >>> optimizer = paddle.optimizer.Adam(
-            ...     learning_rate=0.001, parameters=model.parameters())
+            ...     learning_rate=0.001,
+            ...     parameters=model.parameters(),
+            ... )
             >>> metrics = paddle.metric.Accuracy(topk=(1, 2))
 
             >>> engine = auto.Engine(model, loss, optimizer, metrics)
             >>> # fit
-            >>> engine.fit(train_dataset,
-            ...            epochs=2,
-            ...            batch_size=64)
+            >>> engine.fit(train_dataset, epochs=2, batch_size=64)
             >>> # evaluate
-            >>> engine.evaluate(valid_dataset,
-            ...                 batch_size=64)
+            >>> engine.evaluate(valid_dataset, batch_size=64)
             >>> # predict
-            >>> engine.predict(valid_dataset,
-            ...                batch_size=64)
+            >>> engine.predict(valid_dataset, batch_size=64)
             >>> # save
             >>> engine.save("./my_model")
             >>> # load
@@ -230,31 +227,6 @@ class Engine:
 
         self._logger = get_logger(logging.INFO)
 
-        self._json_config = None
-        if cluster:
-            self._cluster = cluster
-        else:
-            auto_config = None
-            if os.getenv("PADDLE_AUTO_PARALLEL_CONFIG"):
-                try:
-                    path = os.getenv("PADDLE_AUTO_PARALLEL_CONFIG")
-                    with open(path, "r") as f:
-                        self._json_config = json.load(f)
-                except Exception as e:
-                    self._logger.info(
-                        "Load json failed, please check json file, engine will run default config."
-                    )
-                    self._json_config = None
-            else:
-                if os.getenv("PADDLE_AUTO_CLUSTER"):
-                    auto_config = int(os.getenv("PADDLE_AUTO_CLUSTER"))
-            self._cluster = get_default_cluster(self._json_config, auto_config)
-
-        if self._cluster is None:
-            raise TypeError(
-                "'cluster' must be the object or class `paddle.distributed.auto_parallel.Cluster`"
-            )
-
         # for compute cost
         # TODO: remove _fwd_main_progs and _orig_optimizer and _pir_main_progs
         self._fwd_dist_contexts = {}
@@ -309,9 +281,9 @@ class Engine:
             self._strategy.pipeline.enable
             and self._strategy.pipeline.schedule_mode == "1F1B"
         ):
-            assert (
-                os.getenv("CUDA_MODULE_LOADING") != "LAZY"
-            ), "EXP_CUDA_MODULE_LOADING_LAZY not supported in 1F1B pipeline."
+            assert os.getenv("CUDA_MODULE_LOADING") != "LAZY", (
+                "EXP_CUDA_MODULE_LOADING_LAZY not supported in 1F1B pipeline."
+            )
 
         self.history = None
 
@@ -326,6 +298,35 @@ class Engine:
 
         self.fused_ffn_qkv = None
 
+        # self._cluster is UNUSED in PIR mode
+        if not self._in_pir_mode:
+            self._json_config = None
+            if cluster:
+                self._cluster = cluster
+            else:
+                auto_config = None
+                if os.getenv("PADDLE_AUTO_PARALLEL_CONFIG"):
+                    try:
+                        path = os.getenv("PADDLE_AUTO_PARALLEL_CONFIG")
+                        with open(path, "r") as f:
+                            self._json_config = json.load(f)
+                    except Exception as e:
+                        self._logger.info(
+                            "Load json failed, please check json file, engine will run default config."
+                        )
+                        self._json_config = None
+                else:
+                    if os.getenv("PADDLE_AUTO_CLUSTER"):
+                        auto_config = int(os.getenv("PADDLE_AUTO_CLUSTER"))
+                self._cluster = get_default_cluster(
+                    self._json_config, auto_config
+                )
+
+            if self._cluster is None:
+                raise TypeError(
+                    "'cluster' must be the object or class `paddle.distributed.auto_parallel.Cluster`"
+                )
+
     # get dist input spec from shard dataloader
     def _prepare_data_spec_from_dataloader(self, dataloader):
         inputs_spec = []
@@ -335,34 +336,47 @@ class Engine:
             batch_sampler = dataloader.batch_sampler
         else:
             batch_sampler = dataloader._dataloader.batch_sampler
-
         if hasattr(batch_sampler, "set_epoch"):
             # Get data from DataLoader iterator directly may affect data generation randomness
             # of BatchSampler when `Shuffle=True`. It may cause difference of data feeding
             # between dynamic and to_static mode.
             batch_sampler.set_epoch(0)
-
         if isinstance(data, dict):
-            data = tuple(data.values())
-            if len(data) != 2:
+            data = list(data.values())
+            if len(data) >= 2:
+                labels = data.pop()
+                inputs = data
+            else:
                 raise ValueError(
-                    f"Data should be a dict with two keys, but received {len(data)}."
+                    f"Data should be a dict at least two keys, but received {len(data)}."
                 )
-            inputs, labels = data
         elif isinstance(data, (list, tuple)):
-            if len(data) != 2:
+            if len(data) >= 2:
+                labels = data.pop()
+                inputs = data
+            else:
                 raise ValueError(
-                    f"Data should be a list or tuple with two elements, but received {len(data)}."
+                    f"Data should be a dict or list at list two element, but received {len(data)}."
                 )
-            inputs, labels = data
         else:
             raise TypeError(
                 f"Data should be a dict or list, but received {type(data)}."
             )
-
-        inputs = auto_utils.to_list(inputs)
+        if not isinstance(inputs, (list, tuple)):
+            inputs = auto_utils.to_list(inputs)
         labels = auto_utils.to_list(labels)
 
+        def flatten_list(nested_list):
+            flat_list = []
+            for item in nested_list:
+                if isinstance(item, (list, tuple)):
+                    flat_list.extend(flatten_list(item))
+                else:
+                    flat_list.append(item)
+            return flat_list
+
+        # flatten [[1,2],3] - > [1,2,3]
+        inputs = flatten_list(inputs)
         if inputs is not None:
             for i, item in enumerate(inputs):
                 assert item is not None, "Receive None input."
@@ -454,28 +468,28 @@ class Engine:
             raise ValueError("Only support static graph mode.")
 
         if inputs_spec:
-            assert isinstance(
-                inputs_spec, list
-            ), f"inputs should be list, but received {type(inputs_spec)}"
-            assert isinstance(
-                inputs, list
-            ), f"inputs should be list, but received {type(inputs)}"
-            assert len(inputs_spec) == len(
-                inputs
-            ), "the number of `inputs_spec` should be equal to `inputs`'s."
+            assert isinstance(inputs_spec, list), (
+                f"inputs should be list, but received {type(inputs_spec)}"
+            )
+            assert isinstance(inputs, list), (
+                f"inputs should be list, but received {type(inputs)}"
+            )
+            assert len(inputs_spec) == len(inputs), (
+                "the number of `inputs_spec` should be equal to `inputs`'s."
+            )
             for input_spec, input in zip(inputs_spec, inputs):
                 if input_spec.shape != input.shape:
                     input.desc.set_shape(input_spec.shape)
         if labels_spec:
-            assert isinstance(
-                labels_spec, list
-            ), f"labels should be list, but received {type(labels_spec)}"
-            assert isinstance(
-                labels, list
-            ), f"labels should be list, but received {type(labels)}"
-            assert len(labels_spec) == len(
-                labels
-            ), "the number of `labels_spec` should be equal to `labels`'s."
+            assert isinstance(labels_spec, list), (
+                f"labels should be list, but received {type(labels_spec)}"
+            )
+            assert isinstance(labels, list), (
+                f"labels should be list, but received {type(labels)}"
+            )
+            assert len(labels_spec) == len(labels), (
+                "the number of `labels_spec` should be equal to `labels`'s."
+            )
             for label_spec, label in zip(labels_spec, labels):
                 if label_spec.shape != label.shape:
                     label.desc.set_shape(label_spec.shape)
@@ -545,18 +559,18 @@ class Engine:
             else:
                 raise ValueError(f"Unsupported data {data}")
         if user_feeds is not None:
-            assert isinstance(
-                user_feeds, dict
-            ), f"user_feeds must be a dict, but receive {type(user_feeds).__name__}"
+            assert isinstance(user_feeds, dict), (
+                f"user_feeds must be a dict, but receive {type(user_feeds).__name__}"
+            )
             for name, data in user_feeds.items():
                 feeds[name] = data
         return feeds
 
     def _prepare_fetch(self, user_fetches, mode):
         if user_fetches is not None:
-            assert isinstance(
-                user_fetches, list
-            ), f"user_fetches must be a list, but receive {type(user_fetches).__name__}"
+            assert isinstance(user_fetches, list), (
+                f"user_fetches must be a list, but receive {type(user_fetches).__name__}"
+            )
         fetch_names = []
         fetch_indices = []
 
@@ -727,6 +741,21 @@ class Engine:
                 [dist_program], [startup_program]
             )
 
+        if self._strategy.pipeline.auto_parallel_sync_shared_params:
+            config = {}
+            config["concrete_program"] = self.concrete_program
+            config["pipeline_strategy"] = self._strategy.pipeline
+            auto_parallel_sync_shared_params_pass = new_pass(
+                "auto_parallel_sync_shared_params", config
+            )
+            shared_params = (
+                auto_parallel_sync_shared_params_pass.sync_shared_parameters(
+                    dist_program, startup_program
+                )
+            )
+            for pname in shared_params:
+                self._parameter_name_list.append(pname)
+
         # Step 1.2: pir backward
         if mode == "train" and self._loss and self._optimizer:
             loss = dist_program.get_output_value_by_name(self._loss_names[0])
@@ -804,10 +833,10 @@ class Engine:
 
         # re-run apply_mix2dist_pass to dist accumulator.
         apply_mix2dist_pass(dist_program)
-
         if mode == "train" and self._strategy.recompute.enable:
+            config = copy.deepcopy(self._strategy.recompute.to_dict())
             auto_parallel_recompute_pir_pass = new_pass(
-                "auto_parallel_recompute_pir", {}
+                "auto_parallel_recompute_pir", config
             )
             auto_parallel_recompute_pir_pass.apply(
                 [dist_program], [startup_program]
@@ -855,6 +884,11 @@ class Engine:
         self.program_helper.cache_whole_graph_dist_attr(all_params)
 
         RemovePasses.apply_all(dist_program, startup_program, params_grads)
+
+        if self._strategy.pipeline.auto_parallel_sync_shared_params:
+            global_params_grads = auto_parallel_sync_shared_params_pass.sync_shared_parameter_gradient(
+                dist_program, startup_program, global_params_grads
+            )
 
         # Part 4: Optimization Pass
         # NOTE Only those Optimization Pass that related to Parallelism (need dist attr) should be placed here and all the Pass should be Optional.
@@ -917,6 +951,18 @@ class Engine:
                 lambda op: bool(op.has_attr('op_role') and op.op_role == 0),
             )
 
+        if (
+            self._strategy.fused_passes.fused_passes_list is not None
+            and "fused_gemm_epilogue_pass"
+            in self._strategy.fused_passes.fused_passes_list
+        ):
+            pm = pir.PassManager()
+            pm.add_pass("fused_gemm_epilogue_pass", {})
+            pm.run(dense_program)
+            self._strategy.fused_passes.fused_passes_list.remove(
+                "fused_gemm_epilogue_pass"
+            )
+
         if self._strategy.pipeline.enable:
             self._job_plan = pipeline_pass(
                 [dense_program], [dense_program], self._strategy.pipeline
@@ -943,7 +989,7 @@ class Engine:
             opt_job.set_micro_batch_id(0)
             jobs.append(opt_job)
 
-            type_to_program = set_pir_skip_gc_vars(
+            type_to_program = set_skip_gc_vars(
                 self._strategy.gradient_merge.k_steps,
                 job_types,
                 sub_programs,
@@ -1084,9 +1130,10 @@ class Engine:
             serial_main_prog = self._orig_main_prog.clone()
             serial_startup_prog = self._orig_startup_prog.clone()
             if not self._skip_build:
-                with static.program_guard(
-                    serial_main_prog, serial_startup_prog
-                ), utils.unique_name.guard():
+                with (
+                    static.program_guard(serial_main_prog, serial_startup_prog),
+                    utils.unique_name.guard(),
+                ):
                     self._inputs = [
                         s._create_feed_layer() for s in self._inputs_spec
                     ]
@@ -1099,9 +1146,9 @@ class Engine:
                     if mode != "predict" and self._loss:
                         assert isinstance(
                             self._loss, paddle.nn.Layer
-                        ) or callable(
-                            self._loss
-                        ), "the type of `loss` of the Engine arguments should be sub classes of `paddle.nn.Layer` or any callable function."
+                        ) or callable(self._loss), (
+                            "the type of `loss` of the Engine arguments should be sub classes of `paddle.nn.Layer` or any callable function."
+                        )
                         self._losses = auto_utils.to_list(
                             self._loss(*(outputs + self._labels))
                         )
@@ -1114,9 +1161,9 @@ class Engine:
                                 )
                             )
             elif mode == "train":
-                assert isinstance(
-                    self._loss, Variable
-                ), "the type of `loss` of the Engine arguments should be Variable."
+                assert isinstance(self._loss, Variable), (
+                    "the type of `loss` of the Engine arguments should be Variable."
+                )
                 self._losses = auto_utils.to_list(self._loss)
 
         # TODO(zhiqiu): distributed_context is no longer used in pir_program
@@ -1187,7 +1234,9 @@ class Engine:
             self._json_config,
         )
         self._dist_contexts[mode].gradient_scale = self._strategy.gradient_scale
-        self._dist_contexts[mode].gradient_scale_using_allreduce_avg = (
+        self._dist_contexts[
+            mode
+        ].gradient_scale_using_allreduce_avg = (
             self._strategy.gradient_scale_using_allreduce_avg
         )
         self._fwd_main_progs[mode] = serial_main_prog.clone()
@@ -1220,9 +1269,9 @@ class Engine:
 
         if self._tuning.run_after_tuning:
             # update the strategy
-            self._dist_contexts[mode]._strategy = (
-                self._optimization_tuner.get_best_config()
-            )
+            self._dist_contexts[
+                mode
+            ]._strategy = self._optimization_tuner.get_best_config()
 
     def _plan(self, mode):
         if self._planned_mode is None:
@@ -1283,9 +1332,9 @@ class Engine:
         for ib, block in enumerate(origin_main_prog.blocks):
             for iop, op in enumerate(block.ops):
                 ref_op = ref_blocks[ib].ops[iop]
-                assert (
-                    op.type == ref_op.type
-                ), f"'{mode}' mode op '{op.type}' is different with '{ref_mode}' op '{ref_op.type}'. "
+                assert op.type == ref_op.type, (
+                    f"'{mode}' mode op '{op.type}' is different with '{ref_mode}' op '{ref_op.type}'. "
+                )
                 ref_op_dist_attr = (
                     ref_dist_context.get_op_dist_attr_for_program(ref_op)
                 )
@@ -1338,12 +1387,12 @@ class Engine:
             )
 
         if self._in_pir_mode:
-            # FIXME(ljz) avoid shared same tensro more than once in different mode
+            # FIXME(ljz) avoid shared same tensor more than once in different mode
             if mode != "train":
                 return
             # TODO(2024-Q2)
             # 1. unify random control
-            # 2. initilization of non-parameter buffer
+            # 2. initialization of non-parameter buffer
             # 3. run startup program for pir
             # 4. lazy init adaption
             # 5. amp init adaption
@@ -1353,7 +1402,7 @@ class Engine:
             self.program_helper.init_pir(
                 self._pir_dist_main_progs[mode], self._place
             )
-            changed_ouput_op_list = []
+            changed_output_op_list = []
             if self._executor is None:
                 self._executor = paddle.static.Executor(self._place)
                 startup_prog = self._startup_progs[mode].clone()
@@ -1362,9 +1411,9 @@ class Engine:
                 for op in dist_main_prog.global_block().ops:
                     if op.name() == "pd_op.data":
                         var_name = op.str_attr("name")
-                        assert (
-                            var_name not in name_map_value
-                        ), f"The value {var_name} in {op} is already exist"
+                        assert var_name not in name_map_value, (
+                            f"The value {var_name} in {op} is already exist"
+                        )
                         name_map_value[var_name] = op.result(0)
                 del_ops = []
                 block = startup_prog.global_block()
@@ -1411,7 +1460,7 @@ class Engine:
                             )
                             if src_value.persistable:
                                 src_value.persistable = False
-                                changed_ouput_op_list.append(op)
+                                changed_output_op_list.append(op)
                             op.operand(0).set_source(reshard_var)
                 for del_op in del_ops:
                     del_op.erase()
@@ -1421,7 +1470,7 @@ class Engine:
                 paddle.base.libpaddle.pir.apply_dist2dense_pass(startup_prog)
                 remove_unuseful_comm_op_pass(startup_prog)
 
-                for op in changed_ouput_op_list:
+                for op in changed_output_op_list:
                     op.operand_source(0).persistable = True
                 self._executor.run(startup_prog)
                 if self._job_plan is not None:
@@ -1512,7 +1561,7 @@ class Engine:
     # distributed training combined with prim mechanism (prim is behind of distributed)
     # for local main subprogram after distributed partition,
     # mark _need_decomp=True to tag this program needs to be decomposed
-    # get _grad_var_to_var from distributed context and set it to main program for futher decomposing in static executor
+    # get _grad_var_to_var from distributed context and set it to main program for further decomposing in static executor
     def _mark_prim(self, mode):
         if os.getenv("FLAGS_enable_prim_after_distribute") in [
             'True',
@@ -1592,7 +1641,7 @@ class Engine:
 
         Examples:
 
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> import paddle.vision.transforms as T
@@ -1608,13 +1657,13 @@ class Engine:
                 >>> model = paddle.vision.models.LeNet()
                 >>> loss = paddle.nn.CrossEntropyLoss()
                 >>> optimizer = paddle.optimizer.Adam(
-                ...     learning_rate=0.001, parameters=model.parameters())
+                ...     learning_rate=0.001,
+                ...     parameters=model.parameters(),
+                ... )
                 >>> metrics = paddle.metric.Accuracy(topk=(1, 2))
 
                 >>> engine = auto.Engine(model, loss, optimizer, metrics)
-                >>> engine.fit(train_dataset,
-                ...             epochs=2,
-                ...             batch_size=64)
+                >>> engine.fit(train_dataset, epochs=2, batch_size=64)
         """
         self._mode = 'train'
 
@@ -1756,7 +1805,7 @@ class Engine:
 
         Examples:
 
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> import paddle.vision.transforms as T
@@ -1869,7 +1918,7 @@ class Engine:
 
         Examples:
 
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> import paddle.vision.transforms as T
@@ -2028,9 +2077,9 @@ class Engine:
             if self._orig_startup_prog is None:
                 self._orig_startup_prog = static.default_startup_program()
         else:
-            assert (
-                self._inputs_spec and self._labels_spec
-            ), "Please call the dataloader(...) before calling prepare(...)"
+            assert self._inputs_spec and self._labels_spec, (
+                "Please call the dataloader(...) before calling prepare(...)"
+            )
 
         self._inputs_spec, self._labels_spec = inputs_spec, labels_spec
         self._inputs, self._labels = inputs, labels
@@ -2215,12 +2264,12 @@ class Engine:
         if batch_size is None:
             return None
 
-        assert (
-            len(set(self._dp_world_sizes)) == 1
-        ), f"DistributedBatchSampler only support one data parallel group, but got [{len(set(self._dp_world_sizes))}] different data parallel groups"
-        assert (
-            batch_size % self._dp_world_sizes[0] == 0
-        ), f"batch_size [{batch_size}] is not divisible by dp_world_size [{self._dp_world_sizes[0]}]"
+        assert len(set(self._dp_world_sizes)) == 1, (
+            f"DistributedBatchSampler only support one data parallel group, but got [{len(set(self._dp_world_sizes))}] different data parallel groups"
+        )
+        assert batch_size % self._dp_world_sizes[0] == 0, (
+            f"batch_size [{batch_size}] is not divisible by dp_world_size [{self._dp_world_sizes[0]}]"
+        )
         return batch_size // self._dp_world_sizes[0]
 
     def _validate_batch(self, batch):
@@ -2261,9 +2310,9 @@ class Engine:
                     )
                 if self._acc_steps > 1:
                     shape = list(spec.shape)
-                    assert (
-                        shape[0] % self._acc_steps == 0
-                    ), f"Requires batch_size[{spec.shape[0]}] to be divisible by k_steps[{self._acc_steps}]."
+                    assert shape[0] % self._acc_steps == 0, (
+                        f"Requires batch_size[{spec.shape[0]}] to be divisible by k_steps[{self._acc_steps}]."
+                    )
                     shape[0] //= self._acc_steps
                     spec.shape = shape
         return specs or []
@@ -2291,9 +2340,9 @@ class Engine:
         return metrics_name
 
     def _switch_mode(self, mode):
-        assert (
-            mode in self._dist_contexts
-        ), f"{mode} model is not ready, please call `prepare()` first."
+        assert mode in self._dist_contexts, (
+            f"{mode} model is not ready, please call `prepare()` first."
+        )
         self.to_mode(mode)
 
     def to_mode(self, mode: _Mode) -> None:
@@ -2341,7 +2390,7 @@ class Engine:
 
         Examples:
 
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> import paddle.vision.transforms as T
@@ -2357,13 +2406,13 @@ class Engine:
                 >>> model = paddle.vision.models.LeNet()
                 >>> loss = paddle.nn.CrossEntropyLoss()
                 >>> optimizer = paddle.optimizer.Adam(
-                ...     learning_rate=0.001, parameters=model.parameters())
+                ...     learning_rate=0.001,
+                ...     parameters=model.parameters(),
+                ... )
                 >>> metrics = paddle.metric.Accuracy(topk=(1, 2))
 
                 >>> engine = auto.Engine(model, loss, optimizer, metrics)
-                >>> engine.fit(train_dataset,
-                ...             epochs=1,
-                ...             batch_size=64)
+                >>> engine.fit(train_dataset, epochs=1, batch_size=64)
                 >>> engine.save("./my_model")
 
         """
@@ -2428,7 +2477,7 @@ class Engine:
 
         Examples:
 
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> import paddle.vision.transforms as T
@@ -2444,13 +2493,13 @@ class Engine:
                 >>> model = paddle.vision.models.LeNet()
                 >>> loss = paddle.nn.CrossEntropyLoss()
                 >>> optimizer = paddle.optimizer.Adam(
-                ...     learning_rate=0.001, parameters=model.parameters())
+                ...     learning_rate=0.001,
+                ...     parameters=model.parameters(),
+                ... )
                 >>> metrics = paddle.metric.Accuracy(topk=(1, 2))
 
                 >>> engine = auto.Engine(model, loss, optimizer, metrics)
-                >>> engine.fit(train_dataset,
-                ...             epochs=1,
-                ...             batch_size=64)
+                >>> engine.fit(train_dataset, epochs=1, batch_size=64)
                 >>> engine.save("./my_model")
                 >>> engine.load("./my_model")
 

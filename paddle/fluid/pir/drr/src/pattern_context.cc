@@ -205,6 +205,11 @@ Attribute ResultPattern::Float32Attr(float value) const {
       [=](const MatchContext& match_ctx) -> float { return value; });
 }
 
+Attribute ResultPattern::DoubleAttr(double value) const {
+  return ComputeAttr(
+      [=](const MatchContext& match_ctx) -> double { return value; });
+}
+
 Attribute ResultPattern::VectorInt64Attr(
     const std::vector<int64_t>& value) const {
   return ComputeAttr(
@@ -249,7 +254,7 @@ Attribute ResultPattern::PlaceAttr(const std::string& value) const {
 }
 
 Attribute ResultPattern::DataLayoutAttr(const std::string& value) const {
-  return ComputeAttr([=](const MatchContext& match_ctx) -> phi::DataLayout {
+  return ComputeAttr([=](const MatchContext& match_ctx) -> DataLayout {
     PADDLE_ENFORCE_EQ(dialect::StringToDataLayoutMap().count(value) > 0,
                       true,
                       common::errors::InvalidArgument(

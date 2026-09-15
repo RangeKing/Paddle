@@ -22,39 +22,46 @@
 #include "paddle/phi/kernels/gpu/gelu_funcs.h"
 
 COMMON_DECLARE_bool(use_fast_math);
+COMMON_DECLARE_bool(use_accuracy_compatible_kernel);
 
 namespace phi {
 
 template <typename T>
 struct GeluWithApproximateGradFunctor {
-  using MPType = typename phi::dtype::MPTypeTrait<T>::Type;
+  using MT = typename MPTypeTrait<T>::Type;
   inline HOSTDEVICE T operator()(T arg_x, T arg_dout) {
-    MPType x = static_cast<MPType>(arg_x);
-    MPType dout = static_cast<MPType>(arg_dout);
-    MPType one = static_cast<MPType>(1);
-    MPType half = static_cast<MPType>(0.5);
-    MPType kAlpha = static_cast<MPType>(M_2_SQRTPI * M_SQRT1_2);
-    MPType kBeta =
-        kAlpha * static_cast<MPType>(GELU_CONSTANT) * static_cast<MPType>(3);
-    auto cube_x = x * x * x;
-    auto tanh_out =
-        tanh(kAlpha * ((static_cast<MPType>(GELU_CONSTANT) * cube_x) + x));
-    auto ans =
-        half * (one + tanh_out +
-                (one - tanh_out * tanh_out) * (x * kAlpha + kBeta * cube_x));
-    return static_cast<T>(ans * dout);
+    MT x = static_cast<MT>(arg_x);
+    MT dout = static_cast<MT>(arg_dout);
+    MT kBeta = M_SQRT2 * M_2_SQRTPI * static_cast<MT>(0.5);
+    MT kKappa = static_cast<MT>(GELU_CONSTANT);
+    auto x_sq = x * x;
+    auto x_cube = x_sq * x;
+    auto inner = kBeta * (x + kKappa * x_cube);
+    auto tanh_inner = tanh(inner);
+
+    auto left = static_cast<MT>(0.5) * x;
+    auto right = static_cast<MT>(1) + tanh_inner;
+
+    auto left_derivative = static_cast<MT>(0.5) * right;
+    auto tanh_derivative = static_cast<MT>(1) - tanh_inner * tanh_inner;
+    auto inner_derivative =
+        kBeta * (static_cast<MT>(1) + static_cast<MT>(3) * kKappa * x_sq);
+    auto right_derivative = left * tanh_derivative * inner_derivative;
+
+    return static_cast<T>(dout * (left_derivative + right_derivative));
   }
 };
 
 template <typename T>
 struct GeluWithoutApproximateGradFunctor {
-  using MPType = typename phi::dtype::MPTypeTrait<T>::Type;
+  using MT = typename MPTypeTrait<T>::Type;
   inline HOSTDEVICE T operator()(T arg_x, T arg_dout) {
-    MPType x = static_cast<MPType>(arg_x);
-    MPType dout = static_cast<MPType>(arg_dout);
-    constexpr MPType kBeta = M_2_SQRTPI * M_SQRT1_2 * static_cast<MPType>(0.5);
-    const MPType cdf = normcdf(x);
-    const MPType pdf = exp(static_cast<MPType>(-0.5) * x * x) * kBeta;
+    MT x = static_cast<MT>(arg_x);
+    MT dout = static_cast<MT>(arg_dout);
+    constexpr MT kBeta = M_2_SQRTPI * M_SQRT1_2 * MT(0.5);
+    constexpr MT kAlpha = M_SQRT1_2;
+    const MT cdf = MT(0.5) * (MT(1) + std::erf(x * kAlpha));
+    const MT pdf = exp(static_cast<MT>(-0.5) * x * x) * kBeta;
     return static_cast<T>(dout * (cdf + x * pdf));
   }
 };
@@ -66,11 +73,15 @@ void GeluGradKernel(const Context& dev_ctx,
                     bool approximate,
                     DenseTensor* x_grad) {
   dev_ctx.template Alloc<T>(x_grad);
+  if (x_grad && x_grad->numel() == 0) {
+    return;
+  }
   std::vector<const DenseTensor*> ins = {&x, &out_grad};
   std::vector<DenseTensor*> outs = {x_grad};
   if (approximate) {
 #if defined(__NVCC__) || defined(__HIPCC__)
-    if (std::is_same<T, dtype::float16>::value) {
+    if (std::is_same<T, dtype::float16>::value &&
+        !FLAGS_use_accuracy_compatible_kernel) {
       size_t n = x.numel();
       const auto* x_ptr = reinterpret_cast<const __half*>(x.data<T>());
       const auto* y_g_ptr = reinterpret_cast<const __half*>(out_grad.data<T>());
@@ -82,12 +93,10 @@ void GeluGradKernel(const Context& dev_ctx,
     }
 #endif
     using Functor = GeluWithApproximateGradFunctor<T>;
-    phi::funcs::ElementwiseKernel<T, Functor, 1>(
-        dev_ctx, ins, &outs, Functor());
+    funcs::ElementwiseKernel<T, Functor, 1>(dev_ctx, ins, &outs, Functor());
   } else {
     using Functor = GeluWithoutApproximateGradFunctor<T>;
-    phi::funcs::ElementwiseKernel<T, Functor, 1>(
-        dev_ctx, ins, &outs, Functor());
+    funcs::ElementwiseKernel<T, Functor, 1>(dev_ctx, ins, &outs, Functor());
   }
 }
 
@@ -99,5 +108,5 @@ PD_REGISTER_KERNEL(gelu_grad,
                    phi::GeluGradKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}

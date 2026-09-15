@@ -17,6 +17,10 @@ import unittest
 import numpy as np
 
 import paddle
+
+# NOTE(Pan Zhaowu): using legacy linear to fulfill the promise of add_grad op.
+paddle.set_flags({"FLAGS_use_legacy_linear": True})
+
 from paddle import base, nn
 from paddle.base.framework import in_pir_mode
 
@@ -26,7 +30,6 @@ SGD_LR = 1.0
 
 
 class TestLookAhead(unittest.TestCase):
-
     def test_lookahead_static(self):
         paddle.enable_static()
         place = base.CPUPlace()
@@ -34,19 +37,21 @@ class TestLookAhead(unittest.TestCase):
         exe = base.Executor(place)
         train_program = paddle.static.Program()
         startup = paddle.static.Program()
-        with paddle.static.program_guard(train_program, startup):
-            with base.unique_name.guard():
-                data = paddle.static.data(
-                    name='X', shape=[None, 1], dtype='float32'
-                )
-                hidden = paddle.nn.Linear(1, 10)
-                loss = paddle.mean(hidden(data))
+        with (
+            paddle.static.program_guard(train_program, startup),
+            base.unique_name.guard(),
+        ):
+            data = paddle.static.data(
+                name='X', shape=[None, 1], dtype='float32'
+            )
+            hidden = paddle.nn.Linear(1, 10)
+            loss = paddle.mean(hidden(data))
 
-                optimizer = paddle.optimizer.SGD(learning_rate=SGD_LR)
-                lookahead = paddle.incubate.optimizer.LookAhead(
-                    optimizer, alpha=LOOKAHEAD_ALPHA, k=LOOKAHEAD_K
-                )
-                lookahead.minimize(loss)
+            optimizer = paddle.optimizer.SGD(learning_rate=SGD_LR)
+            lookahead = paddle.incubate.optimizer.LookAhead(
+                optimizer, alpha=LOOKAHEAD_ALPHA, k=LOOKAHEAD_K
+            )
+            lookahead.minimize(loss)
 
         exe.run(startup)
         slow_param = None

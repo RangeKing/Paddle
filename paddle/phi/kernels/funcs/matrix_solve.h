@@ -68,7 +68,7 @@ static std::vector<int> getNewAxis(const int b_rank) {
 
 // for Resize
 static std::vector<int64_t> getNewDimsVec(const DDim& b_dims) {
-  std::vector<int64_t> b_dims_vec = common::vectorize(b_dims);
+  std::vector<int64_t> b_dims_vec = vectorize(b_dims);
   int size = b_dims_vec.size();
   if (size >= 2) {
     // swap the last 2 elements in b_dims_vec
@@ -87,7 +87,7 @@ static std::vector<int64_t> getNewDimsVec(const DDim& b_dims) {
 }
 
 template <typename Context, typename T>
-void compute_solve_eigen(const Context& context,
+void compute_solve_eigen(const Context& dev_ctx,
                          const DenseTensor& a,
                          const DenseTensor& b,
                          DenseTensor* out) {
@@ -99,25 +99,29 @@ void compute_solve_eigen(const Context& context,
   const auto& a_mat_dims = a.dims();
   const int a_rank = a_mat_dims.size();
   int n = a_mat_dims[a_rank - 1];
-  int a_batch_size = a_rank > 2 ? a.numel() / (n * n) : 1;
+  int64_t a_batch_size =
+      a_rank > 2 ? a.numel() / (static_cast<int64_t>(n) * n) : 1;
 
   // prepare for b
   const auto& b_mat_dims = b.dims();
   const int b_rank = b_mat_dims.size();
   int b_h = n;
   int b_w = b_mat_dims[b_rank - 1];
-  int b_batch_size = b_rank > 2 ? b.numel() / (b_h * b_w) : 1;
+  int64_t b_batch_size =
+      b_rank > 2 ? b.numel() / (static_cast<int64_t>(b_h) * b_w) : 1;
 
   const T* a_ptr = a.data<T>();
   const T* b_ptr = b.data<T>();
   out->Resize(b_mat_dims);  // make sure the out dims is right
 
-  T* out_ptr = context.template Alloc<T>(out);
+  T* out_ptr = dev_ctx.template Alloc<T>(out);
   if (a_batch_size == b_batch_size) {
-    for (int i = 0; i < a_batch_size; ++i) {
-      ConstEigenMatrixMap a_mat(a_ptr + i * n * n, n, n);
-      ConstEigenMatrixMap b_mat(b_ptr + i * b_h * b_w, b_h, b_w);
-      EigenMatrixMap out_mat(out_ptr + i * b_h * b_w, b_h, b_w);
+    for (int64_t i = 0; i < a_batch_size; ++i) {
+      ConstEigenMatrixMap a_mat(a_ptr + static_cast<int64_t>(i) * n * n, n, n);
+      ConstEigenMatrixMap b_mat(
+          b_ptr + static_cast<int64_t>(i) * b_h * b_w, b_h, b_w);
+      EigenMatrixMap out_mat(
+          out_ptr + static_cast<int64_t>(i) * b_h * b_w, b_h, b_w);
       Eigen::PartialPivLU<Matrix> lu;
       lu.compute(a_mat);
       const T min_abs_pivot = lu.matrixLU().diagonal().cwiseAbs().minCoeff();
@@ -185,7 +189,7 @@ void SolveLinearSystem(T* matrix_data,
 template <typename Context, typename T>
 class MatrixSolveFunctor {
  public:
-  void operator()(const Context& context,
+  void operator()(const Context& dev_ctx,
                   const DenseTensor& a,
                   const DenseTensor& b,
                   DenseTensor* out);

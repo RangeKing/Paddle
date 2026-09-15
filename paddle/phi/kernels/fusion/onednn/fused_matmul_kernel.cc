@@ -15,6 +15,7 @@
 #include <string>
 
 #include "paddle/phi/backends/onednn/matmul_utils.h"
+#include "paddle/phi/backends/onednn/onednn_helper.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/core/tensor_utils.h"
 
@@ -110,7 +111,7 @@ class FusedMatmulOneDNNHandler
     // TODO(jczaja): Why not for int8??
     if (!funcs::is_int8<OT>() && is_output_fused) {
       std::vector<int> transpose_axis = {0, 2, 1, 3};
-      out_strides = phi::funcs::FakeTransposeStrides(out_ddims, transpose_axis);
+      out_strides = funcs::FakeTransposeStrides(out_ddims, transpose_axis);
     }
 
     auto x_md = memory::desc(x_dims, funcs::OneDNNGetDataType<XT>(), x_strides);
@@ -169,12 +170,15 @@ class FusedMatmulOneDNNHandler
       // fill 1 in the front of adesc, to make residual ndims to be same as dst
       // dims
       int dst_size = out_ddims.size();
-      int origin_size = residual_data->mem_desc().get_ndims();
-      auto reshaped_md = residual_data->mem_desc();
-      dnnl::memory::dims expanded_dims = residual_data->mem_desc().get_dims();
+      int origin_size =
+          phi::funcs::GetOneDNNMemDesc(*residual_data).get_ndims();
+      auto reshaped_md = phi::funcs::GetOneDNNMemDesc(*residual_data);
+      dnnl::memory::dims expanded_dims =
+          phi::funcs::GetOneDNNMemDesc(*residual_data).get_dims();
       if (origin_size < dst_size) {
         expanded_dims.insert(expanded_dims.begin(), dst_size - origin_size, 1);
-        reshaped_md = residual_data->mem_desc().reshape(expanded_dims);
+        reshaped_md =
+            phi::funcs::GetOneDNNMemDesc(*residual_data).reshape(expanded_dims);
       }
 
       auto residual_data_tz = vectorize(residual_data->dims());
@@ -220,8 +224,9 @@ class FusedMatmulOneDNNHandler
   std::shared_ptr<dnnl::memory> AcquireSrcMemoryResidual(
       const DenseTensor *input) {
     const XT *input_data = input->data<XT>();
-    auto residual_memory_p = this->AcquireMemoryFromPrimitive(
-        input->mem_desc(), phi::funcs::to_void_cast<XT>(input_data));
+    auto residual_memory_p =
+        this->AcquireMemoryFromPrimitive(phi::funcs::GetOneDNNMemDesc(*input),
+                                         funcs::to_void_cast<XT>(input_data));
     return residual_memory_p;
   }
 
@@ -371,11 +376,11 @@ void ExecuteFusedMatmul(const OneDNNContext &dev_ctx,
   if (is_output_fused && !funcs::is_int8<T_out>()) {
     auto permuted_md =
         dst_memory_p->get_desc().permute_axes(fused_transpose_Out);
-    out->set_mem_desc(
-        permuted_md.reshape(common::vectorize<int64_t>(out->dims())));
+    phi::funcs::SetOneDNNMemDesc(
+        out, permuted_md.reshape(vectorize<int64_t>(out->dims())));
   } else {
-    out->set_mem_desc(dst_memory_p->get_desc().reshape(
-        common::vectorize<int64_t>(out->dims())));
+    phi::funcs::SetOneDNNMemDesc(
+        out, dst_memory_p->get_desc().reshape(vectorize<int64_t>(out->dims())));
   }
 }
 
@@ -383,9 +388,9 @@ std::vector<int64_t> GetInputShape(DDim input_dims,
                                    std::vector<int> shape,
                                    std::vector<int> axis) {
   if (!shape.empty() && !axis.empty()) {
-    return common::vectorize(input_dims.reshape(shape).transpose(axis));
+    return vectorize(input_dims.reshape(shape).transpose(axis));
   }
-  return common::vectorize(input_dims);
+  return vectorize(input_dims);
 }
 
 void CalculateMatrixDims(const std::vector<int64_t> &x_dims,
@@ -416,7 +421,7 @@ void CalculateMatrixDims(const std::vector<int64_t> &x_dims,
   }
 
   if (!is_output_fused && x_dims.size() > 2 && y_dims.size() > 2) {
-    auto out_dims = common::vectorize(out->dims());
+    auto out_dims = vectorize(out->dims());
     for (size_t i = 0; i < (*x_bd_dims).size() - 2; ++i) {
       PADDLE_ENFORCE_EQ(
           (*x_bd_dims)[i] == (*y_bd_dims)[i] || (*x_bd_dims)[i] == 1 ||
@@ -432,7 +437,7 @@ void CalculateMatrixDims(const std::vector<int64_t> &x_dims,
               (*y_bd_dims)[i]));
       (out_dims)[i] = std::max((*x_bd_dims)[i], (*y_bd_dims)[i]);
     }
-    out->Resize(common::make_ddim((out_dims)));
+    out->Resize((out_dims));
   }
 }
 
@@ -440,7 +445,7 @@ template <typename T, typename Context>
 void FusedMatmulKernel(const Context &dev_ctx,
                        const DenseTensor &x,
                        const DenseTensor &y,
-                       const paddle::optional<DenseTensor> &residual_data,
+                       const optional<DenseTensor> &residual_data,
                        bool transpose_x,
                        bool transpose_y,
                        const float matmul_alpha,
@@ -525,29 +530,29 @@ void FusedMatmulKernel(const Context &dev_ctx,
                                  force_fp32_output,
                                  out);
   } else if (is_bfloat16) {
-    ExecuteFusedMatmul<T, phi::dtype::bfloat16>(dev_ctx,
-                                                x,
-                                                y,
-                                                residual_data.get_ptr(),
-                                                x_bd_dims,
-                                                y_bd_dims,
-                                                transpose_x,
-                                                transpose_y,
-                                                matmul_alpha,
-                                                x_strides_override,
-                                                y_strides_override,
-                                                is_output_fused,
-                                                fused_transpose_Out,
-                                                fuse_activation,
-                                                fuse_alpha,
-                                                fuse_beta,
-                                                fused_output_scale,
-                                                scale_x,
-                                                scale_y,
-                                                scale_in_eltwise,
-                                                scale_out,
-                                                force_fp32_output,
-                                                out);
+    ExecuteFusedMatmul<T, phi::bfloat16>(dev_ctx,
+                                         x,
+                                         y,
+                                         residual_data.get_ptr(),
+                                         x_bd_dims,
+                                         y_bd_dims,
+                                         transpose_x,
+                                         transpose_y,
+                                         matmul_alpha,
+                                         x_strides_override,
+                                         y_strides_override,
+                                         is_output_fused,
+                                         fused_transpose_Out,
+                                         fuse_activation,
+                                         fuse_alpha,
+                                         fuse_beta,
+                                         fused_output_scale,
+                                         scale_x,
+                                         scale_y,
+                                         scale_in_eltwise,
+                                         scale_out,
+                                         force_fp32_output,
+                                         out);
   } else if (fuse_relu) {
     ExecuteFusedMatmul<T, uint8_t>(dev_ctx,
                                    x,
@@ -607,7 +612,7 @@ PD_REGISTER_KERNEL(fused_matmul,
                    ONEDNN,
                    phi::fusion::FusedMatmulKernel,
                    float,
-                   phi::dtype::bfloat16,
+                   phi::bfloat16,
                    int8_t,
                    uint8_t) {
   kernel->OutputAt(0).SetDataType(phi::DataType::UNDEFINED);

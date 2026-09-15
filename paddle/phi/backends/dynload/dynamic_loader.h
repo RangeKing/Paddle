@@ -26,7 +26,7 @@ namespace dynload {
 
 void* GetCublasDsoHandle();
 void* GetCublasLtDsoHandle();
-TEST_API void* GetCUDNNDsoHandle();
+void* GetCUDNNDsoHandle();
 void* GetCUPTIDsoHandle();
 void* GetCurandDsoHandle();
 void* GetNvjpegDsoHandle();
@@ -38,14 +38,18 @@ void* GetWarpCTCDsoHandle();
 void* GetWarpRNNTDsoHandle();
 void* GetFlashAttnDsoHandle();
 void* GetFlashAttnV3DsoHandle();
+void* GetFlashMaskV2DsoHandle();
 void* GetNCCLDsoHandle();
+void* GetFLAGCXDsoHandle();
 void* GetTensorRtDsoHandle();
 void* GetMKLMLDsoHandle();
 void* GetLAPACKDsoHandle();
+void* GetMAGMADsoHandle();
 void* GetOpDsoHandle(const std::string& dso_name);
 void* GetNvtxDsoHandle();
 void* GetCUFFTDsoHandle();
 void* GetMKLRTDsoHandle();
+void* GetHMLDsoHandle();
 void* GetROCFFTDsoHandle();
 void* GetCusparseLtDsoHandle();
 void* GetXPTIDsoHandle();

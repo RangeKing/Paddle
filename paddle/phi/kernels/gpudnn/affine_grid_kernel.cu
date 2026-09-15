@@ -21,7 +21,7 @@
 #include "paddle/phi/backends/gpu/gpu_primitives.h"
 #include "paddle/phi/common/int_array.h"
 #include "paddle/phi/core/kernel_registry.h"
-
+#include "paddle/phi/kernels/full_kernel.h"
 namespace phi {
 
 using ScopedSpatialTransformerDescriptor =
@@ -34,7 +34,7 @@ void AffineGridCudnnKernel(const Context& dev_ctx,
                            bool align_corners,
                            DenseTensor* output) {
   PADDLE_ENFORCE_EQ(
-      dev_ctx.GetPlace().GetType() == phi::AllocationType::GPU,
+      dev_ctx.GetPlace().GetType() == AllocationType::GPU,
       true,
       common::errors::InvalidArgument(
           "Only support for CUDAPlace.Please switch your context from "
@@ -42,15 +42,20 @@ void AffineGridCudnnKernel(const Context& dev_ctx,
   auto handle = dev_ctx.cudnn_handle();
   auto* theta = &input;
   const T* theta_data = theta->data<T>();
-  int n = theta->dims()[0];
+  int64_t n = theta->dims()[0];
+
   auto& size_attr = outputShape.GetData();
   int h_size_data[4] = {0};
   h_size_data[0] = n;
   h_size_data[1] = size_attr[1];
   h_size_data[2] = size_attr[2];
   h_size_data[3] = size_attr[3];
-  output->Resize(common::make_ddim({n, h_size_data[2], h_size_data[3], 2}));
+  output->Resize({n, h_size_data[2], h_size_data[3], 2});
   T* output_data = dev_ctx.template Alloc<T>(output);
+  if (input.numel() == 0) {
+    Full<T, Context>(dev_ctx, output->dims(), 0, output);
+    return;
+  }
   ScopedSpatialTransformerDescriptor st_desc;
   cudnnSpatialTransformerDescriptor_t cudnn_st_desc =
       st_desc.descriptor<T>(4, h_size_data);

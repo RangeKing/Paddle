@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable, Literal, overload
+from typing import TYPE_CHECKING, Literal, overload
 
 import numpy as np
 
@@ -27,7 +27,7 @@ from ..base import core
 from ..base.data_feeder import check_type, check_variable_and_dtype
 from ..base.framework import (
     Variable,
-    convert_np_dtype_to_dtype_,
+    convert_nptype_to_datatype_or_vartype,
     in_dygraph_mode,
     in_dynamic_or_pir_mode,
     in_pir_mode,
@@ -38,7 +38,7 @@ from ..nn import BatchNorm2D, Conv2D, Layer, ReLU, Sequential
 from ..nn.initializer import Normal
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from paddle import Tensor, nn
     from paddle._typing import ParamAttrLike, Size2, Size4
@@ -188,22 +188,24 @@ def yolo_loss(
         Tensor: A 1-D tensor with shape [N], the value of yolov3 loss
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> x = paddle.rand([2, 14, 8, 8]).astype('float32')
             >>> gt_box = paddle.rand([2, 10, 4]).astype('float32')
             >>> gt_label = paddle.rand([2, 10]).astype('int32')
-            >>> loss = paddle.vision.ops.yolo_loss(x,
-            ...                                    gt_box=gt_box,
-            ...                                    gt_label=gt_label,
-            ...                                    anchors=[10, 13, 16, 30],
-            ...                                    anchor_mask=[0, 1],
-            ...                                    class_num=2,
-            ...                                    ignore_thresh=0.7,
-            ...                                    downsample_ratio=8,
-            ...                                    use_label_smooth=True,
-            ...                                    scale_x_y=1.)
+            >>> loss = paddle.vision.ops.yolo_loss(
+            ...     x,
+            ...     gt_box=gt_box,
+            ...     gt_label=gt_label,
+            ...     anchors=[10, 13, 16, 30],
+            ...     anchor_mask=[0, 1],
+            ...     class_num=2,
+            ...     ignore_thresh=0.7,
+            ...     downsample_ratio=8,
+            ...     use_label_smooth=True,
+            ...     scale_x_y=1.0,
+            ... )
     """
 
     if in_dynamic_or_pir_mode():
@@ -368,20 +370,22 @@ def yolo_box(
         scores of boxes.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
             >>> x = paddle.rand([2, 14, 8, 8]).astype('float32')
             >>> img_size = paddle.ones((2, 2)).astype('int32')
-            >>> boxes, scores = paddle.vision.ops.yolo_box(x,
-            ...                                             img_size=img_size,
-            ...                                             anchors=[10, 13, 16, 30],
-            ...                                             class_num=2,
-            ...                                             conf_thresh=0.01,
-            ...                                             downsample_ratio=8,
-            ...                                             clip_bbox=True,
-            ...                                             scale_x_y=1.)
+            >>> boxes, scores = paddle.vision.ops.yolo_box(
+            ...     x,
+            ...     img_size=img_size,
+            ...     anchors=[10, 13, 16, 30],
+            ...     class_num=2,
+            ...     conf_thresh=0.01,
+            ...     downsample_ratio=8,
+            ...     clip_bbox=True,
+            ...     scale_x_y=1.0,
+            ... )
     """
     if in_dynamic_or_pir_mode():
         boxes, scores = _C_ops.yolo_box(
@@ -491,7 +495,7 @@ def prior_box(
             The expanded variances is a 4-D tensor, same shape as the prior boxes.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -502,8 +506,8 @@ def prior_box(
             ...     image=image,
             ...     min_sizes=[2.0, 4.0],
             ...     clip=True,
-            ...     flip=True)
-            ...
+            ...     flip=True,
+            ... )
     """
 
     def _is_list_or_tuple_(data):
@@ -668,7 +672,7 @@ def box_coder(
             and M represents the number of decoded boxes.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -680,8 +684,8 @@ def box_coder(
             ...     prior_box=prior_box_encode,
             ...     prior_box_var=prior_box_var_encode,
             ...     target_box=target_box_encode,
-            ...     code_type="encode_center_size")
-            ...
+            ...     code_type="encode_center_size",
+            ... )
             >>> # For decode
             >>> prior_box_decode = paddle.rand((80, 4), dtype=paddle.float32)
             >>> prior_box_var_decode = paddle.rand((80, 4), dtype=paddle.float32)
@@ -691,8 +695,8 @@ def box_coder(
             ...     prior_box_var=prior_box_var_decode,
             ...     target_box=target_box_decode,
             ...     code_type="decode_center_size",
-            ...     box_normalized=False)
-            ...
+            ...     box_normalized=False,
+            ... )
     """
     if in_dynamic_or_pir_mode():
         if isinstance(prior_box_var, (core.eager.Tensor, paddle.pir.Value)):
@@ -707,9 +711,9 @@ def box_coder(
             )
         elif isinstance(prior_box_var, (list, tuple)):
             prior_box_var = list(prior_box_var)
-            assert (
-                len(prior_box_var) == 4
-            ), "Input prior_box_var must be Variable or list|tuple with 4 elements."
+            assert len(prior_box_var) == 4, (
+                "Input prior_box_var must be Variable or list|tuple with 4 elements."
+            )
             output_box = _C_ops.box_coder(
                 prior_box,
                 None,
@@ -747,9 +751,9 @@ def box_coder(
             inputs['PriorBoxVar'] = prior_box_var
         elif isinstance(prior_box_var, (list, tuple)):
             attrs['variance'] = prior_box_var
-            assert (
-                len(attrs['variance']) == 4
-            ), "Input prior_box_var must be Variable or list|tuple with 4 elements."
+            assert len(attrs['variance']) == 4, (
+                "Input prior_box_var must be Variable or list|tuple with 4 elements."
+            )
         else:
             raise TypeError(
                 "Input prior_box_var must be Variable or list|tuple"
@@ -854,7 +858,7 @@ def deform_conv2d(
             A Tensor with type float32, float64.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> #deformable conv v2:
 
@@ -870,7 +874,7 @@ def deform_conv2d(
             >>> mask = paddle.rand((8, kh * kw, 26, 26))
             >>> out = paddle.vision.ops.deform_conv2d(input, offset, weight, mask=mask)
             >>> print(out.shape)
-            [8, 16, 26, 26]
+            paddle.Size([8, 16, 26, 26])
 
             >>> #deformable conv v1:
 
@@ -884,13 +888,24 @@ def deform_conv2d(
             >>> offset = paddle.rand((8, 2 * kh * kw, 26, 26))
             >>> out = paddle.vision.ops.deform_conv2d(input, offset, weight)
             >>> print(out.shape)
-            [8, 16, 26, 26]
+            paddle.Size([8, 16, 26, 26])
     """
     stride = convert_to_list(stride, 2, 'stride')
     padding = convert_to_list(padding, 2, 'padding')
     dilation = convert_to_list(dilation, 2, 'dilation')
 
     use_deform_conv2d_v1 = True if mask is None else False
+
+    # cpu not support float16, need to convert dtype.
+    if paddle.device.get_device() == "cpu":
+        if offset.dtype == paddle.float16:
+            offset = offset.astype(x.dtype)
+        if weight.dtype == paddle.float16:
+            weight = weight.astype(x.dtype)
+        if bias is not None and bias.dtype == paddle.float16:
+            bias = bias.astype(x.dtype)
+        if mask is not None and mask.dtype == paddle.float16:
+            mask = mask.astype(x.dtype)
 
     if in_dynamic_or_pir_mode():
         pre_bias = _C_ops.deformable_conv(
@@ -1062,7 +1077,7 @@ class DeformConv2D(Layer):
             W_{out}&= \frac{(W_{in} + 2 * paddings[1] - (dilations[1] * (kernel\_size[1] - 1) + 1))}{strides[1]} + 1
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> #deformable conv v2:
             >>> import paddle
@@ -1080,7 +1095,7 @@ class DeformConv2D(Layer):
             ...     kernel_size=[kh, kw])
             >>> out = deform_conv(input, offset, mask)
             >>> print(out.shape)
-            [8, 16, 26, 26]
+            paddle.Size([8, 16, 26, 26])
 
             >>> #deformable conv v1:
             >>> import paddle
@@ -1097,7 +1112,7 @@ class DeformConv2D(Layer):
             ...     kernel_size=[kh, kw])
             >>> out = deform_conv(input, offset)
             >>> print(out.shape)
-            [8, 16, 26, 26]
+            paddle.Size([8, 16, 26, 26])
     """
 
     weight: Tensor
@@ -1117,9 +1132,9 @@ class DeformConv2D(Layer):
         bias_attr: ParamAttrLike | None = None,
     ) -> None:
         super().__init__()
-        assert (
-            weight_attr is not False
-        ), "weight_attr should not be False in Conv."
+        assert weight_attr is not False, (
+            "weight_attr should not be False in Conv."
+        )
         self._weight_attr = weight_attr
         self._bias_attr = bias_attr
         self._deformable_groups = deformable_groups
@@ -1251,7 +1266,7 @@ def distribute_fpn_proposals(
           is [B] and data type of int32, where B is the number of images.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -1266,20 +1281,20 @@ def distribute_fpn_proposals(
             ...     rois_num=rois_num)
             ...
     """
-    assert (
-        max_level > 0 and min_level > 0
-    ), "min_level and max_level should be greater than 0"
+    assert max_level > 0 and min_level > 0, (
+        "min_level and max_level should be greater than 0"
+    )
 
     num_lvl = max_level - min_level + 1
     assert num_lvl > 1, "max_level should be greater than min_level"
-    assert (
-        num_lvl < 100
-    ), "Only support max to 100 levels, (max_level - min_level + 1 < 100)"
+    assert num_lvl < 100, (
+        "Only support max to 100 levels, (max_level - min_level + 1 < 100)"
+    )
 
     if in_dynamic_or_pir_mode():
-        assert (
-            rois_num is not None
-        ), "rois_num should not be None in dygraph mode."
+        assert rois_num is not None, (
+            "rois_num should not be None in dygraph mode."
+        )
         (
             multi_rois,
             rois_num_per_level,
@@ -1357,7 +1372,7 @@ def read_file(filename: str, name: str | None = None) -> Tensor:
         A uint8 tensor.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import cv2
             >>> import paddle
@@ -1366,10 +1381,10 @@ def read_file(filename: str, name: str | None = None) -> Tensor:
             >>> cv2.imwrite('fake.jpg', fake_img)
             >>> img_bytes = paddle.vision.ops.read_file('fake.jpg')
             >>> print(img_bytes.shape)
-            [142773]
+            paddle.Size([142773])
     """
 
-    attr_dtype = convert_np_dtype_to_dtype_('uint8')
+    attr_dtype = convert_nptype_to_datatype_or_vartype('uint8')
     if in_dynamic_or_pir_mode():
         return _C_ops.read_file(filename, attr_dtype, paddle.CPUPlace())
     else:
@@ -1407,7 +1422,7 @@ def decode_jpeg(
         Tensor: A decoded image tensor with shape (image_channels, image_height, image_width)
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env:GPU)
             >>> import cv2
@@ -1415,13 +1430,12 @@ def decode_jpeg(
             >>> import paddle
             >>> paddle.device.set_device('gpu')
 
-            >>> fake_img = (np.random.random(
-            ...             (400, 300, 3)) * 255).astype('uint8')
+            >>> fake_img = (np.random.random((400, 300, 3)) * 255).astype('uint8')
             >>> cv2.imwrite('fake.jpg', fake_img)
             >>> img_bytes = paddle.vision.ops.read_file('fake.jpg')
             >>> img = paddle.vision.ops.decode_jpeg(img_bytes)
             >>> print(img.shape)
-            [3, 400, 300]
+            paddle.Size([3, 400, 300])
     """
     if in_dynamic_or_pir_mode():
         return _C_ops.decode_jpeg(x, mode, _current_expected_place())
@@ -1473,15 +1487,18 @@ def psroi_pool(
         The output_channels equal to C / (pooled_h * pooled_w), where C is the channels of input.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> x = paddle.uniform([2, 490, 28, 28], dtype='float32')
-            >>> boxes = paddle.to_tensor([[1, 5, 8, 10], [4, 2, 6, 7], [12, 12, 19, 21]], dtype='float32')
+            >>> boxes = paddle.to_tensor(
+            ...     [[1, 5, 8, 10], [4, 2, 6, 7], [12, 12, 19, 21]],
+            ...     dtype='float32',
+            ... )
             >>> boxes_num = paddle.to_tensor([1, 2], dtype='int32')
             >>> pool_out = paddle.vision.ops.psroi_pool(x, boxes, boxes_num, 7, 1.0)
             >>> print(pool_out.shape)
-            [3, 10, 7, 7]
+            paddle.Size([3, 10, 7, 7])
     """
 
     check_type(output_size, 'output_size', (int, tuple, list), 'psroi_pool')
@@ -1542,17 +1559,20 @@ class PSRoIPool(Layer):
         None.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
             >>> psroi_module = paddle.vision.ops.PSRoIPool(7, 1.0)
             >>> x = paddle.uniform([2, 490, 28, 28], dtype='float32')
-            >>> boxes = paddle.to_tensor([[1, 5, 8, 10], [4, 2, 6, 7], [12, 12, 19, 21]], dtype='float32')
+            >>> boxes = paddle.to_tensor(
+            ...     [[1, 5, 8, 10], [4, 2, 6, 7], [12, 12, 19, 21]],
+            ...     dtype='float32',
+            ... )
             >>> boxes_num = paddle.to_tensor([1, 2], dtype='int32')
             >>> pool_out = psroi_module(x, boxes, boxes_num)
             >>> print(pool_out.shape)
-            [3, 10, 7, 7]
+            paddle.Size([3, 10, 7, 7])
     """
 
     output_size: Size2
@@ -1600,7 +1620,7 @@ def roi_pool(
         pool_out (Tensor): the pooled feature, 4D-Tensor with the shape of [num_boxes, C, output_size[0], output_size[1]].
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.vision.ops import roi_pool
@@ -1612,7 +1632,7 @@ def roi_pool(
             >>> boxes_num = paddle.to_tensor([3]).astype('int32')
             >>> pool_out = roi_pool(data, boxes, boxes_num=boxes_num, output_size=3)
             >>> print(pool_out.shape)
-            [3, 256, 3, 3]
+            paddle.Size([3, 256, 3, 3])
     """
 
     check_type(output_size, 'output_size', (int, tuple), 'roi_pool')
@@ -1621,9 +1641,9 @@ def roi_pool(
 
     pooled_height, pooled_width = output_size
     if in_dynamic_or_pir_mode():
-        assert (
-            boxes_num is not None
-        ), "boxes_num should not be None in dygraph mode."
+        assert boxes_num is not None, (
+            "boxes_num should not be None in dygraph mode."
+        )
         return _C_ops.roi_pool(
             x, boxes, boxes_num, pooled_height, pooled_width, spatial_scale
         )
@@ -1667,7 +1687,7 @@ class RoIPool(Layer):
         pool_out (Tensor): the pooled feature, 4D-Tensor with the shape of [num_boxes, C, output_size[0], output_size[1]].
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.vision.ops import RoIPool
@@ -1680,7 +1700,7 @@ class RoIPool(Layer):
             >>> roi_pool = RoIPool(output_size=(4, 3))
             >>> pool_out = roi_pool(data, boxes, boxes_num)
             >>> print(pool_out.shape)
-            [3, 256, 4, 3]
+            paddle.Size([3, 256, 4, 3])
     """
 
     def __init__(self, output_size: Size2, spatial_scale: float = 1.0) -> None:
@@ -1760,7 +1780,7 @@ def roi_align(
             channels, pooled_h, pooled_w). The data type is float32 or float64.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.vision.ops import roi_align
@@ -1772,7 +1792,7 @@ def roi_align(
             >>> boxes_num = paddle.to_tensor([3]).astype('int32')
             >>> align_out = roi_align(data, boxes, boxes_num, output_size=3)
             >>> print(align_out.shape)
-            [3, 256, 3, 3]
+            paddle.Size([3, 256, 3, 3])
     """
 
     check_type(output_size, 'output_size', (int, tuple), 'roi_align')
@@ -1781,9 +1801,9 @@ def roi_align(
 
     pooled_height, pooled_width = output_size
     if in_dynamic_or_pir_mode():
-        assert (
-            boxes_num is not None
-        ), "boxes_num should not be None in dygraph mode."
+        assert boxes_num is not None, (
+            "boxes_num should not be None in dygraph mode."
+        )
         return _C_ops.roi_align(
             x,
             boxes,
@@ -1840,7 +1860,7 @@ class RoIAlign(Layer):
             shape (num_boxes, channels, pooled_h, pooled_w).
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.vision.ops import RoIAlign
@@ -1853,7 +1873,7 @@ class RoIAlign(Layer):
             >>> roi_align = RoIAlign(output_size=(4, 3))
             >>> align_out = roi_align(data, boxes, boxes_num)
             >>> print(align_out.shape)
-            [3, 256, 4, 3]
+            paddle.Size([3, 256, 4, 3])
     """
 
     def __init__(self, output_size: Size2, spatial_scale: float = 1.0) -> None:
@@ -1888,9 +1908,9 @@ class ConvNormActivation(Sequential):
             in which case it will calculated as ``padding = (kernel_size - 1) // 2 * dilation``
         groups (int, optional): Number of blocked connections from input channels to output channels. Default: 1
         norm_layer (Callable[..., paddle.nn.Layer], optional): Norm layer that will be stacked on top of the convolution layer.
-            If ``None`` this layer wont be used. Default: ``paddle.nn.BatchNorm2D``
+            If ``None`` this layer won't be used. Default: ``paddle.nn.BatchNorm2D``
         activation_layer (Callable[..., paddle.nn.Layer], optional): Activation function which will be stacked on top of the normalization
-            layer (if not ``None``), otherwise on top of the conv layer. If ``None`` this layer wont be used. Default: ``paddle.nn.ReLU``
+            layer (if not ``None``), otherwise on top of the conv layer. If ``None`` this layer won't be used. Default: ``paddle.nn.ReLU``
         dilation (int): Spacing between kernel elements. Default: 1
         bias (bool|None, optional): Whether to use bias in the convolution layer. By default, biases are included if ``norm_layer is None``.
     """
@@ -1977,7 +1997,7 @@ def nms(
         Tensor: 1D-Tensor with the shape of [num_boxes]. Indices of boxes kept by NMS.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> paddle.seed(2023)
@@ -2000,12 +2020,14 @@ def nms(
             >>> scores = paddle.to_tensor([0.6, 0.7, 0.4, 0.233])
             >>> categories = [0, 1, 2, 3]
             >>> category_idxs = paddle.to_tensor([2, 0, 0, 3], dtype="int64")
-            >>> out = paddle.vision.ops.nms(boxes,
-            ...                             0.1,
-            ...                             paddle.to_tensor(scores),
-            ...                             paddle.to_tensor(category_idxs),
-            ...                             categories,
-            ...                             4)
+            >>> out = paddle.vision.ops.nms(
+            ...     boxes,
+            ...     0.1,
+            ...     paddle.to_tensor(scores),
+            ...     paddle.to_tensor(category_idxs),
+            ...     categories,
+            ...     4,
+            ... )
             >>> print(out)
             Tensor(shape=[4], dtype=int64, place=Place(cpu), stop_gradient=True,
             [1, 0, 2, 3])
@@ -2039,12 +2061,12 @@ def nms(
         return sorted_global_indices[sorted_keep_boxes_indices]
 
     if top_k is not None:
-        assert (
-            top_k <= scores.shape[0]
-        ), "top_k should be smaller equal than the number of boxes"
-    assert (
-        categories is not None
-    ), "if category_idxs is given, categories which is a list of unique id of all categories is necessary"
+        assert top_k <= scores.shape[0], (
+            "top_k should be smaller equal than the number of boxes"
+        )
+    assert categories is not None, (
+        "if category_idxs is given, categories which is a list of unique id of all categories is necessary"
+    )
 
     mask = paddle.zeros_like(scores, dtype='int32')
 
@@ -2202,8 +2224,8 @@ def generate_proposals(
             num_anchors is the box count of each position. Each anchor is
             in (xmin, ymin, xmax, ymax) format an unnormalized. The data type must be float32.
         variances (Tensor): A 4-D Tensor. The expanded variances of anchors with a layout of
-            [H, W, num_priors, 4]. Each variance is in
-            (xcenter, ycenter, w, h) format. The data type must be float32.
+            [H, W, A, 4]. Each variance is in (xcenter, ycenter, w, h) format.
+            The data type must be float32.
         pre_nms_top_n (float, optional): Number of total bboxes to be kept per
             image before NMS. `6000` by default.
         post_nms_top_n (float, optional): Number of total bboxes to be kept per
@@ -2226,18 +2248,19 @@ def generate_proposals(
         - rpn_rois_num (Tensor): Rois's num of each image in one batch. 1-D Tensor with shape ``[B,]`` while ``B`` is the batch size. And its sum equals to RoIs number ``N`` .
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> paddle.seed(2023)
 
-            >>> scores = paddle.rand((2,4,5,5), dtype=paddle.float32)
+            >>> scores = paddle.rand((2, 4, 5, 5), dtype=paddle.float32)
             >>> bbox_deltas = paddle.rand((2, 16, 5, 5), dtype=paddle.float32)
             >>> img_size = paddle.to_tensor([[224.0, 224.0], [224.0, 224.0]])
-            >>> anchors = paddle.rand((2,5,4,4), dtype=paddle.float32)
-            >>> variances = paddle.rand((2,5,10,4), dtype=paddle.float32)
-            >>> rois, roi_probs, roi_nums = paddle.vision.ops.generate_proposals(scores, bbox_deltas,
-            ...                 img_size, anchors, variances, return_rois_num=True)
+            >>> anchors = paddle.rand((5, 5, 4, 4), dtype=paddle.float32)
+            >>> variances = paddle.rand((5, 5, 4, 4), dtype=paddle.float32)
+            >>> rois, roi_probs, roi_nums = paddle.vision.ops.generate_proposals(
+            ...     scores, bbox_deltas, img_size, anchors, variances, return_rois_num=True
+            ... )
             >>> # doctest: +SKIP('random sample')
             >>> print(rois, roi_probs, roi_nums)
             Tensor(shape=[2, 4], dtype=float32, place=Place(cpu), stop_gradient=True,
@@ -2251,9 +2274,9 @@ def generate_proposals(
     """
 
     if in_dygraph_mode():
-        assert (
-            return_rois_num
-        ), "return_rois_num should be True in dygraph mode."
+        assert return_rois_num, (
+            "return_rois_num should be True in dygraph mode."
+        )
         attrs = (
             pre_nms_top_n,
             post_nms_top_n,
@@ -2268,9 +2291,9 @@ def generate_proposals(
 
         return rpn_rois, rpn_roi_probs, rpn_rois_num
     elif in_pir_mode():
-        assert (
-            return_rois_num
-        ), "return_rois_num should be True in PaddlePaddle inner op mode."
+        assert return_rois_num, (
+            "return_rois_num should be True in PaddlePaddle inner op mode."
+        )
         rpn_rois, rpn_roi_probs, rpn_rois_num = _C_ops.generate_proposals(
             scores,
             bbox_deltas,
@@ -2513,7 +2536,7 @@ def matrix_nms(
           the number of detected boxes in each image.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.vision.ops import matrix_nms
@@ -2522,9 +2545,16 @@ def matrix_nms(
             >>> boxes[..., 2] = boxes[..., 0] + boxes[..., 2]
             >>> boxes[..., 3] = boxes[..., 1] + boxes[..., 3]
             >>> scores = paddle.rand([4, 80, 1])
-            >>> out = matrix_nms(bboxes=boxes, scores=scores, background_label=0,
-            ...                         score_threshold=0.5, post_threshold=0.1,
-            ...                         nms_top_k=400, keep_top_k=200, normalized=False)
+            >>> out = matrix_nms(
+            ...     bboxes=boxes,
+            ...     scores=scores,
+            ...     background_label=0,
+            ...     score_threshold=0.5,
+            ...     post_threshold=0.1,
+            ...     nms_top_k=400,
+            ...     keep_top_k=200,
+            ...     normalized=False,
+            ... )
     """
     if in_dynamic_or_pir_mode():
         out, index, rois_num = _C_ops.matrix_nms(

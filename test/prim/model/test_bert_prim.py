@@ -33,19 +33,6 @@ MD5SUM = '71e730ee8d7aa77a215b7e898aa089af'
 SAVE_NAME = 'bert_training_data.npz'
 
 
-DY2ST_PRIM_GT = [
-    11.144556999206543,
-    10.343620300292969,
-    10.330279350280762,
-    10.276118278503418,
-    10.222086906433105,
-    10.194628715515137,
-    10.14902114868164,
-    10.096250534057617,
-    10.104615211486816,
-    9.985644340515137,
-]
-
 if core.is_compiled_with_cuda():
     paddle.set_flags({'FLAGS_cudnn_deterministic': True})
 
@@ -130,6 +117,32 @@ class TestBert(unittest.TestCase):
         "paddle is not compiled with CINN and CUDA",
     )
     def test_prim(self):
+        if "H20" in paddle.cuda.get_device_name():
+            DY2ST_PRIM_GT = [
+                10.834290504455566,
+                10.328838348388672,
+                10.342059135437012,
+                10.281204223632812,
+                10.226964950561523,
+                10.220486640930176,
+                10.174433708190918,
+                10.127359390258789,
+                10.134778022766113,
+                10.03632926940918,
+            ]
+        else:
+            DY2ST_PRIM_GT = [
+                10.649632453918457,
+                10.333406448364258,
+                10.33541202545166,
+                10.260543823242188,
+                10.219606399536133,
+                10.176884651184082,
+                10.124699592590332,
+                10.072620391845703,
+                10.112163543701172,
+                9.969392776489258,
+            ]
         dy2st_prim = train(to_static=True, enable_prim=True, enable_cinn=False)
         np.testing.assert_allclose(dy2st_prim, DY2ST_PRIM_GT, rtol=1e-5)
 

@@ -14,6 +14,7 @@
 #pragma once
 
 #include "paddle/phi/kernels/concat_grad_kernel.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/concat_and_split_functor.h"
 #include "paddle/phi/kernels/funcs/concat_funcs.h"
 #include "paddle/phi/kernels/funcs/strided_memcpy.h"
@@ -37,7 +38,7 @@ void ConcatGradKernel(const Context& dev_ctx,
   }
   PADDLE_ENFORCE_NOT_NULL(
       x[0],
-      common::errors::NotFound("The first input tensor is not initalized."));
+      common::errors::NotFound("The first input tensor is not initialized."));
 
   auto axis = axis_scalar.to<int>();
   axis = funcs::ComputeAxis(static_cast<int64_t>(axis),
@@ -45,23 +46,27 @@ void ConcatGradKernel(const Context& dev_ctx,
   // get output tensor that the name is not kEmptyVarName
   std::vector<DenseTensor*> outputs;
   for (size_t j = 0; j < outs.size(); ++j) {
-    if (outs[j] && outs[j]->numel() != 0UL) {
+    if (outs[j]) {
       dev_ctx.template Alloc<T>(outs[j]);
-
       outputs.push_back(outs[j]);
     } else {
       outputs.push_back(nullptr);
     }
+  }
+  // if the out_grad.numel() == 0 ,the all x and x_grad must be zero size
+  // tensor, so just return
+  if (out_grad.numel() == 0) {
+    return;
   }
 
   // Sometimes direct copies will be faster, this maybe need deeply analysis.
   if (axis == 0 && outs.size() < 10) {
     std::vector<const DenseTensor*> ref_shape;
     ref_shape.insert(ref_shape.begin(), x.begin(), x.end());
-    phi::funcs::StridedMemcpyWithAxis0<T, Context>(
+    funcs::StridedMemcpyWithAxis0<T, Context>(
         dev_ctx, out_grad, ref_shape, &outputs);
   } else {
-    phi::funcs::SplitFunctor<Context, T> split_functor;
+    funcs::SplitFunctor<Context, T> split_functor;
     split_functor(dev_ctx, out_grad, x, static_cast<int>(axis), &outputs);
   }
 }

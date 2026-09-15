@@ -1,23 +1,40 @@
 # In Windows, c_api test link must link both 2 shared to avoid symbols redefinition,
-# in Linux, c_api test cant do like this or graph_to_program register more than once.
+# in Linux, c_api test can't do like this or graph_to_program register more than once.
 # Both Windows and Linux can only use paddle_inference_c, but this will increase size
 # of build folder by 30G.
 set(inference_api_tester_deps paddle_inference_api analysis_config)
 
-cc_test(
-  test_paddle_inference_api
-  SRCS api_tester.cc
-  DEPS ${inference_api_tester_deps} common)
+if(NOT WIN32)
+  cc_test(
+    test_paddle_inference_api
+    SRCS api_tester.cc
+    DEPS ${inference_api_tester_deps} common)
 
-cc_test(
-  inference_api_helper_test
-  SRCS helper_test.cc
-  DEPS ${inference_api_tester_deps} common)
+  cc_test(
+    inference_api_helper_test
+    SRCS helper_test.cc
+    DEPS ${inference_api_tester_deps} common)
+endif()
 
 if(WITH_ONNXRUNTIME AND WIN32)
   # Copy onnxruntime for some c++ test in Windows, since the test will
   # be build only in CI, so suppose the generator in Windows is Ninja.
   copy_onnx(test_paddle_inference_api)
+endif()
+
+if(WITH_TESTING
+   AND WITH_ONNXRUNTIME
+   AND NOT APPLE
+   AND NOT WIN32)
+  inference_analysis_test(
+    test_onnxruntime_predictor
+    SRCS
+    onnxruntime_predictor_tester.cc
+    EXTRA_DEPS
+    common
+    paddle_inference_shared
+    ARGS
+    --dirname=${MOBILENETV2_MODEL_DIR})
 endif()
 
 if(WITH_TESTING AND WITH_INFERENCE_API_TEST)
@@ -211,7 +228,7 @@ if(WITH_TESTING AND WITH_INFERENCE_API_TEST)
       --with_accuracy_layer=false)
   endfunction()
 
-  function(inference_analysis_api_object_dection_int8_test_run TARGET_NAME
+  function(inference_analysis_api_object_detection_int8_test_run TARGET_NAME
            test_binary model_dir data_path)
     inference_analysis_test_run(
       ${TARGET_NAME}
@@ -237,7 +254,7 @@ if(WITH_TESTING AND WITH_INFERENCE_API_TEST)
            test_binary model_dir disable_fc)
     inference_analysis_test_run(
       ${TARGET_NAME} COMMAND ${test_binary} ARGS
-      --infer_model=${model_dir}/model --disable_mkldnn_fc=${disable_fc})
+      --infer_model=${model_dir}/model --disable_onednn_fc=${disable_fc})
   endfunction()
 
   function(
@@ -581,7 +598,7 @@ if(WITH_TESTING AND WITH_INFERENCE_API_TEST)
 
     # Quant2 MobileNetV1
     inference_analysis_api_quant_test_run(
-      test_analyzer_quant2_mobilenetv1_mkldnn
+      test_analyzer_quant2_mobilenetv1_onednn
       ${QUANT_IMG_CLASS_TEST_APP}
       ${QUANT2_MobileNetV1_MODEL_DIR}/MobileNet_qat_perf/float
       ${QUANT2_MobileNetV1_MODEL_DIR}/MobileNet_qat_perf/float
@@ -602,7 +619,7 @@ if(WITH_TESTING AND WITH_INFERENCE_API_TEST)
     set(QUANT2_RESNET50_MODEL
         ${QUANT2_RESNET50_CHANNELWISE_MODEL_DIR}/ResNet50_qat_channelwise)
     inference_analysis_api_quant_test_run(
-      test_analyzer_quant2_resnet50_channelwise_mkldnn
+      test_analyzer_quant2_resnet50_channelwise_onednn
       ${QUANT_IMG_CLASS_TEST_APP} ${QUANT2_RESNET50_MODEL}
       ${QUANT2_RESNET50_MODEL} ${IMAGENET_DATA_PATH} true)
 
@@ -847,22 +864,6 @@ if(WITH_TESTING AND WITH_INFERENCE_API_TEST)
     paddle_inference_shared
     ARGS
     --infer_model=${OCR_INSTALL_DIR}/model)
-
-  if(WITH_DISTRIBUTE
-     AND WITH_PSCORE
-     AND WITH_XPU
-     AND WITH_XPU_BKCL)
-    inference_analysis_test(
-      test_analyzer_dist_model_xpu
-      SRCS
-      analyzer_dist_model_xpu_tester.cc
-      EXTRA_DEPS
-      common
-      paddle_inference_shared
-      ARGS
-      --infer_model=${OCR_INSTALL_DIR}/model)
-  endif()
-
   # chinese_ner
   set(CHINESE_NER_INSTALL_DIR "${INFERENCE_DEMO_INSTALL_DIR}/chinese_ner")
   download_model_and_data_without_verify(
@@ -983,10 +984,12 @@ if(WITH_TESTING AND WITH_INFERENCE_API_TEST)
     ARGS
     --infer_model=${RESNET50_MODEL_DIR}/model)
 
-  cc_test(
-    paddle_infer_api_errors_test
-    SRCS paddle_infer_api_errors_tester.cc
-    DEPS ${inference_api_tester_deps} common)
+  if(NOT WIN32)
+    cc_test(
+      paddle_infer_api_errors_test
+      SRCS paddle_infer_api_errors_tester.cc
+      DEPS ${inference_api_tester_deps} common)
+  endif()
 
   if(WITH_GPU)
     inference_analysis_test(
@@ -1028,9 +1031,9 @@ if(WITH_TESTING AND WITH_INFERENCE_API_TEST)
   if(WITH_ONEDNN)
     set_tests_properties(test_analyzer_quant_performance_benchmark
                          PROPERTIES TIMEOUT 120)
-    set_tests_properties(test_analyzer_quant2_mobilenetv1_mkldnn
+    set_tests_properties(test_analyzer_quant2_mobilenetv1_onednn
                          PROPERTIES TIMEOUT 120)
-    set_tests_properties(test_analyzer_quant2_resnet50_channelwise_mkldnn
+    set_tests_properties(test_analyzer_quant2_resnet50_channelwise_onednn
                          PROPERTIES TIMEOUT 120)
   endif()
 

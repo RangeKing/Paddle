@@ -34,25 +34,29 @@
 #include "paddle/fluid/pir/dialect/operator/ir/op_dialect.h"
 #include "paddle/fluid/pir/dialect/operator/ir/pd_op.h"
 #include "paddle/fluid/pir/dialect/operator/utils/op_yaml_info_parser.h"
+#include "paddle/fluid/platform/onednn_helper.h"
 #include "paddle/phi/core/distributed/comm_context_manager.h"
 #include "paddle/phi/core/framework/framework.pb.h"
 #include "paddle/phi/core/kernel_context.h"
 #include "paddle/phi/core/kernel_factory.h"
 #include "paddle/phi/core/memory/stats.h"
-#if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL)
+#if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL) || \
+    defined(PADDLE_WITH_CUSTOM_DEVICE)
 #include "paddle/fluid/distributed/collective/process_group.h"
+#ifdef PADDLE_WITH_CUSTOM_DEVICE
+#include "paddle/fluid/distributed/collective/process_group_custom.h"
+#else
 #include "paddle/fluid/distributed/collective/process_group_nccl.h"
 #endif
-
-#ifdef PADDLE_WITH_DNNL
-#include "paddle/fluid/platform/onednn_helper.h"
 #endif
 
 #ifdef PADDLE_WITH_CUSTOM_DEVICE
+#include "paddle/phi/backends/custom/custom_context.h"
 #include "paddle/phi/backends/device_manager.h"
 #endif
 
 COMMON_DECLARE_bool(use_mkldnn);
+COMMON_DECLARE_bool(use_onednn);
 COMMON_DECLARE_bool(check_nan_inf);
 COMMON_DECLARE_string(static_runtime_data_save_path);
 COMMON_DECLARE_bool(save_static_runtime_data);
@@ -61,7 +65,7 @@ namespace paddle::framework::interpreter {
 
 using VariableIdMap = std::map<std::string, std::vector<int>>;
 
-// NOTE(Ruibiao): SingleStreamGuard make some multi-strem op (i.e.,
+// NOTE(Ruibiao): SingleStreamGuard make some multi-stream op (i.e.,
 // c_allreduce_sum) run in single stream. It is dedicated to BuildOpFuncList
 // which run kernel without stream synchronization.
 class SingleStreamGuard {
@@ -130,50 +134,15 @@ void AsyncWorkQueue::AddTask(const OpFuncType& op_func_type,
 }
 
 bool IsCommunicationOp(const OperatorBase* op) {
-  const std::string& op_name = op->Type();
-  const std::set<std::string> special_comm_op_set = {
-      "send",
-      "recv",
-      "send_v2",
-      "recv_v2",
-  };
-  const std::string communication_op_prefix = "c_";
-  if (op_name.find(communication_op_prefix) != std::string::npos ||
-      special_comm_op_set.count(op_name)) {
-    return true;
-  }
-  if (op->HasAttr("ring_id")) {
-    return true;
-  }
-  return false;
+  return op->HasAttr("ring_id");
 }
 
 bool IsCommunicationOp(const Instruction& instr) {
-  if (!instr.OpBaseValid()) {
-    return false;
-  }
-  return IsCommunicationOp(instr.OpBase());
+  return instr.OpBaseValid() && IsCommunicationOp(instr.OpBase());
 }
 
-bool IsCommunicationOp(const ::pir::Operation* op) {
-  std::string op_name = op->name();
-  if (op->attributes().count("op_name")) {
-    op_name =
-        op->attributes().at("op_name").dyn_cast<pir::StrAttribute>().AsString();
-  }
-  const std::set<std::string> special_comm_op_set = {
-      paddle::dialect::SendV2Op::name(),
-      paddle::dialect::RecvV2Op::name(),
-  };
-  const std::string communication_op_prefix = "c_";
-  if (op_name.find(communication_op_prefix) != std::string::npos ||
-      special_comm_op_set.count(op_name)) {
-    return true;
-  }
-  if (op->attributes().count("ring_id") != 0) {
-    return true;
-  }
-  return false;
+bool IsCommunicationOp(const pir::Operation* op) {
+  return op->attributes().count("ring_id") != 0;
 }
 
 bool IsCpuOp(const Instruction& instr) {
@@ -196,7 +165,7 @@ bool IsGradOp(const std::string& op_name) {
   return paddle::string::ends_with(op_name, "_grad");
 }
 
-bool IsSupportedHeterPlace(const phi::Place& place) {
+bool IsSupportedHeterPlace(const Place& place) {
   return phi::is_gpu_place(place) || phi::is_xpu_place(place) ||
          phi::is_ipu_place(place) || phi::is_custom_place(place);
 }
@@ -310,7 +279,7 @@ GetUnusedVars(const BlockDesc& block,
 }
 
 OpFuncType AnalyseOpFuncType(const OpFuncNode& op_func_node,
-                             const phi::Place& place) {
+                             const Place& place) {
   if (phi::is_cpu_place(place)) {
     return OpFuncType::kCpuSync;
   }
@@ -373,10 +342,14 @@ void CreateAllOps(const framework::BlockDesc& block,
     op_base->SetRuntimeAttributeMap(op_runtime_attr_map);
 
 #ifdef PADDLE_WITH_DNNL
-    if (FLAGS_use_mkldnn) {
+    if (FLAGS_use_mkldnn || FLAGS_use_onednn) {
       if (op->HasAttr("use_mkldnn")) {
         VLOG(4) << "Set use_mkldnn=True for " << op_base->Type();
         op_base->SetAttr("use_mkldnn", true);
+      }
+      if (op->HasAttr("use_onednn")) {
+        VLOG(4) << "Set use_onednn=True for " << op_base->Type();
+        op_base->SetAttr("use_onednn", true);
       }
     }
 #endif
@@ -421,7 +394,7 @@ std::tuple<VariableValueMap, VariableIdMap> BuildVariableMap(
 }
 
 void ApplyDeviceGuard(const OperatorBase* op_base,
-                      const phi::Place& place,
+                      const Place& place,
                       OpKernelType* expected_kernel_key) {
   bool need_change_place =
       (op_base->HasAttr("op_device") &&
@@ -430,7 +403,7 @@ void ApplyDeviceGuard(const OperatorBase* op_base,
     auto& op_device = op_base->Attr<std::string>("op_device");
     if (op_device == "cpu" || phi::is_cpu_place(place)) {
       VLOG(3) << "Switch into CPUPlace by device_guard.";
-      expected_kernel_key->place_ = phi::CPUPlace();
+      expected_kernel_key->place_ = CPUPlace();
     } else if (op_device.find("gpu") != std::string::npos &&
                phi::is_gpu_place(place)) {
       // when the Op that does not have GPUKernel is assigned to GPU, the
@@ -439,7 +412,7 @@ void ApplyDeviceGuard(const OperatorBase* op_base,
       if (op_base->SupportGPU()) {
         expected_kernel_key->place_ = place;
       } else {
-        expected_kernel_key->place_ = phi::CPUPlace();
+        expected_kernel_key->place_ = CPUPlace();
         LOG_FIRST_N(WARNING, 1)
             << "Op(" << op_base->Type()
             << ") has no CUDA implementation. It will be assigned to CPUPlace.";
@@ -454,7 +427,7 @@ void ApplyDeviceGuard(const OperatorBase* op_base,
       if (op_base->SupportXPU()) {
         expected_kernel_key->place_ = place;
       } else {
-        expected_kernel_key->place_ = phi::CPUPlace();
+        expected_kernel_key->place_ = CPUPlace();
         LOG_FIRST_N(WARNING, 1)
             << "Op(" << op_base->Type()
             << ") has no XPU implementation. It will be assigned to CPUPlace.";
@@ -488,7 +461,7 @@ void ApplyDeviceGuard(const OperatorBase* op_base,
       if (op_base->SupportCustomDevice()) {
         expected_kernel_key->place_ = place;
       } else {
-        expected_kernel_key->place_ = phi::CPUPlace();
+        expected_kernel_key->place_ = CPUPlace();
         LOG_FIRST_N(WARNING, 1) << "Op(" << op_base->Type()
                                 << ") has no Custom Place implementation. It "
                                    "will be assigned to CPUPlace.";
@@ -503,7 +476,7 @@ void ApplyDeviceGuard(const OperatorBase* op_base,
 }
 
 phi::DeviceContext* ConstructDeviceContext(const OperatorBase* op,
-                                           const phi::Place& place) {
+                                           const Place& place) {
   auto& pool = phi::DeviceContextPool::Instance();
   auto* default_dev_ctx = pool.Get(place);
 
@@ -553,7 +526,7 @@ phi::DeviceContext* ConstructDeviceContext(const OperatorBase* op,
 }
 
 void HandleOperatorBase(
-    const phi::Place& place,
+    const Place& place,
     std::shared_ptr<OperatorBase> op,
     OpFuncNode* op_func_node,
     Scope* scope,
@@ -578,7 +551,7 @@ void HandleOperatorBase(
   op_func_node->dev_ctx_ = dev_ctx;
 }
 
-void BuildOpFuncList(const phi::Place& place,
+void BuildOpFuncList(const Place& place,
                      const framework::BlockDesc& block,
                      const std::set<std::string>& skip_gc_vars,
                      std::vector<OpFuncNode>* vec_func_list,
@@ -661,7 +634,7 @@ void BuildOpFuncList(const phi::Place& place,
         "conditional_block",
         "conditional_block_grad",
         "pylayer",
-        "pylayer_grad"
+        "pylayer_grad",
         "recurrent_grad",
         "while",
         "while_grad"};
@@ -733,7 +706,7 @@ void BuildOpFuncList(const phi::Place& place,
     try {
       if (dynamic_cast<framework::OperatorWithKernel*>(op) == nullptr) {
         VLOG(4) << "HandleOperatorBase";
-        // op is not a operatorwithkernel, so direcly run OperatorBase::Run()
+        // op is not a operatorwithkernel, so directly run OperatorBase::Run()
 
         std::vector<std::shared_ptr<OperatorBase>> following_ops(
             ops.begin() + static_cast<int>(i) + 1, ops.end());
@@ -859,7 +832,7 @@ void BuildOpFuncList(const phi::Place& place,
                 op->Attr<bool>(kAllKernelsMustComputeRuntimeShape))) {
             RuntimeInferShapeContext infer_shape_ctx(*op, runtime_context);
             // TODO(Aurelius84): In case of control flow ops, they are NOT
-            // inheritted from OperatorWithKernel.
+            // inherited from OperatorWithKernel.
             op_with_kernel->Info().infer_shape_(&infer_shape_ctx);
           }
         }
@@ -869,13 +842,31 @@ void BuildOpFuncList(const phi::Place& place,
             op_func_node.phi_kernel_->GetKernelRegisteredType() ==
                 phi::KernelRegisteredType::FUNCTION) {
           VLOG(6) << op_type << " run function kernel";
-#if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL)
+#if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL) || \
+    defined(PADDLE_WITH_CUSTOM_DEVICE)
           auto attrs = op->Attrs();
           if (attrs.find("ring_id") != attrs.end()) {
             auto ring_id_attr = attrs.at("ring_id");
             int ring_id = PADDLE_GET(int, ring_id_attr);
             auto map = distributed::ProcessGroupMapFromGid::getInstance();
             if (map->has(ring_id)) {
+#ifdef PADDLE_WITH_CUSTOM_DEVICE
+              auto original_stream =
+                  static_cast<phi::CustomContext*>(dev_ctx)->GetStream();
+              distributed::ProcessGroup* pg = map->get(ring_id);
+              auto comm_context =
+                  static_cast<paddle::distributed::ProcessGroupCustom*>(pg)
+                      ->GetOrCreateCommContext(place);
+              dev_ctx =
+                  static_cast<phi::distributed::XCCLCommContext*>(comm_context)
+                      ->GetDevContext();
+              dev_ctx->SetCommContext(comm_context);
+              // set stream
+              static_cast<phi::CustomContext*>(dev_ctx)->SetStream(
+                  original_stream);
+              // todo  set allocator in custom device
+#else
+
               auto original_stream =
                   static_cast<phi::GPUContext*>(dev_ctx)->cuda_stream();
               distributed::ProcessGroup* pg = map->get(ring_id);
@@ -897,6 +888,7 @@ void BuildOpFuncList(const phi::Place& place,
                           place,
                           static_cast<phi::GPUContext*>(dev_ctx)->stream())
                       .get());
+#endif
             } else {
               VLOG(3) << "ring_id " << ring_id
                       << " not found in ProcessGroupMapFromGid ";
@@ -959,7 +951,7 @@ void BuildOpFuncList(const phi::Place& place,
 
             // avoid overwriting valid data
             if (static_build && original_tensor->initialized()) {
-              const phi::Place& target_place = transformed_tensor->place();
+              const Place& target_place = transformed_tensor->place();
               phi::DeviceContext* dev_ctx_for_copy = nullptr;
               if (target_place.GetType() != AllocationType::CPU) {
                 dev_ctx_for_copy = pool.Get(target_place);
@@ -1018,9 +1010,9 @@ void BuildOpFuncList(const phi::Place& place,
       for (auto& vname : op->InputVars()) {
         auto* var = local_scope->FindVar(vname);
         if (var == nullptr) continue;
-        const phi::DenseTensor* tensor{nullptr};
-        if (var->IsType<phi::DenseTensor>()) {
-          tensor = &var->Get<phi::DenseTensor>();
+        const DenseTensor* tensor{nullptr};
+        if (var->IsType<DenseTensor>()) {
+          tensor = &var->Get<DenseTensor>();
         } else {
           VLOG(6) << vname << " is not DenseTensor";
           continue;
@@ -1034,9 +1026,9 @@ void BuildOpFuncList(const phi::Place& place,
       for (auto& vname : op->OutputVars(true)) {
         auto* var = local_scope->FindVar(vname);
         if (var == nullptr) continue;
-        const phi::DenseTensor* tensor{nullptr};
-        if (var->IsType<phi::DenseTensor>()) {
-          tensor = &var->Get<phi::DenseTensor>();
+        const DenseTensor* tensor{nullptr};
+        if (var->IsType<DenseTensor>()) {
+          tensor = &var->Get<DenseTensor>();
         } else {
           VLOG(6) << vname << "  is not DenseTensor";
           continue;
@@ -1108,9 +1100,9 @@ void BuildOpFuncList(const phi::Place& place,
         }
 
         VLOG(6) << "Erase variable " << var_name;
-        if (var->IsType<phi::DenseTensor>()) {
+        if (var->IsType<DenseTensor>()) {
           garbages->emplace_back(
-              var->GetMutable<phi::DenseTensor>()->MoveMemoryHolder());
+              var->GetMutable<DenseTensor>()->MoveMemoryHolder());
         } else if (var->IsType<phi::SelectedRows>()) {
           garbages->emplace_back(var->GetMutable<phi::SelectedRows>()
                                      ->mutable_value()
@@ -1155,9 +1147,9 @@ void BuildOpFuncList(const phi::Place& place,
     auto* var = local_scope->FindVar(var_name);
     if (var == nullptr) continue;
     VLOG(6) << "Erase variable " << var_name;
-    if (var->IsType<phi::DenseTensor>()) {
+    if (var->IsType<DenseTensor>()) {
       garbages->emplace_back(
-          var->GetMutable<phi::DenseTensor>()->MoveMemoryHolder());
+          var->GetMutable<DenseTensor>()->MoveMemoryHolder());
     } else if (var->IsType<phi::SelectedRows>()) {
       garbages->emplace_back(var->GetMutable<phi::SelectedRows>()
                                  ->mutable_value()
@@ -1418,7 +1410,7 @@ void PrintValuesAndVariables(
     ret_variable_str += "(";
     if (!op.operands().empty()) {
       for (size_t i = 0; i < op.num_operands(); ++i) {
-        ::pir::Value in_value = op.operand(i).source();
+        pir::Value in_value = op.operand(i).source();
         if (value_2_var_name.count(in_value)) {
           // get Variable by Value
           auto& var_name = value_2_var_name.at(in_value);
@@ -1475,14 +1467,18 @@ const std::vector<std::string> GetInstructionCallStack(
     PADDLE_ENFORCE(
         attr.isa<pir::ArrayAttribute>(),
         common::errors::InvalidArgument(
-            "%s: Callstack attributes of %s is not ArrayAttribute type", type));
+            "%s: Callstack attributes of %s is not ArrayAttribute type",
+            type,
+            OpProtoAndCheckerMaker::OpCreationCallstackAttrName()));
     pir::ArrayAttribute array_attribute = attr.dyn_cast<pir::ArrayAttribute>();
     std::vector<pir::Attribute> vec_attr = array_attribute.AsVector();
     for (auto value : vec_attr) {
       PADDLE_ENFORCE(
           value.isa<pir::StrAttribute>(),
           common::errors::InvalidArgument(
-              "%s: Callstack attributes of %s is not StrAttribute type", type));
+              "%s: Callstack attributes of %s is not StrAttribute type",
+              type,
+              OpProtoAndCheckerMaker::OpCreationCallstackAttrName()));
       vec_str.emplace_back(value.dyn_cast<pir::StrAttribute>().AsString());
     }
   }
@@ -1507,13 +1503,13 @@ bool IsNoNeedBuffer(pir::Operation* op, pir::Value value) {
 }
 
 std::unordered_map<std::string, std::set<std::string>> GetNoNeedBufferValues(
-    const std::unordered_map<std::string, std::shared_ptr<::pir::Program>>&
+    const std::unordered_map<std::string, std::shared_ptr<pir::Program>>&
         type_to_ir_program) {
   std::unordered_map<std::string, std::set<std::string>> shadow_output_values;
   std::set<std::string> no_need_buffer_vars;
 
   for (auto& pair : type_to_ir_program) {
-    std::shared_ptr<::pir::Program> program = pair.second;
+    std::shared_ptr<pir::Program> program = pair.second;
     // Iterate over the block_args and data_op output, and if all ops in all
     // programs using this value are of the no_need_buffer type, then insert
     // this value into the no_need_buffer set.
@@ -1523,6 +1519,7 @@ std::unordered_map<std::string, std::set<std::string>> GetNoNeedBufferValues(
           no_need_buffer_vars.insert(name);
         } else {
           no_need_buffer_vars.erase(name);
+          break;
         }
       }
     }
@@ -1535,6 +1532,7 @@ std::unordered_map<std::string, std::set<std::string>> GetNoNeedBufferValues(
             no_need_buffer_vars.insert(name);
           } else {
             no_need_buffer_vars.erase(name);
+            break;
           }
         }
       }

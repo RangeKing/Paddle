@@ -14,6 +14,10 @@ limitations under the License. */
 
 #pragma once
 
+#include <limits>
+#include <utility>
+#include <vector>
+
 #ifdef __NVCC__
 #include <curand_kernel.h>
 #endif
@@ -26,10 +30,13 @@ limitations under the License. */
 #include "paddle/phi/backends/gpu/gpu_info.h"
 #include "paddle/phi/common/amp_type_traits.h"
 #include "paddle/phi/core/dense_tensor.h"
+#include "paddle/phi/core/enforce.h"
 #include "paddle/phi/core/generator.h"
 
 #if defined(__NVCC__) || defined(__HIPCC__)
+#include "paddle/phi/kernels/funcs/dense_tensor_iterator.h"
 #include "paddle/phi/kernels/funcs/index_impl.cu.h"
+#include "paddle/phi/kernels/funcs/rng_launch_config.h"
 #include "paddle/phi/kernels/primitive/kernel_primitives.h"
 #endif
 
@@ -68,22 +75,30 @@ struct exponential_transform {
   T lambda_;
 };
 
-template <typename T>
+// uniform_real_transform<T, DstT>:
+//   T    - the arithmetic type used for intermediate computation (e.g. float)
+//   DstT - the final output type written to memory (e.g. float16/bfloat16)
+//
+template <typename T, typename DstT = T>
 struct uniform_real_transform {
   explicit uniform_real_transform(T min, T max)
-      : range_(max - min), min_(min) {}
+      : range_(max - min),
+        min_(min),
+        min_dst_(static_cast<DstT>(min)),
+        max_dst_(static_cast<DstT>(max)) {}
 
-  HOSTDEVICE inline T operator()(T val) const {
-    if (UNLIKELY(val == static_cast<T>(1.0))) {
-      return min_;
-    } else {
-      return val * range_ + min_;
-    }
+  HOSTDEVICE inline DstT operator()(T val) const {
+    DstT result = static_cast<DstT>(val * range_ + min_);
+    // Also catch the case where float-precision arithmetic rounds up to max
+    // after casting to a lower-precision DstT (e.g. float16/bfloat16).
+    return (result == max_dst_) ? min_dst_ : result;
   }
 
  private:
   T range_;
   T min_;
+  DstT min_dst_;
+  DstT max_dst_;
 };
 
 template <typename T, typename R>
@@ -102,6 +117,20 @@ struct uniform_int_transform {
   int min_;
 };
 
+template <typename T, typename R>
+struct uniform_int_from_to_distribution {
+  explicit uniform_int_from_to_distribution(uint64_t range, int64_t base)
+      : range_(range), base_(base) {}
+
+  HOSTDEVICE inline T operator()(R rand) const {
+    return static_cast<T>(static_cast<int64_t>(rand % range_) + base_);
+  }
+
+ private:
+  uint64_t range_;
+  int64_t base_;
+};
+
 template <typename T>
 struct normal_transform {
   explicit normal_transform(T mean, T std) : mean_(mean), std_(std) {}
@@ -114,8 +143,6 @@ struct normal_transform {
 };
 
 #if defined(__NVCC__) || defined(__HIPCC__)
-
-namespace kps = phi::kps;
 
 /*********************** Distribution Function *************************/
 
@@ -274,7 +301,7 @@ __global__ void DistributionKernel(size_t size,
   using SType = hiprandStatePhilox4_32_10_t;
 #endif
   size_t total_thread = GRID_NUM_X * BLOCK_NUM_X;
-  using MT = typename phi::dtype::MPTypeTrait<T>::Type;
+  using MT = typename MPTypeTrait<T>::Type;
   MT args[kCount];
   T result[kCount];
   for (size_t i = idx; i < size; i += total_thread * kCount) {
@@ -288,39 +315,106 @@ __global__ void DistributionKernel(size_t size,
 }
 
 template <typename T, typename DistOp, typename TransformOp>
-void distribution_and_transform(const GPUContext &ctx,
+void distribution_and_transform(const GPUContext &dev_ctx,
                                 DenseTensor *out,
                                 DistOp dist,
                                 TransformOp trans) {
-  T *out_data = ctx.template Alloc<T>(out);
-  auto size = out->numel();
+  T *out_data = dev_ctx.template Alloc<T>(out);
+  int64_t size = out->numel();
   if (size == 0) return;
-  auto gen_cuda = ctx.GetGenerator();
+  auto gen_cuda = dev_ctx.GetGenerator();
 
-  size_t block_size = 256;
-  size_t expect_grid_size = (size + block_size - 1) / block_size;
+  if (funcs::IsDeterministicRNG()) {
+    constexpr int kCount = DistOp::kReturnsCount;
+    auto cfg = funcs::GetDeterministicRNGConfig(size, kCount);
+    size_t total_thread = cfg.block_size * cfg.grid_size;
+    auto seed_offset = gen_cuda->IncrementOffset(cfg.increment);
+    DistributionKernel<T, DistOp, TransformOp>
+        <<<cfg.grid_size, cfg.block_size, 0, dev_ctx.stream()>>>(
+            size,
+            seed_offset.first,
+            seed_offset.second,
+            dist,
+            trans,
+            out_data,
+            total_thread);
+    return;
+  }
 
-  int64_t device_id = ctx.GetPlace().GetDeviceId();
+  constexpr int kCount = DistOp::kReturnsCount;
+  constexpr int64_t kBlockSize = 256;
+  int64_t device_id = dev_ctx.GetPlace().GetDeviceId();
   const auto &prop = phi::backends::gpu::GetDeviceProperties(device_id);
+  const int64_t max_grid_size =
+      (prop.maxThreadsPerMultiProcessor / kBlockSize) *
+      prop.multiProcessorCount;
 
-  size_t max_grid_size = (prop.maxThreadsPerMultiProcessor / block_size) *
-                         prop.multiProcessorCount;
-  size_t grid_size =
-      expect_grid_size > max_grid_size ? max_grid_size : expect_grid_size;
+  auto calc_grid = [&](int64_t n) -> int64_t {
+    int64_t expect_grid = (n + kBlockSize - 1) / kBlockSize;
+    return expect_grid > max_grid_size ? max_grid_size : expect_grid;
+  };
+  // Mirrors torch's calc_execution_policy: the philox increment is
+  // ceil(n / (threads * unroll)) rounds, each reserving 4 counter slots
+  // (max_generator_offsets_per_curand_call).
+  auto calc_increment = [&](int64_t n) -> uint64_t {
+    int64_t grid = calc_grid(n);
+    return ((static_cast<uint64_t>(n) - 1) /
+                (static_cast<uint64_t>(kBlockSize) * grid * kCount) +
+            1) *
+           4;
+  };
+  auto launch_chunk = [&](T *data, int64_t n) {
+    int64_t grid = calc_grid(n);
+    auto seed_offset = gen_cuda->IncrementOffset(calc_increment(n));
+    DistributionKernel<T, DistOp, TransformOp>
+        <<<grid, kBlockSize, 0, dev_ctx.stream()>>>(
+            n,
+            seed_offset.first,
+            seed_offset.second,
+            dist,
+            trans,
+            data,
+            static_cast<size_t>(kBlockSize) * grid);
+  };
 
-  size_t total_thread = block_size * grid_size;
-  size_t curand4_loop_times =
-      (size + 4 * total_thread - 1) / (4 * total_thread);
-  // 'increment' shoulde be multiple of 4
-  uint64_t increment = curand4_loop_times * 4;
+  // torch's distribution_nullary_kernel requires a 32-bit indexable
+  // TensorIterator: numel <= INT32_MAX and the max byte offset
+  // 1 + (numel - 1) * sizeof(T) <= INT32_MAX. The freshly allocated output
+  // is dense, so this cheap check is equivalent to building the iterator.
+  constexpr int64_t kInt32Max = std::numeric_limits<int32_t>::max();
+  if (size <= kInt32Max &&
+      1 + (size - 1) * static_cast<int64_t>(sizeof(T)) <= kInt32Max) {
+    launch_chunk(out_data, size);
+    return;
+  }
 
-  auto seed_offset = gen_cuda->IncrementOffset(increment);
-  uint64_t seed = seed_offset.first;
-  uint64_t offset = seed_offset.second;
+  // Bit-exact port of torch's big-tensor path (DistributionTemplates.h):
+  // the top-level call reserves a full-size philox increment *before*
+  // noticing 32-bit indexing is impossible, so that increment is consumed
+  // but never used by any kernel.
+  gen_cuda->IncrementOffset(calc_increment(size));
 
-  DistributionKernel<T, DistOp, TransformOp>
-      <<<grid_size, block_size, 0, ctx.stream()>>>(
-          size, seed, offset, dist, trans, out_data, total_thread);
+  // This helper (and DistributionKernel) has always written the output
+  // linearly; make the long-standing contiguity precondition explicit now
+  // that the big-tensor path derives chunk offsets from tensor strides.
+  PADDLE_ENFORCE_EQ(out->meta().is_contiguous(),
+                    true,
+                    common::errors::InvalidArgument(
+                        "distribution_and_transform requires a contiguous "
+                        "output tensor when numel exceeds the 32-bit "
+                        "indexing range."));
+
+  // with_32bit_indexing() (the DenseTensorIterator port of torch's
+  // TensorIterator::with_32bit_indexing) halves the largest-extent dim until
+  // every chunk is 32-bit indexable and yields chunks in ascending memory
+  // order; each chunk then reserves its own philox increment and launches
+  // independently.
+  DenseTensorIteratorConfig config;
+  config.add_output(*out);
+  DenseTensorIterator iter = config.build();
+  for (auto &sub_iter : iter.with_32bit_indexing()) {
+    launch_chunk(static_cast<T *>(sub_iter.data_ptr(0)), sub_iter.numel());
+  }
 }
 
 #endif

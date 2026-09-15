@@ -49,21 +49,23 @@ def custom_relu_static(
     paddle.enable_static()
     paddle.set_device(device)
 
-    with static.scope_guard(static.Scope()):
-        with paddle.static.program_guard(paddle.static.Program()):
-            x = paddle.static.data(name='X', shape=[None, 8], dtype=dtype)
-            x.stop_gradient = False
-            out = func(x) if use_func else paddle.nn.functional.relu(x)
-            static.append_backward(out)
+    with (
+        static.scope_guard(static.Scope()),
+        paddle.static.program_guard(paddle.static.Program()),
+    ):
+        x = paddle.static.data(name='X', shape=[None, 8], dtype=dtype)
+        x.stop_gradient = False
+        out = func(x) if use_func else paddle.nn.functional.relu(x)
+        static.append_backward(out)
 
-            exe = paddle.static.Executor()
-            exe.run(paddle.static.default_startup_program())
-            # in static graph mode, x data has been covered by out
-            out_v = exe.run(
-                paddle.static.default_main_program(),
-                feed={'X': np_x},
-                fetch_list=[out],
-            )
+        exe = paddle.static.Executor()
+        exe.run(paddle.static.default_startup_program())
+        # in static graph mode, x data has been covered by out
+        out_v = exe.run(
+            paddle.static.default_main_program(),
+            feed={'X': np_x},
+            fetch_list=[out],
+        )
 
     paddle.disable_static()
     return out_v
@@ -72,45 +74,47 @@ def custom_relu_static(
 def custom_relu_static_inference(func, device, np_data, np_label, path_prefix):
     paddle.set_device(device)
 
-    with static.scope_guard(static.Scope()):
-        with static.program_guard(static.Program()):
-            # simple module
-            data = static.data(
-                name='data', shape=[None, 1, 28, 28], dtype='float32'
-            )
-            label = static.data(name='label', shape=[None, 1], dtype='int64')
+    with (
+        static.scope_guard(static.Scope()),
+        static.program_guard(static.Program()),
+    ):
+        # simple module
+        data = static.data(
+            name='data', shape=[None, 1, 28, 28], dtype='float32'
+        )
+        label = static.data(name='label', shape=[None, 1], dtype='int64')
 
-            hidden = static.nn.fc(data, size=128)
-            hidden = func(hidden)
-            hidden = static.nn.fc(hidden, size=128)
-            predict = static.nn.fc(hidden, size=10, activation='softmax')
-            loss = paddle.nn.functional.cross_entropy(input=hidden, label=label)
-            avg_loss = paddle.mean(loss)
+        hidden = static.nn.fc(data, size=128)
+        hidden = func(hidden)
+        hidden = static.nn.fc(hidden, size=128)
+        predict = static.nn.fc(hidden, size=10, activation='softmax')
+        loss = paddle.nn.functional.cross_entropy(input=hidden, label=label)
+        avg_loss = paddle.mean(loss)
 
-            opt = paddle.optimizer.SGD(learning_rate=0.1)
-            opt.minimize(avg_loss)
+        opt = paddle.optimizer.SGD(learning_rate=0.1)
+        opt.minimize(avg_loss)
 
-            # run start up model
-            exe = static.Executor()
-            exe.run(static.default_startup_program())
+        # run start up model
+        exe = static.Executor()
+        exe.run(static.default_startup_program())
 
-            # train
-            for i in range(4):
-                avg_loss_v = exe.run(
-                    static.default_main_program(),
-                    feed={'data': np_data, 'label': np_label},
-                    fetch_list=[avg_loss],
-                )
-
-            # save inference model
-            static.save_inference_model(path_prefix, [data], [predict], exe)
-
-            # get train predict value
-            predict_v = exe.run(
+        # train
+        for i in range(4):
+            avg_loss_v = exe.run(
                 static.default_main_program(),
                 feed={'data': np_data, 'label': np_label},
-                fetch_list=[predict],
+                fetch_list=[avg_loss],
             )
+
+        # save inference model
+        static.save_inference_model(path_prefix, [data], [predict], exe)
+
+        # get train predict value
+        predict_v = exe.run(
+            static.default_main_program(),
+            feed={'data': np_data, 'label': np_label},
+            fetch_list=[predict],
+        )
 
     return predict_v
 
@@ -163,13 +167,15 @@ class TestNewCustomOpSetUpInstall(unittest.TestCase):
             site_dir = site.getsitepackages()[1]
         else:
             site_dir = site.getsitepackages()[0]
-        custom_egg_path = [
+        custom_install_path = [
             x for x in os.listdir(site_dir) if 'custom_relu_module_setup' in x
         ]
-        assert (
-            len(custom_egg_path) == 1
-        ), f"Matched egg number is {len(custom_egg_path)}."
-        sys.path.append(os.path.join(site_dir, custom_egg_path[0]))
+
+        assert len(custom_install_path) == 2, (
+            f"Matched egg number is {len(custom_install_path)}."
+        )
+
+        sys.path.append(os.path.join(site_dir, custom_install_path[0]))
 
         # usage: import the package directly
         import custom_relu_module_setup
@@ -195,6 +201,7 @@ class TestNewCustomOpSetUpInstall(unittest.TestCase):
     def test_all(self):
         self._test_static()
         self._test_dynamic()
+        self._test_debug_tools()
         self._test_static_save_and_load_inference_model()
         self._test_static_save_and_run_inference_predictor()
         self._test_double_grad_dynamic()
@@ -327,6 +334,27 @@ class TestNewCustomOpSetUpInstall(unittest.TestCase):
 
                 if batch_id == 5:
                     break
+
+    def _test_debug_tools(self):
+        # Test the debug utils on custom op
+        # It is only necessary to test whether any error occur,
+        # and there is no need to verify the results
+        paddle.set_flags(
+            {"FLAGS_tensor_md5_checksum_output_path": "./tmp_md5.txt"}
+        )
+        with (
+            paddle.utils.capture_forward_subgraph_guard("./tmp_subgraph"),
+            paddle.utils.capture_backward_subgraph_guard("./tmp_debug_info"),
+        ):
+            x = paddle.randn([5, 5])
+            x.stop_gradient = False
+            y = paddle.randn([5, 5])
+            y.stop_gradient = False
+            z = x + y
+            func = self.custom_ops[0]
+            out = func(z)
+        loss = out.sum()
+        loss.backward()
 
 
 if __name__ == '__main__':

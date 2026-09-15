@@ -16,6 +16,7 @@ import unittest
 
 import numpy as np
 import op_test
+from op_test import get_device_place
 
 import paddle
 from paddle import base
@@ -42,7 +43,7 @@ class TestAssignValueOp(op_test.OpTest):
         self.attrs = {}
         self.init_data()
         self.attrs["shape"] = self.value.shape
-        self.attrs["dtype"] = framework.convert_np_dtype_to_dtype_(
+        self.attrs["dtype"] = framework.convert_nptype_to_datatype_or_vartype(
             self.value.dtype
         )
         self.python_api = wrap_assign_value_wrapper(self.attrs["dtype"])
@@ -105,11 +106,7 @@ class TestAssignApi(unittest.TestCase):
             self.value = (-100 + 200 * np.random.random(size=(2, 5))).astype(
                 self.dtype
             )
-            self.place = (
-                base.CUDAPlace(0)
-                if base.is_compiled_with_cuda()
-                else base.CPUPlace()
-            )
+            self.place = get_device_place()
 
     def init_dtype(self):
         self.dtype = "float32"
@@ -155,11 +152,7 @@ class TestAssignApi4(TestAssignApi):
             self.value = np.random.choice(a=[False, True], size=(2, 5)).astype(
                 np.bool_
             )
-            self.place = (
-                base.CUDAPlace(0)
-                if base.is_compiled_with_cuda()
-                else base.CPUPlace()
-            )
+            self.place = get_device_place()
 
     def init_dtype(self):
         self.dtype = "bool"
@@ -178,11 +171,7 @@ class TestAssignApi6(TestAssignApi):
                 np.random.random(size=(2, 5))
                 + 1j * (np.random.random(size=(2, 5)))
             ).astype(np.complex64)
-            self.place = (
-                base.CUDAPlace(0)
-                if base.is_compiled_with_cuda()
-                else base.CPUPlace()
-            )
+            self.place = get_device_place()
 
     def init_dtype(self):
         self.dtype = "complex64"
@@ -196,11 +185,7 @@ class TestAssignApi7(TestAssignApi):
                 np.random.random(size=(2, 5))
                 + 1j * (np.random.random(size=(2, 5)))
             ).astype(np.complex128)
-            self.place = (
-                base.CUDAPlace(0)
-                if base.is_compiled_with_cuda()
-                else base.CPUPlace()
-            )
+            self.place = get_device_place()
 
     def init_dtype(self):
         self.dtype = "complex128"

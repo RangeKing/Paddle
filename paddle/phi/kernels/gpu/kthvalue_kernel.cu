@@ -16,13 +16,14 @@
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/common/amp_type_traits.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/eigen/common.h"
 #include "paddle/phi/kernels/funcs/eigen/eigen_function.h"
 #include "paddle/phi/kernels/funcs/math_function.h"
 #include "paddle/phi/kernels/funcs/top_k_function_cuda.h"
 
 namespace phi {
-inline int getBlockSize(int col) {
+inline int getBlockSize(int64_t col) {
   if (col > 512)
     return 1024;
   else if (col > 256 && col <= 512)
@@ -36,17 +37,17 @@ inline int getBlockSize(int col) {
 }
 
 template <typename T>
-bool SortKthvalue(const phi::GPUContext& dev_ctx,
+bool SortKthvalue(const GPUContext& dev_ctx,
                   const DenseTensor* input_tensor,
                   const int64_t num_cols,
                   const int64_t num_rows,
-                  const int k,
+                  const int64_t k,
                   DenseTensor* out_tensor,
                   DenseTensor* indices_tensor) {
   auto cu_stream = dev_ctx.stream();
   DenseTensor input_indices;
   const std::vector<int64_t> dims = {num_rows, num_cols};
-  auto dim = common::make_ddim(dims);
+  auto dim = make_ddim(dims);
   input_indices.Resize(dim);
   dev_ctx.template Alloc<int64_t>(&input_indices);
   size_t temp_storage_bytes = -1;
@@ -55,13 +56,13 @@ bool SortKthvalue(const phi::GPUContext& dev_ctx,
   unsigned int grid_size = num_rows < maxGridDimX
                                ? static_cast<unsigned int>(num_rows)
                                : maxGridDimX;
-  phi::funcs::InitIndex<int64_t><<<grid_size, block_size, 0, cu_stream>>>(
+  funcs::InitIndex<int64_t><<<grid_size, block_size, 0, cu_stream>>>(
       input_indices.data<int64_t>(), num_rows, num_cols);
   cub::CountingInputIterator<int64_t> counting_iter(0);
   cub::TransformInputIterator<int64_t,
-                              phi::funcs::SegmentOffsetIter,
+                              funcs::SegmentOffsetIter,
                               cub::CountingInputIterator<int64_t>>
-      segment_offsets_t(counting_iter, phi::funcs::SegmentOffsetIter(num_cols));
+      segment_offsets_t(counting_iter, funcs::SegmentOffsetIter(num_cols));
   T* sorted_values_ptr;
   int64_t* sorted_indices_ptr;
   DenseTensor temp_values, temp_indices;
@@ -102,7 +103,8 @@ bool SortKthvalue(const phi::GPUContext& dev_ctx,
   }
 #endif
   DenseTensor temp_storage;
-  temp_storage.Resize({static_cast<int>(temp_storage_bytes / sizeof(uint8_t))});
+  temp_storage.Resize(
+      {static_cast<int64_t>(temp_storage_bytes / sizeof(uint8_t))});
   uint8_t* temp_storage_data = dev_ctx.template Alloc<uint8_t>(&temp_storage);
 
   err = cub::DeviceSegmentedRadixSort::SortPairs(temp_storage_data,
@@ -134,13 +136,14 @@ bool SortKthvalue(const phi::GPUContext& dev_ctx,
   }
 #endif
   auto& dev = *dev_ctx.eigen_device();
-  const Eigen::DSizes<Eigen::DenseIndex, 2> slice_indices{0, k - 1};
-  const Eigen::DSizes<Eigen::DenseIndex, 2> slice_sizes{num_rows, 1};
+  const Eigen::DSizes<int64_t, 2> slice_indices{0, k - 1};
+  const Eigen::DSizes<int64_t, 2> slice_sizes{num_rows, 1};
   auto e_indices = EigenMatrix<int64_t>::From(*indices_tensor, dim);
   auto e_tmp_indices =
       EigenMatrix<int64_t>::From(static_cast<const DenseTensor>(temp_indices));
-  std::vector<int> odims = {static_cast<int>(num_rows), static_cast<int>(1)};
-  dim = common::make_ddim(odims);
+
+  std::vector<int64_t> odims = {num_rows, 1};
+  dim = make_ddim(odims);
   auto e_values = EigenMatrix<T>::From(*out_tensor, dim);
   auto e_tmp_values =
       EigenMatrix<T>::From(static_cast<const DenseTensor>(temp_values));
@@ -155,11 +158,17 @@ bool SortKthvalue(const phi::GPUContext& dev_ctx,
 template <typename T, typename Context>
 void KthvalueKernel(const Context& dev_ctx,
                     const DenseTensor& x,
-                    int k,
+                    int64_t k,
                     int axis,
                     bool keepdim,
                     DenseTensor* output,
                     DenseTensor* indices) {
+  if (x.numel() == 0) {
+    Full<T, Context>(dev_ctx, output->dims(), NAN, output);
+    Full<int64_t, Context>(dev_ctx, indices->dims(), 0, indices);
+    return;
+  }
+
   const auto& in_dims = x.dims();
   if (axis < 0) axis += in_dims.size();
   auto out_dims = output->dims();
@@ -172,27 +181,39 @@ void KthvalueKernel(const Context& dev_ctx,
                       1,
                       common::errors::InvalidArgument(
                           "the k in the kthvalue must less equal than the "
-                          "elements number of the input X, but received %d .",
+                          "elements number of the input X, but received %lld .",
                           k));
 
-    phi::Copy<Context>(dev_ctx, x, dev_ctx.GetPlace(), false, output);
-    phi::funcs::set_constant(dev_ctx, indices, static_cast<int64_t>(0));
+    Copy<Context>(dev_ctx, x, dev_ctx.GetPlace(), false, output);
+    funcs::set_constant(dev_ctx, indices, static_cast<int64_t>(0));
     return;
   }
 
   if (axis == in_dims.size() - 1) {
     const int64_t& input_height =
-        common::product(common::slice_ddim(in_dims, 0, in_dims.size() - 1));
+        common::product(slice_ddim(in_dims, 0, in_dims.size() - 1));
     const int64_t& input_width = in_dims[in_dims.size() - 1];
 #if defined(PADDLE_WITH_CUDA) && CUDA_VERSION >= 9000
     const T* input_data = x.data<T>();
-    funcs::LaunchGatherKthValue<T>(dev_ctx,
-                                   input_data,
-                                   input_width,
-                                   input_height,
-                                   k,
-                                   output_data,
-                                   indices_data);
+    if (input_width > std::numeric_limits<int32_t>::max() / input_height ||
+        input_width + MAX_NUM_THREADS > std::numeric_limits<int32_t>::max()) {
+      funcs::LaunchGatherKthValue<T, int64_t>(dev_ctx,
+                                              input_data,
+                                              input_width,
+                                              input_height,
+                                              k,
+                                              output_data,
+                                              indices_data);
+    } else {
+      funcs::LaunchGatherKthValue<T, int32_t>(
+          dev_ctx,
+          input_data,
+          static_cast<int32_t>(input_width),
+          static_cast<int32_t>(input_height),
+          static_cast<int32_t>(k),
+          output_data,
+          indices_data);
+    }
 #else
     PADDLE_ENFORCE_EQ(
         SortKthvalue<T>(
@@ -200,7 +221,6 @@ void KthvalueKernel(const Context& dev_ctx,
         true,
         common::errors::External("KthvalueOP: Error when use cub sorting"));
 #endif
-
     return;
   } else {
     std::vector<int> trans;
@@ -221,7 +241,7 @@ void KthvalueKernel(const Context& dev_ctx,
       for (int i = axis + 1; i < in_dims.size(); i++) {
         tmp_out_shape.emplace_back(in_dims[i]);
       }
-      DDim tmp_out_dims = common::make_ddim(tmp_out_shape);
+      DDim tmp_out_dims = make_ddim(tmp_out_shape);
       output->Resize(tmp_out_dims);
       indices->Resize(tmp_out_dims);
     }
@@ -236,25 +256,36 @@ void KthvalueKernel(const Context& dev_ctx,
     trans_input.Resize(trans_dims);
     T* tran_input_data = dev_ctx.template Alloc<T>(&trans_input);
     int ndims = trans.size();
-    funcs::TransCompute<phi::GPUContext, T>(
-        ndims, dev_ctx, x, &trans_input, trans);
+    funcs::TransCompute<GPUContext, T>(ndims, dev_ctx, x, &trans_input, trans);
     DenseTensor trans_ind, trans_out;
     trans_ind.Resize(trans_out_dims);
     trans_out.Resize(trans_out_dims);
     int64_t* tran_indices_data = dev_ctx.template Alloc<int64_t>(&trans_ind);
     T* tran_output_data = dev_ctx.template Alloc<T>(&trans_out);
-    const int64_t input_height = common::product(
-        common::slice_ddim(trans_dims, 0, trans_dims.size() - 1));
+    const int64_t input_height =
+        common::product(slice_ddim(trans_dims, 0, trans_dims.size() - 1));
     const int64_t input_width = trans_dims[trans_dims.size() - 1];
 
 #if defined(PADDLE_WITH_CUDA) && CUDA_VERSION >= 9000
-    funcs::LaunchGatherKthValue<T>(dev_ctx,
-                                   tran_input_data,
-                                   input_width,
-                                   input_height,
-                                   k,
-                                   tran_output_data,
-                                   tran_indices_data);
+    if (input_width > std::numeric_limits<int32_t>::max() / input_height ||
+        input_width + MAX_NUM_THREADS > std::numeric_limits<int32_t>::max()) {
+      funcs::LaunchGatherKthValue<T, int64_t>(dev_ctx,
+                                              tran_input_data,
+                                              input_width,
+                                              input_height,
+                                              k,
+                                              tran_output_data,
+                                              tran_indices_data);
+    } else {
+      funcs::LaunchGatherKthValue<T, int32_t>(
+          dev_ctx,
+          tran_input_data,
+          static_cast<int32_t>(input_width),
+          static_cast<int32_t>(input_height),
+          static_cast<int32_t>(k),
+          tran_output_data,
+          tran_indices_data);
+    }
 #else
     PADDLE_ENFORCE_EQ(
         SortKthvalue<T>(dev_ctx,
@@ -267,9 +298,9 @@ void KthvalueKernel(const Context& dev_ctx,
         true,
         common::errors::External("KthvalueOP: Error when use cub sorting"));
 #endif
-    funcs::TransCompute<phi::GPUContext, int64_t>(
+    funcs::TransCompute<GPUContext, int64_t>(
         ndims, dev_ctx, trans_ind, indices, trans);
-    funcs::TransCompute<phi::GPUContext, T>(
+    funcs::TransCompute<GPUContext, T>(
         ndims, dev_ctx, trans_out, output, trans);
     if (!keepdim) {
       output->Resize(out_dims);
@@ -287,7 +318,7 @@ PD_REGISTER_KERNEL(kthvalue,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::bfloat16,
-                   phi::dtype::float16) {
+                   phi::bfloat16,
+                   phi::float16) {
   kernel->OutputAt(1).SetDataType(phi::DataType::INT64);
 }

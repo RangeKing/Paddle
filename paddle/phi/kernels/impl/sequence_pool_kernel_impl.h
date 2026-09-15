@@ -16,7 +16,7 @@ limitations under the License. */
 namespace phi {
 
 template <typename T, typename Context>
-void SequencePoolKernel(const Context& ctx,
+void SequencePoolKernel(const Context& dev_ctx,
                         const DenseTensor& x,
                         bool is_test,
                         const std::string& pooltype,
@@ -32,7 +32,7 @@ void SequencePoolKernel(const Context& ctx,
   PADDLE_ENFORCE_GT(
       lod_level,
       0,
-      errors::InvalidArgument("Input(X) phi::DenseTensor of SequencePoolOp "
+      errors::InvalidArgument("Input(X) DenseTensor of SequencePoolOp "
                               "does not contain LoD information."));
   PADDLE_ENFORCE_LE(
       lod_level,
@@ -44,8 +44,8 @@ void SequencePoolKernel(const Context& ctx,
       dims[0],
       /*batch size = */ static_cast<int64_t>(lod[lod_level - 1].size() - 1),
       errors::InvalidArgument(
-          "The first dimension of Input(X) must be large than batch size."
-          "But received first dimension of Input(X) is %d, while batch"
+          "The first dimension of Input(X) must be large than batch size. "
+          "But received first dimension of Input(X) is %d, while batch "
           "size is %d.",
           dims[0],
           static_cast<int64_t>(lod[lod_level - 1].size() - 1)));
@@ -54,24 +54,24 @@ void SequencePoolKernel(const Context& ctx,
         lod[0][lod[0].size() - 1],
         lod[1].size() - 1,
         errors::InvalidArgument("The input lod information is illegal."));
-    phi::LegacyLoD out_lod;
+    LegacyLoD out_lod;
     out_lod.push_back(lod[0]);
     out->set_lod(out_lod);
   }
   dims[0] = lod[lod_level - 1].size() - 1;
   out->Resize({dims});
-  ctx.template Alloc<T>(out);
-  phi::DenseTensor* index = nullptr;
+  dev_ctx.template Alloc<T>(out);
+  DenseTensor* index = nullptr;
 
   // Do not create index buffer for inference mode
   if (pooltype == "MAX" &&
-      (is_test == false || (ctx.GetPlace() == phi::CPUPlace()) == false)) {
+      (is_test == false || (dev_ctx.GetPlace() == CPUPlace()) == false)) {
     index = max_index;
     index->Resize({dims});
-    ctx.template Alloc<int32_t>(index);
+    dev_ctx.template Alloc<int32_t>(index);
   }
-  phi::funcs::SequencePoolFunctor<Context, T> pool;
-  pool(ctx, pooltype, pad_value_, x, out, is_test, index);
+  funcs::SequencePoolFunctor<Context, T> pool;
+  pool(dev_ctx, pooltype, pad_value_, x, out, is_test, index);
 }
 
 }  // namespace phi

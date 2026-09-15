@@ -38,19 +38,19 @@ namespace paddle {
 namespace operators {
 namespace reader {
 
-class BufferedReader : public framework::DecoratedReader {
+class PADDLE_API BufferedReader : public framework::DecoratedReader {
   using TensorVec = phi::TensorArray;
   using VecFuture = std::future<TensorVec>;
 
  public:
   BufferedReader(const std::shared_ptr<framework::ReaderBase>& reader,
-                 const phi::Place& place,
+                 const Place& place,
                  size_t buffer_size,
                  bool pin_memory = false);
 
   ~BufferedReader() override;
 
-  phi::Place GetPlace() const { return place_; }
+  Place GetPlace() const { return place_; }
 
  private:
   void ReadTillBufferFullAsync();
@@ -64,7 +64,7 @@ class BufferedReader : public framework::DecoratedReader {
 
  private:
   ThreadPool thread_pool_;
-  phi::Place place_;
+  Place place_;
   const size_t buffer_size_;
   bool pin_memory_;
 

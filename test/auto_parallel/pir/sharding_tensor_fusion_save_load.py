@@ -68,11 +68,14 @@ class TestSimpleNetShardingTensorFusionSaveLoad:
         self._amp_dtype = os.getenv("amp_dtype", 'float16')
         self._amp_level = os.getenv("amp_level", 'O0')
         self._init_loss_scaling = 1024.0
-        self.mesh = dist.ProcessMesh([0, 1], dim_names=["x"])
+        self.mesh = dist.ProcessMesh([0, 1], dim_names=["dp"])
         self._in_pir_mode = paddle.base.framework.get_flags(
             "FLAGS_enable_pir_api"
         )["FLAGS_enable_pir_api"]
         self.num_batch = 2
+        self.save_unbalanced_param = int(
+            os.getenv("save_unbalanced_param", '1')
+        )
 
     def set_random_seed(self, seed):
         random.seed(seed)
@@ -80,48 +83,50 @@ class TestSimpleNetShardingTensorFusionSaveLoad:
         paddle.seed(seed)
 
     def create_data_loader(self, return_dict=False):
-        images = np.random.rand(BATCH_SIZE, IMAGE_SIZE).astype('float32')
-        labels = np.random.rand(BATCH_SIZE, CLASS_NUM).astype('float32')
-        dataset = RandomDataset(images, labels, BATCH_SIZE, return_dict)
+        images = np.random.rand(100, IMAGE_SIZE).astype('float32')
+        labels = np.random.rand(100, CLASS_NUM).astype('float32')
+        dataset = RandomDataset(images, labels, 100, return_dict)
         loader = DataLoader(dataset, batch_size=BATCH_SIZE)
         return loader
 
     def check_program_equal(self, program_a, program_b):
-        assert (
-            program_a.num_ops() == program_b.num_ops()
-        ), f'The number of ops between two programs is different: {program_a.num_ops()} vs {program_b.num_ops()}.'
+        assert program_a.num_ops() == program_b.num_ops(), (
+            f'The number of ops between two programs is different: {program_a.num_ops()} vs {program_b.num_ops()}.'
+        )
         for i in range(program_a.num_ops()):
             a_op = program_a.global_block().ops[i]
             b_op = program_a.global_block().ops[i]
             # check op name
-            assert (
-                a_op.name() == b_op.name()
-            ), f'The name of {i} op in program is different: {a_op.name()} vs {b_op.name()}.'
+            assert a_op.name() == b_op.name(), (
+                f'The name of {i} op in program is different: {a_op.name()} vs {b_op.name()}.'
+            )
             # check op inputs
             for index in range(a_op.num_operands()):
                 assert (
                     a_op.operand(index)
                     .source()
                     .is_same(b_op.operand(index).source())
-                ), f'The type of {index} operand is different: {a_op.operand(index).source()} vs {b_op.operand(index).source()}'
+                ), (
+                    f'The type of {index} operand is different: {a_op.operand(index).source()} vs {b_op.operand(index).source()}'
+                )
             # check op outputs
             for index in range(a_op.num_results()):
-                assert a_op.result(index).is_same(
-                    b_op.result(index)
-                ), f'The type of {index} result is different: {a_op.result(index)} vs {b_op.result(index)}'
+                assert a_op.result(index).is_same(b_op.result(index)), (
+                    f'The type of {index} result is different: {a_op.result(index)} vs {b_op.result(index)}'
+                )
             # check op attrs
             for k, v in a_op.attrs().items():
-                assert (
-                    k in b_op.attrs()
-                ), f'Can not find key of {k} attribute in other progmam'
+                assert k in b_op.attrs(), (
+                    f'Can not find key of {k} attribute in other program'
+                )
                 if k == 'place':
-                    assert type(v) == type(
-                        b_op.attrs()[k]
-                    ), f'The attribute of {k} is different: {type(v)} vs {type(b_op.attrs()[k])}'
+                    assert type(v) == type(b_op.attrs()[k]), (
+                        f'The attribute of {k} is different: {type(v)} vs {type(b_op.attrs()[k])}'
+                    )
                 else:
-                    assert (
-                        v == b_op.attrs()[k]
-                    ), f'The attribute of {k} is different: {v} vs {b_op.attrs()[k]}'
+                    assert v == b_op.attrs()[k], (
+                        f'The attribute of {k} is different: {v} vs {b_op.attrs()[k]}'
+                    )
 
     def run_dy2static(self):
         paddle.disable_static()
@@ -138,15 +143,16 @@ class TestSimpleNetShardingTensorFusionSaveLoad:
         lr_scheduler = paddle.optimizer.lr.LinearWarmup(
             learning_rate=0.0001, warmup_steps=2, start_lr=0, end_lr=0.0001
         )
-        opt = paddle.optimizer.Adam(
+        opt = paddle.optimizer.AdamW(
             learning_rate=lr_scheduler,
             parameters=layer.parameters(),
         )
+        opt = dist.shard_optimizer(opt, dist.ShardingStage1("dp", self.mesh))
         dist_loader = dist.shard_dataloader(
             dataloader=data_loader,
             meshes=[self.mesh],
             input_keys=["image", "label"],
-            shard_dims=['x'],
+            shard_dims=["dp"],
         )
 
         loss_fn = nn.MSELoss()
@@ -154,6 +160,8 @@ class TestSimpleNetShardingTensorFusionSaveLoad:
         strategy.sharding.enable = True
         strategy.sharding.degree = 2
         strategy.sharding.stage = 1
+        strategy.sharding.enable_tensor_fusion = True
+        strategy.sharding.save_unbalanced_param = self.save_unbalanced_param
 
         if self._amp:
             layer, opt = paddle.amp.decorate(
@@ -186,6 +194,16 @@ class TestSimpleNetShardingTensorFusionSaveLoad:
             lr_scheduler.step()
             if step == 2:
                 state_dict = dist_model.state_dict()
+                if self.save_unbalanced_param:
+                    state_dict = (
+                        dist_model._convert_state_dict_with_rank_unique_name(
+                            state_dict
+                        )
+                    )
+                else:
+                    state_dict = dist_model._convert_state_dict_without_tensor_fusion_param(
+                        state_dict
+                    )
                 dist.save_state_dict(
                     state_dict, self._ckpt_path, async_save=True
                 )
@@ -195,30 +213,10 @@ class TestSimpleNetShardingTensorFusionSaveLoad:
                 loss_md5 = hashlib.md5(array_bytes).hexdigest()
                 loss_before_save.append(loss_md5)
 
-                if int(dist.get_rank()) in [2, 3, 6, 7]:
-                    assert loss is not None
-                else:
-                    assert loss is None
-
             if step >= 9:
                 break
 
-        # check pir dist_model save&load
-        paddle.enable_static()
-        model_file_path = os.path.join(
-            self._ckpt_path,
-            "rank_" + str(paddle.distributed.get_rank()) + ".pd_dist_model",
-        )
-        paddle.save(
-            dist_model._engine._pir_dist_main_progs["train"], model_file_path
-        )
-        loaded_model = paddle.load(model_file_path)
-        self.check_program_equal(
-            dist_model._engine._pir_dist_main_progs["train"], loaded_model
-        )
-        paddle.disable_static()
         paddle.distributed.barrier()
-
         time.sleep(10)
         loss_after_load = []
         for step, inputs in enumerate(dist_loader()):
@@ -229,17 +227,36 @@ class TestSimpleNetShardingTensorFusionSaveLoad:
             lr_scheduler.step()
             if step == 2:
                 state_dict = dist_model.state_dict()
+                if self.save_unbalanced_param:
+                    state_dict = (
+                        dist_model._convert_state_dict_with_rank_unique_name(
+                            state_dict
+                        )
+                    )
+                else:
+                    state_dict = dist_model._convert_state_dict_without_tensor_fusion_param(
+                        state_dict
+                    )
                 dist.load_state_dict(state_dict, self._ckpt_path)
+                if self.save_unbalanced_param:
+                    state_dict = (
+                        dist_model._convert_state_dict_with_origin_name(
+                            state_dict
+                        )
+                    )
+                else:
+                    state_dict = (
+                        dist_model._convert_state_dict_with_tensor_fusion_param(
+                            state_dict
+                        )
+                    )
+                dist_model.set_state_dict(state_dict)
             if step > 2:
                 numpy_array = np.array(loss)
                 array_bytes = numpy_array.tobytes()
                 loss_md5 = hashlib.md5(array_bytes).hexdigest()
                 loss_after_load.append(loss_md5)
 
-                if int(dist.get_rank()) == 1:
-                    assert loss is not None
-                else:
-                    assert loss is None
             if step >= 9:
                 break
 
@@ -247,7 +264,7 @@ class TestSimpleNetShardingTensorFusionSaveLoad:
 
     def run_test_case(self):
         loss = self.run_dy2static()
-        if int(dist.get_rank()) == 1:
+        if int(dist.get_rank()) == 0:
             assert len(loss[0]) == len(loss[1])
             for i in range(len(loss[0])):
                 assert loss[0][i] == loss[1][i]

@@ -14,10 +14,12 @@
 
 #include "paddle/phi/kernels/yolo_box_kernel.h"
 
+#include "paddle/phi/backends/gpu/cuda/cuda_graph_with_memory_pool.h"
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/backends/gpu/gpu_launch_config.h"
 #include "paddle/phi/common/memory_utils.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/math_function.h"
 #include "paddle/phi/kernels/funcs/yolo_box_util.h"
 
@@ -30,38 +32,38 @@ __global__ void KeYoloBoxFw(const T* input,
                             T* scores,
                             const float conf_thresh,
                             const int* anchors,
-                            const int n,
-                            const int h,
-                            const int w,
+                            const int64_t n,
+                            const int64_t h,
+                            const int64_t w,
                             const int an_num,
                             const int class_num,
-                            const int box_num,
-                            int input_size_h,
-                            int input_size_w,
+                            const int64_t box_num,
+                            int64_t input_size_h,
+                            int64_t input_size_w,
                             bool clip_bbox,
                             const float scale,
                             const float bias,
                             bool iou_aware,
                             const float iou_aware_factor) {
-  int tid = blockIdx.x * blockDim.x + threadIdx.x;
-  int stride = blockDim.x * gridDim.x;
+  int64_t tid = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  int64_t stride = static_cast<int64_t>(blockDim.x) * gridDim.x;
   T box[4];
   for (; tid < n * box_num; tid += stride) {
-    int grid_num = h * w;
-    int i = tid / box_num;
-    int j = (tid % box_num) / grid_num;
-    int k = (tid % grid_num) / w;
-    int l = tid % w;
+    int64_t grid_num = h * w;
+    int64_t i = tid / box_num;
+    int64_t j = (tid % box_num) / grid_num;
+    int64_t k = (tid % grid_num) / w;
+    int64_t l = tid % w;
 
-    int an_stride = (5 + class_num) * grid_num;
-    int img_height = imgsize[2 * i];
-    int img_width = imgsize[2 * i + 1];
+    int64_t an_stride = (5 + class_num) * grid_num;
+    int64_t img_height = imgsize[2 * i];
+    int64_t img_width = imgsize[2 * i + 1];
 
-    int obj_idx = funcs::GetEntryIndex(
+    int64_t obj_idx = funcs::GetEntryIndex(
         i, j, k * w + l, an_num, an_stride, grid_num, 4, iou_aware);
     T conf = funcs::sigmoid<T>(input[obj_idx]);
     if (iou_aware) {
-      int iou_idx =
+      int64_t iou_idx =
           funcs::GetIoUIndex(i, j, k * w + l, an_num, an_stride, grid_num);
       T iou = funcs::sigmoid<T>(input[iou_idx]);
       conf = pow(conf, static_cast<T>(1. - iou_aware_factor)) *
@@ -71,7 +73,7 @@ __global__ void KeYoloBoxFw(const T* input,
       continue;
     }
 
-    int box_idx = funcs::GetEntryIndex(
+    int64_t box_idx = funcs::GetEntryIndex(
         i, j, k * w + l, an_num, an_stride, grid_num, 0, iou_aware);
     funcs::GetYoloBox<T>(box,
                          input,
@@ -93,9 +95,9 @@ __global__ void KeYoloBoxFw(const T* input,
     funcs::CalcDetectionBox<T>(
         boxes, box, box_idx, img_height, img_width, clip_bbox);
 
-    int label_idx = funcs::GetEntryIndex(
+    int64_t label_idx = funcs::GetEntryIndex(
         i, j, k * w + l, an_num, an_stride, grid_num, 5, iou_aware);
-    int score_idx = (i * box_num + j * grid_num + k * w + l) * class_num;
+    int64_t score_idx = (i * box_num + j * grid_num + k * w + l) * class_num;
     funcs::CalcLabelScore<T>(
         scores, input, label_idx, score_idx, class_num, conf, grid_num);
   }
@@ -115,27 +117,35 @@ void YoloBoxKernel(const Context& dev_ctx,
                    float iou_aware_factor,
                    DenseTensor* boxes,
                    DenseTensor* scores) {
+  if (x.numel() == 0 || img_size.numel() == 0) {
+    Full<T, Context>(dev_ctx, boxes->dims(), 0, boxes);
+    Full<T, Context>(dev_ctx, scores->dims(), 0, scores);
+    return;
+  }
+
   auto* input = &x;
   float scale = scale_x_y;
   float bias = -0.5 * (scale - 1.);
 
-  const int n = input->dims()[0];
-  const int h = input->dims()[2];
-  const int w = input->dims()[3];
-  const int box_num = boxes->dims()[1];
+  const int64_t n = input->dims()[0];
+  const int64_t h = input->dims()[2];
+  const int64_t w = input->dims()[3];
+  const int64_t box_num = boxes->dims()[1];
   const int an_num = anchors.size() / 2;
-  int input_size_h = downsample_ratio * h;
-  int input_size_w = downsample_ratio * w;
+  int64_t input_size_h = downsample_ratio * h;
+  int64_t input_size_w = downsample_ratio * w;
 
-  int bytes = sizeof(int) * anchors.size();
+  int64_t bytes = sizeof(int) * anchors.size();
   DenseTensor tmp_anchors;
   using common::make_dim;
   tmp_anchors.Resize(make_dim(anchors.size()));
   int* anchors_data = dev_ctx.template Alloc<int>(&tmp_anchors);
   const auto gplace = dev_ctx.GetPlace();
-  const auto cplace = phi::CPUPlace();
+  const auto cplace = CPUPlace();
+  const int* stable_anchors = backends::gpu::RestoreHostMemIfCapturingCUDAGraph(
+      const_cast<int*>(anchors.data()), anchors.size());
   memory_utils::Copy(
-      gplace, anchors_data, cplace, anchors.data(), bytes, dev_ctx.stream());
+      gplace, anchors_data, cplace, stable_anchors, bytes, dev_ctx.stream());
 
   const T* input_data = input->data<T>();
   const int* imgsize_data = img_size.data<int>();
@@ -143,7 +153,7 @@ void YoloBoxKernel(const Context& dev_ctx,
   T* boxes_data = dev_ctx.template Alloc<T>(boxes);
   scores->Resize({n, box_num, class_num});
   T* scores_data = dev_ctx.template Alloc<T>(scores);
-  phi::funcs::SetConstant<phi::GPUContext, T> set_zero;
+  funcs::SetConstant<GPUContext, T> set_zero;
   set_zero(dev_ctx, boxes, static_cast<T>(0));
   set_zero(dev_ctx, scores, static_cast<T>(0));
   backends::gpu::GpuLaunchConfig config =

@@ -17,12 +17,11 @@ from __future__ import annotations
 import copy
 import enum
 import os
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 import paddle
-from paddle import base
 from paddle.base import core, framework
 from paddle.base.executor import global_scope
 from paddle.base.framework import (
@@ -30,13 +29,16 @@ from paddle.base.framework import (
     IrNode,
     Operator,
     OpProtoHolder,
-    convert_np_dtype_to_proto_type,
+    convert_nptype_to_vartype,
 )
 from paddle.static.log_helper import get_logger
 from paddle.static.quantization import (
     QuantizationFreezePass,
     QuantizationTransformPass,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 LOGLEVEL = os.environ.get("PADDLE_TEST_LOGLEVEL", "INFO").upper()
 logging = get_logger(
@@ -67,9 +69,9 @@ class TensorConfig:
             self.dtype = self.data.dtype
             self.shape = self.data.shape
         else:
-            assert (
-                shape is not None
-            ), "While data_gen is not defined, shape must not be None"
+            assert shape is not None, (
+                "While data_gen is not defined, shape must not be None"
+            )
             self.data = np.random.normal(0.0, 1.0, shape).astype(np.float32)
             self.shape = shape
             self.dtype = self.data.dtype
@@ -179,10 +181,11 @@ class BlockConfig:
                 elif self.vars_var_type[name] == VarType.STEP_SCOPES:
                     var_desc.set_type(core.VarDesc.VarType.STEP_SCOPES)
                     continue
-            var_desc.set_dtype(convert_np_dtype_to_proto_type(np.float32))
+
+            var_desc.set_dtype(convert_nptype_to_vartype(np.float32))
             if self.vars_dtype is not None and name in self.vars_dtype.keys():
                 var_desc.set_dtype(
-                    convert_np_dtype_to_proto_type(self.vars_dtype[name])
+                    convert_nptype_to_vartype(self.vars_dtype[name])
                 )
 
         for op_config in self.ops:
@@ -223,15 +226,13 @@ class BlockConfig:
                         ):
                             var_desc.set_type(core.VarDesc.VarType.STEP_SCOPES)
                             continue
-                    var_desc.set_dtype(
-                        convert_np_dtype_to_proto_type(np.float32)
-                    )
+                    var_desc.set_dtype(convert_nptype_to_vartype(np.float32))
                     if (
                         op_config.outputs_dtype is not None
                         and v in op_config.outputs_dtype.keys()
                     ):
                         var_desc.set_dtype(
-                            convert_np_dtype_to_proto_type(
+                            convert_nptype_to_vartype(
                                 op_config.outputs_dtype[v]
                             )
                         )
@@ -291,9 +292,9 @@ class ProgramConfig:
         return log_str
 
     def set_input_type(self, _type: np.dtype) -> None:
-        assert (
-            _type in self.supported_cast_type or _type is None
-        ), "PaddleTRT only supports FP32 / FP16 IO"
+        assert _type in self.supported_cast_type or _type is None, (
+            "PaddleTRT only supports FP32 / FP16 IO"
+        )
 
         ver = paddle.inference.get_trt_compile_version()
         trt_version = ver[0] * 1000 + ver[1] * 100 + ver[2] * 10
@@ -342,7 +343,22 @@ class ProgramConfig:
         return self
 
 
-def create_fake_model(program_config):
+def convert_to_dynamic_shape(dynamic_shape, name):
+    if dynamic_shape.min_input_shape == {}:
+        return tuple(dynamic_shape.min_input_shape)
+    min_shape = tuple(dynamic_shape.min_input_shape[name])
+    opt_shape = tuple(dynamic_shape.opt_input_shape[name])
+    max_shape = tuple(dynamic_shape.max_input_shape[name])
+    result_shape = []
+    for i in range(len(min_shape)):
+        if min_shape[i] == opt_shape[i] == max_shape[i]:
+            result_shape.append(min_shape[i])
+        else:
+            result_shape.append(-1)
+    return tuple(result_shape)
+
+
+def create_fake_model(program_config, run_pir=False, dynamic_shape=None):
     '''Create a Paddle model(in memory) according to the given config.'''
     program_config = copy.deepcopy(program_config)
     program_config._cast()
@@ -361,10 +377,14 @@ def create_fake_model(program_config):
         for name, tensor_config in program_config.inputs.items():
             var_desc = main_block_desc.var(name.encode())
             var_desc.set_type(core.VarDesc.VarType.DENSE_TENSOR)
-            var_desc.set_dtype(
-                convert_np_dtype_to_proto_type(tensor_config.dtype)
-            )
-            var_desc.set_shape(tensor_config.shape)
+            var_desc.set_dtype(convert_nptype_to_vartype(tensor_config.dtype))
+            if dynamic_shape is not None:
+                dynamic_shape_copy = convert_to_dynamic_shape(
+                    dynamic_shape, name
+                )
+                var_desc.set_shape(dynamic_shape_copy)
+            else:
+                var_desc.set_shape(tensor_config.shape)
             var_desc.set_need_check_feed(True)
             if tensor_config.lod is not None:
                 var_desc.set_lod_level(len(tensor_config.lod))
@@ -379,9 +399,7 @@ def create_fake_model(program_config):
         for name, tensor_config in program_config.weights.items():
             var_desc = main_block_desc.var(name.encode())
             var_desc.set_type(core.VarDesc.VarType.DENSE_TENSOR)
-            var_desc.set_dtype(
-                convert_np_dtype_to_proto_type(tensor_config.dtype)
-            )
+            var_desc.set_dtype(convert_nptype_to_vartype(tensor_config.dtype))
             var_desc.set_shape(tensor_config.shape)
             var_desc.set_persistable(True)
 
@@ -400,12 +418,13 @@ def create_fake_model(program_config):
             type=core.VarDesc.VarType.RAW, name="out_var_0"
         )
         out_var.desc.set_persistable(True)
-        util_program.global_block().append_op(
-            type='save_combine',
-            inputs={'X': in_vars},
-            outputs={'Y': out_var},
-            attrs={'file_path': '', 'save_to_memory': True},
-        )
+        if not run_pir:
+            util_program.global_block().append_op(
+                type='save_combine',
+                inputs={'X': in_vars},
+                outputs={'Y': out_var},
+                attrs={'file_path': '', 'save_to_memory': True},
+            )
         for op_config in program_config.ops:
             op_desc = main_block_desc.append_op()
             op_desc.set_type(op_config.type)
@@ -452,15 +471,20 @@ def create_fake_model(program_config):
                         ):
                             var_desc.set_type(core.VarDesc.VarType.STEP_SCOPES)
                             continue
-                    var_desc.set_dtype(
-                        convert_np_dtype_to_proto_type(np.float32)
-                    )
+                    if run_pir:
+                        var_desc.set_dtype(
+                            convert_nptype_to_vartype(tensor_config.dtype)
+                        )
+                    else:
+                        var_desc.set_dtype(
+                            convert_nptype_to_vartype(np.float32)
+                        )
                     if (
                         op_config.outputs_dtype is not None
                         and v in op_config.outputs_dtype.keys()
                     ):
                         var_desc.set_dtype(
-                            convert_np_dtype_to_proto_type(
+                            convert_nptype_to_vartype(
                                 op_config.outputs_dtype[v]
                             )
                         )
@@ -478,18 +502,9 @@ def create_fake_model(program_config):
             op_desc.set_input('X', [name])
             op_desc.set_output('Out', ["fetch"])
             op_desc._set_attr("col", index)
-
-        model = main_program_desc.serialize_to_string()
-
         util_program._sync_with_cpp()
-        place = base.CPUPlace()
-        executor = base.Executor(place)
-        scope = base.Scope()
-        with base.scope_guard(scope):
-            executor.run(util_program)
-            params = scope.find_var("out_var_0").get_bytes()
 
-    return model, params
+    return main_program_desc, util_program
 
 
 def create_quant_model(
@@ -611,9 +626,9 @@ def create_quant_model(
 
     def _get_op_output_var_names(op):
         """ """
-        assert isinstance(
-            op, (IrNode, Operator)
-        ), "The input op should be IrNode or Operator."
+        assert isinstance(op, (IrNode, Operator)), (
+            "The input op should be IrNode or Operator."
+        )
         var_names = []
         op_name = op.name() if isinstance(op, IrNode) else op.type
         if op_name not in op_real_in_out_name:

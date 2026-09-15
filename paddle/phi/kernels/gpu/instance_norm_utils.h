@@ -18,21 +18,14 @@
 #include <cfloat>
 #include <string>
 #include <vector>
-#ifdef __NVCC__
-#include "cub/cub.cuh"
-#endif
-#ifdef __HIPCC__
-#include <hipcub/hipcub.hpp>
-namespace cub = hipcub;
-#endif
-
 #include "paddle/phi/backends/gpu/gpu_dnn.h"
 #include "paddle/phi/common/amp_type_traits.h"
+#include "paddle/phi/kernels/funcs/cub.h"
 
 namespace phi {
 
 template <typename T>
-using CudnnDataType = phi::backends::gpu::CudnnDataType<T>;
+using CudnnDataType = backends::gpu::CudnnDataType<T>;
 template <typename T>
 using BatchNormParamType = typename CudnnDataType<T>::BatchNormParamType;
 
@@ -52,7 +45,7 @@ static __global__ void add_param(const T *input,
                                  T *output,
                                  const int repeat_num,
                                  const int C) {
-  using MPType = typename phi::dtype::MPTypeTrait<T>::Type;
+  using MPType = typename MPTypeTrait<T>::Type;
   typedef cub::BlockReduce<MPType, BlockDim> BlockReduce;
   __shared__ typename BlockReduce::TempStorage ou_storage;
   for (int i = blockIdx.x; i < C; i += gridDim.x) {

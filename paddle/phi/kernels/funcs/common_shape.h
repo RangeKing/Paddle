@@ -14,6 +14,7 @@ limitations under the License. */
 
 #pragma once
 
+#include "paddle/common/enforce.h"
 #include "paddle/phi/core/dense_tensor.h"
 #include "paddle/phi/kernels/funcs/eigen/common.h"
 #include "paddle/phi/kernels/funcs/eigen/eigen_function.h"
@@ -28,15 +29,16 @@ inline void SetXShape(const DenseTensor &x, DenseTensor *xshape) {
   for (int i = 0; i < in_dims.size(); ++i) {
     xshape_dims[i + 1] = in_dims[i];
   }
-  xshape->ResizeAndAllocate(common::make_ddim(xshape_dims));
+  xshape->ResizeAndAllocate(make_ddim(xshape_dims));
   xshape->ResetLoD(x.meta().legacy_lod);
 }
 
+template <typename T>
 inline void GetBroadcastDimsArrays(const DDim &x_dims,
                                    const DDim &y_dims,
-                                   int *x_dims_array,
-                                   int *y_dims_array,
-                                   int *out_dims_array,
+                                   T *x_dims_array,
+                                   T *y_dims_array,
+                                   T *out_dims_array,
                                    const int max_dim,
                                    const int axis) {
   PADDLE_ENFORCE_GE(
@@ -69,8 +71,9 @@ inline void GetBroadcastDimsArrays(const DDim &x_dims,
   }
   for (int i = 0; i < max_dim; ++i) {
     PADDLE_ENFORCE_EQ(
-        x_dims_array[i] == y_dims_array[i] || x_dims_array[i] <= 1 ||
-            y_dims_array[i] <= 1,
+        x_dims_array[i] == y_dims_array[i] ||
+            (x_dims_array[i] <= 1 && x_dims_array[i] != 0) ||
+            (y_dims_array[i] <= 1 && y_dims_array[i] != 0),
         true,
         common::errors::InvalidArgument(
             "Broadcast dimension mismatch. Operands could "
@@ -87,12 +90,15 @@ inline void GetBroadcastDimsArrays(const DDim &x_dims,
       out_dims_array[i] = (std::max)(x_dims_array[i], y_dims_array[i]);
     } else {
       out_dims_array[i] = -1;
+      if (y_dims_array[i] == 0 || x_dims_array[i] == 0) {
+        out_dims_array[i] = 0;
+      }
     }
   }
 }
 
 inline void GetPrePostNumel(
-    const DDim &dim, int axis, int *pre, int *n, int *post) {
+    const DDim &dim, int axis, int64_t *pre, int64_t *n, int64_t *post) {
   *pre = 1;
   *post = 1;
   *n = dim[axis];
@@ -112,7 +118,7 @@ static DDim ExtendDims2Rank(const DDim &in_dims, int rank) {
   for (int i = in_dims.size() - 1, j = rank - 1; i >= 0; --i, --j) {
     shapes[j] = in_dims[i];
   }
-  return common::make_ddim(shapes);
+  return make_ddim(shapes);
 }
 
 template <size_t D>
@@ -179,8 +185,8 @@ static inline std::vector<int64_t> MatrixGetBroadcastBatchPortion(
 // batch_size of matrix
 static inline std::tuple<std::vector<int64_t>, std::vector<int64_t>>
 MatrixGetBroadcastDims(const DenseTensor &x, const DenseTensor &y) {
-  std::vector<int64_t> x_dims_vec = common::vectorize(x.dims());
-  std::vector<int64_t> y_dims_vec = common::vectorize(y.dims());
+  std::vector<int64_t> x_dims_vec = vectorize(x.dims());
+  std::vector<int64_t> y_dims_vec = vectorize(y.dims());
 
   std::vector<int64_t>::const_iterator f1 = x_dims_vec.begin();
   std::vector<int64_t>::const_iterator l1 = x_dims_vec.end() - 2;
@@ -210,7 +216,7 @@ inline DDim GetOutputDims(const DDim &s_dims, const DDim &l_dims) {
   if (s_dims.size() > l_dims.size()) {
     return GetOutputDims(l_dims, s_dims);
   }
-  std::vector<int64_t> shapes = common::vectorize<int64_t>(l_dims);
+  std::vector<int64_t> shapes = vectorize<int64_t>(l_dims);
   for (int i = s_dims.size() - 1, j = l_dims.size() - 1; i >= 0; --i, --j) {
     int64_t s = s_dims[i];
     int64_t l = l_dims[j];
@@ -228,7 +234,7 @@ inline DDim GetOutputDims(const DDim &s_dims, const DDim &l_dims) {
       }
     }
   }
-  return common::make_ddim(shapes);
+  return make_ddim(shapes);
 }
 
 inline DDim GetOutputDimsForDynamicShape(const DDim &s_dims,
@@ -236,7 +242,7 @@ inline DDim GetOutputDimsForDynamicShape(const DDim &s_dims,
   if (s_dims.size() > l_dims.size()) {
     return GetOutputDimsForDynamicShape(l_dims, s_dims);
   }
-  std::vector<int64_t> shapes = common::vectorize<int64_t>(l_dims);
+  std::vector<int64_t> shapes = vectorize<int64_t>(l_dims);
 
   for (int i = s_dims.size() - 1, j = l_dims.size() - 1; i >= 0; --i, --j) {
     int64_t s = s_dims[i];
@@ -259,10 +265,10 @@ inline DDim GetOutputDimsForDynamicShape(const DDim &s_dims,
       }
     }
   }
-  return common::make_ddim(shapes);
+  return make_ddim(shapes);
 }
 
-inline int64_t CalStride(phi::DDim dim) {
+inline int64_t CalStride(DDim dim) {
   int rank = dim.size();
   int64_t dimsum = 1;
   int64_t strides = 0;
@@ -277,7 +283,9 @@ inline std::vector<int32_t> GetPermuteShape(const std::vector<int> &axis,
                                             const DDim &in_dims) {
   std::vector<int32_t> out_dims(in_dims.size());
   for (size_t i = 0; i < axis.size(); i++) {
-    out_dims[i] = in_dims[axis[i]];
+    const int64_t dim = in_dims[axis[i]];
+    PADDLE_ENFORCE_LE_INT_MAX(dim, "permuted dimension");
+    out_dims[i] = static_cast<int32_t>(dim);
   }
   return out_dims;
 }
@@ -292,9 +300,11 @@ inline std::vector<int32_t> GetFlattenShape(const int axis,
       inner *= in_dims[i];
     }
   }
+  PADDLE_ENFORCE_LE_INT_MAX(outer, "flatten outer dimension");
+  PADDLE_ENFORCE_LE_INT_MAX(inner, "flatten inner dimension");
   std::vector<int32_t> out_shape(2);
-  out_shape[0] = outer;
-  out_shape[1] = inner;
+  out_shape[0] = static_cast<int32_t>(outer);
+  out_shape[1] = static_cast<int32_t>(inner);
   return out_shape;
 }
 
@@ -317,7 +327,7 @@ inline void FCOutputSize(const DDim &in_dims,
           in_mat_dims[1],
           in_mat_dims,
           w_dims0,
-          common::make_ddim({w_dims0, w_dims1})));
+          make_ddim({w_dims0, w_dims1})));
 
   out_dims.reserve(static_cast<size_t>(in_num_col_dims + 1));
   for (int i = 0; i < in_num_col_dims; ++i) {

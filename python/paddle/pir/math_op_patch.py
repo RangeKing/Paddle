@@ -12,18 +12,36 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
 
+import copy
 import inspect
 import textwrap
 import warnings
+from functools import reduce
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from paddle import _C_ops
 from paddle.base.libpaddle import DataType
 from paddle.base.wrapped_decorator import wrap_decorator
+from paddle.utils.decorator_utils import (
+    size_args_decorator_patch,
+)
 
 from . import Value
+
+if TYPE_CHECKING:
+    from paddle import Tensor
+    from paddle._typing import (
+        DTypeLike,
+        NestedNumericSequence,
+        PlaceLike,
+        ShapeLike,
+        TensorLike,
+    )
+
 
 _already_patch_value = False
 
@@ -35,6 +53,35 @@ _supported_int_dtype_ = [
     DataType.INT32,
     DataType.INT64,
 ]
+
+_supported_dtype_conversions = {
+    # float
+    'float16': 'float16',
+    'half': 'float16',
+    'bfloat16': 'bfloat16',
+    'float32': 'float32',
+    'float': 'float32',
+    'float64': 'float64',
+    'double': 'float64',
+    # int
+    'int8': 'int8',
+    'char': 'int8',
+    # We handle uint8 conversion separately
+    # 'uint8': 'uint8',
+    # 'byte': 'uint8',
+    'int16': 'int16',
+    'short': 'int16',
+    'int32': 'int32',
+    'int': 'int32',
+    'int64': 'int64',
+    'long': 'int64',
+    # other
+    'bool': 'bool',
+    'complex64': 'complex64',
+    'complex128': 'complex128',
+    'cfloat': 'complex64',
+    'cdouble': 'complex128',
+}
 
 SUPPORT_PROMOTION_OPS = [
     "__add__",
@@ -113,7 +160,7 @@ def monkey_patch_value():
 
     def cpu(self):
         """
-        In dy2static, Value also needs cpu() and cuda() interface.
+        In dy2static, Tensor also needs cpu() and cuda() interface.
         But, the underneath operator has only forward op but not backward one.
 
         Returns:
@@ -122,12 +169,12 @@ def monkey_patch_value():
         Examples:
             In Static Graph Mode:
 
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> paddle.enable_static()
 
-                >>> x = paddle.static.data(name="x", shape=[2,2], dtype='float32')
+                >>> x = paddle.static.data(name="x", shape=[2, 2], dtype='float32')
                 >>> y = x.cpu()
         """
 
@@ -136,11 +183,11 @@ def monkey_patch_value():
 
     def cuda(self, device_id=None, blocking=True):
         """
-        In dy2static, Value also needs cpu() and cuda() interface.
+        In dy2static, Tensor also needs cpu() and cuda() interface.
         But, the underneath operator has only forward op but not backward one.
 
         Args:
-            self(Value): The variable itself.
+            self(Tensor): The variable itself.
             device_id(int, optional): The destination GPU device id. Default: None, means current device.
                 We add this argument for dy2static translation, please do not use it.
             blocking(bool, optional): Whether blocking or not, Default: True.
@@ -152,12 +199,12 @@ def monkey_patch_value():
         Examples:
             In Static Graph Mode:
 
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> paddle.enable_static()
 
-                >>> x = paddle.static.data(name="x", shape=[2,2], dtype='float32')
+                >>> x = paddle.static.data(name="x", shape=[2, 2], dtype='float32')
                 >>> y = x.cpu()
                 >>> z = y.cuda()
         """
@@ -167,60 +214,111 @@ def monkey_patch_value():
         if blocking is not True:
             warnings.warn("blocking is not supported, and it will be ignored.")
 
-        # 1 means cuda place, see paddle/phi/kernels/memcpy_kernel.cc
+        # 1 means cuda/xpu/custom_device place, see paddle/phi/kernels/memcpy_kernel.cc
         return _C_ops.memcpy(self, 1)
+
+    @property
+    def is_cuda(self):
+        """
+        Tensor don't have 'is_cuda' interface in static graph mode
+        But this interface can greatly facilitate dy2static.
+        So we give a warning here and return None.
+        """
+        warnings.warn(
+            "Tensor do not have 'is_cuda' interface for pir graph mode, try not to use it."
+        )
+        from paddle import framework
+
+        if hasattr(self, 'place') and isinstance(
+            self.place, framework.core.CUDAPlace
+        ):
+            return True
+        else:
+            expected_place = framework._current_expected_place_()
+            return isinstance(expected_place, framework.core.CUDAPlace)
+
+    @property
+    def is_cpu(self):
+        """
+        Tensor don't have 'is_cpu' interface in static graph mode
+        But this interface can greatly facilitate dy2static.
+        So we give a warning here and return None.
+        """
+        warnings.warn(
+            "Tensor do not have 'is_cpu' interface for pir graph mode, try not to use it."
+        )
+        from paddle import framework
+
+        if hasattr(self, 'place') and isinstance(
+            self.place, framework.core.CPUPlace
+        ):
+            return True
+        else:
+            expected_place = framework._current_expected_place_()
+            return isinstance(expected_place, framework.core.CPUPlace)
 
     @property
     def place(self):
         """
-        Value don't have 'place' interface in static graph mode
+        Tensor don't have 'place' interface in static graph mode
         But this interface can greatly facilitate dy2static.
         So we give a warning here and return None.
         """
         warnings.warn(
-            "Value do not have 'place' interface for pir graph mode, try not to use it. None will be returned."
+            "Tensor do not have 'place' interface for pir graph mode, try not to use it. None will be returned."
+        )
+
+    @property
+    def device(self):
+        """
+        Tensor don't have 'device' interface in static graph mode
+        But this interface can greatly facilitate dy2static.
+        So we give a warning here and return None.
+        """
+        warnings.warn(
+            "Tensor do not have 'device' interface for pir graph mode, try not to use it. None will be returned."
         )
 
     def contiguous(self):
         """
-        Value don't have 'contiguous' interface in static graph mode
+        Tensor don't have 'contiguous' interface in static graph mode
         But this interface can greatly facilitate dy2static.
         So we give a warning here and return None.
         """
         warnings.warn(
-            "Value do not have 'contiguous' interface for static graph mode, try not to use it. self will be returned."
+            "Tensor do not have 'contiguous' interface for static graph mode, try not to use it. self will be returned."
         )
         return self
 
     def is_contiguous(self):
         """
-        Value don't have 'is_contiguous' interface in static graph mode
+        Tensor don't have 'is_contiguous' interface in static graph mode
         But this interface can greatly facilitate dy2static.
         So we give a warning here and return None.
         """
         warnings.warn(
-            "Value do not have 'is_contiguous' interface for static graph mode, try not to use it. True will be returned."
+            "Tensor do not have 'is_contiguous' interface for static graph mode, try not to use it. True will be returned."
         )
         return True
 
     @property
     def _ndim(self):
         """
-        Returns the dimension of current Value
+        Returns the dimension of current Tensor
 
         Returns:
             the dimension
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
 
                 >>> paddle.enable_static()
 
-                >>> # create a static Value
+                >>> # create a static Tensor
                 >>> x = paddle.static.data(name='x', shape=[3, 2, 1])
-                >>> # print the dimension of the Value
+                >>> # print the dimension of the Tensor
                 >>> print(x.ndim)
                 3
         """
@@ -228,21 +326,21 @@ def monkey_patch_value():
 
     def ndimension(self):
         """
-        Returns the dimension of current Value
+        Returns the dimension of current Tensor
 
         Returns:
             the dimension
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
 
                 >>> paddle.enable_static()
 
-                >>> # create a static Value
+                >>> # create a static Tensor
                 >>> x = paddle.static.data(name='x', shape=[3, 2, 1])
-                >>> # print the dimension of the Value
+                >>> # print the dimension of the Tensor
                 >>> print(x.ndimension())
                 3
         """
@@ -250,36 +348,82 @@ def monkey_patch_value():
 
     def dim(self):
         """
-        Returns the dimension of current Value
+        Returns the dimension of current Tensor
 
         Returns:
             the dimension
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
 
                 >>> paddle.enable_static()
 
-                >>> # create a static Value
+                >>> # create a static Tensor
                 >>> x = paddle.static.data(name='x', shape=[3, 2, 1])
-                >>> # print the dimension of the Value
+                >>> # print the dimension of the Tensor
                 >>> print(x.dim())
                 3
         """
         return len(self.shape)
 
-    def _item(self):
+    def _item(self, *args: int):
         """
         In order to be compatible with the item interface introduced by the dynamic graph, it does nothing but returns self.
         It will check that the shape must be a 1-D tensor
         """
-        if len(self.shape) > 1:
-            raise TypeError(
-                f"Required input var should be 1-D Value, but received {self.shape}"
-            )
-        return self
+
+        if self.is_dist() and not self._is_initialized():
+            return None
+
+        from paddle.jit.dy2static import Shape
+
+        # Python implementation of the input validation logic for the C++ function `tensor__getitem_from_offset`.
+        dims = Shape(self)
+        numel = reduce(lambda x, y: int(x * y), dims) if len(dims) != 0 else 1
+        offset = 0
+
+        if len(args) == 0:
+            if not isinstance(numel, paddle.pir.Value) and numel != 1:
+                raise ValueError(
+                    "only one element tensors can be converted to Python "
+                    "scalars when no input coordinates"
+                )
+            # NOTE: This is to maintain consistency with the original code.
+            return self
+        elif len(args) == 1:
+            (offset,) = args
+            if not isinstance(numel, paddle.pir.Value) and offset >= numel:
+                raise ValueError(
+                    f"index {offset} is out of bounds for size {numel}"
+                )
+        else:
+            if len(args) != len(dims):
+                raise ValueError("incorrect number of indices for Tensor")
+
+            # TODO(dev): In certain cases, the stride calculation of the tensor may be modified by as_strided.
+            # This scenario needs to be considered in the future.
+            strides = [1] * len(dims)
+            for i in range(1, len(strides)):
+                strides[-i - 1] = strides[-i] * dims[-i]
+
+            for i in range(len(args)):
+                index = args[i]
+                if not isinstance(index, int):
+                    raise TypeError(
+                        f"argument (position {i}) must be long, but got {type(index)}",
+                    )
+                if (
+                    not isinstance(dims[i], paddle.pir.Value)
+                    and index >= dims[i]
+                ):
+                    raise ValueError(
+                        f"index {index} is out of bounds for axis {i} with size {dims[i]}"
+                    )
+                offset += index * strides[i]
+
+        return self.flatten()[offset]
 
     def astype(self, dtype):
         """
@@ -290,38 +434,75 @@ def monkey_patch_value():
 
         Args:
 
-            self(Value): The source Value
+            self(Tensor): The source Tensor
 
             dtype: The target data type
 
         Returns:
-            Value: Value with new dtype
+            Tensor: Tensor with new dtype
 
         Examples:
             In Static Graph Mode:
 
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> paddle.enable_static()
                 >>> startup_prog = paddle.static.Program()
                 >>> main_prog = paddle.static.Program()
                 >>> with paddle.static.program_guard(startup_prog, main_prog):
-                ...     original_value = paddle.static.data(name = "new_value", shape=[2,2], dtype='float32')
+                ...     original_value = paddle.static.data(name="new_value", shape=[2, 2], dtype='float32')
                 ...     new_value = original_value.astype('int64')
                 ...     print(f"new value's dtype is: {new_value.dtype}")
-                ...
-                new Value's dtype is: paddle.int64
+                new Tensor's dtype is: paddle.int64
 
         """
 
         if not isinstance(dtype, DataType):
-            dtype = paddle.pir.core.convert_np_dtype_to_dtype_(dtype)
+            dtype = paddle.pir.core.convert_nptype_to_datatype(dtype)
 
         if self.dtype == dtype:
             return self
 
         return _C_ops.cast(self, dtype)
+
+    def byte(self):
+        # since paddle don't support float to uint8, so we need to convert it to int8 first
+        if self.is_floating_point():
+            tensor = astype(self, 'int8')
+            return astype(tensor, 'uint8')
+        elif self.is_complex():
+            real = astype(self.real(), 'int8')
+            return astype(real, 'uint8')
+        else:
+            return astype(self, 'uint8')
+
+    def _create_dtype_conversion_methods():
+        """
+        Batch create all data type conversion methods
+        """
+        methods = []
+        for method_name, target_dtype in _supported_dtype_conversions.items():
+
+            def make_conversion_method(dtype):
+                def conversion_method(self):
+                    return astype(self, dtype)
+
+                return conversion_method
+
+            method_impl = make_conversion_method(target_dtype)
+            method_impl.__name__ = method_name
+            method_impl.__doc__ = f"""
+            Cast a Tensor to {target_dtype} data type if it differs from the current dtype;
+            otherwise, return the original Tensor.
+            Returns:
+                Tensor: a new Tensor with {target_dtype} dtype
+            """
+            methods.append((method_name, method_impl))
+        return methods
+
+    def type_as(self, other):
+        return self.astype(other.dtype)
 
     def _scalar_add_(var, value):
         return paddle.scale(var, 1.0, value)
@@ -384,6 +565,13 @@ def monkey_patch_value():
                 # but only +, -, *, / can use this method
                 if scalar_method is not None:
                     return scalar_method(self, other_var)
+            elif other_var is None:
+                if method_name == "__eq__":
+                    return False
+                elif method_name == "__ne__":
+                    return True
+                else:
+                    pass
             else:
                 # do nothing
                 pass
@@ -424,11 +612,11 @@ def monkey_patch_value():
 
         __impl__.__doc__ = """
             Args:
-                self(Value): left hand Value
-                other_var(Value|float|int): right hand Value
+                self(Tensor): left hand Tensor
+                other_var(Tensor|float|int): right hand Tensor
 
             Returns:
-                Value
+                Tensor
             """
         __impl__.__name__ = method_name
         return __impl__
@@ -436,24 +624,32 @@ def monkey_patch_value():
     @property
     def _size_(self):
         """
-        Returns the number of elements for current Value, which is a int64 Value with shape [] .
+        Returns the number of elements for current Tensor, which is a int64 Tensor with shape [] .
 
         Returns:
-            Value, the number of elements for current Value
+            Tensor, the number of elements for current Tensor
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
-            >>> import paddle
-            >>> paddle.enable_static()
-            >>> startup_prog = paddle.static.Program()
-            >>> main_prog = paddle.static.Program()
-            >>> with paddle.static.program_guard(startup_prog, main_prog):
-            ...     x = paddle.assign(np.random.rand(2, 3, 4).astype("float32"))
-            ...     (output_x,) = exe.run(main_program, fetch_list=[x.size])
-            ...     print(f"value's size is: {output_x}")
-            ...
-            value's size is: 24
+                >>> import paddle
+                >>> paddle.enable_static()
+                >>> startup_prog = paddle.static.Program()
+                >>> main_prog = paddle.static.Program()
+                >>> with paddle.static.program_guard(startup_prog, main_prog):
+                ...     x = paddle.assign(np.random.rand(2, 3, 4).astype("float32"))
+                ...     (output_x,) = exe.run(main_program, fetch_list=[x.size])
+                ...     print(f"value's size is: {output_x}")
+                value's size is: 24
+        """
+        return paddle.numel(self)
+
+    def nelement(self):
+        """
+        Returns the number of elements for current Tensor, which is a int64 Tensor with shape [] . Alias for attribute `size`.
+
+        Returns:
+            Tensor, the number of elements for current Tensor
         """
         return paddle.numel(self)
 
@@ -461,12 +657,12 @@ def monkey_patch_value():
     def _T_(self):
         """
 
-        Permute current Value with its dimensions reversed.
+        Permute current Tensor with its dimensions reversed.
 
         If `n` is the dimensions of `x` , `x.T` is equivalent to `x.transpose([n-1, n-2, ..., 0])`.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> paddle.enable_static()
@@ -495,7 +691,7 @@ def monkey_patch_value():
         If `n` is the dimensions of `x` , `x.mT` is equivalent to `x.transpose([0, 1, ..., n-1, n-2])`.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> paddle.enable_static()
@@ -518,6 +714,319 @@ def monkey_patch_value():
         perm[-1], perm[-2] = perm[-2], perm[-1]
 
         return _C_ops.transpose(self, perm)
+
+    @property
+    def _mH_(self):
+        """
+        Return the conjugate transpose of the last two dimensions of a Tensor.
+
+        Accessing this property is equivalent to calling x.mT.conj().
+
+        Args:
+            self: The input Tensor, which must be at least 2-D or 0-D.
+
+        Returns:
+            Tensor: A new Tensor with its last two dimensions swapped and
+                the elements conjugated. If the input is 0-D, returns the
+                Tensor itself.
+
+        Examples:
+            .. code-block:: pycon
+
+                >>> import paddle
+                >>> paddle.enable_static()
+
+                >>> x = paddle.ones(shape=[2, 3, 5])
+                >>> x_mH = x.mH
+
+                >>> exe = paddle.static.Executor()
+                >>> x_mH_np = exe.run(paddle.static.default_main_program(), fetch_list=[x_mH])[0]
+                >>> print(x_mH_np.shape)
+                (2, 5, 3)
+        """
+        if len(self.shape) == 0:
+            return _C_ops.conj(self)
+        if len(self.shape) < 2:
+            raise ValueError(
+                f"Tensor.ndim({len(self.shape)}) is required to be greater than or equal to 2 "
+                f"or 0-D."
+            )
+
+        perm = list(range(len(self.shape)))
+        perm[-1], perm[-2] = perm[-2], perm[-1]
+
+        return _C_ops.conj(_C_ops.transpose(self, perm))
+
+    @property
+    def _H_(self):
+        """
+        Return the conjugate transpose of a Tensor.
+
+        The conjugate transpose of a 2-D Tensor is equivalent to transposing the
+        Tensor and then taking the conjugate of each element.
+        For 0-D Tensor, returns the conjugated Tensor.
+
+        Args:
+            self: The input Tensor, which must be 0-D or 2-D.
+
+        Returns:
+            Tensor: A new Tensor with its dimensions transposed and elements conjugated.
+                If the input is 0-D, returns the conjugated Tensor.
+
+        Examples:
+            .. code-block:: pycon
+
+                >>> import paddle
+                >>> paddle.enable_static()
+
+                >>> x = paddle.to_tensor([[1.0 + 1.0j, 2.0 + 2.0j], [3.0 + 3.0j, 4.0 + 4.0j]])
+                >>> x_H = x.H
+
+                >>> exe = paddle.static.Executor()
+                >>> x_H_np = exe.run(paddle.static.default_main_program(), fetch_list=[x_H])[0]
+                >>> print(x_H_np)
+                [[(1-1j), (3-3j)],
+                 [(2-2j), (4-4j)]]
+        """
+        if len(self.shape) == 0:
+            return _C_ops.conj(self)
+        if len(self.shape) != 2:
+            raise ValueError(
+                f"Only 0-D or 2-D tensors support .H (conjugate transpose), "
+                f"but got tensor with {len(self.shape)} dimension(s)."
+            )
+        return _C_ops.conj(_C_ops.transpose(self, [1, 0]))
+
+    def _new_full_(
+        self,
+        size: ShapeLike,
+        fill_value: bool | float | paddle.Tensor,
+        *,
+        dtype: DTypeLike | None = None,
+        device: PlaceLike | None = None,
+        requires_grad: bool = False,
+        pin_memory: bool = False,
+    ):
+        """
+
+        Returns a Tensor of size ``size`` filled with ``fill_value``.
+        By default, the returned Tensor has the same dtype and place as this tensor.
+
+        Examples:
+            .. code-block:: pycon
+
+                >>> import paddle
+                >>> paddle.enable_static()
+
+                >>> x = paddle.ones(shape=[2, 3, 5])
+                >>> x_new = x.new_full([2, 3], 3.14, dtype="float64", device="cpu")
+
+                >>> exe = paddle.static.Executor()
+                >>> x_new_np = exe.run(paddle.static.default_main_program(), fetch_list=[x_new])[0]
+                >>> print(x_new_np.shape)
+                (2, 5, 3)
+                >>> print(str(x_new_np.dtype))
+                'paddle.float64'
+                >>> print(x_new_np.place)
+                Place(cpu)
+        """
+        if dtype is None:
+            dtype = self.dtype
+        if device is None:
+            device = self.place
+
+        return paddle.full(
+            size,
+            fill_value,
+            dtype=dtype,
+            device=device,
+            requires_grad=requires_grad,
+            pin_memory=pin_memory,
+        )
+
+    def _new_tensor_(
+        self,
+        data: TensorLike | NestedNumericSequence,
+        dtype: DTypeLike | None = None,
+        device: PlaceLike | None = None,
+        requires_grad: bool = False,
+    ):
+        """
+        Creates a new tensor from ``data`` with the same device and dtype as this tensor.
+
+        Args:
+            data: Data for the new tensor. Can be a list, numpy array, or Tensor.
+            dtype (DTypeLike|None, optional): Desired data type. If None, uses
+                the dtype of this tensor. Default: None.
+            device (PlaceLike|None, optional): Desired device. If None, uses
+                the place of this tensor. Default: None.
+            requires_grad (bool, optional): If True, gradient computation will
+                be enabled for the new tensor. Default: False.
+
+        Returns:
+            Tensor: A new tensor on the specified device.
+
+        Examples:
+            .. code-block:: pycon
+
+                >>> import paddle
+                >>> paddle.enable_static()
+
+                >>> x = paddle.ones(shape=[2, 3])
+                >>> y = x.new_tensor([1, 2, 3], dtype="float64", device="cpu")
+
+                >>> exe = paddle.static.Executor()
+                >>> y_np = exe.run(paddle.static.default_main_program(), fetch_list=[y])[0]
+                >>> print(y_np)
+                [1. 2. 3.]
+        """
+        if dtype is None:
+            dtype = self.dtype
+        if device is None:
+            device = self.place
+        return paddle.to_tensor(
+            data, dtype=dtype, place=device, stop_gradient=not requires_grad
+        )
+
+    @size_args_decorator_patch
+    def _new_empty_(
+        self,
+        size: ShapeLike,
+        *,
+        dtype: DTypeLike | None = None,
+        device: PlaceLike | None = None,
+        requires_grad: bool = False,
+        pin_memory: bool = False,
+    ):
+        """
+
+        Returns a Tensor of size ``size`` filled with uninitialized data.
+        By default, the returned Tensor has the same dtype and place as this tensor.
+
+        Examples:
+            .. code-block:: pycon
+
+                >>> import paddle
+                >>> paddle.enable_static()
+
+                >>> x = paddle.ones(shape=[2, 3, 5])
+                >>> x_new = x.new_empty([2, 3], dtype="float64", device="cpu")
+
+                >>> exe = paddle.static.Executor()
+                >>> x_new_np = exe.run(paddle.static.default_main_program(), fetch_list=[x_new])[0]
+                >>> print(x_new_np.shape)
+                (2, 3)
+                >>> print(str(x_new_np.dtype))
+                'paddle.float64'
+                >>> print(x_new_np.place)
+                Place(cpu)
+        """
+        if dtype is None:
+            dtype = self.dtype
+        if device is None:
+            device = self.place
+
+        return paddle.empty(
+            size,
+            dtype=dtype,
+            device=device,
+            requires_grad=requires_grad,
+            pin_memory=pin_memory,
+        )
+
+    @size_args_decorator_patch
+    def _new_ones_(
+        self,
+        size: ShapeLike,
+        *,
+        dtype: DTypeLike | None = None,
+        device: PlaceLike | None = None,
+        requires_grad: bool = False,
+        pin_memory: bool = False,
+    ):
+        """
+
+        Returns a Tensor of size ``size`` filled with ``1``.
+        By default, the returned Tensor has the same dtype and place as this tensor.
+
+        Examples:
+            .. code-block:: pycon
+
+                >>> import paddle
+                >>> paddle.enable_static()
+
+                >>> x = paddle.ones(shape=[2, 3, 5])
+                >>> x_new = x.new_ones([2, 3], dtype="float64", device="cpu")
+
+                >>> exe = paddle.static.Executor()
+                >>> x_new_np = exe.run(paddle.static.default_main_program(), fetch_list=[x_new])[0]
+                >>> print(x_new_np.shape)
+                (2, 3)
+                >>> print(str(x_new_np.dtype))
+                'paddle.float64'
+                >>> print(x_new_np.place)
+                Place(cpu)
+        """
+        if dtype is None:
+            dtype = self.dtype
+        if device is None:
+            device = self.place
+
+        return paddle.full(
+            size,
+            1,
+            dtype=dtype,
+            device=device,
+            requires_grad=requires_grad,
+            pin_memory=pin_memory,
+        )
+
+    @size_args_decorator_patch
+    def _new_zeros_(
+        self,
+        size: ShapeLike,
+        *,
+        dtype: DTypeLike | None = None,
+        device: PlaceLike | None = None,
+        requires_grad: bool = False,
+        pin_memory: bool = False,
+    ):
+        """
+
+        Returns a Tensor of size ``size`` filled with ``0``.
+        By default, the returned Tensor has the same dtype and place as this tensor.
+
+        Examples:
+            .. code-block:: pycon
+
+                >>> import paddle
+                >>> paddle.enable_static()
+
+                >>> x = paddle.ones(shape=[2, 3, 5])
+                >>> x_new = x.new_zeros([2, 3], dtype="float64", device="cpu")
+
+                >>> exe = paddle.static.Executor()
+                >>> x_new_np = exe.run(paddle.static.default_main_program(), fetch_list=[x_new])[0]
+                >>> print(x_new_np.shape)
+                (2, 3)
+                >>> print(str(x_new_np.dtype))
+                'paddle.float64'
+                >>> print(x_new_np.place)
+                Place(cpu)
+        """
+        if dtype is None:
+            dtype = self.dtype
+        if device is None:
+            device = self.place
+
+        return paddle.full(
+            size,
+            0,
+            dtype=dtype,
+            device=device,
+            requires_grad=requires_grad,
+            pin_memory=pin_memory,
+        )
 
     def _int_(self):
         error_msg = """\
@@ -626,24 +1135,24 @@ def monkey_patch_value():
 
     def clone(self):
         """
-        Returns a new static Value, which is the clone of the original static
-        Value. It remains in the current graph, that is, the cloned Value
+        Returns a new static Tensor, which is the clone of the original static
+        Tensor. It remains in the current graph, that is, the cloned Tensor
         provides gradient propagation. Calling ``out = tensor.clone()`` is same
         as ``out = assign(tensor)`` .
 
         Returns:
-            Value, The cloned Value.
+            Tensor, The cloned Tensor.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
 
                 >>> paddle.enable_static()
 
-                >>> # create a static Value
+                >>> # create a static Tensor
                 >>> x = paddle.static.data(name='x', shape=[3, 2, 1])
-                >>> # create a cloned Value
+                >>> # create a cloned Tensor
                 >>> y = x.clone()
 
         """
@@ -655,14 +1164,14 @@ def monkey_patch_value():
         **Notes**:
             **1. This API is ONLY available in Dygraph mode**
 
-            **2. Use it only Value has gradient, normally we use this for Parameters since other temporal Value will be deleted by Python's GC**
+            **2. Use it only Tensor has gradient, normally we use this for Parameters since other temporal Tensor will be deleted by Python's GC**
 
-        Clear  (set to ``0`` ) the Gradient of Current Value
+        Clear  (set to ``0`` ) the Gradient of Current Tensor
 
         Returns:  None
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> import numpy as np
@@ -688,12 +1197,12 @@ def monkey_patch_value():
     def append(self, var):
         """
         Notes:
-           The type of Value must be Tensor Array.
+           The type of Tensor must be Tensor Array.
 
         """
         if not self.is_dense_tensor_array_type():
             raise TypeError(
-                f"Only Value with DenseTensorArray support `append` method, but received {self}"
+                f"Only Tensor with DenseTensorArray support `append` method, but received {self}"
             )
         from paddle.tensor.array import array_length, array_write
 
@@ -701,20 +1210,20 @@ def monkey_patch_value():
 
     def pop(self, *args):
         """
-        The type of Value must be Tensor Array.
+        The type of Tensor must be Tensor Array.
         When self is TensorArray, calling pop is similar to Python's pop on list.
         This interface is used to simplify dygraph to static graph operations.
 
         Args:
-            self(Value): The source variable, which must be DenseTensorArray
+            self(Tensor): The source variable, which must be DenseTensorArray
             *args: optional, a int means index.
         Returns:
-            Value: self[index]
+            Tensor: self[index]
         """
 
         if not self.is_dense_tensor_array_type():
             raise TypeError(
-                f"Only Value with DenseTensorArray support `pop` method, but received {self}"
+                f"Only Tensor with DenseTensorArray support `pop` method, but received {self}"
             )
         if len(args) == 0:
             idx = -1
@@ -733,9 +1242,9 @@ def monkey_patch_value():
         return _C_ops.sparse_indices(self)
 
     def set_shape(self, shape):
-        assert (
-            paddle.base.dygraph.base.in_to_static_mode()
-        ), "We only support call 'set_shape' in to_static mode."
+        assert paddle.base.dygraph.base.in_to_static_mode(), (
+            "We only support call 'set_shape' in to_static mode."
+        )
 
         if self.is_dense_tensor_type() or self.is_selected_row_type():
             type = paddle.pir.create_shaped_type(self.type(), shape)
@@ -753,6 +1262,7 @@ def monkey_patch_value():
         device=None,
         dtype=None,
         blocking=None,
+        copy_tensor=None,
     ):
         if device is None and dtype is None and blocking is None:
             return self
@@ -781,11 +1291,11 @@ def monkey_patch_value():
         if blocking is None:
             blocking = True
         else:
-            assert isinstance(
-                blocking, bool
-            ), "blocking value error, must be the True, False or None"
+            assert isinstance(blocking, bool), (
+                "blocking value error, must be the True, False or None"
+            )
 
-        def transform(t, device, dtype, blocking):
+        def transform(t, device, dtype, blocking, copy_tensor):
             if dtype is None:
                 dtype = t.dtype
             t_used = t
@@ -796,26 +1306,36 @@ def monkey_patch_value():
                     place=t_used.place
                 ):
                     t_casted = t_used.cast(dtype=dtype)
+                    copy_tensor = False
             else:
                 t_casted = t_used
 
             # 2. Copy casted Tensor(in CPU or GPU) to device
             if isinstance(device, paddle.CUDAPlace):
                 new_t = t_casted.cuda(blocking=blocking)
+                copy_tensor = False
             elif isinstance(device, paddle.CUDAPinnedPlace):
                 if blocking is not True:
                     warnings.warn(
                         "blocking is not supported, and it will be ignored."
                     )
                 new_t = _C_ops.memcpy(self, 2)
+                copy_tensor = False
             elif isinstance(device, paddle.CPUPlace):
                 new_t = t_casted.cpu()
+                copy_tensor = False
             else:
                 new_t = t_casted
-
+            if copy_tensor:
+                return copy.deepcopy(new_t)
             return new_t
 
-        return transform(self, device, dtype, blocking)
+        return transform(self, device, dtype, blocking, copy_tensor)
+
+    def __deepcopy__(self, memo):
+        new_tensor = self.clone()
+        memo[id(self)] = new_tensor
+        return new_tensor
 
     def to(self, *args, **kwargs):
         """
@@ -831,35 +1351,45 @@ def monkey_patch_value():
             Tensor: self
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
-                >>> tensorx = paddle.to_tensor([1,2,3])
-                >>> print(tensorx)
+                >>> x = paddle.to_tensor([1, 2, 3])
+                >>> print(x)
                 Tensor(shape=[3], dtype=int64, place=Place(gpu:0), stop_gradient=True,
                     [1, 2, 3])
 
-                >>> tensorx = tensorx.to("cpu")
-                >>> print(tensorx.place)
+                >>> x = x.to("cpu")
+                >>> print(x.place)
                 Place(cpu)
 
-                >>> tensorx = tensorx.to("float32")
-                >>> print(tensorx.dtype)
+                >>> x = x.to("float32")
+                >>> print(x.dtype)
                 paddle.float32
 
-                >>> tensorx = tensorx.to("gpu", "int16")
-                >>> print(tensorx)
+                >>> x = x.to("gpu", "int16")
+                >>> print(x)
                 Tensor(shape=[3], dtype=int16, place=Place(gpu:0), stop_gradient=True,
                     [1, 2, 3])
-                >>> tensor2 = paddle.to_tensor([4,5,6])
-                >>> tensor2
+                >>> y = paddle.to_tensor([4, 5, 6])
+                >>> y
                 Tensor(shape=[3], dtype=int64, place=Place(gpu:0), stop_gradient=True,
                     [4, 5, 6])
-                >>> tensor2 = tensor2.to(tensorx)
-                >>> print(tensor2)
+                >>> y = y.to(x)
+                >>> print(y)
                 Tensor(shape=[3], dtype=int16, place=Place(gpu:0), stop_gradient=True,
                     [4, 5, 6])
         """
+
+        if "non_blocking" in kwargs:
+            non_blocking = kwargs.pop("non_blocking")
+        else:
+            non_blocking = False
+
+        if "copy" in kwargs:
+            copy_tensor = kwargs.pop("copy")
+        else:
+            copy_tensor = False
 
         size_args = len(args)
         size_kwargs = len(kwargs)
@@ -985,11 +1515,15 @@ def monkey_patch_value():
             args["dtype"] = other.dtype
             # in dy2static, we need show warning for this case
             other.place  # noqa: B018
-
-        return self._to(**args)
+        args["blocking"] = (
+            False if not args.get("blocking", False) or non_blocking else True
+        )
+        args["copy_tensor"] = copy_tensor
+        res = self._to(**args)
+        return res
 
     @fake_interface_only
-    def numpy(self):
+    def numpy(self, *, force=True):
         """
         **Notes**:
             **This API is ONLY available in Dygraph mode**
@@ -999,7 +1533,8 @@ def monkey_patch_value():
         Returns type:
             ndarray: dtype is same as current Variable
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
+
                 >>> import paddle
                 >>> import paddle.base as base
                 >>> from paddle.nn import Linear
@@ -1014,6 +1549,32 @@ def monkey_patch_value():
         pass
 
     @fake_interface_only
+    def tolist(self):
+        """
+        **Notes**:
+            **This API is ONLY available in Dygraph mode**
+        Returns a Python list that contains the elements of current :ref:`api_guide_Variable_en`
+
+        Returns:
+            list: The Python list containing the elements of current Variable.
+
+        Returns type:
+            list: Elements have the same dtype as current Variable
+
+        Examples:
+            .. code-block:: pycon
+
+                >>> import paddle
+                >>> import paddle.base as base
+                >>> import numpy as np
+                >>> data = np.random.uniform(-1, 1, [2, 3]).astype('float32')
+                >>> with base.dygraph.guard():
+                ...     x = paddle.to_tensor(data)
+                ...     print(x.tolist())  # Convert tensor to Python list
+        """
+        pass
+
+    @fake_interface_only
     def register_hook(self, hook):
         """
         Value don't have 'register_hook' interface in static graph mode
@@ -1022,22 +1583,124 @@ def monkey_patch_value():
         """
         pass
 
+    @property
+    def requires_grad(self) -> bool:
+        """
+        Whether this Tensor requires gradient computation.
+
+        This is a convenience property that returns the opposite of stop_gradient.
+        Setting requires_grad=True is equivalent to setting stop_gradient=False.
+
+        Examples:
+            .. code-block:: pycon
+
+                >>> import paddle
+                >>> x = paddle.randn([2, 3])
+                >>> print(x.requires_grad)  # False by default
+                >>>
+                >>> x.requires_grad = False
+                >>> print(x.stop_gradient)  # True
+        """
+        return not self.stop_gradient
+
+    @requires_grad.setter
+    def requires_grad(self, value: bool) -> None:
+        """
+        Set whether this Tensor requires gradient computation.
+
+        Args:
+            value (bool): True to enable gradient computation, False to disable.
+        """
+        if not isinstance(value, bool):
+            raise TypeError(
+                f"requires_grad must be bool, but got {type(value)}"
+            )
+        self.stop_gradient = not value
+
+    def requires_grad_(self, requires_grad: bool = True) -> Tensor:
+        """
+        Set whether this Tensor requires gradient computation.
+
+        Args:
+            requires_grad (bool): True to enable gradient computation, False to disable.
+        """
+        if not isinstance(requires_grad, bool):
+            raise TypeError(
+                f"requires_grad must be bool, but got {type(requires_grad)}"
+            )
+        self.stop_gradient = not requires_grad
+        return self
+
+    @property
+    def itemsize(self) -> int:
+        """
+        Returns the number of bytes allocated on the machine for a single element of the Tensor.
+
+        Examples:
+            .. code-block:: pycon
+
+                >>> import paddle
+                >>> x = paddle.randn((2, 3), dtype=paddle.float64)
+                >>> x.itemsize
+                8
+        """
+        return self.element_size()
+
+    @property
+    def nbytes(self: Tensor) -> int:
+        """
+        Returns the number of bytes allocated for elements of the dense Tensor. Defined to be ``size`` * ``element_size()``
+        """
+        if self.is_sparse_coo_tensor_type() or self.is_sparse_csr_tensor_type():
+            raise RuntimeError(
+                "nbytes is not defined for sparse tensors. "
+                "Add nbytes of indices and values for sparse storage size, "
+                "or multiply numel by element_size for the equivalent dense tensor."
+            )
+        return self.size * self.element_size()
+
     import paddle
+
+    def get_device(self) -> None:
+        """
+        Tensor don't have 'get_device' interface in static graph mode
+        But this interface can greatly facilitate dy2static.
+        So we give a warning here and return None.
+        """
+        warnings.warn(
+            "Tensor do not have 'get_device' interface for pir graph mode, try not to use it. None will be returned."
+        )
 
     value_methods = [
         ('cpu', cpu),
         ('cuda', cuda),
         ('place', place),
+        ('device', device),
         ('contiguous', contiguous),
+        ('is_cuda', is_cuda),
+        ('is_cpu', is_cpu),
         ('is_contiguous', is_contiguous),
         ('item', _item),
         ('dim', dim),
         ('ndimension', ndimension),
         ('ndim', _ndim),
         ('astype', astype),
+        ('byte', byte),
+        ('uint8', byte),
+        ('type_as', type_as),
         ('size', _size_),
+        ('nelement', nelement),
         ('T', _T_),
         ('mT', _mT_),
+        ('mH', _mH_),
+        ('H', _H_),
+        ('new_full', _new_full_),
+        ('new_tensor', _new_tensor_),
+        ('new_empty', _new_empty_),
+        ('new_ones', _new_ones_),
+        ('new_zeros', _new_zeros_),
+        ("requires_grad", requires_grad),
+        ("requires_grad_", requires_grad_),
         ('clone', clone),
         ('clear_gradient', clear_gradient),
         ('append', append),
@@ -1049,8 +1712,11 @@ def monkey_patch_value():
         ('values', values),
         ("_to", _to),
         ("to", to),
+        ("tolist", tolist),
         ("numpy", numpy),
         ("register_hook", register_hook),
+        ("get_device", get_device),
+        ("__deepcopy__", __deepcopy__),
         # For basic operators
         (
             '__add__',
@@ -1177,7 +1843,11 @@ def monkey_patch_value():
         ('__int__', _int_),
         ('__bool__', _bool_),
         ('__complex__', _complex_),
+        ('itemsize', itemsize),
+        ('nbytes', nbytes),
     ]
+    dtype_conversion_methods = _create_dtype_conversion_methods()
+    value_methods.extend(dtype_conversion_methods)
 
     global _already_patch_value
     if not _already_patch_value:

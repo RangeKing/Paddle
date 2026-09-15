@@ -16,6 +16,7 @@
 
 #include "paddle/fluid/framework/new_executor/instruction/instruction_base.h"
 #include "paddle/fluid/framework/new_executor/interpreter/execution_config.h"
+#include "paddle/fluid/framework/new_executor/new_executor_defs.h"
 
 namespace ir {
 class Operation;
@@ -31,8 +32,8 @@ class ValueExecutionInfo;
 class IfInstruction : public InstructionBase {
  public:
   IfInstruction(size_t id,
-                const phi::Place& place,
-                ::pir::Operation* op,
+                const Place& place,
+                pir::Operation* op,
                 ValueExecutionInfo* value_exe_info,
                 interpreter::ExecutionConfig execution_config);
 
@@ -42,7 +43,7 @@ class IfInstruction : public InstructionBase {
 
   const std::string& Name() const override { return cond_name_; }
 
-  ::pir::Operation* Operation() const override { return op_; }
+  pir::Operation* Operation() const override { return op_; }
 
   PirInterpreter* TrueBranchInterpreter() const { return true_branch_inter_; }
 
@@ -53,7 +54,7 @@ class IfInstruction : public InstructionBase {
   void SetInputHooks(const std::vector<PirHookFunc>& hookfuncs);
 
  private:
-  ::pir::Operation* op_;
+  pir::Operation* op_;
 
   std::string cond_name_{"if_instruction"};
 

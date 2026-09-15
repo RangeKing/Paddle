@@ -11,6 +11,7 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License. */
+#include <algorithm>
 #include <csignal>
 #include <fstream>
 #include <string>
@@ -22,7 +23,7 @@ limitations under the License. */
 #include "paddle/phi/core/platform/cuda_device_guard.h"
 #include "paddle/phi/core/platform/device/gpu/gpu_info.h"
 #endif
-#ifdef PADDLE_WITH_CUDA
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_XPU)
 #include "paddle/phi/backends/dynload/cupti.h"
 #endif
 #include "paddle/fluid/platform/init.h"
@@ -30,7 +31,9 @@ limitations under the License. */
 #include "paddle/phi/core/os_info.h"
 #include "paddle/phi/core/platform/device/device_wrapper.h"
 #include "paddle/phi/core/platform/device_context.h"
-
+#ifdef PADDLE_WITH_CUSTOM_DEVICE
+#include "paddle/fluid/custom_engine/custom_device_load.h"
+#endif
 #ifdef PADDLE_WITH_XPU
 #include "paddle/phi/backends/xpu/xpu_header.h"
 #include "paddle/phi/core/platform/device/xpu/xpu_info.h"
@@ -79,7 +82,7 @@ std::once_flag glog_init_flag;
 std::once_flag memory_method_init_flag;
 
 bool InitGflags(std::vector<std::string> args) {
-  bool successed = false;
+  bool succeeded = false;
   std::call_once(gflags_init_flag, [&]() {
     FLAGS_logtostderr = true;
     // NOTE(zhiqiu): dummy is needed, since the function
@@ -96,20 +99,35 @@ bool InitGflags(std::vector<std::string> args) {
       line += arg;
       line += ' ';
     }
-    VLOG(1) << "Before Parse: argc is " << argc
+    VLOG(8) << "Before Parse: argc is " << argc
             << ", Init commandline: " << line;
 
     char **arr = argv.data();
     paddle::flags::AllowUndefinedFlags();
     paddle::flags::ParseCommandLineFlags(&argc, &arr);
-    successed = true;
+    succeeded = true;
 
-    VLOG(1) << "After Parse: argc is " << argc;
+    VLOG(8) << "After Parse: argc is " << argc;
   });
-  return successed;
+  return succeeded;
 }
 
-#ifdef PADDLE_WITH_CUDA
+void InitGflagsFromEnv() {
+  std::vector<std::string> env_flags;
+  const auto &flag_map = phi::GetExportedFlagInfoMap();
+  env_flags.reserve(flag_map.size());
+  for (const auto &pair : flag_map) {
+    env_flags.push_back(pair.second.name);
+  }
+#ifdef __APPLE__
+  env_flags.erase(
+      std::remove(env_flags.begin(), env_flags.end(), "use_pinned_memory"),
+      env_flags.end());
+#endif
+  paddle::flags::SetFlagsFromEnv(env_flags, false);
+}
+
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_XPU)
 void InitCupti() {
 #ifdef PADDLE_WITH_CUPTI
   if (FLAGS_multiple_of_cupti_buffer_size == 1) return;
@@ -131,7 +149,7 @@ void InitCupti() {
   }
   MULTIPLY_ATTR_VALUE(CUPTI_ACTIVITY_ATTR_DEVICE_BUFFER_SIZE);
   MULTIPLY_ATTR_VALUE(CUPTI_ACTIVITY_ATTR_DEVICE_BUFFER_SIZE_CDP);
-#if CUDA_VERSION >= 9000
+#if CUDA_VERSION >= 9000 || defined(PADDLE_WITH_XPU)
   MULTIPLY_ATTR_VALUE(CUPTI_ACTIVITY_ATTR_PROFILING_SEMAPHORE_POOL_SIZE);
 #endif
 #undef MULTIPLY_ATTR_VALUE
@@ -150,7 +168,7 @@ void LoadCustomDevice(const std::string &library_dir) {
         common::errors::InvalidArgument(
             "Fail to open library: %s with error: %s", lib_path, dlerror()));
 
-    phi::LoadCustomRuntimeLib(lib_path, dso_handle);
+    paddle::LoadCustomLib(lib_path, dso_handle);
   }
   phi::CustomKernelMap::Instance().RegisterCustomKernels();
   LOG(INFO) << "Finished in LoadCustomDevice with libs_path: [" << library_dir
@@ -166,7 +184,7 @@ void InitDevices() {
     phi::SetCurrentThreadName("MainThread");
 // CUPTI attribute should be set before any CUDA context is created (see CUPTI
 // documentation about CUpti_ActivityAttribute).
-#ifdef PADDLE_WITH_CUDA
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_XPU)
     InitCupti();
 #endif
     /*Init all available devices by default */
@@ -216,6 +234,7 @@ void InitDevices(const std::vector<int> devices) {
 #endif
 #ifdef PADDLE_WITH_XPU
     places.emplace_back(phi::XPUPlace(device));
+    places.emplace_back(phi::XPUPinnedPlace());
 #endif
 #ifdef PADDLE_WITH_IPU
     places.emplace_back(phi::IPUPlace(device));
@@ -433,7 +452,7 @@ void InitMemoryMethod() {
     memory_method->allocation_deleter =
         paddle::memory::allocation::Allocator::AllocationDeleter;
 #if defined(PADDLE_WITH_CUSTOM_DEVICE) || defined(PADDLE_WITH_CUDA) || \
-    defined(PADDLE_WITH_HIP)
+    defined(PADDLE_WITH_HIP) || defined(PADDLE_WITH_XPU)
     memory_method->copy_with_stream =
         paddle::memory::Copy<phi::Place, phi::Place>;
 #endif
@@ -499,8 +518,11 @@ void InitMemoryMethod() {
           .GetZeroAllocator(phi::CPUPlace())
           .get();
     };
-    // XPUs do not have the concept of pinned memory,
-    // so the get_pinned_allocator function is not set.
+    memory_method->get_pinned_allocator = []() -> phi::Allocator * {
+      return paddle::memory::allocation::AllocatorFacade::Instance()
+          .GetAllocator(phi::XPUPinnedPlace())
+          .get();
+    };
     memory_method->get_new_xpu_event = [](int device_id) {
       return paddle::platform::XpuEventResourcePool::Instance().New(device_id);
     };

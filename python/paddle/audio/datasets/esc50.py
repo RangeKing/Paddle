@@ -14,9 +14,7 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple
-
-from typing_extensions import TypeAlias
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeAlias
 
 from paddle.dataset.common import DATA_HOME
 from paddle.utils import download
@@ -62,38 +60,41 @@ class ESC50(AudioClassificationDataset):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +TIMEOUT(60)
             >>> import paddle
 
-            >>> mode = 'dev'
-            >>> esc50_dataset = paddle.audio.datasets.ESC50(mode=mode,  # type: ignore[arg-type]
-            ...                                         feat_type='raw')
+            >>> esc50_dataset = paddle.audio.datasets.ESC50(
+            ...     mode='dev',
+            ...     feat_type='raw',
+            ... )
             >>> for idx in range(5):
             ...     audio, label = esc50_dataset[idx]
             ...     # do something with audio, label
             ...     print(audio.shape, label)
             ...     # [audio_data_length] , label_id
-            [220500] 0
-            [220500] 14
-            [220500] 36
-            [220500] 36
-            [220500] 19
+            paddle.Size([220500]) 0
+            paddle.Size([220500]) 14
+            paddle.Size([220500]) 36
+            paddle.Size([220500]) 36
+            paddle.Size([220500]) 19
 
-            >>> esc50_dataset = paddle.audio.datasets.ESC50(mode=mode,  # type: ignore[arg-type]
-            ...                                         feat_type='mfcc',
-            ...                                         n_mfcc=40)
+            >>> esc50_dataset = paddle.audio.datasets.ESC50(
+            ...     mode='dev',
+            ...     feat_type='mfcc',
+            ...     n_mfcc=40,
+            ... )
             >>> for idx in range(5):
             ...     audio, label = esc50_dataset[idx]
             ...     # do something with mfcc feature, label
             ...     print(audio.shape, label)
             ...     # [feature_dim, length] , label_id
-            [40, 1723] 0
-            [40, 1723] 14
-            [40, 1723] 36
-            [40, 1723] 36
-            [40, 1723] 19
+            paddle.Size([40, 1723]) 0
+            paddle.Size([40, 1723]) 14
+            paddle.Size([40, 1723]) 36
+            paddle.Size([40, 1723]) 36
+            paddle.Size([40, 1723]) 19
 
     """
 
@@ -179,9 +180,9 @@ class ESC50(AudioClassificationDataset):
         archive: dict[str, str] | None = None,
         **kwargs: Any,
     ) -> None:
-        assert split in range(
-            1, 6
-        ), f'The selected split should be integer, and 1 <= split <= 5, but got {split}'
+        assert split in range(1, 6), (
+            f'The selected split should be integer, and 1 <= split <= 5, but got {split}'
+        )
         if archive is not None:
             self.archive = archive
         files, labels = self._get_data(mode, split)

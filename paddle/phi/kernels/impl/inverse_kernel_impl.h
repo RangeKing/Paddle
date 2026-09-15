@@ -28,8 +28,10 @@ void InverseKernel(const Context& dev_ctx,
                    const DenseTensor& x,
                    DenseTensor* out) {
   dev_ctx.template Alloc<T>(out);
-
-  phi::funcs::MatrixInverseFunctor<Context, T> mat_inv;
+  if (x.numel() == 0) {
+    return;
+  }
+  funcs::MatrixInverseFunctor<Context, T> mat_inv;
   mat_inv(dev_ctx, x, out);
 }
 

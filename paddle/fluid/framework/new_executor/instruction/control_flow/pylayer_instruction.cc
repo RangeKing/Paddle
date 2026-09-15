@@ -35,16 +35,15 @@
 #include "paddle/fluid/framework/new_executor/instruction/instruction_util.h"
 #include "paddle/fluid/pir/dialect/operator/ir/manual_op.h"
 #include "paddle/fluid/pir/dialect/operator/ir/manual_pylayer_op.h"
-
-#ifdef PADDLE_WITH_DNNL
 #include "paddle/fluid/platform/onednn_helper.h"
-#endif
+
+COMMON_DECLARE_bool(check_cuda_error);
 
 namespace paddle::framework {
 
 PyLayerInstruction::PyLayerInstruction(
     size_t id,
-    const phi::Place& place,
+    const Place& place,
     pir::Operation* op,
     ValueExecutionInfo* value_exec_info,
     interpreter::ExecutionConfig execution_config)
@@ -149,14 +148,21 @@ PyLayerInstruction::~PyLayerInstruction() { delete fwd_inter_; }
 
 void PyLayerInstruction::Run() {
   VLOG(6) << "start pylayer forward block interpreter";
+  if (FLAGS_check_cuda_error) [[unlikely]] {
+    CUDAErrorCheck("PyLayerInstruction begin");
+  }
 
 #ifdef PADDLE_WITH_DNNL
   // Executor on being destroyed clears oneDNN cache and resets
   // registered model data layout. This is unwanted for nested
   // Executors (executors declared inside control ops)
-  paddle::platform::DontClearMKLDNNCache(fwd_inter_->GetPlace());
+  paddle::platform::DontClearONEDNNCache(fwd_inter_->GetPlace());
 #endif
   fwd_inter_->Run({}, false);
+
+  if (FLAGS_check_cuda_error) [[unlikely]] {
+    CUDAErrorCheck("PyLayerInstruction finish");
+  }
 }
 
 }  // namespace paddle::framework

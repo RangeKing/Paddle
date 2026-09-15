@@ -13,14 +13,10 @@
 // limitations under the License.
 
 #include "paddle/phi/kernels/auc_kernel.h"
-
-#include "paddle/phi/backends/cpu/cpu_context.h"
 #include "paddle/phi/backends/gpu/gpu_primitives.h"
 #include "paddle/phi/core/kernel_registry.h"
 
 namespace phi {
-
-using phi::PADDLE_CUDA_NUM_THREADS;
 
 __global__ void ClearObsoleteDataKernel(int64_t *pos,
                                         int64_t *neg,
@@ -28,8 +24,8 @@ __global__ void ClearObsoleteDataKernel(int64_t *pos,
                                         const int slide_steps) {
   int cur_step_index =
       static_cast<int>(pos[(slide_steps + 1) * bucket_length]) % slide_steps;
-  int cur_step_begin = cur_step_index * bucket_length;
-  int sum_step_begin = slide_steps * bucket_length;
+  int64_t cur_step_begin = static_cast<int64_t>(cur_step_index) * bucket_length;
+  int64_t sum_step_begin = static_cast<int64_t>(slide_steps) * bucket_length;
   CUDA_KERNEL_LOOP(i, bucket_length) {
     pos[sum_step_begin + i] -= pos[cur_step_begin + i];
     neg[sum_step_begin + i] -= neg[cur_step_begin + i];
@@ -43,8 +39,8 @@ __global__ void UpdateSumDataKernel(int64_t *pos,
                                     const int slide_steps) {
   int cur_step_index =
       static_cast<int>(pos[(slide_steps + 1) * bucket_length]) % slide_steps;
-  int cur_step_begin = cur_step_index * bucket_length;
-  int sum_step_begin = slide_steps * bucket_length;
+  int64_t cur_step_begin = static_cast<int64_t>(cur_step_index) * bucket_length;
+  int64_t sum_step_begin = static_cast<int64_t>(slide_steps) * bucket_length;
   CUDA_KERNEL_LOOP(i, bucket_length) {
     pos[sum_step_begin + i] += pos[cur_step_begin + i];
     neg[sum_step_begin + i] += neg[cur_step_begin + i];
@@ -74,9 +70,9 @@ __global__ void AddDataKernel(const int64_t *label_data,
                    "The predict data must gather or equal 0.");
     uint32_t binIdx = static_cast<uint32_t>(predict_data * num_thresholds);
     if (label_data[i]) {
-      phi::CudaAtomicAdd(pos + cur_step_begin + binIdx, 1);
+      CudaAtomicAdd(pos + cur_step_begin + binIdx, 1);
     } else {
-      phi::CudaAtomicAdd(neg + cur_step_begin + binIdx, 1);
+      CudaAtomicAdd(neg + cur_step_begin + binIdx, 1);
     }
   }
 }
@@ -151,8 +147,8 @@ void statAuc(const Context &dev_ctx,
   int cur_step_index =
       static_cast<int>(origin_stat_pos[(slide_steps + 1) * bucket_length]) %
       slide_steps;
-  int cur_step_begin = cur_step_index * bucket_length;
-  int sum_step_begin = slide_steps * bucket_length;
+  int64_t cur_step_begin = static_cast<int64_t>(cur_step_index) * bucket_length;
+  int64_t sum_step_begin = static_cast<int64_t>(slide_steps) * bucket_length;
 
   ClearObsoleteDataKernel<<<(bucket_length + PADDLE_CUDA_NUM_THREADS - 1) /
                                 PADDLE_CUDA_NUM_THREADS,
@@ -189,7 +185,7 @@ void AucKernel(const Context &dev_ctx,
                const DenseTensor &label,
                const DenseTensor &stat_pos,
                const DenseTensor &stat_neg,
-               const paddle::optional<DenseTensor> &ins_tag_weight,
+               const optional<DenseTensor> &ins_tag_weight,
                const std::string &curve,
                int num_thresholds,
                int slide_steps,
@@ -265,7 +261,7 @@ void AucKernel(const Context &dev_ctx,
                       origin_stat_pos,
                       origin_stat_neg,
                       is_fake_data);
-  int sum_offset = slide_steps * (num_thresholds + 1);
+  int64_t sum_offset = static_cast<int64_t>(slide_steps) * (num_thresholds + 1);
   CalcAucKernel<<<1, 1, 0, dev_ctx.stream()>>>(origin_stat_pos + sum_offset,
                                                origin_stat_neg + sum_offset,
                                                num_thresholds,

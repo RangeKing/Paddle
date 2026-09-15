@@ -102,7 +102,8 @@ class ForLoopTuplePreTransformer(BaseTransformer):
 
     will be changed into :
 
-    >>> UUID_iterator = _jst.Indexable(B)  # make iterator-only to indexable list.
+    >>> # make iterator-only to indexable list.
+    >>> UUID_iterator = _jst.Indexable(B)
     >>> for UUID_target in UUID_iterator:
     >>>     A = _jst.Unpack(UUID_target, structure)
     >>>     C
@@ -184,9 +185,9 @@ class ForNodeVisitor:
     """
 
     def __init__(self, for_node):
-        assert isinstance(
-            for_node, gast.For
-        ), "Input node for the initialization of ForNodeVisitor is not gast.For node."
+        assert isinstance(for_node, gast.For), (
+            "Input node for the initialization of ForNodeVisitor is not gast.For node."
+        )
         # 1. original for node
         self.node = for_node
 
@@ -276,14 +277,14 @@ class ForNodeVisitor:
     def _args_check(self):
         if self.is_for_range_iter():
             self.args_length = len(self.iter_args)
-            assert (
-                self.args_length >= 1 and self.args_length <= 3
-            ), "range() function takes 1 to 3 arguments"
+            assert self.args_length >= 1 and self.args_length <= 3, (
+                "range() function takes 1 to 3 arguments"
+            )
         elif self.is_for_enumerate_iter():
             self.args_length = len(self.iter_args)
-            assert (
-                self.args_length >= 1 and self.args_length <= 2
-            ), "enumerate() function takes 1 to 2 arguments"
+            assert self.args_length >= 1 and self.args_length <= 2, (
+                "enumerate() function takes 1 to 2 arguments"
+            )
         else:
             self.args_length = None
 

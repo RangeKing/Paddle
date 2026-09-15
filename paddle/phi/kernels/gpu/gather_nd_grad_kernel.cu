@@ -15,7 +15,6 @@
 #include "paddle/phi/kernels/gather_nd_grad_kernel.h"
 
 #include "paddle/phi/backends/gpu/gpu_context.h"
-#include "paddle/phi/common/bfloat16.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/funcs/eigen/common.h"
 #include "paddle/phi/kernels/funcs/scatter.cu.h"
@@ -23,20 +22,20 @@
 namespace phi {
 
 template <typename T, typename Context>
-void GatherNdGradKernel(const Context &ctx,
+void GatherNdGradKernel(const Context &dev_ctx,
                         const DenseTensor &x,
                         const DenseTensor &index,
                         const DenseTensor &out_grad,
                         DenseTensor *x_grad) {
-  ctx.template Alloc<T>(x_grad);
-  auto dxt = phi::EigenVector<T>::Flatten(*x_grad);
-  auto &place = *ctx.eigen_device();
+  dev_ctx.template Alloc<T>(x_grad);
+  auto dxt = EigenVector<T>::Flatten(*x_grad);
+  auto &place = *dev_ctx.eigen_device();
   dxt.device(place) = dxt.constant(static_cast<T>(0));
   if (out_grad.numel() == 0) return;
 
   const auto &index_type = index.dtype();
   bool index_type_match =
-      index_type == phi::DataType::INT32 || index_type == phi::DataType::INT64;
+      index_type == DataType::INT32 || index_type == DataType::INT64;
 
   PADDLE_ENFORCE_EQ(index_type_match,
                     true,
@@ -44,13 +43,13 @@ void GatherNdGradKernel(const Context &ctx,
                         "Index holds the wrong type, it holds [%s],"
                         "but desires to be [%s] or [%s].",
                         index_type,
-                        phi::DataType::INT32,
-                        phi::DataType::INT64));
+                        DataType::INT32,
+                        DataType::INT64));
 
-  if (index_type == phi::DataType::INT32) {
-    phi::funcs::GPUScatterNdAdd<T, int>(ctx, out_grad, index, x_grad);
-  } else if (index_type == phi::DataType::INT64) {
-    phi::funcs::GPUScatterNdAdd<T, int64_t>(ctx, out_grad, index, x_grad);
+  if (index_type == DataType::INT32) {
+    funcs::GPUScatterNdAdd<T, int>(dev_ctx, out_grad, index, x_grad);
+  } else if (index_type == DataType::INT64) {
+    funcs::GPUScatterNdAdd<T, int64_t>(dev_ctx, out_grad, index, x_grad);
   }
 }
 
@@ -68,7 +67,7 @@ PD_REGISTER_KERNEL(gather_nd_grad,
                    int8_t,
                    int16_t,
                    bool,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::complex64,
+                   phi::complex128) {}

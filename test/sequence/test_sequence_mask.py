@@ -26,7 +26,7 @@ from op_test import OpTest
 
 import paddle
 from paddle.base.framework import (
-    convert_np_dtype_to_proto_type,
+    convert_nptype_to_vartype,
 )
 
 
@@ -59,20 +59,20 @@ class SequenceMaskTestBase(OpTest):
         self.outputs = {'Y': self.calc_ground_truth_mask()}
         self.attrs = {
             'maxlen': self.maxlen,
-            'out_dtype': convert_np_dtype_to_proto_type(self.mask_dtype),
+            'out_dtype': convert_nptype_to_vartype(self.mask_dtype),
         }
 
     def calc_ground_truth_mask(self):
         maxlen = np.max(self.x) if self.maxlen < 0 else self.maxlen
         shape = (*self.x.shape, maxlen)
         index_broadcast = np.broadcast_to(
-            np.reshape(range(maxlen), newshape=[1] * self.x.ndim + [-1]),
+            np.reshape(range(maxlen), [1] * self.x.ndim + [-1]),
             shape=shape,
         )
         x_broadcast = np.broadcast_to(
             np.reshape(
                 self.x,
-                newshape=(*self.x.shape, -1),
+                (*self.x.shape, -1),
             ),
             shape=shape,
         )
@@ -135,21 +135,19 @@ class SequenceMaskTestBase_tensor_attr(OpTest):
 
         self.inputs = {'X': self.x, 'MaxLenTensor': self.maxlen_tensor}
         self.outputs = {'Y': self.calc_ground_truth_mask()}
-        self.attrs = {
-            'out_dtype': convert_np_dtype_to_proto_type(self.mask_dtype)
-        }
+        self.attrs = {'out_dtype': convert_nptype_to_vartype(self.mask_dtype)}
 
     def calc_ground_truth_mask(self):
         maxlen = np.max(self.x) if self.maxlen < 0 else self.maxlen
         shape = (*self.x.shape, maxlen)
         index_broadcast = np.broadcast_to(
-            np.reshape(range(maxlen), newshape=[1] * self.x.ndim + [-1]),
+            np.reshape(range(maxlen), [1] * self.x.ndim + [-1]),
             shape=shape,
         )
         x_broadcast = np.broadcast_to(
             np.reshape(
                 self.x,
-                newshape=(*self.x.shape, -1),
+                (*self.x.shape, -1),
             ),
             shape=shape,
         )
@@ -185,7 +183,6 @@ class SequenceMaskTest5_tensor_attr(SequenceMaskTestBase_tensor_attr):
 
 
 class TestSequenceMaskOpError(unittest.TestCase):
-
     def test_errors(self):
         paddle.enable_static()
         with paddle.static.program_guard(
@@ -206,6 +203,35 @@ class TestSequenceMaskWithEmptyTensor(unittest.TestCase):
         lengths = paddle.to_tensor(np.array([], dtype=np.int64))
         mask = paddle.nn.functional.sequence_mask(lengths)
         self.assertEqual(list(mask.shape), [0, 0])
+
+
+class SequenceMaskTest_ZeroSize(OpTest):
+    def initDefaultParameters(self):
+        self.op_type = 'sequence_mask'
+        self.python_api = sequence_mask_wrapper
+        self.maxlen = 10
+        self.mask_dtype = 'int64'
+        self.x = np.random.random([0, 3]).astype('int64')
+        self.y = np.random.random([0, 3, 10]).astype('int64')
+
+    def initParameters(self):
+        pass
+
+    def setUp(self):
+        self.initDefaultParameters()
+        self.initParameters()
+        if not isinstance(self.x, np.ndarray):
+            self.x = np.array(self.x)
+
+        self.inputs = {'X': self.x}
+        self.outputs = {'Y': self.y}
+        self.attrs = {
+            'maxlen': self.maxlen,
+            'out_dtype': convert_nptype_to_vartype(self.mask_dtype),
+        }
+
+    def test_check_output(self):
+        self.check_output(check_pir=True)
 
 
 if __name__ == '__main__':

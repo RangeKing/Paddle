@@ -19,8 +19,9 @@
 
 namespace phi {
 
-bool SplitCheckIfOneDNNSupport(const KernelContext* ctx) {
-  if (ctx->InputAt<phi::DenseTensor>(0).mem_desc().get_inner_nblks() == 0) {
+bool SplitCheckIfOneDNNSupport(const KernelContext* dev_ctx) {
+  if (phi::funcs::GetOneDNNMemDesc(dev_ctx->InputAt<DenseTensor>(0))
+          .get_inner_nblks() == 0) {
     return true;
   }
   return false;
@@ -33,10 +34,10 @@ const std::vector<int64_t> get_slice_strides(
   auto strides = full_md.get_strides();
   auto ndims = full_md.get_dims().size();
   auto full_dims = full_md.get_dims();
-  auto splitted_stride = strides[axis];
-  std::vector<int64_t> slice_strides(ndims, splitted_stride);
+  auto split_stride = strides[axis];
+  std::vector<int64_t> slice_strides(ndims, split_stride);
   for (size_t i = 0; i < ndims; ++i) {
-    slice_strides[i] = strides[i] > splitted_stride
+    slice_strides[i] = strides[i] > split_stride
                            ? (strides[i] / full_dims[axis]) * out_vec_dims[axis]
                            : strides[i];
   }
@@ -55,7 +56,7 @@ void SplitKernel(const Context& dev_ctx,
 
   auto outs_number = out.size();
   const auto x_dims = x.dims();
-  auto x_vec_dims = common::vectorize(x_dims);
+  auto x_vec_dims = vectorize(x_dims);
 
   dnnl::memory::data_type x_type = funcs::ToOneDNNDataType(x.dtype());
 
@@ -65,17 +66,17 @@ void SplitKernel(const Context& dev_ctx,
   funcs::ReorderOneDNNHandler reorder_handler(
       x_vec_dims, x.dtype(), x_type, onednn_engine);
   auto reorder_src_memory_p = reorder_handler.AcquireSrcMemory(
-      x.mem_desc(), funcs::to_void_cast(x.data<T>()));
+      phi::funcs::GetOneDNNMemDesc(x), funcs::to_void_cast(x.data<T>()));
 
   for (size_t i = 0; i < outs_number; ++i) {
-    auto out_vec_dims = common::vectorize(out[i]->dims());
+    auto out_vec_dims = vectorize(out[i]->dims());
     auto slice_mem_p = reorder_handler.AcquireSubmemory(
         out_vec_dims, offset, reorder_src_memory_p);
 
     auto reorder_dst_memory_p = reorder_handler.AcquireDstMemory(
         out[i],
         out_vec_dims,
-        get_slice_strides(out_vec_dims, x.mem_desc(), axis),
+        get_slice_strides(out_vec_dims, phi::funcs::GetOneDNNMemDesc(x), axis),
         dev_ctx.GetPlace());
     auto reorder_p =
         reorder_handler.AcquireReorder(reorder_dst_memory_p, slice_mem_p);
@@ -83,7 +84,7 @@ void SplitKernel(const Context& dev_ctx,
     reorder_p->execute(astream, *slice_mem_p, *reorder_dst_memory_p);
 
     offset[axis] += sections.GetData()[i];
-    out[i]->set_mem_desc(reorder_dst_memory_p->get_desc());
+    phi::funcs::SetOneDNNMemDesc(out[i], reorder_dst_memory_p->get_desc());
   }
   astream.wait();
 }
@@ -109,7 +110,7 @@ PD_REGISTER_KERNEL(split,
                    ONEDNN,
                    phi::SplitKernel,
                    float,
-                   phi::dtype::bfloat16,
+                   phi::bfloat16,
                    int8_t,
                    uint8_t) {
   kernel->check_if_onednn_kernel_support_ = phi::SplitCheckIfOneDNNSupport;
@@ -120,7 +121,7 @@ PD_REGISTER_KERNEL(split_with_num,
                    ONEDNN,
                    phi::SplitWithNumKernel,
                    float,
-                   phi::dtype::bfloat16,
+                   phi::bfloat16,
                    int8_t,
                    uint8_t) {
   kernel->check_if_onednn_kernel_support_ = phi::SplitCheckIfOneDNNSupport;

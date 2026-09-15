@@ -81,7 +81,7 @@ DefineHeader = """
 
 """
 
-DefaultArch = [70, 75, 80, 90]
+DefaultArch = [70, 75, 80, 90, 100]
 epilogue_tags = ["bias", "biasFtGelu", "biasReLU", "noBias"]
 
 WeightTypes = ["uint8_t", "cutlass::uint4b_t"]
@@ -89,6 +89,7 @@ ThreadblockShapes = [
     "cutlass::gemm::GemmShape<16, 128, 64>",
     "cutlass::gemm::GemmShape<32, 128, 64>",
     "cutlass::gemm::GemmShape<64, 128, 64>",
+    "cutlass::gemm::GemmShape<128, 128, 64>",
     "cutlass::gemm::GemmShape<128, 128, 64>",
     "cutlass::gemm::GemmShape<128, 256, 64>",
     "cutlass::gemm::GemmShape<256, 128, 64>",
@@ -98,6 +99,7 @@ WarpShapes = [
     "cutlass::gemm::GemmShape<32, 32, 64>",
     "cutlass::gemm::GemmShape<64, 64, 64>",
     "cutlass::gemm::GemmShape<64, 64, 64>",
+    "cutlass::gemm::GemmShape<128, 32, 64>",
     "cutlass::gemm::GemmShape<64, 64, 64>",
     "cutlass::gemm::GemmShape<64, 64, 64>",
 ]
@@ -110,7 +112,13 @@ WarpShapes_sm70 = [
     "cutlass::gemm::GemmShape<32, 32, 64>",
     "cutlass::gemm::GemmShape<64, 64, 64>",
 ]
-StagesList = {70: [2], 75: [2], 80: [2, 3, 4, 5], 90: [2, 3, 4, 5]}
+StagesList = {
+    70: [2],
+    75: [2],
+    80: [2, 3, 4, 5],
+    90: [2, 3, 4, 5],
+    100: [2, 3, 4, 5],
+}
 
 ElementTypes = {"fp16": "half", "bf16": "__nv_bfloat16"}
 Archs = {
@@ -118,6 +126,7 @@ Archs = {
     75: "cutlass::arch::Sm75",
     80: "cutlass::arch::Sm80",
     90: "cutlass::arch::Sm80",
+    100: "cutlass::arch::Sm80",
 }
 EpilogueTags = {
     "bias": "EpilogueOpBias",
@@ -151,16 +160,15 @@ def find_arch_range(archs):
             compile_archs.append(70)
         elif arch >= 75 and arch < 80:
             compile_archs.append(75)
-        elif arch >= 80 and arch < 90:
+        elif arch >= 80 and arch < 110:
             compile_archs.append(80)
-        elif arch >= 90 and arch < 91:
-            compile_archs.append(90)
     compile_archs = list(set(compile_archs))
     compile_archs.sort()
     return compile_archs
 
 
 def convert_to_arch_list(archs):
+    archs = archs.replace("90a", "90")
     archs = archs.lower().strip()
     if archs == "all":
         return DefaultArch
@@ -235,8 +243,6 @@ if __name__ == "__main__":
     if archs:
         for element_type in ElementTypes.keys():
             for arch in archs:
-                if arch == 90 and 80 in archs:
-                    continue
                 for epilogue_tag in EpilogueTags.keys():
                     for stages in StagesList[arch]:
                         file_name = f"autogen_tmp/generic_mixed_gemm_kernelLauncher_{element_type}_sm{arch}_stages{stages}_{epilogue_tag}.cu"

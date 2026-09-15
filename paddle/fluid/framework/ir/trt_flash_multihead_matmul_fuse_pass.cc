@@ -277,7 +277,7 @@ int TrtFlashMultiHeadMatmulFusePass::BuildFlashFusion(
                                                              name_scope);
 
   multihead_pattern();
-  auto fuse_creater = [&](Node* input0,
+  auto fuse_creator = [&](Node* input0,
                           Node* mul0,
                           Node* mul1,
                           Node* mul2,
@@ -293,7 +293,7 @@ int TrtFlashMultiHeadMatmulFusePass::BuildFlashFusion(
                           Node* scale_out) {
     // get Device context
     auto* dev_ctx = static_cast<phi::CPUContext*>(
-        phi::DeviceContextPool::Instance().Get(phi::CPUPlace()));
+        phi::DeviceContextPool::Instance().Get(CPUPlace()));
 
     auto scale_attr = PADDLE_GET_CONST(float, scale->Op()->GetAttr("scale"));
 
@@ -321,11 +321,11 @@ int TrtFlashMultiHeadMatmulFusePass::BuildFlashFusion(
     }
     if (use_trt_fma && weight_is_constant) {
       auto* wq_tensor =
-          scope->FindVar(mul0_w->Name())->GetMutable<phi::DenseTensor>();
+          scope->FindVar(mul0_w->Name())->GetMutable<DenseTensor>();
       auto* wk_tensor =
-          scope->FindVar(mul1_w->Name())->GetMutable<phi::DenseTensor>();
+          scope->FindVar(mul1_w->Name())->GetMutable<DenseTensor>();
       auto* wv_tensor =
-          scope->FindVar(mul2_w->Name())->GetMutable<phi::DenseTensor>();
+          scope->FindVar(mul2_w->Name())->GetMutable<DenseTensor>();
       float* wq_data = wq_tensor->data<float>();
       float* wk_data = wk_tensor->data<float>();
       float* wv_data = wv_tensor->data<float>();
@@ -337,7 +337,7 @@ int TrtFlashMultiHeadMatmulFusePass::BuildFlashFusion(
       combined_w_desc->SetShape(
           {wq_tensor->dims()[0], 3, wq_tensor->dims()[1]});
       combined_w_desc->SetPersistable(true);
-      phi::DenseTensor tmp_combined_w_tensor;
+      DenseTensor tmp_combined_w_tensor;
       tmp_combined_w_tensor.Resize(combined_w_dims);
       float* tmp_combined_w_data =
           dev_ctx->template HostAlloc<float>(&tmp_combined_w_tensor);
@@ -444,7 +444,7 @@ int TrtFlashMultiHeadMatmulFusePass::BuildFlashFusion(
     GET_IR_NODE_FROM_SUBGRAPH(
         transpose2_qkv_out, transpose2_qkv_out, multihead_pattern);
 
-    fuse_creater(input0,
+    fuse_creator(input0,
                  mul0,
                  mul1,
                  mul2,

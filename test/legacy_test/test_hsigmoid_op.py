@@ -26,12 +26,13 @@ np.random.seed(100)
 
 
 def find_latest_set(num):
+    num = int(np.asarray(num).item())
     return 1 + int(math.floor(math.log2(num)))
 
 
 class CodeTable:
     def __init__(self, num_classes, code):
-        self.c = num_classes + code
+        self.c = int(np.asarray(num_classes + code).item())
 
     def cal_index(self, bit):
         return (self.c >> (bit + 1)) - 1
@@ -77,7 +78,7 @@ def hsigmoid(x, w, label, bias, num_classes):
         length = code_table.get_length()
         for j in range(length):
             idx = code_table.cal_index(j)
-            pre_output[i][j] += bias[idx][0]
+            pre_output[i][j] += np.asarray(bias[idx]).item()
     for i in range(batch_size):
         code_table = CodeTable(num_classes, label[i])
         length = code_table.get_length()
@@ -142,7 +143,7 @@ def hsigmoidWithCustomTree(
             length = code_table.get_length()
             for j in range(length):
                 idx = code_table.cal_index(j)
-                pre_output[i][j] += bias[idx][0]
+                pre_output[i][j] += np.asarray(bias[idx]).item()
     for i in range(batch_size):
         code_table = CodeTableWithCustomTree(path_table, path_code, i)
         length = code_table.get_length()
@@ -259,9 +260,7 @@ class TestHSigmoidOpSparse(OpTest):
                 (1, 0, 0, -1, -1),
                 (0, 1, -1, -1, -1),
             ]
-        ).astype(
-            'int64'
-        )  # np.array to store
+        ).astype('int64')  # np.array to store
         bias = np.random.random((num_classes - 1, 1))
         self.attrs = {'num_classes': num_classes, 'is_sparse': True}
         self.inputs = {
@@ -282,9 +281,9 @@ class TestHSigmoidOpSparse(OpTest):
 
 
 @skip_check_grad_ci(
-    reason="[skip shape check] The huffman tree is structed separately. It will be complicated if use large shape."
+    reason="[skip shape check] The huffman tree is structured separately. It will be complicated if use large shape."
 )
-class TestHSigmoidOpWithCostumTree(OpTest):
+class TestHSigmoidOpWithCustomTree(OpTest):
     def setUp(self):
         self.op_type = "hierarchical_sigmoid"
         self.python_api = python_api
@@ -312,9 +311,7 @@ class TestHSigmoidOpWithCostumTree(OpTest):
                 (1, 0, 0, -1, -1),
                 (0, 1, -1, -1, -1),
             ]
-        ).astype(
-            'int64'
-        )  # np.array to store
+        ).astype('int64')  # np.array to store
         bias = np.random.random((num_classes - 1, 1))
         self.attrs = {'num_classes': num_classes, 'is_sparse': False}
         self.inputs = {
@@ -343,9 +340,9 @@ class TestHSigmoidOpWithCostumTree(OpTest):
 
 
 @skip_check_grad_ci(
-    reason="[skip shape check] The huffman tree is structed separately. It will be complicated if use large shape."
+    reason="[skip shape check] The huffman tree is structured separately. It will be complicated if use large shape."
 )
-class TestHSigmoidOpWithCostumTreeWithoutBias(OpTest):
+class TestHSigmoidOpWithCustomTreeWithoutBias(OpTest):
     def setUp(self):
         self.op_type = "hierarchical_sigmoid"
         self.python_api = python_api
@@ -373,9 +370,7 @@ class TestHSigmoidOpWithCostumTreeWithoutBias(OpTest):
                 (1, 0, 0, -1, -1),
                 (0, 1, -1, -1, -1),
             ]
-        ).astype(
-            'int64'
-        )  # np.array to store
+        ).astype('int64')  # np.array to store
         # bias = np.random.random((num_classes - 1, 1)).astype("float32")
         self.attrs = {'num_classes': num_classes, 'is_sparse': False}
         self.inputs = {

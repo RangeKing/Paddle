@@ -17,7 +17,6 @@ limitations under the License. */
 #include "paddle/phi/kernels/eigvalsh_kernel.h"
 
 #include "paddle/phi/backends/gpu/gpu_context.h"
-#include "paddle/phi/common/complex.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/impl/eigvalsh_kernel_impl.h"
 
@@ -27,9 +26,9 @@ PD_REGISTER_KERNEL(eigvalsh,  // cuda_only
                    phi::EigvalshKernel,
                    float,
                    double,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {
-  kernel->InputAt(1).SetDataType(phi::dtype::ToReal(kernel_key.dtype()));
+                   phi::complex64,
+                   phi::complex128) {
+  kernel->InputAt(0).SetDataType(phi::dtype::ToReal(kernel_key.dtype()));
 }
 
 #endif  // not PADDLE_WITH_HIP

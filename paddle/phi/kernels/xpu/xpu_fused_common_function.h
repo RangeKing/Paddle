@@ -21,7 +21,7 @@ struct XPUDropoutParam {
   bool is_upscale_in_train;
   bool is_test;
   bool fix_seed;
-  const phi::DenseTensor *tensor_seed;
+  const DenseTensor *tensor_seed;
   int seed_val;
 
   XPUDropoutParam() {
@@ -37,7 +37,7 @@ struct XPUDropoutParam {
                            bool is_upscale_in_train_,
                            bool is_test_,
                            bool fix_seed_,
-                           const phi::DenseTensor *tensor_seed,
+                           const DenseTensor *tensor_seed,
                            int seed_val_) {
     dropout_prob = dropout_prob_;
     is_upscale_in_train = is_upscale_in_train_;
@@ -71,9 +71,9 @@ void Dropout(xpu::Context *xpu_ctx,
              T *mask,
              T *y,
              const XPUDropoutParam &param,
-             int len) {
+             int64_t len) {
   using XPUType = typename XPUTypeTrait<T>::Type;
-  int r = XPU_SUCCESS;
+  int r = 0;
   if (param.dropout_prob == 0.0f) {
     r = xpu::copy(xpu_ctx,
                   reinterpret_cast<const XPUType *>(x),
@@ -123,7 +123,7 @@ void DropoutGrad(xpu::Context *xpu_ctx,
                  const T *mask,
                  T *dx,
                  const XPUDropoutParam &param,
-                 int len) {
+                 int64_t len) {
   using XPUType = typename XPUTypeTrait<T>::Type;
   if (param.dropout_prob == 0.0f) {
     int r = xpu::copy(xpu_ctx,

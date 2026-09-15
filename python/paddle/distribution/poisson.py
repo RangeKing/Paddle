@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 import paddle
 from paddle.base.data_feeder import convert_dtype
 from paddle.distribution import distribution
+from paddle.utils.decorator_utils import param_one_alias
 
 if TYPE_CHECKING:
     from paddle import Tensor
@@ -49,7 +50,7 @@ class Poisson(distribution.Distribution):
             1-D Tensor with paddle global default dtype.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.distribution import Poisson
@@ -69,8 +70,8 @@ class Poisson(distribution.Distribution):
             Tensor(shape=[], dtype=float32, place=Place(cpu), stop_gradient=True,
             3.11671519)
 
-            >>> rv1 = Poisson(paddle.to_tensor([[30.,40.],[8.,5.]]))
-            >>> rv2 = Poisson(paddle.to_tensor([[1000.,40.],[7.,10.]]))
+            >>> rv1 = Poisson(paddle.to_tensor([[30.0, 40.0], [8.0, 5.0]]))
+            >>> rv2 = Poisson(paddle.to_tensor([[1000.0, 40.0], [7.0, 10.0]]))
             >>> print(rv1.kl_divergence(rv2))
             Tensor(shape=[2, 2], dtype=float32, place=Place(cpu), stop_gradient=True,
             [[864.80499268, 0.          ],
@@ -118,6 +119,7 @@ class Poisson(distribution.Distribution):
         """
         return self.rate
 
+    @param_one_alias(["shape", "sample_shape"])
     def sample(self, shape: Sequence[int] = []) -> Tensor:
         """Generate poisson samples of the specified shape. The final shape would be ``shape+batch_shape`` .
 

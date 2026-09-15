@@ -36,7 +36,6 @@ limitations under the License. */
 #include "paddle/common/flags.h"
 #include "paddle/phi/backends/all_context.h"
 #include "paddle/phi/common/amp_type_traits.h"
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/common/memory_utils.h"
 #include "paddle/phi/core/dense_tensor.h"
 #include "paddle/phi/core/enforce.h"
@@ -119,19 +118,20 @@ class GemmEpilogueAlgoCache {
             sizeof(workspace_size)));
 
     int returned_results = 0;
-    std::vector<GPU(blasLtMatmulHeuristicResult_t)> heuristic_results(
-        requested_algo_count_);
-    PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::GPU(blasLtMatmulAlgoGetHeuristic)(
-        lt_handle,
-        op_desc,
-        a_desc,
-        b_desc,
-        c_desc,
-        c_desc,
-        preference,
-        requested_algo_count_,
-        heuristic_results.data(),
-        &returned_results));
+    // NVCC 12.x ICEs on destroy_at<cublasLtMatmulHeuristicResult_t> in C++20.
+    GPU(blasLtMatmulHeuristicResult_t)
+    heuristic_results[requested_algo_count_]{};
+    PADDLE_ENFORCE_GPU_SUCCESS(
+        phi::dynload::GPU(blasLtMatmulAlgoGetHeuristic)(lt_handle,
+                                                        op_desc,
+                                                        a_desc,
+                                                        b_desc,
+                                                        c_desc,
+                                                        c_desc,
+                                                        preference,
+                                                        requested_algo_count_,
+                                                        heuristic_results,
+                                                        &returned_results));
 
     PADDLE_ENFORCE_GT(
         returned_results,
@@ -258,7 +258,7 @@ class GemmEpilogueAlgoCache {
   }
   std::unordered_map<int64_t, GPU(blasLtMatmulAlgo_t)> map_;
   int search_times_;
-  const int requested_algo_count_ = 10;
+  static constexpr int requested_algo_count_ = 10;
   std::mutex cache_mutex_;
 
   void HashMatmulDesc_(GPU(blasLtMatmulDesc_t) desc,
@@ -387,26 +387,25 @@ static GPU(blasLtEpilogue_t)
   } else {
     PADDLE_THROW(common::errors::InvalidArgument(
         "The activation attribute of fused_gemm_epilogue op should be"
-        " one of {\"none\", \"relu\", \"gelu\"}. But received %s."
-        "But received activation=%s.",
+        " one of {\"none\", \"relu\", \"gelu\"}. But received %s.",
         activation));
   }
 }
 
 template <typename T>
-void ComputeFusedGemmEpilogueForward(const phi::GPUContext& dev_ctx,
-                                     const phi::DenseTensor* x,
-                                     const phi::DenseTensor* y,
-                                     const phi::DenseTensor* bias,
+void ComputeFusedGemmEpilogueForward(const GPUContext& dev_ctx,
+                                     const DenseTensor* x,
+                                     const DenseTensor* y,
+                                     const DenseTensor* bias,
                                      int64_t M,
                                      int64_t N,
                                      int64_t K,
                                      bool trans_x,
                                      bool trans_y,
                                      const std::string& activation,
-                                     phi::DenseTensor* out,
-                                     phi::DenseTensor* reserve_space) {
-  using MT = typename phi::dtype::MPTypeTrait<T>::Type;
+                                     DenseTensor* out,
+                                     DenseTensor* reserve_space) {
+  using MT = typename MPTypeTrait<T>::Type;
 
   VLOG(6) << "x.shape={" << x->dims() << "}, y.shape={" << y->dims()
           << "}, out.shape={" << out->dims() << "}, M=" << M << ", N=" << N
@@ -462,10 +461,10 @@ void ComputeFusedGemmEpilogueForward(const phi::GPUContext& dev_ctx,
       sizeof(bias_data)));
 
   if (enable_auxiliary && activation != "none") {
-    // Note (Ming Huang): The initialization of ReseveSpace is happened in the
+    // Note (Ming Huang): The initialization of ReserveSpace is happened in the
     // dev_ctx.Alloc. Therefore, we set real date type up here.
     if (activation == "relu") {
-      phi::DataType rs_type = phi::DataType::BOOL;
+      DataType rs_type = DataType::BOOL;
       size_t reserve_space_size =
           common::product(reserve_space->dims()) * SizeOf(rs_type);
       dev_ctx.Alloc(reserve_space, rs_type, reserve_space_size);
@@ -566,8 +565,7 @@ void ComputeFusedGemmEpilogueForward(const phi::GPUContext& dev_ctx,
 
 struct BwdFusedEpilogueSetter {
  public:
-  static phi::funcs::MatmulFusedType SetForDx(
-      const std::string& activation_grad) {
+  static funcs::MatmulFusedType SetForDx(const std::string& activation_grad) {
     if (activation_grad == "none") {
       return kMatmulGrad;
     } else if (activation_grad == "relu_grad") {
@@ -588,8 +586,8 @@ struct BwdFusedEpilogueSetter {
   }
 
   template <typename DYT, bool TransY>
-  static phi::funcs::MatmulFusedType SetForDy(const phi::GPUContext& dev_ctx,
-                                              phi::DenseTensor* dbias) {
+  static funcs::MatmulFusedType SetForDy(const GPUContext& dev_ctx,
+                                         DenseTensor* dbias) {
     if (dbias != nullptr) {
       dev_ctx.Alloc<DYT>(dbias, dbias->numel() * sizeof(DYT));
       return TransY ? kMatmulBiasGradToB : kMatmulBiasGradToA;
@@ -600,21 +598,21 @@ struct BwdFusedEpilogueSetter {
 };
 
 template <typename T, typename DXT, typename DYT, bool TransX, bool TransY>
-void ComputeFusedGemmEpilogueBackwardImpl(const phi::GPUContext& dev_ctx,
-                                          const phi::DenseTensor* dout,
-                                          const phi::DenseTensor* x,
-                                          const phi::DenseTensor* y,
-                                          const phi::DenseTensor* reserve_space,
+void ComputeFusedGemmEpilogueBackwardImpl(const GPUContext& dev_ctx,
+                                          const DenseTensor* dout,
+                                          const DenseTensor* x,
+                                          const DenseTensor* y,
+                                          const DenseTensor* reserve_space,
                                           int64_t M,
                                           int64_t N,
                                           int64_t K,
                                           const std::string activation_grad,
-                                          phi::DenseTensor* dx,
-                                          phi::DenseTensor* dy,
-                                          phi::DenseTensor* dbias,
+                                          DenseTensor* dx,
+                                          DenseTensor* dy,
+                                          DenseTensor* dbias,
                                           bool use_addto_dx,
                                           bool use_addto_dy) {
-  using MT = typename phi::dtype::MPTypeTrait<T>::Type;
+  using MT = typename MPTypeTrait<T>::Type;
   constexpr bool kIsValidDataType =
       (std::is_same<DXT, T>::value || std::is_same<DXT, MT>::value) &&
       (std::is_same<DYT, T>::value || std::is_same<DYT, MT>::value);
@@ -629,7 +627,7 @@ void ComputeFusedGemmEpilogueBackwardImpl(const phi::GPUContext& dev_ctx,
                              ? nullptr
                              : const_cast<void*>(reserve_space->data());
     dev_ctx.Alloc<DXT>(dx, dx->numel() * sizeof(DXT));
-    phi::funcs::LinearGradWithCublasLt<T, DXT, DYT, TransX, TransY>::Run(
+    funcs::LinearGradWithCublasLt<T, DXT, DYT, TransX, TransY>::Run(
         dev_ctx,
         dout,
         y,
@@ -651,7 +649,7 @@ void ComputeFusedGemmEpilogueBackwardImpl(const phi::GPUContext& dev_ctx,
     constexpr auto kYGradAIsDZ = (Trait::kYGradA == FusedGEMMGradInType::kDZ);
     // Caution: DYT is in front of DXT in this template arguments.
     dev_ctx.Alloc<DYT>(dy, dy->numel() * sizeof(DYT));
-    phi::funcs::LinearGradWithCublasLt<T, DXT, DYT, TransX, TransY>::Run(
+    funcs::LinearGradWithCublasLt<T, DXT, DYT, TransX, TransY>::Run(
         dev_ctx,
         dout,
         x,
@@ -690,29 +688,28 @@ static GPU(blasLtEpilogue_t)
   } else {
     PADDLE_THROW(common::errors::InvalidArgument(
         "The activation_grad attribute of fused_gemm_epilogue op should "
-        "be one of {\"none\", \"relu\", \"gelu\"}. But received %s."
-        "But received activation_grad=%s.",
+        "be one of {\"none\", \"relu\", \"gelu\"}. But received "
+        "activation_grad=%s.",
         activation_grad));
   }
 }
 
 template <typename T, typename DXT, typename DYT, bool TransX, bool TransY>
-void ComputeFusedGemmEpilogueBackwardImplDev(
-    const phi::GPUContext& dev_ctx,
-    const phi::DenseTensor* dout,
-    const phi::DenseTensor* x,
-    const phi::DenseTensor* y,
-    const phi::DenseTensor* reserve_space,
-    int64_t M,
-    int64_t N,
-    int64_t K,
-    const std::string activation_grad,
-    phi::DenseTensor* dx,
-    phi::DenseTensor* dy,
-    phi::DenseTensor* dbias,
-    bool use_addto_dx,
-    bool use_addto_dy) {
-  using MT = typename phi::dtype::MPTypeTrait<T>::Type;
+void ComputeFusedGemmEpilogueBackwardImplDev(const GPUContext& dev_ctx,
+                                             const DenseTensor* dout,
+                                             const DenseTensor* x,
+                                             const DenseTensor* y,
+                                             const DenseTensor* reserve_space,
+                                             int64_t M,
+                                             int64_t N,
+                                             int64_t K,
+                                             const std::string activation_grad,
+                                             DenseTensor* dx,
+                                             DenseTensor* dy,
+                                             DenseTensor* dbias,
+                                             bool use_addto_dx,
+                                             bool use_addto_dy) {
+  using MT = typename MPTypeTrait<T>::Type;
   constexpr bool kIsValidDataType =
       (std::is_same<DXT, T>::value || std::is_same<DXT, MT>::value) &&
       (std::is_same<DYT, T>::value || std::is_same<DYT, MT>::value);
@@ -1024,20 +1021,20 @@ void ComputeFusedGemmEpilogueBackwardImplDev(
 }
 
 template <typename T, typename DXT = T, typename DYT = T>
-void ComputeFusedGemmEpilogueBackward(const phi::GPUContext& dev_ctx,
-                                      const phi::DenseTensor* dout,
-                                      const phi::DenseTensor* x,
-                                      const phi::DenseTensor* y,
-                                      const phi::DenseTensor* reserve_space,
+void ComputeFusedGemmEpilogueBackward(const GPUContext& dev_ctx,
+                                      const DenseTensor* dout,
+                                      const DenseTensor* x,
+                                      const DenseTensor* y,
+                                      const DenseTensor* reserve_space,
                                       int64_t M,
                                       int64_t N,
                                       int64_t K,
                                       bool trans_x,
                                       bool trans_y,
                                       const std::string& activation_grad,
-                                      phi::DenseTensor* dx,
-                                      phi::DenseTensor* dy,
-                                      phi::DenseTensor* dbias,
+                                      DenseTensor* dx,
+                                      DenseTensor* dy,
+                                      DenseTensor* dbias,
                                       bool use_addto_dx = false,
                                       bool use_addto_dy = false) {
   VLOG(10) << "M=" << M << ", K=" << K << ", N=" << N << ", trans_x=" << trans_x

@@ -15,11 +15,12 @@
 from __future__ import annotations
 
 import builtins
-from typing import TYPE_CHECKING, Callable, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 from typing_extensions import ParamSpec
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from types import CodeType
 
 T = TypeVar("T")
@@ -59,7 +60,7 @@ def check_no_fallback(fn: Callable[P, T]) -> Callable[P, T]:
     return fn
 
 
-def fallback():
+def fallback(recursive=False):
     pass
 
 

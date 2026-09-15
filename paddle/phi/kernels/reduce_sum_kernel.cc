@@ -15,6 +15,9 @@
 #include "paddle/phi/kernels/reduce_sum_kernel.h"
 
 #include "paddle/phi/backends/all_context.h"
+#ifdef PADDLE_WITH_DNNL
+#include "paddle/phi/backends/onednn/onednn_context.h"
+#endif
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/reduce_kernel_impl.h"
 
@@ -34,9 +37,6 @@ void SumKernel(const Context& dev_ctx,
 
 }  // namespace phi
 
-using complex64 = ::phi::dtype::complex<float>;
-using complex128 = ::phi::dtype::complex<double>;
-
 PD_REGISTER_KERNEL(sum,
                    CPU,
                    ALL_LAYOUT,
@@ -44,15 +44,15 @@ PD_REGISTER_KERNEL(sum,
                    bool,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
+                   phi::float16,
+                   phi::bfloat16,
                    int16_t,
                    int,
                    int64_t,
                    uint8_t,
                    int8_t,
-                   complex64,
-                   complex128) {
+                   phi::complex64,
+                   phi::complex128) {
   kernel->OutputAt(0).SetDataType(phi::DataType::UNDEFINED);
 }
 
@@ -64,15 +64,15 @@ PD_REGISTER_KERNEL(sum,
                    bool,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
+                   phi::float16,
+                   phi::bfloat16,
                    int16_t,
                    int,
                    int64_t,
                    uint8_t,
                    int8_t,
-                   complex64,
-                   complex128) {
+                   phi::complex64,
+                   phi::complex128) {
   kernel->OutputAt(0).SetDataType(phi::DataType::UNDEFINED);
 }
 #endif
@@ -84,8 +84,7 @@ PD_REGISTER_KERNEL(sum, KPS, ALL_LAYOUT, phi::SumKernel, float) {
 #endif
 
 #if defined(PADDLE_WITH_DNNL)
-PD_REGISTER_KERNEL(
-    sum, OneDNN, ONEDNN, phi::SumKernel, float, phi::dtype::bfloat16) {
+PD_REGISTER_KERNEL(sum, OneDNN, ONEDNN, phi::SumKernel, float, phi::bfloat16) {
   kernel->check_if_onednn_kernel_support_ = phi::ReduceCheckIfOneDNNSupport;
 }
 #endif
@@ -96,11 +95,12 @@ PD_REGISTER_KERNEL(sum,
                    ALL_LAYOUT,
                    phi::SumKernel,
                    float,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
+                   phi::float16,
+                   phi::bfloat16,
                    int8_t,
                    int,
-                   int64_t) {
+                   int64_t,
+                   bool) {
   kernel->OutputAt(0).SetDataType(phi::DataType::UNDEFINED);
 }
 #endif

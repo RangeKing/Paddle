@@ -24,5 +24,14 @@ PD_REGISTER_KERNEL(addmm,
                    phi::AddmmKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}
+
+PD_REGISTER_KERNEL(addmm_out_dtype,
+                   GPU,
+                   ALL_LAYOUT,
+                   phi::AddmmOutDtypeKernel,
+                   phi::float16,
+                   phi::bfloat16) {
+  kernel->OutputAt(0).SetDataType(phi::DataType::FLOAT32);
+}

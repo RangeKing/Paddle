@@ -17,6 +17,7 @@
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/funcs/blas/blas.h"
 #include "paddle/phi/kernels/funcs/cpu_vec.h"
+#include "paddle/phi/kernels/funcs/eigen/common.h"
 #include "paddle/phi/kernels/funcs/fc_functor.h"
 #include "paddle/utils/optional.h"
 
@@ -26,10 +27,10 @@ namespace phi {
 template <typename T>
 inline void bias_relu(const int n, const T* x, const T* bias, T* y) {
   if (bias) {
-    phi::funcs::vec_add_bias<T, phi::backends::cpu::avx>(n, *bias, x, y);
-    phi::funcs::vec_relu<T, phi::backends::cpu::avx>(n, y, y);
+    funcs::vec_add_bias<T, backends::cpu::avx>(n, *bias, x, y);
+    funcs::vec_relu<T, backends::cpu::avx>(n, y, y);
   } else {
-    phi::funcs::vec_relu<T, phi::backends::cpu::avx>(n, x, y);
+    funcs::vec_relu<T, backends::cpu::avx>(n, x, y);
   }
 }
 
@@ -40,38 +41,36 @@ inline void vec_softmax(const int n, const T* x, T* y) {
   for (int i = 1; i < n; ++i) {
     scalar = scalar < x[i] ? x[i] : scalar;
   }
-  phi::funcs::vec_add_bias<T, phi::backends::cpu::avx>(
-      n, -scalar, x, y);            // sub
-  phi::funcs::vec_exp<T>(n, y, y);  // exp
+  funcs::vec_add_bias<T, backends::cpu::avx>(n, -scalar, x, y);  // sub
+  funcs::vec_exp<T>(n, y, y);                                    // exp
   // sum
   scalar = T(0);
   for (int i = 0; i < n; ++i) {
     scalar += y[i];
   }
-  phi::funcs::vec_scal<T>(n, static_cast<T>(1) / scalar, y);  // scale
+  funcs::vec_scal<T>(n, static_cast<T>(1) / scalar, y);  // scale
 }
 
 template <typename T, typename Context>
-void AttentionLSTMKernel(
-    const Context& dev_ctx,
-    const DenseTensor& x_in,
-    const DenseTensor& c0_in,
-    const paddle::optional<DenseTensor>& h0_in,
-    const DenseTensor& attention_weight_in,
-    const paddle::optional<DenseTensor>& attention_bias_in,
-    const paddle::optional<DenseTensor>& attention_scalar_in,
-    const paddle::optional<DenseTensor>& attention_scalar_bias_in,
-    const DenseTensor& lstm_weight_in,
-    const DenseTensor& lstm_bias_in,
-    const std::string& gate_activation,
-    const std::string& cell_activation,
-    const std::string& candidate_activation,
-    DenseTensor* hidden,
-    DenseTensor* cell,
-    DenseTensor* attentioned_x,
-    DenseTensor* attention_fc_out,
-    DenseTensor* lstm_x,
-    DenseTensor* lstm_out) {
+void AttentionLSTMKernel(const Context& dev_ctx,
+                         const DenseTensor& x_in,
+                         const DenseTensor& c0_in,
+                         const optional<DenseTensor>& h0_in,
+                         const DenseTensor& attention_weight_in,
+                         const optional<DenseTensor>& attention_bias_in,
+                         const optional<DenseTensor>& attention_scalar_in,
+                         const optional<DenseTensor>& attention_scalar_bias_in,
+                         const DenseTensor& lstm_weight_in,
+                         const DenseTensor& lstm_bias_in,
+                         const std::string& gate_activation,
+                         const std::string& cell_activation,
+                         const std::string& candidate_activation,
+                         DenseTensor* hidden,
+                         DenseTensor* cell,
+                         DenseTensor* attentioned_x,
+                         DenseTensor* attention_fc_out,
+                         DenseTensor* lstm_x,
+                         DenseTensor* lstm_out) {
   auto* x = &x_in;
   auto* h0 = h0_in.get_ptr();
   auto* c0 = &c0_in;
@@ -117,13 +116,13 @@ void AttentionLSTMKernel(
   auto& act_gate_str = gate_activation;
   auto& act_cell_str = cell_activation;
   auto& act_cand_str = candidate_activation;
-  if (phi::backends::cpu::MayIUse(phi::backends::cpu::avx)) {
-    phi::funcs::VecActivations<T, phi::backends::cpu::avx> act_functor;
+  if (backends::cpu::MayIUse(backends::cpu::avx)) {
+    funcs::VecActivations<T, backends::cpu::avx> act_functor;
     act_gate = act_functor(act_gate_str);
     act_cell = act_functor(act_cell_str);
     act_cand = act_functor(act_cand_str);
   } else {
-    phi::funcs::VecActivations<T, phi::backends::cpu::isa_any> act_functor;
+    funcs::VecActivations<T, backends::cpu::isa_any> act_functor;
     act_gate = act_functor(act_gate_str);
     act_cell = act_functor(act_cell_str);
     act_cand = act_functor(act_cand_str);
@@ -148,9 +147,9 @@ void AttentionLSTMKernel(
   T* lstm_out_data = dev_ctx.template Alloc<T>(lstm_out);
 
   // x(TxM) * fc (Mx1) part of atten_wgt(M+D)x1
-  auto blas = phi::funcs::GetBlas<phi::CPUContext, T>(dev_ctx);
+  auto blas = funcs::GetBlas<CPUContext, T>(dev_ctx);
 
-  phi::funcs::FCFunctor<Context, T> fc;
+  funcs::FCFunctor<Context, T> fc;
   fc(dev_ctx, total_T, 1, M, x_data, atten_w_data, atted_x_data, atten_b_data);
 
   const T* cur_atten_x_data = atted_x_data;
@@ -171,7 +170,9 @@ void AttentionLSTMKernel(
       bias_relu<T>(seq_len, cur_atten_x_data, &prev_cell_bias, fc_out_data);
       // 1c. fc scalar
       if (atten_scalar_data) {
-        blas.SCAL(seq_len, *atten_scalar_data, fc_out_data);
+        for (int j = 0; j < seq_len; ++j) {
+          fc_out_data[j] = fc_out_data[j] * (*atten_scalar_data);
+        }
         bias_relu<T>(seq_len, fc_out_data, atten_scalar_bias_data, fc_out_data);
       }
       // 1d. softmax
@@ -200,7 +201,9 @@ void AttentionLSTMKernel(
                   D4);
       }
       // since input is 1xM, so can use add bias
-      blas.VADD(D4, lstm_b_data, lstm_out_data, lstm_out_data);
+      for (int j = 0; j < D4; ++j) {
+        lstm_out_data[j] += lstm_b_data[j];
+      }
 
       // gate act: sigmoid
       act_gate(D3, lstm_out_data, lstm_out_data);
@@ -208,17 +211,38 @@ void AttentionLSTMKernel(
       act_cand(D, lstm_out_data + D3, lstm_out_data + D3);
 
       // a = forget * prev_cell
-      blas.VMUL(D, lstm_out_data, prev_cell_data, lstm_out_data);
+      Eigen::Map<Eigen::Matrix<T, Eigen::Dynamic, 1>> forget_cell(lstm_out_data,
+                                                                  D);
+      Eigen::Map<const Eigen::Matrix<T, Eigen::Dynamic, 1>> forget_gate(
+          lstm_out_data, D);
+      Eigen::Map<const Eigen::Matrix<T, Eigen::Dynamic, 1>> prev_cell(
+          prev_cell_data, D);
+      forget_cell = forget_gate.array() * prev_cell.array();
 
       // b = input * tilde
-      blas.VMUL(D, lstm_out_data + D, lstm_out_data + D3, lstm_out_data + D);
+      Eigen::Map<Eigen::Matrix<T, Eigen::Dynamic, 1>> input_tilde(
+          lstm_out_data + D, D);
+      Eigen::Map<const Eigen::Matrix<T, Eigen::Dynamic, 1>> input_gate(
+          lstm_out_data + D, D);
+      Eigen::Map<const Eigen::Matrix<T, Eigen::Dynamic, 1>> tilde(
+          lstm_out_data + D3, D);
+      input_tilde = input_gate.array() * tilde.array();
 
       // cell_out = a + b
-      blas.VADD(D, lstm_out_data, lstm_out_data + D, cur_cell_out_data);
+      for (int j = 0; j < D; ++j) {
+        cur_cell_out_data[j] = lstm_out_data[j] + lstm_out_data[D + j];
+      }
 
       // state act tanh(cell_out) * output_gate
       act_cell(D, cur_cell_out_data, lstm_out_data);
-      blas.VMUL(D, lstm_out_data, lstm_out_data + D2, cur_hidden_out_data);
+
+      Eigen::Map<Eigen::Matrix<T, Eigen::Dynamic, 1>> hidden_map(
+          cur_hidden_out_data, D);
+      Eigen::Map<const Eigen::Matrix<T, Eigen::Dynamic, 1>> act_cell_map(
+          lstm_out_data, D);
+      Eigen::Map<const Eigen::Matrix<T, Eigen::Dynamic, 1>> output_gate(
+          lstm_out_data + D2, D);
+      hidden_map = act_cell_map.array() * output_gate.array();
 
       prev_hidden_data = cur_hidden_out_data;
       prev_cell_data = cur_cell_out_data;

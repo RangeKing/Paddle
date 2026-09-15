@@ -26,7 +26,7 @@ static void Sort(const XPUContext& dev_ctx,
                  DenseTensor* index_out) {
   auto* value_data = value.data<T>();
   auto place = dev_ctx.GetPlace();
-  auto cpu_place = phi::CPUPlace();
+  auto cpu_place = CPUPlace();
 
   DenseTensor scores_slice_cpu;
   scores_slice_cpu.Resize({value.numel()});
@@ -41,7 +41,7 @@ static void Sort(const XPUContext& dev_ctx,
   DenseTensor index_t;
   index_t.Resize({value.numel()});
   int* index = dev_ctx.template HostAlloc<int>(&index_t);
-  for (int i = 0; i < value.numel(); ++i) {
+  for (int64_t i = 0; i < value.numel(); ++i) {
     index[i] = i;
   }
 
@@ -60,7 +60,7 @@ template <typename T, typename Context>
 void DistributeFpnProposalsKernel(
     const Context& dev_ctx,
     const DenseTensor& fpn_rois,
-    const paddle::optional<DenseTensor>& rois_num,
+    const optional<DenseTensor>& rois_num,
     int min_level,
     int max_level,
     int refer_level,
@@ -75,7 +75,7 @@ void DistributeFpnProposalsKernel(
     PADDLE_ENFORCE_EQ(
         fpn_rois.lod().size(),
         1UL,
-        errors::InvalidArgument("DistributeFpnProposalsOp needs LoD"
+        errors::InvalidArgument("DistributeFpnProposalsOp needs LoD "
                                 "with one level"));
   }
   using XPUType = typename XPUTypeTrait<T>::Type;
@@ -94,7 +94,7 @@ void DistributeFpnProposalsKernel(
   DenseTensor sub_lod_list;
   sub_lod_list.Resize({num_level, lod_size});
   int* sub_lod_list_data = dev_ctx.template Alloc<int>(&sub_lod_list);
-  phi::funcs::SetConstant<phi::XPUContext, int> set_zero;
+  funcs::SetConstant<XPUContext, int> set_zero;
   set_zero(dev_ctx, &sub_lod_list, static_cast<int>(0));
 
   DenseTensor target_lvls;
@@ -106,7 +106,7 @@ void DistributeFpnProposalsKernel(
     rois_lod_vec[i] = static_cast<int>(fpn_rois_lod[i]);
   }
   xpu::VectorParam<int> rois_lod = {
-      rois_lod_vec.data(), static_cast<int>(rois_lod_vec.size()), nullptr};
+      rois_lod_vec.data(), static_cast<int64_t>(rois_lod_vec.size()), nullptr};
 
   int r = xpu::distribute_fpn_proposals_helper<XPUType, int>(
       dev_ctx.x_context(),
@@ -129,7 +129,7 @@ void DistributeFpnProposalsKernel(
 
   int start = 0;
   std::vector<int> sub_lod_list_cpu(lod_size * num_level);
-  phi::TensorToVector<int>(sub_lod_list, dev_ctx, &sub_lod_list_cpu);
+  TensorToVector<int>(sub_lod_list, dev_ctx, &sub_lod_list_cpu);
 
   for (int i = 0; i < num_level; ++i) {
     DenseTensor sub_lod = sub_lod_list.Slice(i, i + 1);

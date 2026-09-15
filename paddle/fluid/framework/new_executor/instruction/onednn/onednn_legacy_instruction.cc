@@ -37,6 +37,8 @@
 #include "paddle/phi/backends/onednn/onednn_helper.h"
 #include "paddle/phi/kernels/funcs/data_layout_transform.h"
 
+COMMON_DECLARE_bool(check_cuda_error);
+
 namespace paddle::framework {
 
 static paddle::framework::Attribute ConvertPirAttribute2FrameworkAttribute(
@@ -91,7 +93,7 @@ static paddle::framework::Attribute ConvertPirAttribute2FrameworkAttribute(
 
 OneDNNLegacyKernelInstruction::OneDNNLegacyKernelInstruction(
     size_t id,
-    const phi::Place& place,
+    const Place& place,
     pir::Operation* op,
     const ValueExecutionInfo* value_exec_info)
     : InstructionBase(id, place), value_exec_info_(value_exec_info) {
@@ -126,10 +128,10 @@ OneDNNLegacyKernelInstruction::OneDNNLegacyKernelInstruction(
   if (infer_meta_interface_) {
     BuildPhiContext<
         phi::InferMetaContext,
-        phi::MetaTensor,
-        phi::MetaTensor,
-        paddle::small_vector<phi::MetaTensor, phi::kInputSmallVectorSize>,
-        paddle::small_vector<phi::MetaTensor, phi::kInputSmallVectorSize>,
+        MetaTensor,
+        MetaTensor,
+        paddle::small_vector<MetaTensor, phi::kInputSmallVectorSize>,
+        paddle::small_vector<MetaTensor, phi::kInputSmallVectorSize>,
         false>(op, *value_exec_info_, yaml_info_parser, &infer_meta_context_);
   }
   VLOG(6) << "finish process infer meta context";
@@ -227,9 +229,9 @@ OneDNNLegacyKernelInstruction::OneDNNLegacyKernelInstruction(
     }
   }
 
-  // Step3: Mark is_run_mkldnn_kernel=true
+  // Step3: Mark is_run_onednn_kernel=true
   phi::MetaConfig new_config = infer_meta_context_.GetMetaConfig();
-  new_config.is_run_mkldnn_kernel = true;
+  new_config.is_run_onednn_kernel = true;
   infer_meta_context_.SetMetaConfig(new_config);
 
   // Step4: Handle skip_transform_inputs
@@ -258,6 +260,11 @@ OneDNNLegacyKernelInstruction::~OneDNNLegacyKernelInstruction() {
 }
 
 void OneDNNLegacyKernelInstruction::Run() {
+  if (FLAGS_check_cuda_error) [[unlikely]] {
+    CUDAErrorCheck("OneDNNLegacyKernelInstruction " + legacy_op_name_ +
+                   " begin");
+  }
+
   // Step1. TransLayout
   auto inputs = kernel_context_->InNameList();
   for (auto& input_name : inputs) {
@@ -266,37 +273,37 @@ void OneDNNLegacyKernelInstruction::Run() {
     }
     auto input_vars = kernel_context_->MultiInputVar(*input_name);
     for (auto& var : input_vars) {
-      if (var->IsType<phi::DenseTensor>()) {
-        auto input = var->GetMutable<phi::DenseTensor>();
-        if (input->layout() != phi::DataLayout::ONEDNN) {
-          phi::DataLayout from_layout = input->layout();
+      if (var->IsType<DenseTensor>()) {
+        auto input = var->GetMutable<DenseTensor>();
+        if (input->layout() != DataLayout::ONEDNN) {
+          DataLayout from_layout = input->layout();
 
           //  Handle 'layout_transform' in
           //  ops_onednn_extra.yaml(GetKernelTypeForVar)
           if (data_format_tensors_.count(*input_name) &&
-              input_layout_ != phi::DataLayout::kAnyLayout) {
+              input_layout_ != DataLayout::ANY) {
             from_layout = input_layout_;
           }
 
-          auto transed_tensor = const_cast<phi::DenseTensor*>(input);
+          auto transed_tensor = const_cast<DenseTensor*>(input);
 
-          if (from_layout == DataLayout::kNHWC ||
-              from_layout == DataLayout::kNDHWC) {
+          if (from_layout == DataLayout::NHWC ||
+              from_layout == DataLayout::NDHWC) {
             phi::funcs::MatchShapeToLayout(
-                transed_tensor, from_layout, phi::DataLayout::ONEDNN);
+                transed_tensor, from_layout, DataLayout::ONEDNN);
             // We register only NHWC assuming that model is consistent e.g.
             // either NHWC or NCHW
             phi::OneDNNContext::tls().set_cur_paddle_data_layout(from_layout);
           }
 
-          if (from_layout == DataLayout::kAnyLayout) {
+          if (from_layout == DataLayout::ANY) {
             from_layout =
                 phi::OneDNNContext::tls().get_cur_paddle_data_layout();
           }
 
           dnnl::memory::desc out_mem_desc =
               phi::funcs::make_memory_desc(*input, from_layout);
-          transed_tensor->set_mem_desc(out_mem_desc);
+          phi::funcs::SetOneDNNMemDesc(transed_tensor, out_mem_desc);
         }
       }
     }
@@ -311,5 +318,10 @@ void OneDNNLegacyKernelInstruction::Run() {
   // Step3. Run kernel
   VLOG(6) << "Run op " << legacy_op_name_ << " kernel.";
   (*(phi_kernel_))((kernel_context_));
+
+  if (FLAGS_check_cuda_error) [[unlikely]] {
+    CUDAErrorCheck("OneDNNLegacyKernelInstruction " + legacy_op_name_ +
+                   " finish");
+  }
 }
 }  // namespace paddle::framework

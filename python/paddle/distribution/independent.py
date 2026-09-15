@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from paddle.distribution import distribution
+from paddle.utils.decorator_utils import param_one_alias
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -38,7 +39,7 @@ class Independent(distribution.Distribution):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.distribution import independent
@@ -52,7 +53,7 @@ class Independent(distribution.Distribution):
             >>> reinterpreted_beta = independent.Independent(beta, 1)
             >>> print(reinterpreted_beta.batch_shape, reinterpreted_beta.event_shape)
             () (2,)
-            >>> print(reinterpreted_beta.log_prob(paddle.to_tensor([0.2,  0.2])))
+            >>> print(reinterpreted_beta.log_prob(paddle.to_tensor([0.2, 0.2])))
             Tensor(shape=[], dtype=float32, place=Place(gpu:0), stop_gradient=True,
                     -0.45687842)
     """
@@ -89,6 +90,7 @@ class Independent(distribution.Distribution):
     def variance(self) -> Tensor:
         return self._base.variance
 
+    @param_one_alias(["shape", "sample_shape"])
     def sample(self, shape: Sequence[int] = []) -> Tensor:
         return self._base.sample(shape)
 

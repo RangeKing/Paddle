@@ -16,9 +16,11 @@
 
 #include <thrust/device_vector.h>
 
+#include "paddle/common/enforce.h"
 #include "paddle/common/hostdevice.h"
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/elementwise_functor.h"
 #include "paddle/phi/kernels/gpu/graph_send_ue_recv_funcs.h"
 #include "paddle/phi/kernels/impl/graph_message_passing_impl.h"
@@ -45,8 +47,11 @@ __global__ void GraphSendUVCUDAKernel(const T* x_data,
   while (ty < index_size) {
     IndexT src = src_indices[ty];
     IndexT dst = dst_indices[ty];
-    int64_t tx = blockIdx.x * blockDim.x + threadIdx.x;
-    int64_t stride_x = blockDim.x * gridDim.x;
+    int64_t tx =
+        static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x) +
+        static_cast<int64_t>(threadIdx.x);
+    int64_t stride_x =
+        static_cast<int64_t>(blockDim.x) * static_cast<int64_t>(gridDim.x);
 
     const T* x_off = x_data + src * x_len;
     const T* y_off = y_data + dst * y_len;
@@ -63,7 +68,7 @@ __global__ void GraphSendUVCUDAKernel(const T* x_data,
 }
 
 template <typename Context, typename T, typename IndexT>
-void GraphSendUVOpCUDAKernelLaunchHelper(const Context& ctx,
+void GraphSendUVOpCUDAKernelLaunchHelper(const Context& dev_ctx,
                                          const DenseTensor& x,
                                          const DenseTensor& y,
                                          const DenseTensor& src_index,
@@ -83,10 +88,10 @@ void GraphSendUVOpCUDAKernelLaunchHelper(const Context& ctx,
   for (int i = 0; i < out_dims.size(); i++) {
     memset_size *= out_dims[i];
   }
-  ctx.template Alloc<T>(out);
+  dev_ctx.template Alloc<T>(out);
   T* out_data = out->data<T>();
 
-  const auto& bcast_info = phi::CalcBCastInfo(x.dims(), y.dims());
+  const auto& bcast_info = CalcBCastInfo(x.dims(), y.dims());
   const T* x_data = x.data<T>();
   const T* y_data = y.data<T>();
   const IndexT* s_index = src_index.data<IndexT>();
@@ -98,16 +103,19 @@ void GraphSendUVOpCUDAKernelLaunchHelper(const Context& ctx,
   }
 
   int64_t out_len = bcast_info.out_len;
-  const int ntx = FindNumThreads(out_len, ctx.GetMaxThreadsPerBlock());
-  const int nty = ctx.GetMaxThreadsPerBlock() / ntx;
-  const int nbx = (out_len + ntx - 1) / ntx;
-  const int nby = FindNumBlocks('y', (index_size + nty - 1) / nty);
+  const int ntx = FindNumThreads(out_len, dev_ctx.GetMaxThreadsPerBlock());
+  const int nty = dev_ctx.GetMaxThreadsPerBlock() / ntx;
+  const int64_t nbx_64 = (out_len + ntx - 1) / ntx;
+  PADDLE_ENFORCE_LE_INT_MAX(nbx_64, "grid.x");
+  const int nbx = static_cast<int>(nbx_64);
+  const int64_t nby_64 = (index_size + nty - 1) / nty;
+  const int nby = FindNumBlocks('y', nby_64);
   const dim3 grid(nbx, nby);
   const dim3 block(ntx, nty);
   if (message_op == "ADD") {
     funcs::AddFunctor<T> add_functor;
     GraphSendUVCUDAKernel<T, IndexT, funcs::AddFunctor<T>>
-        <<<grid, block, 0, ctx.stream()>>>(
+        <<<grid, block, 0, dev_ctx.stream()>>>(
             x_data,
             y_data,
             s_index,
@@ -124,7 +132,7 @@ void GraphSendUVOpCUDAKernelLaunchHelper(const Context& ctx,
   } else if (message_op == "MUL") {
     funcs::MultiplyFunctor<T> mul_functor;
     GraphSendUVCUDAKernel<T, IndexT, funcs::MultiplyFunctor<T>>
-        <<<grid, block, 0, ctx.stream()>>>(
+        <<<grid, block, 0, dev_ctx.stream()>>>(
             x_data,
             y_data,
             s_index,
@@ -142,7 +150,7 @@ void GraphSendUVOpCUDAKernelLaunchHelper(const Context& ctx,
 }
 
 template <typename T, typename Context>
-void SendUVKernel(const Context& ctx,
+void SendUVKernel(const Context& dev_ctx,
                   const DenseTensor& x,
                   const DenseTensor& y,
                   const DenseTensor& src_index,
@@ -150,12 +158,19 @@ void SendUVKernel(const Context& ctx,
                   const std::string& message_op,
                   DenseTensor* out) {
   auto index_type = src_index.dtype();
-  if (index_type == phi::DataType::INT32) {
+
+  if (x.numel() == 0 || y.numel() == 0 || src_index.numel() == 0 ||
+      dst_index.numel() == 0) {
+    Full<T, Context>(dev_ctx, out->dims(), 0, out);
+    return;
+  }
+
+  if (index_type == DataType::INT32) {
     GraphSendUVOpCUDAKernelLaunchHelper<Context, T, int32_t>(
-        ctx, x, y, src_index, dst_index, message_op, out);
-  } else if (index_type == phi::DataType::INT64) {
+        dev_ctx, x, y, src_index, dst_index, message_op, out);
+  } else if (index_type == DataType::INT64) {
     GraphSendUVOpCUDAKernelLaunchHelper<Context, T, int64_t>(
-        ctx, x, y, src_index, dst_index, message_op, out);
+        dev_ctx, x, y, src_index, dst_index, message_op, out);
   }
 }
 
@@ -169,4 +184,4 @@ PD_REGISTER_KERNEL(send_uv,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::float16) {}
+                   phi::float16) {}

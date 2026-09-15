@@ -11,17 +11,26 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# Compatibility Note: The design of certain PaddlePaddle public APIs
+# incorporates principles from PyTorch and NumPy, maintaining compatibility
+# with PyTorch's API conventions in terms of function signatures and
+# parameter semantics. It is important to clarify that these APIs are
+# implemented as independent modules with no runtime dependency on PyTorch.
 
+import builtins as _builtins
 import math
+import sys as _sys
 import typing
 
 __is_metainfo_generated = False
 try:
     from paddle.cuda_env import *  # noqa: F403
-    from paddle.version import (  # noqa: F401
-        commit as __git_commit__,
-        full_version as __version__,
+    from paddle.paddle_version import (  # noqa: F401
+        PaddleVersion,
+        __version__,
     )
+    from paddle.version import commit as __git_commit__  # noqa: F401
 
     __is_metainfo_generated = True
 
@@ -33,22 +42,89 @@ except ImportError:
      import paddle from the source directory; please install paddlepaddle*.whl firstly.'''
     )
 
+
+# Preload CUDA libraries from pip package before loading C extensions,
+# to prevent LD_LIBRARY_PATH from pulling in mismatched system versions.
+# Also used later by CINN to preload libnvrtc-builtins.
+def _preload_nvidia_lib(lib_glob, sub_dirs=None):
+    """Search and preload a library from pip nvidia packages.
+
+    Searches nvidia/cu{major}/lib/ first (CUDA 13+),
+    then nvidia/{sub_dir}/lib/ for each sub_dir (CUDA 12).
+    """
+    import ctypes
+    import glob
+    import os
+
+    from .version import cuda_version as _cuda_version
+
+    pkg_dir = os.path.dirname(os.path.abspath(__file__))
+    nvidia_dir = os.path.join(pkg_dir, '..', 'nvidia')
+    cuda_major = _cuda_version.split('.')[0]
+
+    paths = glob.glob(
+        os.path.join(nvidia_dir, f'cu{cuda_major}', 'lib', lib_glob)
+    )
+    for sub_dir in sub_dirs or []:
+        paths += glob.glob(os.path.join(nvidia_dir, sub_dir, 'lib', lib_glob))
+    for path in paths:
+        ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
+        break
+
+
+if __is_metainfo_generated:
+    import platform
+
+    if platform.system() == 'Linux':
+        try:
+            from .version import (
+                cuda_version as _cuda_version,
+                with_pip_cuda_libraries,
+            )
+
+            if (
+                _cuda_version != 'False'
+                and with_pip_cuda_libraries == 'ON'
+                and (
+                    platform.machine() in ('x86_64', 'AMD64')
+                    or (
+                        platform.machine() == 'aarch64'
+                        and _builtins.int(_cuda_version.split('.')[0]) >= 13
+                    )
+                )
+            ):
+                _preload_nvidia_lib('libcublasLt.so.*[0-9]', ['cublas'])
+                _preload_nvidia_lib('libcublas.so.*[0-9]', ['cublas'])
+        except Exception:
+            pass
+
 # NOTE(SigureMo): We should place the import of base.core before other modules,
 # because there are some initialization codes in base/core/__init__.py.
 from .base import core  # noqa: F401
+from .base.dygraph.generated_tensor_methods_patch import (
+    monkey_patch_generated_methods_for_tensor,
+)
 from .batch import batch
 
 # Do the *DUPLICATED* monkey-patch for the tensor object.
 # We need remove the duplicated code here once we fix
 # the illogical implement in the monkey-patch methods later.
-from .framework import monkey_patch_math_tensor, monkey_patch_variable
+from .framework import (
+    monkey_patch_math_tensor,
+    monkey_patch_variable,
+)
 from .pir import monkey_patch_dtype, monkey_patch_program, monkey_patch_value
+from .pir.generated_methods_patch import (
+    monkey_patch_generated_methods_for_value,
+)
 
 monkey_patch_variable()
 monkey_patch_math_tensor()
 monkey_patch_value()
 monkey_patch_program()
 monkey_patch_dtype()
+
+monkey_patch_generated_methods_for_value()
 
 from .base.dataset import *  # noqa: F403
 from .framework import (
@@ -62,15 +138,20 @@ from .framework import (
 from .framework.dtype import (
     bfloat16,
     bool,
+    cdouble,
+    cfloat,
     complex64,
     complex128,
+    double,
     dtype,
     finfo,
+    float,
     float8_e4m3fn,
     float8_e5m2,
     float16,
     float32,
     float64,
+    half,
     iinfo,
     int8,
     int16,
@@ -79,6 +160,9 @@ from .framework.dtype import (
     pstring,
     raw,
     uint8,
+    uint16,
+    uint32,
+    uint64,
 )
 
 if typing.TYPE_CHECKING:
@@ -86,6 +170,62 @@ if typing.TYPE_CHECKING:
 else:
     Tensor = framework.core.eager.Tensor
     Tensor.__qualname__ = 'Tensor'
+    original_init = Tensor.__init__
+
+    def new_init(self, *args, **kwargs):
+        """
+        New Usage Example:
+        1. paddle.Tensor()
+        2. paddle.Tensor(device="cpu")
+        3. paddle.Tensor(1,2,3)
+        4. paddle.Tensor(1,2,3, device="cpu")
+        5. paddle.Tensor([1,2,3])
+        6. paddle.Tensor([1,2,3], device="cpu")
+        7. paddle.Tensor(data=[1,2,3])
+        8. paddle.Tensor(data=[1,2,3], device="cpu")
+        Original Usage Example:
+        9. paddle.Tensor(value=data, place="cpu", persistable=False, zero_copy=False, name=None, stop_gradient=True)
+        """
+        if 'device' in kwargs:
+            device = kwargs.pop('device')
+        else:
+            device = "cpu"
+        device = framework._get_paddle_place(device)
+        if len(args) == 0 and len(kwargs) == 0:  # case 1, 2
+            original_init(
+                self,
+                paddle.empty(shape=[0], dtype='float32', device=device),
+                place=device,
+            )
+            return
+        if 'data' in kwargs:  # case 7,8
+            data = kwargs.pop('data')
+            original_init(
+                self,
+                paddle.tensor(data, dtype='float32', device=device),
+                place=device,
+            )
+        elif len(args) == 1 and isinstance(args[0], (list, tuple)):
+            # case 5, 6
+            original_init(
+                self,
+                paddle.tensor(args[0], dtype='float32', device=device),
+                place=device,
+            )
+        elif (
+            _builtins.all(isinstance(arg, _builtins.int) for arg in args)
+            and len(kwargs) == 0
+        ):
+            # case 3, 4
+            original_init(
+                self,
+                paddle.empty(shape=list(args), dtype='float32', device=device),
+                place=device,
+            )
+        else:
+            original_init(self, *args, **kwargs)
+
+    Tensor.__init__ = new_init
 
 import paddle.distributed.fleet
 import paddle.text
@@ -94,6 +234,8 @@ from paddle import (
     amp as amp,
     audio as audio,
     autograd as autograd,
+    compat as compat,
+    cuda as cuda,
     dataset as dataset,
     decomposition as decomposition,
     device as device,
@@ -107,37 +249,76 @@ from paddle import (
     metric as metric,
     nn as nn,
     onnx as onnx,
+    optim as optim,
     optimizer as optimizer,
     quantization as quantization,
+    random as random,
     reader as reader,
     regularizer as regularizer,
     sparse as sparse,
     static as static,
     sysconfig as sysconfig,
+    testing as testing,
     vision as vision,
 )
 
+distributions = distribution
+_sys.modules['paddle.distributions'] = distribution
+
 # high-level api
 from . import (
+    _C as _C,
     _pir_ops as _pir_ops,
     _typing as _typing,
     callbacks as callbacks,
     fft as fft,
+    functional as functional,
     hub as hub,
+    library as library,
     linalg as linalg,
     signal as signal,
+    special as special,
     tensor as tensor,
+    utils as utils,
+)
+from ._classes import classes as classes
+from ._ops import ops as ops
+from .amp import (
+    get_autocast_cpu_dtype,
+    get_autocast_dtype,
+    get_autocast_gpu_dtype,
+    is_autocast_enabled,
+)
+from .amp.auto_cast import autocast
+from .audio.functional.window import (  # noqa: F401
+    bartlett_window,
+    blackman_window,
+    hamming_window,
+    hann_window,
+    kaiser_window,
 )
 from .autograd import (
     enable_grad,
     grad,
+    inference_mode,
     is_grad_enabled,
     no_grad,
     set_grad_enabled,
 )
+from .base.core import Size
+from .compat.proxy import (
+    disable_compat,
+    enable_compat,
+    use_compat_guard,
+)
 from .device import (  # noqa: F401
+    Event,
+    Stream,
+    device_guard,
     get_cudnn_version,
+    get_default_device,
     get_device,
+    get_device_module,
     is_compiled_with_cinn,
     is_compiled_with_cuda,
     is_compiled_with_custom_device,
@@ -145,6 +326,7 @@ from .device import (  # noqa: F401
     is_compiled_with_ipu,
     is_compiled_with_rocm,
     is_compiled_with_xpu,
+    set_default_device,
     set_device,
 )
 from .distributed import DataParallel
@@ -155,6 +337,7 @@ from .framework import (  # noqa: F401
     CustomPlace,
     IPUPlace,
     ParamAttr,
+    XPUPinnedPlace,
     XPUPlace,
     async_save,
     clear_async_save_task_queue,
@@ -162,8 +345,10 @@ from .framework import (  # noqa: F401
     load,
     save,
     set_default_dtype,
+    set_default_tensor_type,
 )
 from .framework.random import (
+    Generator,
     get_cuda_rng_state,
     get_rng_state,
     seed,
@@ -175,10 +360,20 @@ from .hapi import (
     flops,
     summary,
 )
+from .nn.functional import (
+    adaptive_avg_pool1d,
+    conv1d,
+    conv2d,
+    conv3d,
+    group_norm,
+    layer_norm,
+    relu,
+)
 from .nn.functional.distance import (
     pdist,
 )
 from .nn.initializer.lazy_init import LazyGuard
+from .random import initial_seed
 from .tensor.attribute import (
     imag,
     is_complex,
@@ -188,8 +383,21 @@ from .tensor.attribute import (
     real,
     shape,
 )
+from .tensor.compat_softmax import log_softmax, softmax
 from .tensor.creation import (
+    BFloat16Tensor,
+    BoolTensor,
+    ByteTensor,
+    CharTensor,
+    DoubleTensor,
+    FloatTensor,
+    HalfTensor,
+    IntTensor,
+    LongTensor,
+    MmapStorage,
+    ShortTensor,
     arange,
+    asarray,
     assign,
     cauchy_,
     clone,
@@ -201,6 +409,7 @@ from .tensor.creation import (
     empty,
     empty_like,
     eye,
+    from_numpy,
     full,
     full_like,
     geometric_,
@@ -210,6 +419,8 @@ from .tensor.creation import (
     ones,
     ones_like,
     polar,
+    range,
+    tensor as as_tensor,
     to_tensor,
     tril,
     tril_,
@@ -223,10 +434,10 @@ from .tensor.creation import (
 from .tensor.einsum import einsum
 from .tensor.linalg import (  # noqa: F401
     bincount,
-    bmm,
     cdist,
     cholesky,
     cross,
+    det,
     diagonal,
     dist,
     dot,
@@ -234,10 +445,14 @@ from .tensor.linalg import (  # noqa: F401
     histogram,
     histogram_bin_edges,
     histogramdd,
+    logdet,
     matmul,
     matrix_transpose,
     mv,
     norm,
+    permute,
+    pinv,
+    qr,
     t,
     t_,
     transpose,
@@ -266,7 +481,6 @@ from .tensor.logic import (
     is_empty,
     is_tensor,
     isclose,
-    less,
     less_,
     less_equal,
     less_equal_,
@@ -304,10 +518,10 @@ from .tensor.manipulation import (
     dstack,
     expand,
     expand_as,
+    expand_copy,
     flatten,
     flatten_,
     flip,
-    flip as reverse,
     gather,
     gather_nd,
     hsplit,
@@ -323,17 +537,25 @@ from .tensor.manipulation import (
     masked_scatter,
     masked_scatter_,
     moveaxis,
+    narrow,
     put_along_axis,
+    put_along_axis_,
+    ravel,
     repeat_interleave,
     reshape,
     reshape_,
+    resize_as_,
     roll,
     rot90,
     row_stack,
     scatter,
     scatter_,
+    scatter_add,
+    scatter_add_,
     scatter_nd,
     scatter_nd_add,
+    scatter_reduce,
+    scatter_reduce_,
     select_scatter,
     shard_index,
     slice,
@@ -358,6 +580,8 @@ from .tensor.manipulation import (
     unstack,
     view,
     view_as,
+    view_as_complex,
+    view_as_real,
     vsplit,
     vstack,
 )
@@ -370,8 +594,14 @@ from .tensor.math import (  # noqa: F401
     acosh_,
     add,
     add_n,
+    addcdiv,
+    addcdiv_,
     addmm,
     addmm_,
+    addmv,
+    addmv_,
+    addr,
+    addr_,
     all,
     amax,
     amin,
@@ -386,14 +616,21 @@ from .tensor.math import (  # noqa: F401
     atan_,
     atanh,
     atanh_,
+    baddbmm,
+    baddbmm_,
     bitwise_left_shift,
     bitwise_left_shift_,
     bitwise_right_shift,
     bitwise_right_shift_,
+    bmm,
     broadcast_shape,
+    broadcast_shapes,
     cartesian_prod,
     ceil,
+    clamp_max,
+    clamp_min,
     clip,
+    clip_,
     combinations,
     conj,
     copysign,
@@ -425,8 +662,6 @@ from .tensor.math import (  # noqa: F401
     floor,
     floor_divide,
     floor_divide_,
-    floor_mod,
-    floor_mod_,
     fmax,
     fmin,
     frac,
@@ -441,6 +676,7 @@ from .tensor.math import (  # noqa: F401
     gcd,
     gcd_,
     heaviside,
+    histc,
     hypot,
     hypot_,
     i0,
@@ -484,8 +720,7 @@ from .tensor.math import (  # noqa: F401
     min,
     minimum,
     mm,
-    mod,
-    mod_,
+    mul,
     multigammaln,
     multigammaln_,
     multiplex,
@@ -518,6 +753,7 @@ from .tensor.math import (  # noqa: F401
     scale,
     sgn,
     sign,
+    sign_,
     signbit,
     sin,
     sin_,
@@ -530,6 +766,7 @@ from .tensor.math import (  # noqa: F401
     square_,
     stanh,
     subtract,
+    subtract_,
     sum,
     take,
     tan,
@@ -538,6 +775,7 @@ from .tensor.math import (  # noqa: F401
     tanh_,
     trace,
     trapezoid,
+    true_divide,
     trunc,
     trunc_,
     vander,
@@ -554,9 +792,11 @@ from .tensor.random import (
     normal_,
     poisson,
     rand,
+    rand_like,
     randint,
     randint_like,
     randn,
+    randn_like,
     randperm,
     standard_gamma,
     standard_normal,
@@ -566,12 +806,14 @@ from .tensor.search import (
     argmax,
     argmin,
     argsort,
+    argwhere,
     bucketize,
     index_sample,
     index_select,
     kthvalue,
     masked_select,
     mode,
+    msort,
     nonzero,
     searchsorted,
     sort,
@@ -590,10 +832,39 @@ from .tensor.stat import (
     var,
 )
 from .tensor.to_string import set_printoptions
+from .testing import _assert as _assert
 from .utils.dlpack import (
     from_dlpack,
     to_dlpack,
 )
+
+
+class _TensorMethodOrModule:
+    def __init__(self):
+        import paddle.tensor as tensor_module
+
+        from .tensor.creation import tensor as tensor_api
+
+        self.module = tensor_module
+        self.method = tensor_api
+
+    def __call__(self, *args, **kwargs):
+        return self.method(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self.module, name)
+
+    def __repr__(self):
+        return repr(self.method)
+
+    def __str__(self):
+        return str(self.method)
+
+    def __dir__(self):
+        return dir(self.module)
+
+
+tensor = _TensorMethodOrModule()  # noqa: F811
 
 # CINN has to set a flag to include a lib
 if is_compiled_with_cinn():
@@ -607,51 +878,84 @@ if is_compiled_with_cinn():
     if os.path.exists(cuh_file):
         os.environ.setdefault('runtime_include_dir', runtime_include_dir)
 
-    if sys.version_info >= (3, 9):
+    data_file_path = resources.files('paddle.cinn_config')
+    os.environ['CINN_CONFIG_PATH'] = str(data_file_path)
 
-        data_file_path = resources.files('paddle.cinn_config')
-        os.environ['CINN_CONFIG_PATH'] = str(data_file_path)
-    else:
-        import pkg_resources
-
-        data_file_path = pkg_resources.resource_filename(
-            'paddle.cinn_config', ''
-        )
-        os.environ['CINN_CONFIG_PATH'] = data_file_path
-
-if __is_metainfo_generated and is_compiled_with_cuda():
+if (
+    __is_metainfo_generated
+    and is_compiled_with_cuda()
+    and not is_compiled_with_rocm()
+):
     import os
     import platform
 
+    from .version import cuda_version as _cuda_version, with_pip_cuda_libraries
+
+    cuda_major = _builtins.int(_cuda_version.split('.')[0])
+
     if (
         platform.system() == 'Linux'
-        and platform.machine() == 'x86_64'
-        and paddle.version.with_pip_cuda_libraries == 'ON'
+        and (
+            platform.machine() in ('x86_64', 'AMD64')
+            or (platform.machine() == 'aarch64' and cuda_major >= 13)
+        )
+        and with_pip_cuda_libraries == 'ON'
     ):
         package_dir = os.path.dirname(os.path.abspath(__file__))
         nvidia_package_path = package_dir + "/.." + "/nvidia"
         set_flags({"FLAGS_nvidia_package_dir": nvidia_package_path})
 
-        cublas_lib_path = package_dir + "/.." + "/nvidia/cublas/lib"
-        set_flags({"FLAGS_cublas_dir": cublas_lib_path})
+        if cuda_major >= 13:
+            cuda_lib_path = os.path.join(
+                nvidia_package_path, f'cu{cuda_major}', 'lib'
+            )
+            cusparselt_lib_path = os.path.join(
+                nvidia_package_path, 'cusparselt', 'lib'
+            )
+            set_flags(
+                {
+                    "FLAGS_cuda_dir": cuda_lib_path,
+                    "FLAGS_cublas_dir": cuda_lib_path,
+                    "FLAGS_curand_dir": cuda_lib_path,
+                    "FLAGS_cusolver_dir": cuda_lib_path,
+                    "FLAGS_cusparse_dir": cuda_lib_path,
+                    "FLAGS_cusparselt_dir": cusparselt_lib_path,
+                    "FLAGS_cupti_dir": cuda_lib_path,
+                }
+            )
+        else:
+            cublas_lib_path = package_dir + "/.." + "/nvidia/cublas/lib"
+            set_flags({"FLAGS_cublas_dir": cublas_lib_path})
+
+            curand_lib_path = package_dir + "/.." + "/nvidia/curand/lib"
+            set_flags({"FLAGS_curand_dir": curand_lib_path})
+
+            cusolver_lib_path = package_dir + "/.." + "/nvidia/cusolver/lib"
+            set_flags({"FLAGS_cusolver_dir": cusolver_lib_path})
+
+            cusparse_lib_path = package_dir + "/.." + "/nvidia/cusparse/lib"
+            set_flags({"FLAGS_cusparse_dir": cusparse_lib_path})
+
+            cupti_dir_lib_path = package_dir + "/.." + "/nvidia/cuda_cupti/lib"
+            set_flags({"FLAGS_cupti_dir": cupti_dir_lib_path})
 
         cudnn_lib_path = package_dir + "/.." + "/nvidia/cudnn/lib"
         set_flags({"FLAGS_cudnn_dir": cudnn_lib_path})
 
-        curand_lib_path = package_dir + "/.." + "/nvidia/curand/lib"
-        set_flags({"FLAGS_curand_dir": curand_lib_path})
-
-        cusolver_lib_path = package_dir + "/.." + "/nvidia/cusolver/lib"
-        set_flags({"FLAGS_cusolver_dir": cusolver_lib_path})
-
-        cusparse_lib_path = package_dir + "/.." + "/nvidia/cusparse/lib"
-        set_flags({"FLAGS_cusparse_dir": cusparse_lib_path})
-
         nccl_lib_path = package_dir + "/.." + "/nvidia/nccl/lib"
         set_flags({"FLAGS_nccl_dir": nccl_lib_path})
 
-        cupti_dir_lib_path = package_dir + "/.." + "/nvidia/cuda_cupti/lib"
-        set_flags({"FLAGS_cupti_dir": cupti_dir_lib_path})
+        if is_compiled_with_cinn():
+            if cuda_major >= 13:
+                cuda_cccl_path = os.path.join(
+                    nvidia_package_path, f'cu{cuda_major}', 'include'
+                )
+            else:
+                cuda_cccl_path = (
+                    package_dir + "/.." + "/nvidia/cuda_cccl/include/"
+                )
+            set_flags({"FLAGS_cuda_cccl_dir": cuda_cccl_path})
+            _preload_nvidia_lib("libnvrtc-builtins.so.*", ['cuda_nvrtc'])
 
     elif (
         platform.system() == 'Windows'
@@ -671,6 +975,16 @@ if __is_metainfo_generated and is_compiled_with_cuda():
             site_cuda_base_path = os.path.join(
                 os.path.dirname(__file__), '..', 'nvidia'
             )
+            site_cuda_paths = []
+            if cuda_major >= 13:
+                site_cuda_paths.append(
+                    os.path.join(
+                        site_cuda_base_path,
+                        f'cu{cuda_major}',
+                        'bin',
+                        'x86_64',
+                    )
+                )
             site_cuda_list = [
                 "cublas",
                 "cuda_nvrtc",
@@ -695,10 +1009,11 @@ if __is_metainfo_generated and is_compiled_with_cuda():
                     os.path.exists, [th_dll_path, py_dll_path, base_py_dll_path]
                 )
             )
-            for site_cuda_package in site_cuda_list:
-                site_cuda_path = os.path.join(
-                    site_cuda_base_path, site_cuda_package, 'bin'
-                )
+            site_cuda_paths.extend(
+                os.path.join(site_cuda_base_path, package, 'bin')
+                for package in site_cuda_list
+            )
+            for site_cuda_path in site_cuda_paths:
                 if os.path.exists(site_cuda_path):
                     dll_paths.append(site_cuda_path)
 
@@ -729,10 +1044,7 @@ if __is_metainfo_generated and is_compiled_with_cuda():
             import glob
 
             dlls = glob.glob(os.path.join(th_dll_path, '*.dll'))
-            for site_cuda_package in site_cuda_list:
-                site_cuda_path = os.path.join(
-                    site_cuda_base_path, site_cuda_package, 'bin'
-                )
+            for site_cuda_path in site_cuda_paths:
                 if os.path.exists(site_cuda_path):
                     dlls.extend(
                         glob.glob(os.path.join(site_cuda_path, '*.dll'))
@@ -767,13 +1079,13 @@ if __is_metainfo_generated and is_compiled_with_cuda():
                         raise err
             kernel32.SetErrorMode(prev_error_mode)
 
+
 disable_static()
 
 from .pir_utils import IrGuard
 
 ir_guard = IrGuard()
 ir_guard._switch_to_pir()
-
 
 # Constants
 newaxis: None = None
@@ -782,35 +1094,88 @@ nan = math.nan
 pi = math.pi
 e = math.e
 
+# API alias
+cat = concat
+concatenate = concat
+take_along_dim = take_along_axis
+clamp = clip
+clamp_ = clip_
+true_divide_ = divide_
+ger = outer
+div = divide
+div_ = divide_
+eq = equal
+ne = not_equal
+lt = less_than
+less = less_than
+le = less_equal
+ge = greater_equal
+swapdims = transpose
+swapaxes = transpose
+manual_seed = seed
+sub = subtract
+sub_ = subtract_
+movedim = moveaxis
+mod = remainder
+floor_mod = remainder
+fmod = remainder
+fix = trunc
+fix_ = trunc_
+mvlgamma = multigammaln
+mvlgamma_ = multigammaln_
+negative_ = neg_
+pinverse = pinv
+
+
 __all__ = [
     'block_diag',
+    'gt',
+    'eq',
     'iinfo',
     'finfo',
     'dtype',
     'uint8',
+    'uint16',
+    'uint32',
+    'uint64',
     'int8',
     'int16',
     'int32',
     'int64',
     'float8_e4m3fn',
     'float8_e5m2',
+    'half',
     'float16',
+    'float',
     'float32',
     'float64',
+    'double',
     'bfloat16',
     'bool',
+    'cfloat',
+    'cdouble',
     'complex64',
     'complex128',
     'pstring',
     'raw',
+    'addcdiv',
+    'addcdiv_',
     'addmm',
     'addmm_',
+    'addmv',
+    'addmv_',
+    'addr',
+    'addr_',
+    'baddbmm',
+    'baddbmm_',
     'allclose',
     'isclose',
     't',
     't_',
     'add',
     'subtract',
+    'subtract_',
+    'det',
     'diag',
     'diagflat',
     'diag_embed',
@@ -836,11 +1201,13 @@ __all__ = [
     'logit',
     'logit_',
     'LazyGuard',
+    'Size',
     'sign',
     'is_empty',
     'equal',
     'equal_',
     'equal_all',
+    "from_numpy",
     'is_tensor',
     'is_complex',
     'is_integer',
@@ -858,7 +1225,9 @@ __all__ = [
     'mv',
     'in_dynamic_mode',
     'min',
+    'narrow',
     'amin',
+    'aminmax',
     'any',
     'slice',
     'slice_scatter',
@@ -875,6 +1244,7 @@ __all__ = [
     'summary',
     'flops',
     'sort',
+    'msort',
     'searchsorted',
     'bucketize',
     'split',
@@ -884,6 +1254,7 @@ __all__ = [
     'vsplit',
     'logical_and',
     'logical_and_',
+    'MmapStorage',
     'full_like',
     'less_than',
     'less_than_',
@@ -891,7 +1262,22 @@ __all__ = [
     'less_',
     'kron',
     'clip',
+    'clip_',
+    'clamp',
+    'clamp_',
+    'clamp_max',
+    'clamp_min',
     'Tensor',
+    'FloatTensor',
+    'DoubleTensor',
+    'HalfTensor',
+    'BFloat16Tensor',
+    'ByteTensor',
+    'CharTensor',
+    'ShortTensor',
+    'IntTensor',
+    'LongTensor',
+    'BoolTensor',
     'crop',
     'ParamAttr',
     'stanh',
@@ -905,6 +1291,7 @@ __all__ = [
     'squeeze',
     'squeeze_',
     'to_tensor',
+    'as_tensor',
     'gather_nd',
     'isin',
     'isinf',
@@ -941,6 +1328,7 @@ __all__ = [
     'histogram_bin_edges',
     'histogram',
     'histogramdd',
+    'histc',
     'multiplex',
     'CUDAPlace',
     'empty',
@@ -962,6 +1350,7 @@ __all__ = [
     'pdist',
     'unbind',
     'meshgrid',
+    'range',
     'arange',
     'load',
     'numel',
@@ -973,8 +1362,11 @@ __all__ = [
     'enable_grad',
     'set_grad_enabled',
     'is_grad_enabled',
+    'inference_mode',
     'mod',
     'mod_',
+    'fmod',
+    'fmod_',
     'abs',
     'abs_',
     'tril',
@@ -987,6 +1379,8 @@ __all__ = [
     'index_select',
     'CPUPlace',
     'matmul',
+    'pinverse',
+    'qr',
     'seed',
     'acos',
     'acos_',
@@ -1007,11 +1401,13 @@ __all__ = [
     'DataParallel',
     'argmin',
     'prod',
+    'broadcast_shapes',
     'broadcast_shape',
     'conj',
     'neg',
     'neg_',
     'negative',
+    'negative_',
     'lgamma',
     'lgamma_',
     'gammaincc',
@@ -1021,11 +1417,19 @@ __all__ = [
     'lerp',
     'erfinv',
     'inner',
+    'inverse',
     'outer',
+    'ger',
     'square',
     'square_',
     'divide',
     'divide_',
+    'div',
+    'div_',
+    'sub',
+    'sub_',
+    'true_divide',
+    'true_divide_',
     'gammaln',
     'gammaln_',
     'ceil',
@@ -1073,10 +1477,15 @@ __all__ = [
     'tanh',
     'tanh_',
     'transpose',
+    'swapaxes',
+    'swapdims',
     'transpose_',
+    'permute',
     'cauchy_',
     'geometric_',
     'randn',
+    'randn_like',
+    'rand_like',
     'strided_slice',
     'unique',
     'unique_consecutive',
@@ -1086,7 +1495,9 @@ __all__ = [
     'std',
     'flatten',
     'flatten_',
+    'ravel',
     'asin',
+    'mul',
     'multiply',
     'multiply_',
     'disable_static',
@@ -1096,8 +1507,10 @@ __all__ = [
     'enable_static',
     'scatter_nd',
     'set_default_dtype',
+    'set_default_tensor_type',
     'disable_signal_handler',
     'expand_as',
+    'expand_copy',
     'stack',
     'hstack',
     'vstack',
@@ -1110,12 +1523,15 @@ __all__ = [
     'logspace',
     'reshape',
     'reshape_',
+    'resize_as_',
     'atleast_1d',
     'atleast_2d',
     'atleast_3d',
     'reverse',
     'nonzero',
+    'argwhere',
     'CUDAPinnedPlace',
+    'XPUPinnedPlace',
     'logical_not',
     'logical_not_',
     'add_n',
@@ -1126,14 +1542,19 @@ __all__ = [
     'cosh',
     'log',
     'log_',
+    'logdet',
     'log2',
     'log2_',
     'log10',
     'log10_',
     'concat',
+    'cat',
+    'concatenate',
     'check_shape',
     'trunc',
     'trunc_',
+    'fix',
+    'fix_',
     'frac',
     'frac_',
     'digamma',
@@ -1148,24 +1569,35 @@ __all__ = [
     'acosh',
     'atanh',
     'as_complex',
+    'view_as_complex',
     'as_real',
+    'view_as_real',
     'diff',
     'angle',
     'fmax',
     'fmin',
     'moveaxis',
+    'movedim',
     'repeat_interleave',
     'clone',
     'kthvalue',
     'renorm',
     'renorm_',
     'take_along_axis',
+    'take_along_dim',
+    'scatter_reduce',
+    'scatter_reduce_',
     'put_along_axis',
+    'put_along_axis_',
+    'scatter_add',
     'select_scatter',
     'multigammaln',
     'multigammaln_',
+    'mvlgamma',
+    'mvlgamma_',
     'nan_to_num',
     'nan_to_num_',
+    'scatter_add_',
     'heaviside',
     'tril_indices',
     'index_add',
@@ -1222,4 +1654,41 @@ __all__ = [
     'nan',
     'pi',
     'e',
+    'is_autocast_enabled',
+    'get_autocast_dtype',
+    'get_autocast_cpu_dtype',
+    'get_autocast_gpu_dtype',
+    'ne',
+    'lt',
+    'le',
+    'ge',
+    'asarray',
+    'conv1d',
+    'conv2d',
+    'conv3d',
+    'group_norm',
+    'layer_norm',
+    'relu',
+    'manual_seed',
+    'initial_seed',
+    'softmax',
+    'log_softmax',
+    'Generator',
+    'adaptive_avg_pool1d',
+    'autocast',
+    'enable_compat',
+    'disable_compat',
+    'use_compat_guard',
 ]
+import os
+
+monkey_patch_generated_methods_for_tensor()
+import paddle._paddle_docs
+
+FLAGS_trace_api = os.environ.get("FLAGS_trace_api", None)
+if FLAGS_trace_api is not None and FLAGS_trace_api != "":
+    from .api_tracer import start_api_tracer
+
+    api_path = FLAGS_trace_api.split(",")[0]
+    save_config_path = FLAGS_trace_api.split(",")[1]
+    start_api_tracer(api_path, save_config_path)

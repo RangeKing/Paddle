@@ -18,16 +18,16 @@ limitations under the License. */
 namespace phi::funcs {
 
 template <typename T>
-struct GRUUnitFunctor<phi::CPUContext, T> {
-  static void compute(const phi::CPUContext &context,
+struct GRUUnitFunctor<CPUContext, T> {
+  static void compute(const CPUContext &dev_ctx,
                       GRUMetaValue<T> value,
                       int frame_size,
                       int batch_size,
-                      const phi::funcs::detail::ActivationType active_node,
-                      const phi::funcs::detail::ActivationType active_gate,
+                      const funcs::detail::ActivationType active_node,
+                      const funcs::detail::ActivationType active_gate,
                       bool origin_mode) {
 #if !defined(__NVCC__) && !defined(__HIPCC___)
-    auto blas = phi::funcs::GetBlas<phi::CPUContext, T>(context);
+    auto blas = funcs::GetBlas<CPUContext, T>(dev_ctx);
     if (value.prev_out_value) {
       blas.GEMM(false,
                 false,
@@ -44,8 +44,8 @@ struct GRUUnitFunctor<phi::CPUContext, T> {
                 frame_size * 3);
     }
 
-    detail::forward_reset_output<phi::CPUContext>(
-        phi::funcs::detail::forward::gru_resetOutput<T>(),
+    detail::forward_reset_output<CPUContext>(
+        funcs::detail::forward::gru_resetOutput<T>(),
         value,
         frame_size,
         batch_size,
@@ -69,8 +69,8 @@ struct GRUUnitFunctor<phi::CPUContext, T> {
                 frame_size * 3);
     }
 
-    detail::forward_final_output<phi::CPUContext>(
-        phi::funcs::detail::forward::gru_finalOutput<T>(),
+    detail::forward_final_output<CPUContext>(
+        funcs::detail::forward::gru_finalOutput<T>(),
         value,
         frame_size,
         batch_size,
@@ -83,25 +83,24 @@ struct GRUUnitFunctor<phi::CPUContext, T> {
 };
 
 template <typename T>
-struct GRUUnitGradFunctor<phi::CPUContext, T> {
-  static void compute(const phi::CPUContext &context,
+struct GRUUnitGradFunctor<CPUContext, T> {
+  static void compute(const CPUContext &dev_ctx,
                       GRUMetaValue<T> value,
                       GRUMetaGrad<T> grad,
                       int frame_size,
                       int batch_size,
-                      const phi::funcs::detail::ActivationType active_node,
-                      const phi::funcs::detail::ActivationType active_gate,
+                      const funcs::detail::ActivationType active_node,
+                      const funcs::detail::ActivationType active_gate,
                       bool origin_mode) {
 #if !defined(__NVCC__) && !defined(__HIPCC___)
-    detail::backward_state_grad(
-        phi::funcs::detail::backward::gru_stateGrad<T>(),
-        value,
-        grad,
-        frame_size,
-        batch_size,
-        active_node,
-        origin_mode);
-    auto blas = phi::funcs::GetBlas<phi::CPUContext, T>(context);
+    detail::backward_state_grad(funcs::detail::backward::gru_stateGrad<T>(),
+                                value,
+                                grad,
+                                frame_size,
+                                batch_size,
+                                active_node,
+                                origin_mode);
+    auto blas = funcs::GetBlas<CPUContext, T>(dev_ctx);
     if (value.prev_out_value && grad.prev_out_grad) {
       blas.GEMM(false,
                 true,
@@ -134,13 +133,12 @@ struct GRUUnitGradFunctor<phi::CPUContext, T> {
       }
     }
 
-    detail::backward_reset_grad(
-        phi::funcs::detail::backward::gru_resetGrad<T>(),
-        value,
-        grad,
-        frame_size,
-        batch_size,
-        active_gate);
+    detail::backward_reset_grad(funcs::detail::backward::gru_resetGrad<T>(),
+                                value,
+                                grad,
+                                frame_size,
+                                batch_size,
+                                active_gate);
     if (grad.prev_out_grad && value.prev_out_value) {
       blas.GEMM(false,
                 true,
@@ -178,14 +176,14 @@ struct GRUUnitGradFunctor<phi::CPUContext, T> {
 
 template <typename T>
 struct GRUUnitFunctorV2<CPUContext, T> {
-  static void compute(const CPUContext &context,
+  static void compute(const CPUContext &dev_ctx,
                       GRUMetaValue<T> value,
                       int frame_size,
                       int batch_size,
-                      const phi::funcs::detail::ActivationType active_node,
-                      const phi::funcs::detail::ActivationType active_gate) {
+                      const funcs::detail::ActivationType active_node,
+                      const funcs::detail::ActivationType active_gate) {
 #if !defined(__NVCC__) && !defined(__HIPCC___)
-    auto blas = phi::funcs::GetBlas<CPUContext, T>(context);
+    auto blas = funcs::GetBlas<CPUContext, T>(dev_ctx);
     if (value.prev_out_value) {
       blas.GEMM(CblasNoTrans,
                 CblasTrans,
@@ -198,58 +196,57 @@ struct GRUUnitFunctorV2<CPUContext, T> {
                 0,
                 value.reset_output_value);
     }
-    detail::forward_reset_output(
-        phi::funcs::detail::forward::gru_resetOutput<T>(),
-        value,
-        frame_size,
-        batch_size,
-        active_gate,
-        false,
-        &context);
+    detail::forward_reset_output(funcs::detail::forward::gru_resetOutput<T>(),
+                                 value,
+                                 frame_size,
+                                 batch_size,
+                                 active_gate,
+                                 false,
+                                 &dev_ctx);
 
     T *cell_state_value = value.gate_value + 2 * frame_size;
     T *reset_output_value = value.reset_output_value;
     for (int b = 0; b < batch_size; ++b) {
-      blas.VADD(
-          frame_size, cell_state_value, reset_output_value, cell_state_value);
+      for (int i = 0; i < frame_size; ++i) {
+        cell_state_value[i] += reset_output_value[i];
+      }
       cell_state_value += frame_size * 3;
       reset_output_value += frame_size;
     }
 
-    detail::forward_final_output(
-        phi::funcs::detail::forward::gru_finalOutput<T>(),
-        value,
-        frame_size,
-        batch_size,
-        active_node,
-        true,
-        false,
-        &context);
+    detail::forward_final_output(funcs::detail::forward::gru_finalOutput<T>(),
+                                 value,
+                                 frame_size,
+                                 batch_size,
+                                 active_node,
+                                 true,
+                                 false,
+                                 &dev_ctx);
 #endif
   }
 };
 
 template <typename T>
 struct GRUUnitGradFunctorV2<CPUContext, T> {
-  static void compute(const CPUContext &context,
+  static void compute(const CPUContext &dev_ctx,
                       GRUMetaValue<T> value,
                       GRUMetaGrad<T> grad,
                       int frame_size,
                       int batch_size,
-                      const phi::funcs::detail::ActivationType active_node,
-                      const phi::funcs::detail::ActivationType active_gate) {
+                      const funcs::detail::ActivationType active_node,
+                      const funcs::detail::ActivationType active_gate) {
 #if !defined(__NVCC__) && !defined(__HIPCC___)
     // calculate grad_update_gate, grad_frame_state,
     // grad_reset_output, grad_reset_gate
-    detail::cpu_gru_backward(context,
-                             phi::funcs::detail::backward::gru<T>(),
+    detail::cpu_gru_backward(dev_ctx,
+                             funcs::detail::backward::gru<T>(),
                              value,
                              grad,
                              frame_size,
                              batch_size,
                              active_node,
                              active_gate);
-    auto blas = phi::funcs::GetBlas<CPUContext, T>(context);
+    auto blas = funcs::GetBlas<CPUContext, T>(dev_ctx);
     if (grad.prev_out_grad && value.prev_out_value) {
       // update prev_out_grad
       blas.GEMM(false,
@@ -343,9 +340,12 @@ struct GRUUnitGradFunctorV2<CPUContext, T> {
     T *state_bias_grad = grad.bias_hh_grad + 2 * frame_size;
     T *reset_output_grad = grad.reset_output_grad;
     for (int b = 0; b < batch_size; ++b) {
-      blas.VADD(2 * frame_size, bias_hh_grad, gate_grad, bias_hh_grad);
-      blas.VADD(
-          frame_size, state_bias_grad, reset_output_grad, state_bias_grad);
+      for (int i = 0; i < 2 * frame_size; ++i) {
+        bias_hh_grad[i] += gate_grad[i];
+      }
+      for (int i = 0; i < frame_size; ++i) {
+        state_bias_grad[i] += reset_output_grad[i];
+      }
       gate_grad += 3 * frame_size;
       reset_output_grad += frame_size;
     }
@@ -353,10 +353,10 @@ struct GRUUnitGradFunctorV2<CPUContext, T> {
   }
 };
 
-template struct GRUUnitFunctor<phi::CPUContext, float>;
-template struct GRUUnitFunctor<phi::CPUContext, double>;
-template struct GRUUnitGradFunctor<phi::CPUContext, float>;
-template struct GRUUnitGradFunctor<phi::CPUContext, double>;
+template struct GRUUnitFunctor<CPUContext, float>;
+template struct GRUUnitFunctor<CPUContext, double>;
+template struct GRUUnitGradFunctor<CPUContext, float>;
+template struct GRUUnitGradFunctor<CPUContext, double>;
 
 template struct GRUUnitFunctorV2<CPUContext, float>;
 template struct GRUUnitFunctorV2<CPUContext, double>;

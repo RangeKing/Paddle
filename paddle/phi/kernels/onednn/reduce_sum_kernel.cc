@@ -13,7 +13,9 @@ See the License for the specific language governing permissions and
 limitations under the License. */
 
 #include "paddle/phi/kernels/reduce_sum_kernel.h"
+
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/onednn/reduce_kernel_impl.h"
 
 namespace phi {
@@ -26,6 +28,11 @@ void SumRawKernel(const Context& dev_ctx,
                   DataType out_dtype UNUSED,
                   DenseTensor* out) {
   reduce_all = recompute_reduce_all(x, dims, reduce_all);
+  if (x.numel() == 0) {
+    dev_ctx.template Alloc<T>(out);
+    Full<T, Context>(dev_ctx, out->dims(), 0, out);
+    return;
+  }
   ReduceKernel<T, Context>(dev_ctx,
                            x,
                            dims,
@@ -37,4 +44,4 @@ void SumRawKernel(const Context& dev_ctx,
 }  // namespace phi
 
 PD_REGISTER_KERNEL(
-    sum_raw, OneDNN, ONEDNN, phi::SumRawKernel, float, phi::dtype::bfloat16) {}
+    sum_raw, OneDNN, ONEDNN, phi::SumRawKernel, float, phi::bfloat16) {}

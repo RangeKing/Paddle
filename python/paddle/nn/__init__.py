@@ -12,7 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from . import functional, initializer, quant, utils  # noqa: F401
+
+from . import (  # noqa: F401
+    attention,
+    functional,
+    init,
+    initializer,
+    quant,
+    utils,
+)
 from .clip import ClipGradByGlobalNorm, ClipGradByNorm, ClipGradByValue
 from .decode import BeamSearchDecoder, dynamic_decode
 
@@ -52,6 +60,12 @@ from .layer.activation import (
 from .layer.common import (
     AlphaDropout,
     Bilinear,
+    CircularPad1D,
+    CircularPad2D,
+    CircularPad3D,
+    ConstantPad1D,
+    ConstantPad2D,
+    ConstantPad3D,
     CosineSimilarity,
     Dropout,
     Dropout2D,
@@ -65,6 +79,12 @@ from .layer.common import (
     Pad1D,
     Pad2D,
     Pad3D,
+    ReflectionPad1D,
+    ReflectionPad2D,
+    ReflectionPad3D,
+    ReplicationPad1D,
+    ReplicationPad2D,
+    ReplicationPad3D,
     Unflatten,
     Unfold,
     Upsample,
@@ -108,6 +128,7 @@ from .layer.loss import (
     L1Loss,
     MarginRankingLoss,
     MSELoss,
+    MultiLabelMarginLoss,
     MultiLabelSoftMarginLoss,
     MultiMarginLoss,
     NLLLoss,
@@ -173,7 +194,64 @@ from .layer.transformer import (
     TransformerEncoderLayer,
 )
 from .layer.vision import ChannelShuffle, PixelShuffle, PixelUnshuffle
+from .modules.container import (
+    ModuleDict,
+    ModuleList,
+)
+from .modules.module import Module
+from .parameter import Parameter
 from .utils.spectral_norm_hook import spectral_norm  # noqa: F401
+
+SiLU = Silu
+AdaptiveAvgPool1d = AdaptiveAvgPool1D
+AdaptiveAvgPool2d = AdaptiveAvgPool2D
+AdaptiveAvgPool3d = AdaptiveAvgPool3D
+AvgPool1d = AvgPool1D
+AvgPool2d = AvgPool2D
+AvgPool3d = AvgPool3D
+BatchNorm1d = BatchNorm1D
+BatchNorm2d = BatchNorm2D
+BatchNorm3d = BatchNorm3D
+MultiheadAttention = MultiHeadAttention
+HuberLoss = SmoothL1Loss
+MultilabelMarginLoss = MultiLabelMarginLoss
+MultilabelSoftMarginLoss = MultiLabelSoftMarginLoss
+MaxUnpool1d = MaxUnPool1D
+MaxUnpool2d = MaxUnPool2D
+MaxUnpool3d = MaxUnPool3D
+UpsamplingBilinear2d = UpsamplingBilinear2D
+UpsamplingNearest2d = UpsamplingNearest2D
+ZeroPad1d = ZeroPad1D
+ZeroPad2d = ZeroPad2D
+ZeroPad3d = ZeroPad3D
+ReflectionPad1d = ReflectionPad1D
+ReflectionPad2d = ReflectionPad2D
+ReflectionPad3d = ReflectionPad3D
+ConstantPad1d = ConstantPad1D
+ConstantPad2d = ConstantPad2D
+ConstantPad3d = ConstantPad3D
+ReplicationPad1d = ReplicationPad1D
+ReplicationPad2d = ReplicationPad2D
+ReplicationPad3d = ReplicationPad3D
+CircularPad1d = CircularPad1D
+CircularPad2d = CircularPad2D
+CircularPad3d = CircularPad3D
+Conv1d = Conv1D
+Conv2d = Conv2D
+Conv3d = Conv3D
+ConvTranspose1d = Conv1DTranspose
+ConvTranspose2d = Conv2DTranspose
+ConvTranspose3d = Conv3DTranspose
+AdaptiveMaxPool1d = AdaptiveMaxPool1D
+AdaptiveMaxPool2d = AdaptiveMaxPool2D
+AdaptiveMaxPool3d = AdaptiveMaxPool3D
+LPPool2d = LPPool2D
+LPPool1d = LPPool1D
+MaxPool1d = MaxPool1D
+MaxPool2d = MaxPool2D
+MaxPool3d = MaxPool3D
+FractionalMaxPool2d = FractionalMaxPool2D
+FractionalMaxPool3d = FractionalMaxPool3D
 
 __all__ = [
     'BatchNorm',
@@ -197,6 +275,30 @@ __all__ = [
     'Pad1D',
     'Pad2D',
     'Pad3D',
+    'ConstantPad1D',
+    'ConstantPad2D',
+    'ConstantPad3D',
+    'CircularPad1D',
+    'CircularPad2D',
+    'CircularPad3D',
+    'ReplicationPad1D',
+    'ReplicationPad2D',
+    'ReplicationPad3D',
+    'ReflectionPad1D',
+    'ReflectionPad2D',
+    'ReflectionPad3D',
+    'CircularPad1d',
+    'CircularPad2d',
+    'CircularPad3d',
+    'ConstantPad1d',
+    'ConstantPad2d',
+    'ConstantPad3d',
+    'ReplicationPad1d',
+    'ReplicationPad2d',
+    'ReplicationPad3d',
+    'ReflectionPad1d',
+    'ReflectionPad2d',
+    'ReflectionPad3d',
     'CosineSimilarity',
     'Dropout',
     'Dropout2D',
@@ -242,9 +344,11 @@ __all__ = [
     'NLLLoss',
     'PoissonNLLLoss',
     'Conv1D',
+    'Conv1d',
     'Sequential',
     'Hardswish',
     'Conv1DTranspose',
+    'ConvTranspose1d',
     'AdaptiveMaxPool1D',
     'TransformerEncoder',
     'Softmax',
@@ -252,6 +356,7 @@ __all__ = [
     'ParameterDict',
     'ParameterList',
     'Conv2D',
+    'Conv2d',
     'Softshrink',
     'Hardtanh',
     'TransformerDecoderLayer',
@@ -260,7 +365,9 @@ __all__ = [
     'GLU',
     'SELU',
     'Silu',
+    'SiLU',
     'Conv2DTranspose',
+    'ConvTranspose2d',
     'CTCLoss',
     'RNNTLoss',
     'ThresholdedReLU',
@@ -269,8 +376,10 @@ __all__ = [
     'Layer',
     'TransformerDecoder',
     'Conv3D',
+    'Conv3d',
     'Tanh',
     'Conv3DTranspose',
+    'ConvTranspose3d',
     'Flatten',
     'AdaptiveAvgPool1D',
     'Tanhshrink',
@@ -300,11 +409,14 @@ __all__ = [
     'MaxUnPool2D',
     'MaxUnPool3D',
     'MultiLabelSoftMarginLoss',
+    'MultilabelSoftMarginLoss',
     'HingeEmbeddingLoss',
     'Identity',
     'CosineEmbeddingLoss',
     'RReLU',
     'MultiMarginLoss',
+    'MultiLabelMarginLoss',
+    'MultilabelMarginLoss',
     'TripletMarginWithDistanceLoss',
     'TripletMarginLoss',
     'SoftMarginLoss',
@@ -317,4 +429,25 @@ __all__ = [
     'LPPool2D',
     'ZeroPad1D',
     'ZeroPad3D',
+    'Parameter',
+    'AdaptiveMaxPool1d',
+    'AdaptiveMaxPool2d',
+    'AdaptiveMaxPool3d',
+    'LPPool2d',
+    'LPPool1d',
+    'Module',
+    'ModuleDict',
+    'ModuleList',
+    'MaxPool1d',
+    'MaxPool2d',
+    'MaxPool3d',
+    'FractionalMaxPool2d',
+    'FractionalMaxPool3d',
+    'AvgPool1d',
+    'AvgPool2d',
+    'AvgPool3d',
+    'BatchNorm1d',
+    'BatchNorm2d',
+    'BatchNorm3d',
+    'MultiheadAttention',
 ]

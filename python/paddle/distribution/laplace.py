@@ -21,6 +21,7 @@ import numpy as np
 import paddle
 from paddle.base import framework
 from paddle.distribution import distribution
+from paddle.utils.decorator_utils import param_one_alias
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -49,7 +50,7 @@ class Laplace(distribution.Distribution):
         scale (scalar|Tensor): The scale of the distribution.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> paddle.seed(2023)
@@ -187,7 +188,7 @@ class Laplace(distribution.Distribution):
           Tensor: The log probability, whose data type is same with value.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
 
@@ -219,7 +220,7 @@ class Laplace(distribution.Distribution):
             The entropy of distribution.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
 
@@ -250,7 +251,7 @@ class Laplace(distribution.Distribution):
             Tensor: The cumulative probability of value.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
 
@@ -261,13 +262,13 @@ class Laplace(distribution.Distribution):
                         0.54758132)
         """
         loc, scale, value = self._validate_value(value)
-        iterm = (
+        item = (
             0.5
             * (value - loc).sign()
             * paddle.expm1(-(value - loc).abs() / scale)
         )
 
-        return 0.5 - iterm
+        return 0.5 - item
 
     def icdf(self, value: float | Tensor) -> Tensor:
         r"""Inverse Cumulative distribution function.
@@ -289,7 +290,7 @@ class Laplace(distribution.Distribution):
             Tensor: The cumulative probability of value.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> m = paddle.distribution.Laplace(paddle.to_tensor(0.0), paddle.to_tensor(1.0))
@@ -303,6 +304,7 @@ class Laplace(distribution.Distribution):
 
         return loc - scale * (term).sign() * paddle.log1p(-2 * term.abs())
 
+    @param_one_alias(["shape", "sample_shape"])
     def sample(self, shape: Sequence[int] = []) -> Tensor:
         r"""Generate samples of the specified shape.
 
@@ -314,7 +316,7 @@ class Laplace(distribution.Distribution):
             Tensor: A sample tensor that fits the Laplace distribution.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> paddle.seed(2023)
@@ -327,6 +329,7 @@ class Laplace(distribution.Distribution):
         with paddle.no_grad():
             return self.rsample(shape)
 
+    @param_one_alias(["shape", "sample_shape"])
     def rsample(self, shape: Sequence[int] = []) -> Tensor:
         r"""Reparameterized sample.
 
@@ -338,7 +341,7 @@ class Laplace(distribution.Distribution):
             Tensor: A sample tensor that fits the Laplace distribution.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> paddle.seed(2023)
@@ -410,7 +413,7 @@ class Laplace(distribution.Distribution):
             Tensor: The kl-divergence between two laplace distributions.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
 

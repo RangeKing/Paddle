@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 import contextlib
-from typing import TYPE_CHECKING, Callable, Generator
+from typing import TYPE_CHECKING
 
 import paddle.distributed as dist
 from paddle import framework
@@ -24,7 +24,7 @@ from paddle.distributed.communication.group import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Generator, Sequence
 
     from paddle import Tensor
     from paddle.base.core import task
@@ -50,7 +50,7 @@ class P2POp:
             default group. Default: None.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env: DISTRIBUTED)
 
@@ -152,7 +152,7 @@ def batch_isend_irecv(p2p_op_list: list[P2POp]) -> list[task]:
         This API only supports the dygraph mode.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env: DISTRIBUTED)
 

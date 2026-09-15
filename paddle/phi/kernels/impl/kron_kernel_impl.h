@@ -28,7 +28,7 @@
 namespace phi {
 
 inline DenseTensor UnsqueezeTo(const DenseTensor &src, int ndims) {
-  const phi::DDim &shape = src.dims();
+  const DDim &shape = src.dims();
   int rank = shape.size();
   DenseTensor res;
   res.ShareDataWith(src);
@@ -36,7 +36,7 @@ inline DenseTensor UnsqueezeTo(const DenseTensor &src, int ndims) {
       rank,
       ndims,
       errors::InvalidArgument(
-          "The input Tensor's rank should be less than or equal to ndims"
+          "The input Tensor's rank should be less than or equal to ndims. "
           "Received input Tensor's rank = %d, ndims = %d",
           rank,
           ndims));
@@ -45,7 +45,7 @@ inline DenseTensor UnsqueezeTo(const DenseTensor &src, int ndims) {
     for (int i = ndims - rank; i < ndims; i++) {
       new_dim[i] = shape[i - ndims + rank];
     }
-    res.Resize(common::make_ddim(new_dim));
+    res.Resize(new_dim);
   }
   return res;
 }
@@ -105,15 +105,15 @@ struct KronOpFunctor {
     int ndims = out->dims().size();
     int64_t numel = out->numel();
 
-    const phi::DDim &dim_x = x.dims();
-    const phi::DDim &dim_y = y.dims();
-    const phi::DDim &dim_out = out->dims();
-    const phi::DDim stride_x =
-        dim_x.size() == 0 ? phi::DDim(dim_x) : common::stride(dim_x);
-    const phi::DDim stride_y =
-        dim_y.size() == 0 ? phi::DDim(dim_y) : common::stride(dim_y);
-    const phi::DDim stride_out =
-        dim_out.size() == 0 ? phi::DDim(dim_out) : common::stride(dim_out);
+    const DDim &dim_x = x.dims();
+    const DDim &dim_y = y.dims();
+    const DDim &dim_out = out->dims();
+    const DDim stride_x =
+        dim_x.size() == 0 ? DDim(dim_x) : common::stride(dim_x);
+    const DDim stride_y =
+        dim_y.size() == 0 ? DDim(dim_y) : common::stride(dim_y);
+    const DDim stride_out =
+        dim_out.size() == 0 ? DDim(dim_out) : common::stride(dim_out);
 
     const int64_t *p_stride_x = nullptr, *p_stride_y = nullptr,
                   *p_stride_out = nullptr, *p_shape_y = nullptr;
@@ -153,18 +153,21 @@ struct KronOpFunctor {
 };
 
 template <typename T, typename Context>
-void KronKernel(const Context &ctx,
+void KronKernel(const Context &dev_ctx,
                 const DenseTensor &x,
                 const DenseTensor &y,
                 DenseTensor *out) {
-  ctx.template Alloc<T>(out);
+  dev_ctx.template Alloc<T>(out);
+  if (out && out->numel() == 0) {
+    return;
+  }
 
   int ndims = out->dims().size();
   DenseTensor xx = UnsqueezeTo(x, ndims);
   DenseTensor yy = UnsqueezeTo(y, ndims);
 
   KronOpFunctor<Context, T> func;
-  func(ctx, xx, yy, out);
+  func(dev_ctx, xx, yy, out);
 }
 
 }  // namespace phi

@@ -26,17 +26,16 @@
 #include "paddle/phi/core/platform/monitor.h"
 #include "paddle/phi/core/platform/timer.h"
 
-#ifdef PADDLE_WITH_PSCORE
-#include "paddle/fluid/distributed/ps/wrapper/fleet.h"
-#include "paddle/fluid/framework/fleet/heter_ps/graph_gpu_wrapper.h"
-#endif
-
 #if defined _WIN32 || defined __APPLE__
 #else
 #define _LINUX
 #endif
 
+#ifdef _WIN32
+DEFINE_INT_STATUS(STAT_total_feasign_num_in_mem);
+#else
 USE_INT_STAT(STAT_total_feasign_num_in_mem);
+#endif
 USE_INT_STAT(STAT_epoch_finish);
 COMMON_DECLARE_bool(graph_get_neighbor_id);
 COMMON_DECLARE_int32(gpugraph_storage_mode);
@@ -78,7 +77,7 @@ DatasetImpl<T>::DatasetImpl()
   cur_channel_ = 0;
   fleet_send_batch_size_ = 1024;
   fleet_send_sleep_seconds_ = 0;
-  merge_by_insid_ = false;
+  merge_by_ins_id_ = false;
   merge_by_sid_ = true;
   enable_pv_merge_ = false;
   merge_size_ = 2;
@@ -190,7 +189,7 @@ void DatasetImpl<T>::SetParseLogKey(bool parse_logkey) {
 
 template <typename T>
 void DatasetImpl<T>::SetMergeByInsId(int merge_size) {
-  merge_by_insid_ = true;
+  merge_by_ins_id_ = true;
   parse_ins_id_ = true;
   merge_size_ = merge_size;
 }
@@ -887,7 +886,7 @@ void MultiSlotDataset::GlobalShuffle(int thread_num) {
           << input_channel_->Size();
 
   auto get_client_id = [this, fleet_ptr](const Record& data) -> size_t {
-    if (this->merge_by_insid_) {
+    if (this->merge_by_ins_id_) {
       return XXH64(data.ins_id_.data(), data.ins_id_.length(), 0) %
              this->trainer_num_;
     } else if (this->shuffle_by_uid_) {
@@ -1593,8 +1592,8 @@ void MultiSlotDataset::GenerateLocalTablesUnlock(int table_id,
 
 void MultiSlotDataset::MergeByInsId() {
   VLOG(3) << "MultiSlotDataset::MergeByInsId begin";
-  if (!merge_by_insid_) {
-    VLOG(3) << "merge_by_insid=false, will not MergeByInsId";
+  if (!merge_by_ins_id_) {
+    VLOG(3) << "merge_by_ins_id=false, will not MergeByInsId";
     return;
   }
   auto multi_slot_desc = data_feed_desc_.multi_slot_desc();

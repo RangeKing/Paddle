@@ -22,6 +22,10 @@
 #include "paddle/fluid/framework/op_version_registry.h"
 #include "paddle/utils/string/pretty_log.h"
 
+#if !defined(PADDLE_WITH_XPU_KP) || defined(__xpu_on_host__)
+#include "unsupported/Eigen/CXX11/Tensor"
+#endif
+
 namespace paddle::framework::ir {
 
 using EigenVectorArrayMap = Eigen::Map<Eigen::Array<double, Eigen::Dynamic, 1>>;
@@ -186,7 +190,7 @@ MultiGRUFusePass::MultiGRUFusePass() {
       .AddAttr("origin_mode")
       .IsType<bool>()
       .End()
-      .AddAttr("use_mkldnn")
+      .AddAttr("use_onednn")
       .IsType<bool>()
       .End()
       .AddAttr("mkldnn_data_type")

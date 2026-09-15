@@ -45,7 +45,7 @@ class SumOp : public framework::OperatorWithKernel {
         common::errors::NotFound("Input var[%s] should not be nullptr",
                                  x_vars_name[0]));
 
-    if (x_vars[0]->IsType<phi::DenseTensor>()) {
+    if (x_vars[0]->IsType<DenseTensor>()) {
       int dtype = -1;
       for (size_t idx = 0; idx < x_vars.size(); ++idx) {
         PADDLE_ENFORCE_NOT_NULL(
@@ -76,12 +76,12 @@ class SumOp : public framework::OperatorWithKernel {
       // NOTE(jiahongyu): Below codes originally enclosed by PADDLE_WITH_DNNL
       if (!((data_type == framework::proto::VarType::FP32 ||
              data_type == framework::proto::VarType::BF16) &&
-            ctx.OutputVar("Out")->IsType<phi::DenseTensor>())) {  // NOLINT
+            ctx.OutputVar("Out")->IsType<DenseTensor>())) {  // NOLINT
         this->SetDnnFallback(true);
       } else if (!std::all_of(x_vars.begin(),
                               x_vars.end(),
                               [](const framework::Variable* v) {
-                                return v->IsType<phi::DenseTensor>();
+                                return v->IsType<DenseTensor>();
                               })) {
         this->SetDnnFallback(true);
       }
@@ -111,13 +111,12 @@ class SumOp : public framework::OperatorWithKernel {
       PADDLE_THROW(common::errors::InvalidArgument(
           "Expected each tensor in Input(x) in sum op has be initialized, but "
           "some tensor in Input(x) is not be initialized, please check your "
-          "code.",
-          framework::ToTypeName(x_vars[0]->Type())));
+          "code."));
     }
     PADDLE_THROW(common::errors::InvalidArgument(
         "Expected type of Input(X) must be Tensor,  SelectedRows or "
         "DenseTensorArray. But got "
-        "unsupport type: %s.",
+        "unsupported type: %s.",
         framework::ToTypeName(x_vars[0]->Type())));
   }
 };
@@ -127,8 +126,8 @@ class SumOpMaker : public framework::OpProtoAndCheckerMaker {
   void Make() override {
     AddInput(
         "X",
-        "A Variable list. The shape and data type of the list elements"
-        "should be consistent. Variable can be multi-dimensional Tensor"
+        "A Variable list. The shape and data type of the list elements "
+        "should be consistent. Variable can be multi-dimensional Tensor "
         "or phi::DenseTensor, and data types can be: float32, float64, int32, "
         "int64.")
         .AsDuplicable();

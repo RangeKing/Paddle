@@ -18,10 +18,7 @@ limitations under the License. */
 #include <string>
 #include <unordered_map>
 #include "paddle/phi/backends/dynload/cublasLt.h"
-#include "paddle/phi/common/float8_e4m3fn.h"
 #include "paddle/phi/core/dense_tensor.h"
-
-namespace dyl = phi::dynload;
 
 namespace phi {
 
@@ -51,9 +48,9 @@ class CublasLtHelper {
 
     // matmul desc
 #if CUBLAS_VER_MAJOR < 11
-    status = dyl::cublasLtMatmulDescCreate(&matmul_desc_, cudaComputeType);
+    status = dynload::cublasLtMatmulDescCreate(&matmul_desc_, cudaComputeType);
 #else
-    status = dyl::cublasLtMatmulDescCreate(
+    status = dynload::cublasLtMatmulDescCreate(
         &matmul_desc_, cudaComputeType, CUDA_R_32I);
 #endif
 
@@ -61,51 +58,52 @@ class CublasLtHelper {
         status,
         CUBLAS_STATUS_SUCCESS,
         common::errors::External(
-            "cublasLtMatmulDescCreate execution error"
+            "cublasLtMatmulDescCreate execution error, "
             "refer https://docs.nvidia.com/cuda/cublas/index.html to get more "
             "information"));
     cublasOperation_t op_transpose = CUBLAS_OP_T;
-    status = dyl::cublasLtMatmulDescSetAttribute(matmul_desc_,
-                                                 CUBLASLT_MATMUL_DESC_TRANSA,
-                                                 &op_transpose,
-                                                 sizeof(op_transpose));
+    status =
+        dynload::cublasLtMatmulDescSetAttribute(matmul_desc_,
+                                                CUBLASLT_MATMUL_DESC_TRANSA,
+                                                &op_transpose,
+                                                sizeof(op_transpose));
     PADDLE_ENFORCE_EQ(
         status,
         CUBLAS_STATUS_SUCCESS,
         common::errors::External(
-            "cublasLtMatmulDescSetAttribute execution error"
+            "cublasLtMatmulDescSetAttribute execution error, "
             "refer https://docs.nvidia.com/cuda/cublas/index.html to get more "
             "information"));
 
     // matrix desc
-    status = dyl::cublasLtMatrixLayoutCreate(&B_desc_, CUDA_R_8I, k, n, k);
+    status = dynload::cublasLtMatrixLayoutCreate(&B_desc_, CUDA_R_8I, k, n, k);
     PADDLE_ENFORCE_EQ(
         status,
         CUBLAS_STATUS_SUCCESS,
         common::errors::External(
-            "cublasLtMatrixLayoutCreate execution error"
+            "cublasLtMatrixLayoutCreate execution error, "
             "refer https://docs.nvidia.com/cuda/cublas/index.html to get more "
             "information"));
 
-    status = dyl::cublasLtMatrixLayoutCreate(&A_desc_, CUDA_R_8I, k, m, k);
+    status = dynload::cublasLtMatrixLayoutCreate(&A_desc_, CUDA_R_8I, k, m, k);
     PADDLE_ENFORCE_EQ(
         status,
         CUBLAS_STATUS_SUCCESS,
         common::errors::External(
-            "cublasLtMatrixLayoutCreate execution error"
+            "cublasLtMatrixLayoutCreate execution error, "
             "refer https://docs.nvidia.com/cuda/cublas/index.html to get more "
             "information"));
 
-    status = dyl::cublasLtMatrixLayoutCreate(&C_desc_, CUDA_R_32I, n, m, n);
+    status = dynload::cublasLtMatrixLayoutCreate(&C_desc_, CUDA_R_32I, n, m, n);
     PADDLE_ENFORCE_EQ(
         status,
         CUBLAS_STATUS_SUCCESS,
         common::errors::External(
-            "cublasLtMatrixLayoutCreate execution error"
+            "cublasLtMatrixLayoutCreate execution error, "
             "refer https://docs.nvidia.com/cuda/cublas/index.html to get more "
             "information"));
 
-#if CUDA_VERSION >= 11020
+#if defined(PADDLE_WITH_CUDA)
 
     int algoId = 21;
     int swizzle = 0;
@@ -133,38 +131,39 @@ class CublasLtHelper {
       workspace_size_ = value.workspace_size;
     }
 
-    dyl::cublasLtMatmulAlgoInit(handle_,
-                                cudaComputeType,
-                                CUDA_R_32I,
-                                CUDA_R_8I,
-                                CUDA_R_8I,
-                                CUDA_R_32I,
-                                CUDA_R_32I,
-                                algoId,
-                                &algo_);
-    dyl::cublasLtMatmulAlgoConfigSetAttribute(
+    dynload::cublasLtMatmulAlgoInit(handle_,
+                                    cudaComputeType,
+                                    CUDA_R_32I,
+                                    CUDA_R_8I,
+                                    CUDA_R_8I,
+                                    CUDA_R_32I,
+                                    CUDA_R_32I,
+                                    algoId,
+                                    &algo_);
+    dynload::cublasLtMatmulAlgoConfigSetAttribute(
         &algo_,
         CUBLASLT_ALGO_CONFIG_CUSTOM_OPTION,
         &(customOption),
         sizeof(customOption));
-    dyl::cublasLtMatmulAlgoConfigSetAttribute(
+    dynload::cublasLtMatmulAlgoConfigSetAttribute(
         &algo_, CUBLASLT_ALGO_CONFIG_TILE_ID, &(tile), sizeof(tile));
-    dyl::cublasLtMatmulAlgoConfigSetAttribute(&algo_,
-                                              CUBLASLT_ALGO_CONFIG_SPLITK_NUM,
-                                              &(splitK_val),
-                                              sizeof(splitK_val));
-    dyl::cublasLtMatmulAlgoConfigSetAttribute(
+    dynload::cublasLtMatmulAlgoConfigSetAttribute(
+        &algo_,
+        CUBLASLT_ALGO_CONFIG_SPLITK_NUM,
+        &(splitK_val),
+        sizeof(splitK_val));
+    dynload::cublasLtMatmulAlgoConfigSetAttribute(
         &algo_,
         CUBLASLT_ALGO_CONFIG_CTA_SWIZZLING,
         &(swizzle),
         sizeof(swizzle));
-    dyl::cublasLtMatmulAlgoConfigSetAttribute(
+    dynload::cublasLtMatmulAlgoConfigSetAttribute(
         &algo_,
         CUBLASLT_ALGO_CONFIG_REDUCTION_SCHEME,
         &(reductionScheme),
         sizeof(int));
 #if CUDA_VERSION >= 11000
-    dyl::cublasLtMatmulAlgoConfigSetAttribute(
+    dynload::cublasLtMatmulAlgoConfigSetAttribute(
         &algo_, CUBLASLT_ALGO_CONFIG_STAGES_ID, &(stages), sizeof(stages));
 #endif
 #endif
@@ -178,33 +177,33 @@ class CublasLtHelper {
             void* workspace = nullptr) {
     cublasStatus_t status;
 
-    status = dyl::cublasLtMatmul(handle_,
-                                 matmul_desc_,
-                                 &alpha_,
-                                 B_dev,
-                                 B_desc_,
-                                 A_dev,
-                                 A_desc_,
-                                 &beta_,
-                                 C_dev,
-                                 C_desc_,
-                                 C_dev,
-                                 C_desc_,
-#if CUDA_VERSION >= 11020
-                                 &algo_,
-                                 workspace,
-                                 workspace_size_,
+    status = dynload::cublasLtMatmul(handle_,
+                                     matmul_desc_,
+                                     &alpha_,
+                                     B_dev,
+                                     B_desc_,
+                                     A_dev,
+                                     A_desc_,
+                                     &beta_,
+                                     C_dev,
+                                     C_desc_,
+                                     C_dev,
+                                     C_desc_,
+#if defined(PADDLE_WITH_CUDA)
+                                     &algo_,
+                                     workspace,
+                                     workspace_size_,
 #else
-                                 nullptr,
-                                 nullptr,
-                                 0,
+                                     nullptr,
+                                     nullptr,
+                                     0,
 #endif
-                                 stream);
+                                     stream);
     PADDLE_ENFORCE_EQ(
         status,
         CUBLAS_STATUS_SUCCESS,
         common::errors::External(
-            "cublasLtMatmul execution error"
+            "cublasLtMatmul execution error, "
             "refer https://docs.nvidia.com/cuda/cublas/index.html to get more "
             "information"));
   }
@@ -234,25 +233,30 @@ inline cudaDataType_t GetCublasLtDataType() {
 }
 
 template <>
-inline cudaDataType_t GetCublasLtDataType<phi::dtype::float16>() {
+inline cudaDataType_t GetCublasLtDataType<phi::float16>() {
   return CUDA_R_16F;
 }
 
 template <>
-inline cudaDataType_t GetCublasLtDataType<phi::dtype::bfloat16>() {
+inline cudaDataType_t GetCublasLtDataType<phi::bfloat16>() {
   return CUDA_R_16BF;
 }
 
 #if CUDA_VERSION >= 12010
 template <typename T>
-void CublasLtMatmulFP8(const phi::GPUContext& dev_ctx,
-                       const phi::DenseTensor& mat_a,
-                       const phi::DenseTensor& mat_b,
-                       phi::DenseTensor* workspace,
-                       phi::DenseTensor* out) {
-  int m = mat_a.dims()[0];
-  int k = mat_a.dims()[1];
-  int n = mat_b.dims()[1];
+void CublasLtMatmulFP8(const GPUContext& dev_ctx,
+                       const DenseTensor& mat_a,
+                       const DenseTensor& mat_b,
+                       DenseTensor* workspace,
+                       DenseTensor* out) {
+  // TODO(large-tensor): downstream functors may still use int
+  int64_t m = mat_a.dims()[0];
+
+  // TODO(large-tensor): downstream functors may still use int
+  int64_t k = mat_a.dims()[1];
+
+  // TODO(large-tensor): downstream functors may still use int
+  int64_t n = mat_b.dims()[1];
 
   // init data structure
   cublasStatus_t status;
@@ -268,66 +272,66 @@ void CublasLtMatmulFP8(const phi::GPUContext& dev_ctx,
   float beta_ = 0.0f;
 
   cublasComputeType_t cudaComputeType = CUBLAS_COMPUTE_32F;
-  status =
-      dyl::cublasLtMatmulDescCreate(&matmul_desc_, cudaComputeType, CUDA_R_32F);
+  status = dynload::cublasLtMatmulDescCreate(
+      &matmul_desc_, cudaComputeType, CUDA_R_32F);
   cublasOperation_t op_transpose = CUBLAS_OP_T;
-  status = dyl::cublasLtMatmulDescSetAttribute(matmul_desc_,
-                                               CUBLASLT_MATMUL_DESC_TRANSA,
-                                               &op_transpose,
-                                               sizeof(op_transpose));
-  status = dyl::cublasLtMatrixLayoutCreate(&B_desc_, B_type, k, n, k);
-  status = dyl::cublasLtMatrixLayoutCreate(&A_desc_, A_type, k, m, k);
-  status = dyl::cublasLtMatrixLayoutCreate(&C_desc_, C_type, n, m, n);
+  status = dynload::cublasLtMatmulDescSetAttribute(matmul_desc_,
+                                                   CUBLASLT_MATMUL_DESC_TRANSA,
+                                                   &op_transpose,
+                                                   sizeof(op_transpose));
+  status = dynload::cublasLtMatrixLayoutCreate(&B_desc_, B_type, k, n, k);
+  status = dynload::cublasLtMatrixLayoutCreate(&A_desc_, A_type, k, m, k);
+  status = dynload::cublasLtMatrixLayoutCreate(&C_desc_, C_type, n, m, n);
 
   // Need to use heuristic
   int returnedResults = 0;
   cublasLtMatmulHeuristicResult_t heuristicResult = {};
   cublasLtMatmulPreference_t preference = NULL;
-  size_t work_space_size = workspace->numel();
+  size_t workspace_size = workspace->numel();
 
-  status = dyl::cublasLtMatmulPreferenceCreate(&preference);
-  status = dyl::cublasLtMatmulPreferenceSetAttribute(
+  status = dynload::cublasLtMatmulPreferenceCreate(&preference);
+  status = dynload::cublasLtMatmulPreferenceSetAttribute(
       preference,
       CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES,
-      &work_space_size,
-      sizeof(work_space_size));
+      &workspace_size,
+      sizeof(workspace_size));
 
-  status = dyl::cublasLtMatmulAlgoGetHeuristic(dev_ctx.cublaslt_handle(),
-                                               matmul_desc_,
-                                               B_desc_,
-                                               A_desc_,
-                                               C_desc_,
-                                               C_desc_,
-                                               preference,
-                                               1,
-                                               &heuristicResult,
-                                               &returnedResults);
+  status = dynload::cublasLtMatmulAlgoGetHeuristic(dev_ctx.cublaslt_handle(),
+                                                   matmul_desc_,
+                                                   B_desc_,
+                                                   A_desc_,
+                                                   C_desc_,
+                                                   C_desc_,
+                                                   preference,
+                                                   1,
+                                                   &heuristicResult,
+                                                   &returnedResults);
 
   PADDLE_ENFORCE_NE(returnedResults,
                     0,
                     common::errors::NotFound(
                         "Unable to find suitable cuBLAS GEMM algorithm"));
 
-  status =
-      dyl::cublasLtMatmul(dev_ctx.cublaslt_handle(),
-                          matmul_desc_,
-                          &alpha_,
-                          mat_b.data<phi::dtype::float8_e4m3fn>(),
-                          B_desc_,
-                          mat_a.data<phi::dtype::float8_e4m3fn>(),
-                          A_desc_,
-                          &beta_,
-                          out->data<T>(),
-                          C_desc_,
-                          out->data<T>(),
-                          C_desc_,
-                          // nullptr,
-                          &heuristicResult.algo,
-                          //  nullptr,
-                          reinterpret_cast<void*>(workspace->data<int8_t>()),
-                          // 0,
-                          work_space_size,
-                          dev_ctx.stream());
+  status = dynload::cublasLtMatmul(
+      dev_ctx.cublaslt_handle(),
+      matmul_desc_,
+      &alpha_,
+      mat_b.data<phi::float8_e4m3fn>(),
+      B_desc_,
+      mat_a.data<phi::float8_e4m3fn>(),
+      A_desc_,
+      &beta_,
+      out->data<T>(),
+      C_desc_,
+      out->data<T>(),
+      C_desc_,
+      // nullptr,
+      &heuristicResult.algo,
+      //  nullptr,
+      reinterpret_cast<void*>(workspace->data<int8_t>()),
+      // 0,
+      workspace_size,
+      dev_ctx.stream());
 }
 #endif
 

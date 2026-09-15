@@ -30,11 +30,11 @@ class ValueExecutionInfo;
 class TensorRTEngineInstruction : public InstructionBase {
  public:
   TensorRTEngineInstruction(size_t id,
-                            const phi::Place& place,
-                            ::pir::Operation* op,
+                            const Place& place,
+                            pir::Operation* op,
                             const ValueExecutionInfo* value_exec_info);
 
-  ::pir::Operation* Operation() const override { return op_; }
+  pir::Operation* Operation() const override { return op_; }
 
   void Run() override;
 
@@ -42,21 +42,22 @@ class TensorRTEngineInstruction : public InstructionBase {
 
  private:
   std::string ReadBinaryFileToString(const std::string& filePath);
-  void PrepareDynamicShape();
+  void InputsCheck();
   void RunTrt();
   void BindInputTensor(const std::string& input_name,
-                       const phi::DenseTensor& input_tensor,
+                       const DenseTensor& input_tensor,
                        const Scope& scope,
                        std::vector<void*>& buffers,  // NOLINT
                        std::vector<int>& shape_v,    // NOLINT
                        int* runtime_batch);
   void BindOutputTensor(std::string output_name,
-                        phi::DenseTensor* output_tensor,
+                        DenseTensor* output_tensor,
                         int output_index,
                         std::vector<void*>& buffers,  // NOLINT
                         int* runtime_batch);
   std::unique_ptr<paddle::platform::TensorRTEngine> trt_engine_;  // not owned
   int64_t workspace_size_;
+  bool use_cuda_graph_;
   bool allow_build_at_runtime_;
   std::unordered_map<int, std::string>
       input_names_;  // Only record input name that is not empty
@@ -65,9 +66,13 @@ class TensorRTEngineInstruction : public InstructionBase {
       output_names_;  // Only record output name that is not empty
   int output_nums_ = 0;
   std::vector<int> outputs_rank_;
-  std::vector<phi::DataType> outputs_dtype_;
+  std::vector<DataType> outputs_dtype_;
   std::string op_name_ = "pd_op.tensorrt_engine";
-  ::pir::Operation* op_{nullptr};  // not owned
+  pir::Operation* op_{nullptr};  // not owned
+  std::string refit_params_path_;
+  std::vector<std::string> refit_param_names_;
+  std::map<std::string, std::map<std::string, std::string>>
+      refit_param_names2trt_names_;
 
   const ValueExecutionInfo* value_exec_info_;  // not owned
 };

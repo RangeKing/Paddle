@@ -16,23 +16,15 @@
 #include <iostream>
 #include <string>
 #include <typeindex>
-
-#include "paddle/phi/common/bfloat16.h"
-#include "paddle/phi/common/complex.h"
 #include "paddle/phi/common/data_type.h"
-#include "paddle/phi/common/float16.h"
-#include "paddle/phi/common/float8_e4m3fn.h"
-#include "paddle/phi/common/float8_e5m2.h"
 #include "paddle/phi/core/enforce.h"
 #include "paddle/phi/core/framework/framework.pb.h"
-#include "paddle/utils/test_macros.h"
-
-namespace proto = paddle::framework::proto;
 
 namespace phi {
+using VarType = paddle::framework::proto::VarType;
 
-TEST_API std::string VarDataTypeToString(const proto::VarType::Type type);
-TEST_API extern size_t SizeOfType(proto::VarType::Type type);
+PADDLE_API std::string VarDataTypeToString(const VarType::Type type);
+TEST_API extern size_t SizeOfType(VarType::Type type);
 
 template <typename T>
 struct IsComplex : public std::false_type {};
@@ -46,9 +38,7 @@ struct DataTypeTrait {};
 // Stub handle for void
 template <>
 struct DataTypeTrait<void> {
-  constexpr static proto::VarType::Type DataType() {
-    return proto::VarType::RAW;
-  }
+  constexpr static VarType::Type DataType() { return VarType::RAW; }
 };
 
 #define _ForEachDataTypeHelper_(callback, cpp_type, proto_type) \
@@ -63,6 +53,9 @@ struct DataTypeTrait<void> {
   _ForEachDataTypeHelper_(callback, int64_t, INT64);                          \
   _ForEachDataTypeHelper_(callback, bool, BOOL);                              \
   _ForEachDataTypeHelper_(callback, uint8_t, UINT8);                          \
+  _ForEachDataTypeHelper_(callback, uint16_t, UINT16);                        \
+  _ForEachDataTypeHelper_(callback, uint32_t, UINT32);                        \
+  _ForEachDataTypeHelper_(callback, uint64_t, UINT64);                        \
   _ForEachDataTypeHelper_(callback, int16_t, INT16);                          \
   _ForEachDataTypeHelper_(callback, int8_t, INT8);                            \
   _ForEachDataTypeHelper_(callback, ::phi::dtype::complex<float>, COMPLEX64); \
@@ -71,11 +64,14 @@ struct DataTypeTrait<void> {
   _ForEachDataTypeHelper_(callback, ::phi::dtype::float8_e4m3fn, FP8_E4M3FN); \
   _ForEachDataTypeHelper_(callback, ::phi::dtype::float8_e5m2, FP8_E5M2);
 
-#define _ForEachIntDataType_(callback)               \
-  _ForEachDataTypeHelper_(callback, int, INT32);     \
-  _ForEachDataTypeHelper_(callback, int64_t, INT64); \
-  _ForEachDataTypeHelper_(callback, uint8_t, UINT8); \
-  _ForEachDataTypeHelper_(callback, int16_t, INT16); \
+#define _ForEachIntDataType_(callback)                 \
+  _ForEachDataTypeHelper_(callback, int, INT32);       \
+  _ForEachDataTypeHelper_(callback, int64_t, INT64);   \
+  _ForEachDataTypeHelper_(callback, uint8_t, UINT8);   \
+  _ForEachDataTypeHelper_(callback, uint16_t, UINT16); \
+  _ForEachDataTypeHelper_(callback, uint32_t, UINT32); \
+  _ForEachDataTypeHelper_(callback, uint64_t, UINT64); \
+  _ForEachDataTypeHelper_(callback, int16_t, INT16);   \
   _ForEachDataTypeHelper_(callback, int8_t, INT8);
 
 #define _ForEachDataTypeSmall_(callback)                                      \
@@ -108,26 +104,44 @@ struct DataTypeTrait<void> {
   _ForEachDataTypeHelper_(callback, int64_t, INT64);                          \
   _ForEachDataTypeHelper_(callback, bool, BOOL);                              \
   _ForEachDataTypeHelper_(callback, uint8_t, UINT8);                          \
+  _ForEachDataTypeHelper_(callback, uint16_t, UINT16);                        \
+  _ForEachDataTypeHelper_(callback, uint32_t, UINT32);                        \
+  _ForEachDataTypeHelper_(callback, uint64_t, UINT64);                        \
   _ForEachDataTypeHelper_(callback, int16_t, INT16);                          \
   _ForEachDataTypeHelper_(callback, int8_t, INT8);                            \
   _ForEachDataTypeHelper_(callback, ::phi::dtype::complex<float>, COMPLEX64); \
   _ForEachDataTypeHelper_(callback, ::phi::dtype::complex<double>, COMPLEX128);
 
-#define DefineDataTypeTrait(cpp_type, proto_type)                           \
-  template <>                                                               \
-  struct DataTypeTrait<cpp_type> {                                          \
-    constexpr static proto::VarType::Type DataType() { return proto_type; } \
+// complex and float8 are not supported on XPU.
+#define _ForEachDataTypeForXPU_(callback)                          \
+  _ForEachDataTypeHelper_(callback, float, FP32);                  \
+  _ForEachDataTypeHelper_(callback, ::phi::dtype::float16, FP16);  \
+  _ForEachDataTypeHelper_(callback, ::phi::dtype::bfloat16, BF16); \
+  _ForEachDataTypeHelper_(callback, double, FP64);                 \
+  _ForEachDataTypeHelper_(callback, int, INT32);                   \
+  _ForEachDataTypeHelper_(callback, int64_t, INT64);               \
+  _ForEachDataTypeHelper_(callback, bool, BOOL);                   \
+  _ForEachDataTypeHelper_(callback, uint8_t, UINT8);               \
+  _ForEachDataTypeHelper_(callback, int16_t, INT16);               \
+  _ForEachDataTypeHelper_(callback, int8_t, INT8);
+
+#define DefineDataTypeTrait(cpp_type, proto_type)                         \
+  template <>                                                             \
+  struct DataTypeTrait<cpp_type> {                                        \
+    constexpr static paddle::framework::proto::VarType::Type DataType() { \
+      return proto_type;                                                  \
+    }                                                                     \
   }
 
 _ForEachDataType_(DefineDataTypeTrait);
 
 #undef DefineDataTypeTrait
 
-TEST_API extern proto::VarType::Type ToDataType(std::type_index type);
-extern std::type_index ToTypeIndex(proto::VarType::Type type);
+TEST_API extern VarType::Type ToDataType(std::type_index type);
+extern std::type_index ToTypeIndex(VarType::Type type);
 
 template <typename Visitor>
-inline void VisitDataType(proto::VarType::Type type, Visitor visitor) {
+inline void VisitDataType(VarType::Type type, Visitor visitor) {
 #define VisitDataTypeCallback(cpp_type, proto_type) \
   do {                                              \
     if (type == proto_type) {                       \
@@ -139,12 +153,12 @@ inline void VisitDataType(proto::VarType::Type type, Visitor visitor) {
   _ForEachDataType_(VisitDataTypeCallback);
 #undef VisitDataTypeCallback
   PADDLE_THROW(common::errors::Unimplemented(
-      "Not supported proto::VarType::Type(%d) as data type.",
+      "Not supported paddle::framework::proto::VarType::Type(%d) as data type.",
       static_cast<int>(type)));
 }
 
 template <typename Visitor>
-inline void VisitDataTypeSmall(proto::VarType::Type type, Visitor visitor) {
+inline void VisitDataTypeSmall(VarType::Type type, Visitor visitor) {
 #define VisitDataTypeCallbackSmall(cpp_type, proto_type) \
   do {                                                   \
     if (type == proto_type) {                            \
@@ -159,7 +173,7 @@ inline void VisitDataTypeSmall(proto::VarType::Type type, Visitor visitor) {
 
 // for normal dtype, int, int64, float, float64, float16
 template <typename Visitor>
-inline void VisitDataTypeNormal(proto::VarType::Type type, Visitor visitor) {
+inline void VisitDataTypeNormal(VarType::Type type, Visitor visitor) {
 #define VisitDataTypeCallbackNormal(cpp_type, proto_type) \
   do {                                                    \
     if (type == proto_type) {                             \
@@ -173,7 +187,7 @@ inline void VisitDataTypeNormal(proto::VarType::Type type, Visitor visitor) {
 }
 
 template <typename Visitor>
-inline void VisitIntDataType(proto::VarType::Type type, Visitor visitor) {
+inline void VisitIntDataType(VarType::Type type, Visitor visitor) {
 #define VisitIntDataTypeCallback(cpp_type, proto_type) \
   do {                                                 \
     if (type == proto_type) {                          \
@@ -191,7 +205,7 @@ inline void VisitIntDataType(proto::VarType::Type type, Visitor visitor) {
 }
 
 template <typename Visitor>
-inline void VisitDataTypeTiny(proto::VarType::Type type, Visitor visitor) {
+inline void VisitDataTypeTiny(VarType::Type type, Visitor visitor) {
 #define VisitDataTypeCallbackTiny(cpp_type, proto_type) \
   do {                                                  \
     if (type == proto_type) {                           \
@@ -205,7 +219,7 @@ inline void VisitDataTypeTiny(proto::VarType::Type type, Visitor visitor) {
 }
 
 template <typename Visitor>
-inline void VisitDataTypeForHIP(proto::VarType::Type type, Visitor visitor) {
+inline void VisitDataTypeForHIP(VarType::Type type, Visitor visitor) {
 #define VisitDataTypeCallbackHIP(cpp_type, proto_type) \
   do {                                                 \
     if (type == proto_type) {                          \
@@ -218,26 +232,24 @@ inline void VisitDataTypeForHIP(proto::VarType::Type type, Visitor visitor) {
 #undef VisitDataTypeCallbackHIP
 }
 
-inline std::ostream& operator<<(std::ostream& out,
-                                const proto::VarType::Type& type) {
+inline std::ostream& operator<<(std::ostream& out, const VarType::Type& type) {
   out << VarDataTypeToString(type);
   return out;
 }
 
-extern inline bool IsComplexType(const proto::VarType::Type& type) {
-  return (type == proto::VarType::COMPLEX64 ||
-          type == proto::VarType::COMPLEX128);
+extern inline bool IsComplexType(const VarType::Type& type) {
+  return (type == VarType::COMPLEX64 || type == VarType::COMPLEX128);
 }
 
-extern proto::VarType::Type PromoteTypesIfComplexExists(
-    const proto::VarType::Type type_a, const proto::VarType::Type type_b);
+extern VarType::Type PromoteTypesIfComplexExists(const VarType::Type type_a,
+                                                 const VarType::Type type_b);
 
-extern inline proto::VarType::Type ToComplexType(proto::VarType::Type t) {
+extern inline VarType::Type ToComplexType(VarType::Type t) {
   switch (t) {
-    case proto::VarType::FP32:
-      return proto::VarType::COMPLEX64;
-    case proto::VarType::FP64:
-      return proto::VarType::COMPLEX128;
+    case VarType::FP32:
+      return VarType::COMPLEX64;
+    case VarType::FP64:
+      return VarType::COMPLEX128;
     default:
       PADDLE_THROW(common::errors::Unimplemented(
           "Unknown real value data type (%s), now only support float32 and "
@@ -246,17 +258,16 @@ extern inline proto::VarType::Type ToComplexType(proto::VarType::Type t) {
   }
 }
 
-extern inline proto::VarType::Type ToRealType(proto::VarType::Type t) {
+extern inline VarType::Type ToRealType(VarType::Type t) {
   switch (t) {
-    case proto::VarType::COMPLEX64:
-      return proto::VarType::FP32;
-    case proto::VarType::COMPLEX128:
-      return proto::VarType::FP64;
+    case VarType::COMPLEX64:
+      return VarType::FP32;
+    case VarType::COMPLEX128:
+      return VarType::FP64;
     default:
       PADDLE_THROW(common::errors::Unimplemented(
           "Unknown complex value data type (%s), now only support complex64 "
-          "and "
-          "complex128.",
+          "and complex128.",
           VarDataTypeToString(t)));
   }
 }

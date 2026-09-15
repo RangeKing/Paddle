@@ -29,16 +29,16 @@ static void MatMulXPUFunction(const DenseTensor& x,
   const auto& x_dims = x.dims();
   const auto& y_dims = y.dims();
 
-  auto mat_dim_a = phi::funcs::CreateMatrixDescriptor(
-      RowMatrixFromVector(x_dims), 0, trans_x);
-  auto mat_dim_b = phi::funcs::CreateMatrixDescriptor(
-      ColumnMatrixFromVector(y_dims), 0, trans_y);
+  auto mat_dim_a =
+      funcs::CreateMatrixDescriptor(RowMatrixFromVector(x_dims), 0, trans_x);
+  auto mat_dim_b =
+      funcs::CreateMatrixDescriptor(ColumnMatrixFromVector(y_dims), 0, trans_y);
 
   T* data_c = out->data<T>();
-  int m = mat_dim_a.height_;
-  int n = mat_dim_b.width_;
-  int k = mat_dim_a.width_;
-  int batch_size = mat_dim_a.batch_size_;
+  int64_t m = mat_dim_a.height_;
+  int64_t n = mat_dim_b.width_;
+  int64_t k = mat_dim_a.width_;
+  int64_t batch_size = mat_dim_a.batch_size_;
   // batch matmul
   int fc_calc_type = FCCalcType<XPUType>();
   decltype(&xblas_fc_batch_wrapper<XPUType, int16_t, float>)

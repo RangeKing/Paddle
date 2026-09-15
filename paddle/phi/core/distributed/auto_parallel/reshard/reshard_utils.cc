@@ -16,6 +16,7 @@
 
 #include "glog/logging.h"
 #include "paddle/phi/backends/context_pool.h"
+#include "paddle/phi/backends/device_manager.h"
 #include "paddle/phi/core/device_context.h"
 #include "paddle/phi/core/distributed/auto_parallel/process_mesh.h"
 #include "paddle/phi/core/distributed/auto_parallel/reshard/reshard_function.h"
@@ -97,7 +98,6 @@ CommContext* CreateOrGetCommContext(const DeviceContext& dev_ctx,
     int64_t world_size = static_cast<int64_t>(process_ids.size());
     int64_t rank = GetLocalRankInParticipate(process_ids);
     VLOG(3) << "local world size: " << world_size << " local rank: " << rank;
-
     auto store = CreateOrGetGlobalTCPStore();
     if (phi::CPUContext::classof(&dev_ctx)) {
 #if defined(PADDLE_WITH_GLOO)
@@ -109,24 +109,40 @@ CommContext* CreateOrGetCommContext(const DeviceContext& dev_ctx,
       PADDLE_THROW(common::errors::Unimplemented(
           "Cannot use gloo on CPU, please turn PADDLE_WITH_GLOO flag on."));
 #endif
-    } else if (phi::CustomContext::classof(&dev_ctx)) {
-#ifdef PADDLE_WITH_CUSTOM_DEVICE
-      CommContextManager::CreateXCCLCommContext(
-          store, unique_comm_key, dev_ctx.GetPlace(), rank, world_size);
-#endif
-    } else {
+    }
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
+    else if (phi::GPUContext::classof(&dev_ctx)) {  // NOLINT
 #if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL)
-      if (phi::GPUContext::classof(&dev_ctx)) {
-        CommContextManager::CreateNCCLCommContext(store,
-                                                  unique_comm_key,
-                                                  static_cast<int>(rank),
-                                                  static_cast<int>(world_size));
-      }
+      CommContextManager::CreateNCCLCommContext(store,
+                                                unique_comm_key,
+                                                static_cast<int>(rank),
+                                                static_cast<int>(world_size));
 #else
       PADDLE_THROW(common::errors::Unimplemented(
-          "CommContext is only supported on CPU and GPU for now, other devices "
-          "will be supported later."));
+          "Cannot use nccl on GPU, please turn WITH_NCCL flag on."));
 #endif
+    }
+#elif defined(PADDLE_WITH_XPU)
+    else if (phi::XPUContext::classof(&dev_ctx)) {  // NOLINT
+#if defined(PADDLE_WITH_XPU_BKCL)
+      CommContextManager::CreateBKCLCommContext(store,
+                                                unique_comm_key,
+                                                static_cast<int>(rank),
+                                                static_cast<int>(world_size));
+#else
+      PADDLE_THROW(common::errors::Unimplemented(
+          "Cannot use xpu on GPU, please turn WITH_XPU_BKCL flag on."));
+#endif
+    }
+#elif defined(PADDLE_WITH_CUSTOM_DEVICE)
+    else if (phi::CustomContext::classof(&dev_ctx)) {  // NOLINT
+      CommContextManager::CreateXCCLCommContext(
+          store, unique_comm_key, dev_ctx.GetPlace(), rank, world_size);
+    }
+#endif
+    else {  // NOLINT
+      PADDLE_THROW(common::errors::Unimplemented(
+          "CommContext is only supported CPU, GPU, XPU, and CustomDevice."));
     }
   }
 
@@ -168,30 +184,37 @@ bool IsCurRankInMesh(const ProcessMesh& process_mesh) {
 bool NeedComputationClipForPP(
     const std::shared_ptr<phi::TensorBase>& tensor_impl) {
   PADDLE_ENFORCE_EQ(
-      phi::distributed::DistTensor::classof(tensor_impl.get()),
+      DistTensor::classof(tensor_impl.get()),
       true,
       common::errors::InvalidArgument(
           "The input tensor of NeedComputationClipForPP should be "
-          "``phi::distributed::DistTensor``. "
+          "``DistTensor``. "
           "However it's %s",
           typeid(tensor_impl.get()).name()));
-  return !IsCurRankInMesh(
-      std::static_pointer_cast<phi::distributed::DistTensor>(tensor_impl)
-          ->dist_attr()
-          .process_mesh());
+  return !IsCurRankInMesh(std::static_pointer_cast<DistTensor>(tensor_impl)
+                              ->dist_attr()
+                              .process_mesh());
 }
 
 Place GetDefaultPlace() {
-#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
+#if defined(PADDLE_WITH_CUSTOM_DEVICE)
+  auto dev_types = phi::DeviceManager::GetAllCustomDeviceTypes();
+  if (phi::DeviceManager::GetDeviceCount(dev_types[0]) > 0) {
+    return paddle::DefaultCustomPlace();
+  }
+#elif defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
   if (phi::backends::gpu::GetGPUDeviceCount() >= 0) {
     return paddle::DefaultGPUPlace();
+  }
+#elif defined(PADDLE_WITH_XPU)
+  if (phi::backends::xpu::GetXPUDeviceCount() >= 0) {
+    return paddle::DefaultXPUPlace();
   }
 #endif
   return paddle::CPUPlace();
 }
 
-phi::DeviceContext* GetDistTensorDeviceContext(
-    phi::distributed::DistTensor* input) {
+DeviceContext* GetDistTensorDeviceContext(DistTensor* input) {
   // TODO(GhostScreaming): pipeline parallel may create an undefined middle grad
   // tensor. In such case, we need to get default place.
   auto place =
@@ -199,10 +222,10 @@ phi::DeviceContext* GetDistTensorDeviceContext(
   return phi::DeviceContextPool::Instance().Get(place);
 }
 
-phi::DDim InferShapeForReshardFromReplicate(
-    const std::shared_ptr<phi::DenseTensor>& global_value,
+DDim InferShapeForReshardFromReplicate(
+    const std::shared_ptr<DenseTensor>& global_value,
     const TensorDistAttr& dist_attr) {
-  phi::DDim out_dim = global_value->dims();
+  DDim out_dim = global_value->dims();
   auto coord_id = GetCurRankCoordInMesh(dist_attr.process_mesh());
   for (int tensor_axis = 0; tensor_axis < global_value->dims().size();
        ++tensor_axis) {

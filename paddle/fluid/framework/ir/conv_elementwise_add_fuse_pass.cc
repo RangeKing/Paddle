@@ -89,7 +89,7 @@ void ConvElementwiseAddFusePass::ApplyImpl(ir::Graph* graph) const {
                 ->assert_is_op_input("conv2d", "Input")
                 ->AsInput();
 
-  patterns::ConvElementwiseadd pattern(gpd.mutable_pattern(), pattern_name);
+  patterns::ConvElementwiseAdd pattern(gpd.mutable_pattern(), pattern_name);
   pattern(x);
   int found_conv_eltwise_count = 0;
   auto handler = [&](const GraphPatternDetector::subgraph_t& subgraph,
@@ -122,8 +122,8 @@ void ConvElementwiseAddFusePass::ApplyImpl(ir::Graph* graph) const {
     new_op_desc.SetAttr("use_cudnn", true);
 
     bool is_fp16_precision =
-        static_cast<phi::DataType>(Get<int>("model_precision")) ==
-            phi::DataType::FLOAT16 ||
+        static_cast<DataType>(Get<int>("model_precision")) ==
+            DataType::FLOAT16 ||
         Get<bool>("enable_gpu_mixed");
 
     bool cutlass_enable = Get<bool>("use_cutlass");

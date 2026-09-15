@@ -17,10 +17,14 @@
 #include "paddle/phi/api/include/tensor.h"
 #include "paddle/phi/backends/context_pool.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/c_concat_kernel.h"
 #include "paddle/phi/kernels/funcs/concat_and_split_functor.h"
 
 #if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL)
 #include "paddle/phi/core/distributed/nccl_comm_context.h"
+#endif
+#if defined(PADDLE_WITH_FLAGCX)
+#include "paddle/phi/core/distributed/flagcx_comm_context.h"
 #endif
 
 namespace phi {
@@ -56,38 +60,48 @@ void CConcatKernel(const Context& dev_ctx,
                         rank,
                         nranks));
 
-  phi::DenseTensor temp_out;
-  phi::DDim temp_out_dims = x->dims();
+  DenseTensor temp_out;
+  DDim temp_out_dims = x->dims();
   temp_out_dims[0] *= nranks;
   temp_out.Resize(temp_out_dims);
   dev_ctx.template Alloc<T>(&temp_out);
 
   gpuStream_t stream = nullptr;
 
-  phi::distributed::NCCLCommContext* comm_ctx = nullptr;
+#if defined(PADDLE_WITH_FLAGCX) && defined(PADDLE_KERNEL_WITH_FLAGCX)
+  distributed::FlagcxCommContext* comm_ctx = nullptr;
   comm_ctx =
-      static_cast<phi::distributed::NCCLCommContext*>(dev_ctx.GetCommContext());
+      static_cast<distributed::FlagcxCommContext*>(dev_ctx.GetCommContext());
+#else
+  distributed::NCCLCommContext* comm_ctx = nullptr;
+  comm_ctx =
+      static_cast<distributed::NCCLCommContext*>(dev_ctx.GetCommContext());
+#endif
   PADDLE_ENFORCE_NE(comm_ctx,
                     nullptr,
                     common::errors::Unavailable(
                         "NCCLCommContext is nullptr, collective op should "
                         "has ring_id attr."));
   stream = dev_ctx.stream();
+#if defined(PADDLE_WITH_FLAGCX) && defined(PADDLE_KERNEL_WITH_FLAGCX)
+  comm_ctx->AllGather(&temp_out, *x, reinterpret_cast<flagcxStream_t>(&stream));
+#else
   comm_ctx->AllGather(&temp_out, *x, stream);
+#endif
 
-  std::vector<phi::DenseTensor> inputs;
+  std::vector<DenseTensor> inputs;
   int axis = x->dims().size() - 1;
   auto out_dims = x->dims();
   out_dims[out_dims.size() - 1] *= nranks;
-  int rows_per_tensor = x->dims()[0];
-  int offset = 0;
+  int64_t rows_per_tensor = x->dims()[0];
+  int64_t offset = 0;
   for (int i = 0; i < nranks; i++) {
-    phi::DenseTensor temp = temp_out.Slice(offset, offset + rows_per_tensor);
+    DenseTensor temp = temp_out.Slice(offset, offset + rows_per_tensor);
     inputs.emplace_back(temp);
     offset += rows_per_tensor;
   }
 
-  phi::funcs::ConcatFunctor<phi::GPUContext, T> functor;
+  funcs::ConcatFunctor<GPUContext, T> functor;
   out->Resize(out_dims);
   dev_ctx.template Alloc<T>(out);
   functor(dev_ctx, inputs, axis, out);
@@ -98,8 +112,6 @@ void CConcatKernel(const Context& dev_ctx,
 }
 }  // namespace phi
 
-#if (NCCL_VERSION_CODE >= 21000 && CUDA_VERSION >= 11000) || \
-    defined(PADDLE_WITH_HIP)
 PD_REGISTER_KERNEL(c_concat,
                    GPU,
                    ALL_LAYOUT,
@@ -108,16 +120,5 @@ PD_REGISTER_KERNEL(c_concat,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::bfloat16,
-                   phi::dtype::float16) {}
-#else
-PD_REGISTER_KERNEL(c_concat,
-                   GPU,
-                   ALL_LAYOUT,
-                   phi::CConcatKernel,
-                   float,
-                   double,
-                   int,
-                   int64_t,
-                   phi::dtype::float16) {}
-#endif
+                   phi::bfloat16,
+                   phi::float16) {}

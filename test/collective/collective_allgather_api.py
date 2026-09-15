@@ -14,6 +14,8 @@
 
 import os
 
+os.environ['FLAGS_enable_pir_api'] = '0'
+
 import legacy_test.test_collective_api_base as test_base
 
 import paddle
@@ -98,10 +100,9 @@ class TestCollectiveAllgatherAPI(test_base.TestCollectiveAPIRunnerBase):
         rank = args["trainerid"]
         current_endpoint = args["currentendpoint"]
         nranks = 2
-        if args["use_comm_context"] or args["dynamic_static_unified_comm"]:
-            paddle.distributed.collective._init_parallel_env(args["backend"])
-        else:
-            paddle.distributed.init_parallel_env()
+
+        paddle.distributed.collective._init_parallel_env(args["backend"])
+
         if args['backend'] == 'nccl':
             device_id = int(os.getenv("FLAGS_selected_gpus", "0"))
             place = base.CUDAPlace(
@@ -115,9 +116,9 @@ class TestCollectiveAllgatherAPI(test_base.TestCollectiveAPIRunnerBase):
         indata = test_base.create_test_data(
             shape=(10, 1000), dtype=args["dtype"], seed=os.getpid()
         )
-        assert (
-            args['static_mode'] == 1
-        ), "collective_allgather_api only support static graph mode"
+        assert args['static_mode'] == 1, (
+            "collective_allgather_api only support static graph mode"
+        )
         result = (
             self.get_model_new(
                 train_prog, startup_prog, rank, dtype=args["dtype"]

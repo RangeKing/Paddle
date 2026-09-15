@@ -155,9 +155,9 @@ class OptimizerWithMixedPrecision:
 
     def get_loss_scaling(self):
         """Return the real-time loss scaling factor."""
-        assert (
-            self._loss_scaling is not None
-        ), 'Please call minimize() before calling get_loss_scaling().'
+        assert self._loss_scaling is not None, (
+            'Please call minimize() before calling get_loss_scaling().'
+        )
         return self._loss_scaling
 
     def get_scaled_loss(self):
@@ -193,7 +193,7 @@ class OptimizerWithMixedPrecision:
                 self._optimizer._learning_rate_map[
                     paddle.static.default_main_program()
                 ] = paddle.pir.core.create_persistable_value(
-                    dtype='float32',
+                    dtype=self._optimizer.get_lr_dtype(),
                     shape=[1],
                     name=unique_name.generate("learning_rate"),
                     initializer=paddle.nn.initializer.ConstantInitializer(
@@ -227,15 +227,16 @@ class OptimizerWithMixedPrecision:
                 persistable=True,
             )
 
-        # Ensure the data type of learning rate vars is float32 (same as the
-        # master parameter dtype)
+        # Ensure the data type of learning rate vars matches the optimizer's
+        # preferred dtype (e.g. float64 for AdamW, float32 for others).
         if isinstance(self._optimizer._learning_rate, float):
+            _lr_dtype = self._optimizer.get_lr_dtype()
             self._optimizer._learning_rate_map[default_main_program()] = (
                 paddle.static.create_global_var(
                     name=unique_name.generate("learning_rate"),
                     shape=[1],
                     value=float(self._optimizer._learning_rate),
-                    dtype='float32',
+                    dtype=_lr_dtype,
                     persistable=True,
                 )
             )
@@ -375,7 +376,7 @@ class OptimizerWithMixedPrecision:
             use_fp16_test(bool): Whether to use fp16 testing.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import numpy as np
                 >>> import paddle
@@ -399,8 +400,7 @@ class OptimizerWithMixedPrecision:
                 ...     # or the slow convergence in a way.
                 ...     optimizer = paddle.optimizer.Momentum(learning_rate=0.01, multi_precision=True)
                 ...     # 3) These ops in `custom_black_list` will keep in the float32 computation type.
-                ...     amp_list = paddle.static.amp.CustomOpLists(
-                ...         custom_black_list=['pool2d'])
+                ...     amp_list = paddle.static.amp.CustomOpLists(custom_black_list=['pool2d'])
                 ...     # 4) The entry of Paddle AMP.
                 ...     # Enable pure fp16 training by setting `use_pure_fp16` to True.
                 ...     optimizer = paddle.static.amp.decorate(
@@ -408,7 +408,8 @@ class OptimizerWithMixedPrecision:
                 ...         amp_list,
                 ...         init_loss_scaling=128.0,
                 ...         use_dynamic_loss_scaling=True,
-                ...         use_pure_fp16=True)
+                ...         use_pure_fp16=True,
+                ...     )
                 ...     # If you don't use the default_startup_program(), you should pass
                 ...     # your defined `startup_program` into `minimize`.
                 ...     optimizer.minimize(loss)
@@ -420,9 +421,9 @@ class OptimizerWithMixedPrecision:
                 >>> if paddle.is_compiled_with_cuda() and len(paddle.static.cuda_places()) > 0:
                 ...     run_example_code()
         """
-        assert (
-            self._train_program is not None
-        ), "Please call the minimize method first."
+        assert self._train_program is not None, (
+            "Please call the minimize method first."
+        )
         if self._use_pure_fp16:
             cast_parameters_to_fp16(
                 place,
@@ -583,9 +584,9 @@ class OptimizerWithMixedPrecision:
             if g.dtype == paddle.float32 or g.dtype == core.DataType.FLOAT32
         ]
         fp16_grads = [g for g in grads if g.dtype == self._amp_vartype]
-        assert len(fp32_grads) + len(fp16_grads) == len(
-            grads
-        ), "Data types of all grads must be either fp16/bf16 or fp32."
+        assert len(fp32_grads) + len(fp16_grads) == len(grads), (
+            "Data types of all grads must be either fp16/bf16 or fp32."
+        )
         return grads, fp32_grads, fp16_grads
 
     def _check_finite_and_unscale(self, params_grads):
@@ -800,7 +801,7 @@ def decorate(
         enabled.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
             :name: example-1
 
             # black&white list based strategy example
@@ -814,14 +815,13 @@ def decorate(
             >>> loss = paddle.mean(hidden)
             >>> optimizer = paddle.optimizer.Adam(learning_rate=0.001)
 
-            >>> mp_optimizer = static.amp.decorate(
-            ...         optimizer=optimizer, init_loss_scaling=8.0)
+            >>> mp_optimizer = static.amp.decorate(optimizer=optimizer, init_loss_scaling=8.0)
 
             >>> ops, param_grads = mp_optimizer.minimize(loss)
             >>> scaled_loss = mp_optimizer.get_scaled_loss()
 
 
-        .. code-block:: python
+        .. code-block:: pycon
             :name: example-2
 
             # pure fp16 training example
@@ -847,8 +847,7 @@ def decorate(
             ...     # or the slow convergence in a way.
             ...     optimizer = paddle.optimizer.Momentum(learning_rate=0.01, multi_precision=True)
             ...     # 3) These ops in `custom_black_list` will keep in the float32 computation type.
-            ...     amp_list = paddle.static.amp.CustomOpLists(
-            ...         custom_black_list=['pool2d'])
+            ...     amp_list = paddle.static.amp.CustomOpLists(custom_black_list=['pool2d'])
             ...     # 4) The entry of Paddle AMP.
             ...     # Enable pure fp16 training by setting `use_pure_fp16` to True.
             ...     optimizer = paddle.static.amp.decorate(
@@ -856,7 +855,8 @@ def decorate(
             ...         amp_list,
             ...         init_loss_scaling=128.0,
             ...         use_dynamic_loss_scaling=True,
-            ...         use_pure_fp16=True)
+            ...         use_pure_fp16=True,
+            ...     )
             ...     # If you don't use the default_startup_program(), you should pass
             ...     # your defined `startup_program` into `minimize`.
             ...     optimizer.minimize(loss)
@@ -950,7 +950,7 @@ def decorate(  # noqa: F811
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> paddle.enable_static()
@@ -974,9 +974,7 @@ def decorate(  # noqa: F811
             >>> with paddle.utils.unique_name.guard():
             ...     with paddle.static.program_guard(main_program, startup_program):
             ...         model = SimpleConvNet()
-            ...         x = paddle.static.data(
-            ...             name='input', shape=[None, 1, 28, 28], dtype='float32'
-            ...         )
+            ...         x = paddle.static.data(name='input', shape=[None, 1, 28, 28], dtype='float32')
             ...         out = model(x)
             ...         loss = paddle.mean(out)
             ...         optimizer = paddle.optimizer.AdamW()

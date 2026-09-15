@@ -47,7 +47,10 @@ def train_mlp(
     )
 
     if sharding_stage != "dp":
-        group = paddle.distributed.new_group([0, 1], backend="nccl")
+        group = paddle.distributed.new_group(
+            [0, 1],
+            backend="bkcl" if paddle.core.is_compiled_with_xpu() else "nccl",
+        )
     scaler = None
     if test_scaler:
         assert sharding_stage == 3
@@ -70,7 +73,7 @@ def train_mlp(
         ]
 
     if sharding_stage == 3:
-        model.to(device="gpu")
+        model.to(device="xpu" if paddle.core.is_compiled_with_xpu() else "gpu")
 
     if not use_pure_bf16:
         for param in model.parameters():
@@ -80,7 +83,7 @@ def train_mlp(
             param.set_value(t)
 
     if sharding_stage == 3:
-        segment_size = 2 ^ 10  # threshold of each param
+        segment_size = 2**10  # threshold of each param
         model = GroupShardedStage3(
             model, optimizer, group=group, segment_size=segment_size
         )

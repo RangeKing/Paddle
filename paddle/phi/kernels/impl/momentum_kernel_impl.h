@@ -17,7 +17,6 @@
 #include "glog/logging.h"
 
 #include "paddle/phi/common/amp_type_traits.h"
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/kernels/funcs/algorithm.h"
 #include "paddle/phi/kernels/funcs/eigen/common.h"
 #include "paddle/phi/kernels/funcs/for_range.h"
@@ -27,7 +26,7 @@
 namespace phi {
 
 template <typename T>
-using MultiPrecisionType = typename phi::dtype::MPTypeTrait<T>::Type;
+using MultiPrecisionType = typename MPTypeTrait<T>::Type;
 
 template <typename T>
 struct CPUDenseUpdater {
@@ -297,7 +296,7 @@ class SparseMomentumFunctor<T, MT, UseNesterov> {
 
   inline HOSTDEVICE void operator()(size_t i) {
     auto row_idx =
-        phi::funcs::BinarySearch<int64_t>(rows_, row_height_, i / row_numel_);
+        funcs::BinarySearch<int64_t>(rows_, row_height_, i / row_numel_);
     MT grad =
         row_idx >= 0
             ? static_cast<MT>(grad_[row_idx * row_numel_ + i % row_numel_]) *
@@ -377,7 +376,7 @@ class SparseMomentumFunctor<T, MT, NoNesterov> {
 
   inline HOSTDEVICE void operator()(size_t i) {
     auto row_idx =
-        phi::funcs::BinarySearch<int64_t>(rows_, row_height_, i / row_numel_);
+        funcs::BinarySearch<int64_t>(rows_, row_height_, i / row_numel_);
     MT grad =
         row_idx >= 0
             ? static_cast<MT>(grad_[row_idx * row_numel_ + i % row_numel_]) *
@@ -405,12 +404,12 @@ class SparseMomentumFunctor<T, MT, NoNesterov> {
 };
 
 template <typename T, typename MT, typename Context>
-void MomentumDenseImpl(const Context& ctx,
+void MomentumDenseImpl(const Context& dev_ctx,
                        const DenseTensor& param,
                        const DenseTensor& grad,
                        const DenseTensor& velocity,
                        const DenseTensor& learning_rate,
-                       const paddle::optional<DenseTensor>& master_param_opt,
+                       const optional<DenseTensor>& master_param_opt,
                        float mu_t,
                        bool use_nesterov,
                        const std::string& regularization_method,
@@ -440,13 +439,13 @@ void MomentumDenseImpl(const Context& ctx,
                           "the attr `multi_precision` is true"));
   }
 
-  ctx.template Alloc<T>(param_out);
-  ctx.template Alloc<MT>(velocity_out);
+  dev_ctx.template Alloc<T>(param_out);
+  dev_ctx.template Alloc<MT>(velocity_out);
   const MT* master_in_data =
       multi_precision ? master_param->data<MT>() : nullptr;
   MT* master_out_data =
-      multi_precision ? ctx.template Alloc<MT>(master_param_out) : nullptr;
-  if (ctx.GetPlace().GetType() == phi::AllocationType::CPU) {
+      multi_precision ? dev_ctx.template Alloc<MT>(master_param_out) : nullptr;
+  if (dev_ctx.GetPlace().GetType() == AllocationType::CPU) {
     CPUDenseMomentumFunctor<MT> functor;
     functor(&param,
             &grad,
@@ -458,11 +457,12 @@ void MomentumDenseImpl(const Context& ctx,
             regularization_coeff,
             param_out,
             velocity_out);
-  } else if (ctx.GetPlace().GetType() == phi::AllocationType::GPU) {
-    funcs::ForRange<Context> for_range(ctx, param.numel());
+  } else if (dev_ctx.GetPlace().GetType() == AllocationType::GPU ||
+             dev_ctx.GetPlace().GetType() == AllocationType::CUSTOM) {
+    funcs::ForRange<Context> for_range(dev_ctx, param.numel());
     const auto grad_type = grad.dtype();
 #define PADDLE_LAUNCH_DENSE_MOMENTUM_KERNEL(__nesterov, __reg_type)     \
-  if (grad_type == phi::DataType::FLOAT32) {                            \
+  if (grad_type == DataType::FLOAT32) {                                 \
     DenseMomentumFunctor<T, float, MT, __reg_type, __nesterov> functor( \
         param.data<T>(),                                                \
         grad.data<float>(),                                             \
@@ -473,8 +473,8 @@ void MomentumDenseImpl(const Context& ctx,
         rescale_grad,                                                   \
         param.numel(),                                                  \
         regularization_coeff,                                           \
-        ctx.template Alloc<T>(param_out),                               \
-        ctx.template Alloc<MT>(velocity_out),                           \
+        dev_ctx.template Alloc<T>(param_out),                           \
+        dev_ctx.template Alloc<MT>(velocity_out),                       \
         master_out_data);                                               \
     for_range(functor);                                                 \
   } else {                                                              \
@@ -488,8 +488,8 @@ void MomentumDenseImpl(const Context& ctx,
         rescale_grad,                                                   \
         param.numel(),                                                  \
         regularization_coeff,                                           \
-        ctx.template Alloc<T>(param_out),                               \
-        ctx.template Alloc<MT>(velocity_out),                           \
+        dev_ctx.template Alloc<T>(param_out),                           \
+        dev_ctx.template Alloc<MT>(velocity_out),                       \
         master_out_data);                                               \
     for_range(functor);                                                 \
   }
@@ -515,12 +515,12 @@ void MomentumDenseImpl(const Context& ctx,
 }
 
 template <typename T, typename MT, typename Context>
-void MomentumSparseImpl(const Context& ctx,
+void MomentumSparseImpl(const Context& dev_ctx,
                         const DenseTensor& param,
                         const SelectedRows& grad,
                         const DenseTensor& velocity,
                         const DenseTensor& learning_rate,
-                        const paddle::optional<DenseTensor>& master_param_opt,
+                        const optional<DenseTensor>& master_param_opt,
                         float mu_t,
                         bool use_nesterov,
                         const std::string& regularization_method,
@@ -552,13 +552,13 @@ void MomentumSparseImpl(const Context& ctx,
                           "the attr `multi_precision` is true"));
   }
 
-  ctx.template Alloc<T>(param_out);
-  ctx.template Alloc<MT>(velocity_out);
+  dev_ctx.template Alloc<T>(param_out);
+  dev_ctx.template Alloc<MT>(velocity_out);
 
   const MT* master_in_data =
       multi_precision ? master_param->data<MT>() : nullptr;
   MT* master_out_data =
-      multi_precision ? ctx.template Alloc<MT>(master_param_out) : nullptr;
+      multi_precision ? dev_ctx.template Alloc<MT>(master_param_out) : nullptr;
 
   // sparse update maybe empty.
   if (grad.rows().size() == 0) {
@@ -566,16 +566,16 @@ void MomentumSparseImpl(const Context& ctx,
     return;
   }
 
-  phi::SelectedRows tmp_merged_grad;
-  phi::SelectedRows* merged_grad = &tmp_merged_grad;
-  phi::funcs::scatter::MergeAdd<Context, T> merge_func;
-  merge_func(ctx, grad, merged_grad);
+  SelectedRows tmp_merged_grad;
+  SelectedRows* merged_grad = &tmp_merged_grad;
+  funcs::scatter::MergeAdd<Context, T> merge_func;
+  merge_func(dev_ctx, grad, merged_grad);
 
   auto* grad_merge_rows = merged_grad->mutable_rows();
-  phi::MixVector<int64_t> mixv_grad_merge_rows(grad_merge_rows);
-  const int64_t* rows = mixv_grad_merge_rows.Data(ctx.GetPlace());
+  MixVector<int64_t> mixv_grad_merge_rows(grad_merge_rows);
+  const int64_t* rows = mixv_grad_merge_rows.Data(dev_ctx.GetPlace());
   int64_t row_numel = merged_grad->value().numel() / merged_grad->rows().size();
-  funcs::ForRange<Context> for_range(ctx, param.numel());
+  funcs::ForRange<Context> for_range(dev_ctx, param.numel());
   if (use_nesterov) {
     SparseMomentumFunctor<T, MT, UseNesterov> functor(
         param.data<T>(),
@@ -590,8 +590,8 @@ void MomentumSparseImpl(const Context& ctx,
         static_cast<int64_t>(merged_grad->rows().size()),
         regularization_flag,
         regularization_coeff,
-        ctx.template Alloc<T>(param_out),
-        ctx.template Alloc<MT>(velocity_out),
+        dev_ctx.template Alloc<T>(param_out),
+        dev_ctx.template Alloc<MT>(velocity_out),
         master_out_data);
     for_range(functor);
 
@@ -609,8 +609,8 @@ void MomentumSparseImpl(const Context& ctx,
         static_cast<int64_t>(merged_grad->rows().size()),
         regularization_flag,
         regularization_coeff,
-        ctx.template Alloc<T>(param_out),
-        ctx.template Alloc<MT>(velocity_out),
+        dev_ctx.template Alloc<T>(param_out),
+        dev_ctx.template Alloc<MT>(velocity_out),
         master_out_data);
     for_range(functor);
   }
@@ -622,7 +622,7 @@ void MomentumDenseKernel(const Context& dev_ctx,
                          const DenseTensor& grad,
                          const DenseTensor& velocity,
                          const DenseTensor& learning_rate,
-                         const paddle::optional<DenseTensor>& master_param,
+                         const optional<DenseTensor>& master_param,
                          float mu,
                          bool use_nesterov,
                          const std::string& regularization_method,
@@ -632,7 +632,7 @@ void MomentumDenseKernel(const Context& dev_ctx,
                          DenseTensor* param_out,
                          DenseTensor* velocity_out,
                          DenseTensor* master_param_out) {
-  using MT = typename phi::dtype::MPTypeTrait<T>::Type;
+  using MT = typename MPTypeTrait<T>::Type;
   if (multi_precision) {
     MomentumDenseImpl<T, MT>(dev_ctx,
                              param,
@@ -674,7 +674,7 @@ void MomentumSparseKernel(const Context& dev_ctx,
                           const SelectedRows& grad,
                           const DenseTensor& velocity,
                           const DenseTensor& learning_rate,
-                          const paddle::optional<DenseTensor>& master_param,
+                          const optional<DenseTensor>& master_param,
                           float mu,
                           bool use_nesterov,
                           const std::string& regularization_method,
@@ -684,7 +684,7 @@ void MomentumSparseKernel(const Context& dev_ctx,
                           DenseTensor* param_out,
                           DenseTensor* velocity_out,
                           DenseTensor* master_param_out) {
-  using MT = typename phi::dtype::MPTypeTrait<T>::Type;
+  using MT = typename MPTypeTrait<T>::Type;
   if (multi_precision) {
     MomentumSparseImpl<T, MT>(dev_ctx,
                               param,

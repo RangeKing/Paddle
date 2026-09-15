@@ -14,10 +14,9 @@
 
 #include "paddle/phi/kernels/c_embedding_kernel.h"
 #include "glog/logging.h"
-#include "paddle/phi/api/backward/backward_api.h"
+#include "paddle/phi/api/backward/backward_api_base.h"
 #include "paddle/phi/api/include/api.h"
 #include "paddle/phi/backends/all_context.h"
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/core/kernel_registry.h"
 
 namespace phi {
@@ -38,9 +37,9 @@ void CEmbeddingKernel(const Context& dev_ctx,
     auto N = w.dims()[0];
     auto D = w.dims()[1];
 
-    auto x_tmp = std::make_shared<phi::DenseTensor>();
+    auto x_tmp = std::make_shared<DenseTensor>();
     x_tmp->ShareDataWith(ids).Resize({K});
-    auto w_tmp = std::make_shared<phi::DenseTensor>();
+    auto w_tmp = std::make_shared<DenseTensor>();
     w_tmp->ShareDataWith(w).Resize({N, D});
     paddle::Tensor x_tensor(x_tmp), w_tensor(w_tmp);
 
@@ -62,8 +61,7 @@ void CEmbeddingKernel(const Context& dev_ctx,
                 paddle::experimental::embedding(
                     ids_tensor, w_tensor, -1, false),
                 {K, D}));
-    out->ShareDataWith(
-           *reinterpret_cast<phi::DenseTensor*>(out_tensor.impl().get()))
+    out->ShareDataWith(*reinterpret_cast<DenseTensor*>(out_tensor.impl().get()))
         .Resize(out_dims);
   } else {
     PADDLE_THROW(common::errors::Unavailable(
@@ -79,6 +77,6 @@ PD_REGISTER_KERNEL(c_embedding,
                    ALL_LAYOUT,
                    phi::CEmbeddingKernel,
                    float,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}
 #endif

@@ -21,21 +21,20 @@ set(CRYPTOPP_INSTALL_DIR ${THIRD_PARTY_PATH}/install/cryptopp)
 set(CRYPTOPP_INCLUDE_DIR
     "${CRYPTOPP_INSTALL_DIR}/include"
     CACHE PATH "cryptopp include directory." FORCE)
-set(CRYPTOPP_TAG CRYPTOPP_8_2_0)
+set(CRYPTOPP_TAG CRYPTOPP_8_6_0)
+
+# cryptopp-cmake 8.6.0 adds the full CMAKE_CXX_FLAGS string through
+# add_compile_options(), which makes compilers treat Paddle's space-separated
+# flags as a single input file. Paddle also keeps the Windows Ninja workaround
+# for "/FIwinapifamily.h" here.
+set(CRYPTOPP_PATCH_COMMAND
+    ${CMAKE_COMMAND} -E copy_if_different
+    "${PADDLE_SOURCE_DIR}/patches/cryptopp/CMakeLists.txt" "<SOURCE_DIR>/")
 
 if(WIN32)
   set(CRYPTOPP_LIBRARIES
       "${CRYPTOPP_INSTALL_DIR}/lib/cryptopp-static.lib"
       CACHE FILEPATH "cryptopp library." FORCE)
-  # There is a compilation parameter "/FI\"winapifamily.h\"" or "/FIwinapifamily.h" can't be used correctly
-  # with Ninja on Windows. The only difference between the patch file and original
-  # file is that the compilation parameters are changed to '/nologo'. This
-  # patch command can be removed when upgrading to a higher version.
-  if("${CMAKE_GENERATOR}" STREQUAL "Ninja")
-    set(CRYPTOPP_PATCH_COMMAND
-        ${CMAKE_COMMAND} -E copy_if_different
-        "${PADDLE_SOURCE_DIR}/patches/cryptopp/CMakeLists.txt" "<SOURCE_DIR>/")
-  endif()
 else()
   set(CRYPTOPP_LIBRARIES
       "${CRYPTOPP_INSTALL_DIR}/lib/libcryptopp.a"
@@ -58,6 +57,15 @@ set(CRYPTOPP_CMAKE_ARGS
     -DCMAKE_CXX_FLAGS_RELEASE=${CMAKE_CXX_FLAGS_RELEASE}
     -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
     -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER})
+
+# For CMake >= 4.0.0, set policy compatibility for cryptopp's CMake.
+if(CMAKE_VERSION VERSION_GREATER_EQUAL "4.0.0")
+  message(
+    WARNING
+      "cryptopp: forcing CMake policy compatibility for CMake >= 4.0 (CMAKE_POLICY_VERSION_MINIMUM=3.5)"
+  )
+  list(APPEND CRYPTOPP_CMAKE_ARGS -DCMAKE_POLICY_VERSION_MINIMUM=3.5)
+endif()
 
 include_directories(${CRYPTOPP_INCLUDE_DIR})
 

@@ -29,14 +29,29 @@ namespace phi {
 template <typename T, typename Context>
 void GroupNormKernel(const Context& dev_ctx,
                      const DenseTensor& x,
-                     const paddle::optional<DenseTensor>& scale,
-                     const paddle::optional<DenseTensor>& bias,
-                     float epsilon,
+                     const optional<DenseTensor>& scale,
+                     const optional<DenseTensor>& bias,
+                     double epsilon,
                      int groups,
                      const std::string& data_layout,
                      DenseTensor* y,
                      DenseTensor* mean,
                      DenseTensor* variance);
+
+template <typename T, typename Context>
+void GroupNormNDHWCKernel(const Context& dev_ctx,
+                          const DenseTensor& x,
+                          const optional<DenseTensor>& residual,
+                          const optional<DenseTensor>& scale,
+                          const optional<DenseTensor>& bias,
+                          double epsilon,
+                          int groups,
+                          const std::string& data_layout_str,
+                          const std::string& activation,
+                          DenseTensor* y,
+                          DenseTensor* residual_out,
+                          DenseTensor* mean,
+                          DenseTensor* var);
 
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
 template <typename T, typename AccT = T>
@@ -95,13 +110,13 @@ struct GroupNormNDHWCParams {
 
   // The number of activations per instance (d * h * w) and the number of
   // activations per block.
-  int32_t dhw, dhwPerBlock;
+  int64_t dhw, dhwPerBlock;
   // The number of channels per group and blocks per activation in the C
   // dimension.
   int32_t cPerBlock, cPerGroup;
 
   // The precomputed stride between instances.
-  int32_t dhwc;
+  int64_t dhwc;
   // The inverse of dhwc in floats (to compute mean/var).
   float invDHWC;
   // The precomputed number of groups per block.

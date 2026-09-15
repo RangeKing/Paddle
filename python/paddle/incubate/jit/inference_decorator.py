@@ -20,7 +20,7 @@ import sys
 import textwrap
 import warnings
 from pathlib import Path
-from typing import Callable, Protocol, TypeVar, overload
+from typing import TYPE_CHECKING, Protocol, TypeVar, overload
 
 from typing_extensions import ParamSpec
 
@@ -29,6 +29,9 @@ from paddle.base.framework import use_pir_api
 from paddle.inference import Config, PrecisionType, create_predictor
 from paddle.nn import Layer
 from paddle.static import InputSpec
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 _LayerT = TypeVar("_LayerT", bound=Layer)
 _InputT = ParamSpec("_InputT")
@@ -74,23 +77,27 @@ def is_fixed_type(input):
         return False
 
 
+def is_list_or_tuple(args):
+    return isinstance(args, (list, tuple))
+
+
 # get paddle.Tensor for paddle inference use.
 def get_tensor(run_time_args, arg_name):
     if isinstance(run_time_args, paddle.Tensor):
         return [run_time_args]
-    elif isinstance(run_time_args, list):
+    elif is_list_or_tuple(run_time_args):
         this_input_tensor_lists = []
         for ele in run_time_args:
-            assert isinstance(
-                ele, paddle.Tensor
-            ), f"the elements in {arg_name} must be paddle.Tensor"
+            assert isinstance(ele, paddle.Tensor), (
+                f"the elements in {arg_name} must be paddle.Tensor"
+            )
             this_input_tensor_lists.append(ele)
         return this_input_tensor_lists
     elif is_fixed_type(run_time_args):
         return [run_time_args]
     else:
         raise AssertionError(
-            f'''we only support adding paddle.incubate.jit.inference() in functions whose arguments are paddle.Tensor or list[paddle.Tensor] or None,
+            f'''we only support adding paddle.incubate.jit.inference() in functions whose arguments are paddle.Tensor or list[paddle.Tensor] & tuple[paddle.Tensor] or None,
             but here we get {arg_name} in your function is {type(run_time_args)}, please modify your function to meet our requirement.'''
         )
 
@@ -99,7 +106,7 @@ def get_tensor(run_time_args, arg_name):
 def get_d2s_spec(run_time_args, name):
     if isinstance(run_time_args, paddle.Tensor):
         return InputSpec.from_tensor(run_time_args, name=name)
-    elif isinstance(run_time_args, list):
+    elif is_list_or_tuple(run_time_args):
         this_input_spec = []
         suffix = 0
         for ele in run_time_args:
@@ -273,7 +280,7 @@ class InferenceEngine:
                 input_specs.append(this_input)
 
         for i in range(len(input_specs)):
-            if isinstance(input_specs[i], list):
+            if is_list_or_tuple(input_specs[i]):
                 for j in range(len(input_specs[i])):
                     input_specs[i][j].stop_gradient = True
             elif isinstance(input_specs[i], paddle.static.InputSpec):
@@ -285,7 +292,7 @@ class InferenceEngine:
         if len(self.d2s_input_names) == 0:
             self.d2s_input_names.extend([None] * len(input_tensor_lists))
         for i in range(len(input_specs)):
-            if isinstance(input_specs[i], list):
+            if is_list_or_tuple(input_specs[i]):
                 for j in range(len(input_specs[i])):
                     input_specs[i][j].shape = self.d2s_input_shapes[
                         d2s_shapes_id
@@ -335,7 +342,7 @@ class InferenceEngine:
                 )
                 f.write(line)
         print(
-            f"the {func.__name__} function is sucessfully saved to {self.save_path}.pdmodel"
+            f"the {func.__name__} function is successfully saved to {self.save_path}.pdmodel"
         )
         sys.stdout.flush()
 
@@ -389,7 +396,7 @@ class InferenceEngine:
         config.enable_new_ir(self.enable_new_ir)
 
         device_num = paddle.device.get_device()
-        if 'gpu' in device_num:
+        if device_num.startswith('gpu'):
             gpu_id = int(device_num.split(':')[1])
             config.enable_use_gpu(
                 self.memory_pool_init_size_mb,
@@ -581,7 +588,7 @@ def inference(
         function (callable): the decorated function which can be used for inference.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +SKIP('`paddle.incubate.jit.inference` can not run in xdoctest')
             >>> import paddle
@@ -589,12 +596,14 @@ def inference(
             ...     def __init__(self, hidd):
             ...         super().__init__()
             ...         self.fn = paddle.nn.Linear(hidd, hidd, bias_attr=False)
+            ...
             ...     def forward(self, x):
             ...         for i in range(10):
-            ...             x = paddle.nn.functional.softmax(x,-1)
+            ...             x = paddle.nn.functional.softmax(x, -1)
             ...         x = x.cast("float32")
             ...         x = self.func(x)
             ...         return x
+            ...
             ...     def func(self, x):
             ...         x = x + x
             ...         return self.fn(x)
@@ -602,7 +611,7 @@ def inference(
             >>> batch = 4096
             >>> hidd = 1024
             >>> dtype = "bfloat16"
-            >>> x = paddle.rand([batch, hidd], dtype=dtype) # type: ignore[arg-type]
+            >>> x = paddle.rand([batch, hidd], dtype=dtype)  # type: ignore[call-overload]
             >>> mylayer = ExampleLayer(hidd)
             >>> dynamic_result = mylayer(x)
             >>> mylayer = paddle.incubate.jit.inference(mylayer)
@@ -640,7 +649,7 @@ def inference(
         )
 
         # This is the innermost_decorator, ie. when user invoke the function decorated by @paddle.incubate.jit.inference()
-        # he is actually invoke this internel function.
+        # he is actually invoke this internal function.
         def innermost_decorator(*args, **kwargs):
             input_tensor_lists = infer_engine.get_input_tensor_lists(
                 *args, **kwargs

@@ -18,12 +18,7 @@ limitations under the License. */
 #include <typeindex>
 
 #include "paddle/fluid/platform/enforce.h"
-#include "paddle/phi/common/bfloat16.h"
-#include "paddle/phi/common/complex.h"
 #include "paddle/phi/common/data_type.h"
-#include "paddle/phi/common/float16.h"
-#include "paddle/phi/common/float8_e4m3fn.h"
-#include "paddle/phi/common/float8_e5m2.h"
 #include "paddle/phi/core/framework/framework.pb.h"
 #include "paddle/utils/test_macros.h"
 
@@ -62,6 +57,9 @@ struct DataTypeTrait<void> {
   _ForEachDataTypeHelper_(callback, int64_t, INT64);                          \
   _ForEachDataTypeHelper_(callback, bool, BOOL);                              \
   _ForEachDataTypeHelper_(callback, uint8_t, UINT8);                          \
+  _ForEachDataTypeHelper_(callback, uint16_t, UINT16);                        \
+  _ForEachDataTypeHelper_(callback, uint32_t, UINT32);                        \
+  _ForEachDataTypeHelper_(callback, uint64_t, UINT64);                        \
   _ForEachDataTypeHelper_(callback, int16_t, INT16);                          \
   _ForEachDataTypeHelper_(callback, int8_t, INT8);                            \
   _ForEachDataTypeHelper_(callback, ::phi::dtype::complex<float>, COMPLEX64); \
@@ -70,11 +68,14 @@ struct DataTypeTrait<void> {
   _ForEachDataTypeHelper_(callback, ::phi::dtype::float8_e4m3fn, FP8_E4M3FN); \
   _ForEachDataTypeHelper_(callback, ::phi::dtype::float8_e5m2, FP8_E5M2);
 
-#define _ForEachIntDataType_(callback)               \
-  _ForEachDataTypeHelper_(callback, int, INT32);     \
-  _ForEachDataTypeHelper_(callback, int64_t, INT64); \
-  _ForEachDataTypeHelper_(callback, uint8_t, UINT8); \
-  _ForEachDataTypeHelper_(callback, int16_t, INT16); \
+#define _ForEachIntDataType_(callback)                 \
+  _ForEachDataTypeHelper_(callback, int, INT32);       \
+  _ForEachDataTypeHelper_(callback, int64_t, INT64);   \
+  _ForEachDataTypeHelper_(callback, uint8_t, UINT8);   \
+  _ForEachDataTypeHelper_(callback, uint16_t, UINT16); \
+  _ForEachDataTypeHelper_(callback, uint32_t, UINT32); \
+  _ForEachDataTypeHelper_(callback, uint64_t, UINT64); \
+  _ForEachDataTypeHelper_(callback, int16_t, INT16);   \
   _ForEachDataTypeHelper_(callback, int8_t, INT8);
 
 #define _ForEachDataTypeSmall_(callback)                                      \
@@ -107,10 +108,26 @@ struct DataTypeTrait<void> {
   _ForEachDataTypeHelper_(callback, int64_t, INT64);                          \
   _ForEachDataTypeHelper_(callback, bool, BOOL);                              \
   _ForEachDataTypeHelper_(callback, uint8_t, UINT8);                          \
+  _ForEachDataTypeHelper_(callback, uint16_t, UINT16);                        \
+  _ForEachDataTypeHelper_(callback, uint32_t, UINT32);                        \
+  _ForEachDataTypeHelper_(callback, uint64_t, UINT64);                        \
   _ForEachDataTypeHelper_(callback, int16_t, INT16);                          \
   _ForEachDataTypeHelper_(callback, int8_t, INT8);                            \
   _ForEachDataTypeHelper_(callback, ::phi::dtype::complex<float>, COMPLEX64); \
   _ForEachDataTypeHelper_(callback, ::phi::dtype::complex<double>, COMPLEX128);
+
+// complex and float8 are not supported on XPU.
+#define _ForEachDataTypeForXPU_(callback)                          \
+  _ForEachDataTypeHelper_(callback, float, FP32);                  \
+  _ForEachDataTypeHelper_(callback, ::phi::dtype::float16, FP16);  \
+  _ForEachDataTypeHelper_(callback, ::phi::dtype::bfloat16, BF16); \
+  _ForEachDataTypeHelper_(callback, double, FP64);                 \
+  _ForEachDataTypeHelper_(callback, int, INT32);                   \
+  _ForEachDataTypeHelper_(callback, int64_t, INT64);               \
+  _ForEachDataTypeHelper_(callback, bool, BOOL);                   \
+  _ForEachDataTypeHelper_(callback, uint8_t, UINT8);               \
+  _ForEachDataTypeHelper_(callback, int16_t, INT16);               \
+  _ForEachDataTypeHelper_(callback, int8_t, INT8);
 
 #define DefineDataTypeTrait(cpp_type, proto_type)                           \
   template <>                                                               \

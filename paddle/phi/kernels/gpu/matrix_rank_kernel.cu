@@ -32,9 +32,9 @@ void MatrixRankKernel(const Context& dev_ctx,
                       DenseTensor* out) {
   DenseTensor atol_tensor;
   if (use_default_tol) {
-    atol_tensor = phi::Full<T, Context>(dev_ctx, {1}, static_cast<T>(0));
+    atol_tensor = Full<T, Context>(dev_ctx, {1}, static_cast<T>(0));
   } else {
-    atol_tensor = phi::Full<T, Context>(dev_ctx, {1}, static_cast<T>(tol));
+    atol_tensor = Full<T, Context>(dev_ctx, {1}, static_cast<T>(tol));
   }
   MatrixRankTolKernel<T, Context>(
       dev_ctx, x, atol_tensor, use_default_tol, hermitian, out);
@@ -47,6 +47,8 @@ PD_REGISTER_KERNEL(matrix_rank,  // cuda_only
                    ALL_LAYOUT,
                    phi::MatrixRankKernel,
                    float,
-                   double) {}
+                   double,
+                   phi::complex64,
+                   phi::complex128) {}
 
 #endif  // not PADDLE_WITH_HIP

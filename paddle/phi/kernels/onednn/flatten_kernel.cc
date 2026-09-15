@@ -25,7 +25,7 @@ void ExecuteFlatten(const Context& dev_ctx,
                     const DDim& x_dims,
                     const DDim& out_dims,
                     DenseTensor* out) {
-  auto x_vec_dims = common::vectorize(x_dims);
+  auto x_vec_dims = vectorize(x_dims);
 
   funcs::ReorderOneDNNHandler reorder_handler(
       x_vec_dims,
@@ -34,7 +34,7 @@ void ExecuteFlatten(const Context& dev_ctx,
       dev_ctx.GetEngine());
 
   auto reorder_src_memory_p = reorder_handler.AcquireSrcMemory(
-      x.mem_desc(), funcs::to_void_cast(x.data<T>()));
+      phi::funcs::GetOneDNNMemDesc(x), funcs::to_void_cast(x.data<T>()));
   out->Resize(x_dims);  // to match x numel, format is changed later
   // reorder is done into a plain tag to allow usage with blocked formats
   auto reorder_dst_memory_p = reorder_handler.AcquireDstMemory(
@@ -47,9 +47,10 @@ void ExecuteFlatten(const Context& dev_ctx,
 
   out->Resize(out_dims);
 
-  auto reshape_dims = out_dims.size() != 0 ? common::vectorize(out_dims)
-                                           : std::vector<int64_t>{1};
-  out->set_mem_desc(reorder_dst_memory_p->get_desc().reshape(reshape_dims));
+  auto reshape_dims =
+      out_dims.size() != 0 ? vectorize(out_dims) : std::vector<int64_t>{1};
+  phi::funcs::SetOneDNNMemDesc(
+      out, reorder_dst_memory_p->get_desc().reshape(reshape_dims));
 }
 
 template <typename T, typename Context>
@@ -75,11 +76,11 @@ void FlattenWithXShapeKernel(const Context& dev_ctx,
 
 }  // namespace phi
 PD_REGISTER_KERNEL(
-    flatten, OneDNN, ONEDNN, phi::FlattenKernel, float, phi::dtype::bfloat16) {}
+    flatten, OneDNN, ONEDNN, phi::FlattenKernel, float, phi::bfloat16) {}
 
 PD_REGISTER_KERNEL(flatten_with_xshape,
                    OneDNN,
                    ONEDNN,
                    phi::FlattenWithXShapeKernel,
                    float,
-                   phi::dtype::bfloat16) {}
+                   phi::bfloat16) {}

@@ -42,8 +42,11 @@ limitations under the License. */
 #include <hiprand/hiprand.h>
 #include <miopen/miopen.h>
 #include <rocblas/rocblas.h>
+// thrust headers require hipcc (rocThrust 7.0+ pulls in rocprim)
+#ifdef __HIPCC__
 #include <thrust/system/hip/error.h>
 #include <thrust/system_error.h>  // NOLINT
+#endif
 #endif
 
 #include <fstream>
@@ -59,7 +62,6 @@ limitations under the License. */
 #include <execinfo.h>
 #endif
 
-#define GLOG_NO_ABBREVIATED_SEVERITIES  // msvc conflict logging with windows.h
 #include "glog/logging.h"
 #include "paddle/common/errors.h"
 #include "paddle/common/flags.h"

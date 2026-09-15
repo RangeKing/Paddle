@@ -181,7 +181,7 @@ int FCGRUFusePass::BuildFusion(Graph* graph,
                          Node* bias,
                          Node* hidden,
                          Node* fc_bias,
-                         const bool use_mkldnn) {
+                         const bool use_onednn) {
     OpDesc op_desc;
     op_desc.SetType("fusion_gru");
 
@@ -200,7 +200,7 @@ int FCGRUFusePass::BuildFusion(Graph* graph,
                     gru->Op()->GetAttrIfExists<bool>("origin_mode"));
     // TODO(TJ): This should be a option for infer
     op_desc.SetAttr("use_seq", true);
-    op_desc.SetAttr("use_mkldnn", use_mkldnn);
+    op_desc.SetAttr("use_onednn", use_onednn);
     op_desc.SetAttr("activation", gru->Op()->GetAttr("activation"));
     op_desc.SetAttr("gate_activation", gru->Op()->GetAttr("gate_activation"));
 
@@ -224,16 +224,15 @@ int FCGRUFusePass::BuildFusion(Graph* graph,
           nullptr,
           common::errors::NotFound("FC bias var has not been found."));
 
-      auto* gru_bias_tensor = gru_bias_var->GetMutable<phi::DenseTensor>();
-      auto* fc_bias_tensor = fc_bias_var->GetMutable<phi::DenseTensor>();
+      auto* gru_bias_tensor = gru_bias_var->GetMutable<DenseTensor>();
+      auto* fc_bias_tensor = fc_bias_var->GetMutable<DenseTensor>();
       PADDLE_ENFORCE_EQ(
           gru_bias_tensor->numel(),
           fc_bias_tensor->numel(),
           common::errors::PreconditionNotMet(
               "GRU and FC biases have to have equal number of elements."));
 
-      auto gru_bias_data =
-          gru_bias_tensor->mutable_data<float>(phi::CPUPlace());
+      auto gru_bias_data = gru_bias_tensor->mutable_data<float>(CPUPlace());
       auto* fc_bias_data = fc_bias_tensor->data<float>();
 
       // Recompute GRU bias
@@ -243,18 +242,18 @@ int FCGRUFusePass::BuildFusion(Graph* graph,
     }
 #undef GET_NODE
 
-#define NEW_IMTERMEDIATE_OUT(key)                \
+#define NEW_INTERMEDIATE_OUT(key)                \
   VarDesc key(NEW_NAME(key));                    \
   key.SetPersistable(false);                     \
   auto* key##_node = graph->CreateVarNode(&key); \
   IR_NODE_LINK_TO(op, key##_node);
 
-    NEW_IMTERMEDIATE_OUT(ReorderedH0);
-    NEW_IMTERMEDIATE_OUT(XX);
-    NEW_IMTERMEDIATE_OUT(BatchedInput);
-    NEW_IMTERMEDIATE_OUT(BatchedOut);
+    NEW_INTERMEDIATE_OUT(ReorderedH0);
+    NEW_INTERMEDIATE_OUT(XX);
+    NEW_INTERMEDIATE_OUT(BatchedInput);
+    NEW_INTERMEDIATE_OUT(BatchedOut);
 #undef NEW_NAME
-#undef NEW_IMTERMEDIATE_OUT
+#undef NEW_INTERMEDIATE_OUT
 
     IR_NODE_LINK_TO(x, op);
     IR_NODE_LINK_TO(weight_x, op);
@@ -290,8 +289,9 @@ int FCGRUFusePass::BuildFusion(Graph* graph,
       LOG(INFO) << "fc_gru_fuse_pass not supported when origin_mode=True.";
       return;
     }
-    const bool use_mkldnn =
-        (mul->Op()->GetAttrIfExists<bool>("use_mkldnn") &&
+    const bool use_onednn =
+        ((mul->Op()->GetAttrIfExists<bool>("use_mkldnn") ||
+          mul->Op()->GetAttrIfExists<bool>("use_onednn")) &&
          gru->Op()->GetAttrIfExists<std::string>("activation") == "tanh" &&
          gru->Op()->GetAttrIfExists<std::string>("gate_activation") ==
              "sigmoid");
@@ -302,7 +302,7 @@ int FCGRUFusePass::BuildFusion(Graph* graph,
       GET_IR_NODE_FROM_SUBGRAPH(elementwise_add, elementwise_add, fc_pattern);
       GET_IR_NODE_FROM_SUBGRAPH(fc_out, elementwise_add_out, fc_pattern);
 
-      gru_creator(gru, x_n, w, Weight, Bias, Hidden, fc_bias, use_mkldnn);
+      gru_creator(gru, x_n, w, Weight, Bias, Hidden, fc_bias, use_onednn);
       // Remove unneeded nodes.
       std::unordered_set<const Node*> marked_nodes({mul,
                                                     gru,
@@ -314,7 +314,7 @@ int FCGRUFusePass::BuildFusion(Graph* graph,
                                                     BatchHidden});
       GraphSafeRemoveNodes(graph, marked_nodes);
     } else {
-      gru_creator(gru, x_n, w, Weight, Bias, Hidden, nullptr, use_mkldnn);
+      gru_creator(gru, x_n, w, Weight, Bias, Hidden, nullptr, use_onednn);
       // Remove unneeded nodes.
       std::unordered_set<const Node*> marked_nodes(
           {mul, gru, BatchGate, BatchResetHiddenPrev, BatchHidden});

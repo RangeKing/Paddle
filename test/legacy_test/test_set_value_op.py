@@ -14,11 +14,17 @@
 
 # Test set_value op in static graph mode
 
-import os
 import unittest
 
 import numpy as np
-from op_test import OpTest, convert_float_to_uint16
+from op_test import (
+    OpTest,
+    convert_float_to_uint16,
+    get_device,
+    get_device_place,
+    get_devices,
+    is_custom_device,
+)
 
 import paddle
 from paddle.base import core
@@ -1223,9 +1229,7 @@ class TestSetValueValueShape4(TestSetValueApi):
     def set_value(self):
         self.value = np.array(
             [[1, 1, 1, 1], [2, 2, 2, 2], [3, 3, 3, 3]]
-        ).astype(
-            self.dtype
-        )  # shape is (3,4)
+        ).astype(self.dtype)  # shape is (3,4)
 
     def _call_setitem(self, x):
         x[0] = paddle.assign(self.value)  # x is Paddle.Tensor
@@ -1278,16 +1282,7 @@ class TestSetValueValueShape6(TestSetValueApi):
         return x
 
     def test_api(self):
-        places = []
-        if (
-            os.environ.get('FLAGS_CI_both_cpu_and_gpu', 'False').lower()
-            in ['1', 'true', 'on']
-            or not paddle.is_compiled_with_cuda()
-        ):
-            places.append('cpu')
-        if paddle.is_compiled_with_cuda():
-            places.append('gpu')
-        for place in places:
+        for place in get_devices():
             paddle.set_device(place)
 
             static_out = self._run_static()
@@ -1719,14 +1714,14 @@ class TestSetValueIsSamePlace(unittest.TestCase):
         origin_place = a.place
         a[[0, 1], 1] = 10
         self.assertEqual(origin_place._type(), a.place._type())
-        if paddle.is_compiled_with_cuda():
-            paddle.set_device('gpu')
+        if paddle.is_compiled_with_cuda() or is_custom_device():
+            paddle.set_device(get_device())
         paddle.enable_static()
 
 
 @unittest.skipIf(
-    not core.is_compiled_with_cuda()
-    or not core.is_bfloat16_supported(core.CUDAPlace(0)),
+    not (core.is_compiled_with_cuda() or is_custom_device())
+    or not core.is_bfloat16_supported(get_device_place()),
     "core is not compiled with CUDA and not support the bfloat16",
 )
 class TestSetValueBFloat16(OpTest):
@@ -1753,13 +1748,13 @@ class TestSetValueBFloat16(OpTest):
         self.outputs = {'Out': convert_float_to_uint16(expected_out)}
 
     def test_check_output(self):
-        place = core.CUDAPlace(0)
+        place = get_device_place()
         # NOTE(zoooo0820) Here we set check_dygraph=False since set_value OP has no corresponding python api
         # to set self.python_api
         self.check_output_with_place(place, check_dygraph=False)
 
     def test_check_grad(self):
-        place = core.CUDAPlace(0)
+        place = get_device_place()
         self.check_grad_with_place(place, ['Input'], 'Out', check_dygraph=False)
 
 
@@ -1798,6 +1793,177 @@ class TestSetValueWithScalarInDygraph(unittest.TestCase):
 
         np.testing.assert_array_equal(out, np_data)
         np.testing.assert_array_equal(x.grad, expected_x_grad)
+
+
+class TestSetValueEmptyTensorInDygraph(unittest.TestCase):
+    def setUp(self):
+        paddle.disable_static()
+
+    def _check_place(self, place):
+        x = paddle.to_tensor(np.arange(8, dtype='float32'), place=place)
+        value = paddle.to_tensor(np.zeros((0,), dtype='float32'), place=place)
+        with self.assertRaises(ValueError):
+            x[2:5] = value
+
+        x = paddle.to_tensor(np.zeros([1, 2]), dtype='int32', place=place)
+        mask = paddle.to_tensor([[False, False]], place=place)
+        x[mask] = paddle.to_tensor([], dtype='int64', place=place)
+        np.testing.assert_array_equal(x.numpy(), np.zeros([1, 2]))
+
+        mask = paddle.to_tensor([[True, False]], place=place)
+        with self.assertRaises(ValueError):
+            x[mask] = paddle.to_tensor([], dtype='int64', place=place)
+
+        x = paddle.to_tensor(np.zeros([2, 3, 4], dtype='float32'), place=place)
+        mask = paddle.to_tensor([False, False], place=place)
+        x[mask] = paddle.to_tensor(
+            np.zeros([0, 3, 4], dtype='float32'), place=place
+        )
+        np.testing.assert_array_equal(x.numpy(), np.zeros([2, 3, 4]))
+
+        with self.assertRaises(ValueError):
+            x[mask] = paddle.to_tensor([], place=place)
+
+        x = paddle.to_tensor(np.zeros([2, 3], dtype='float32'), place=place)
+        mask = paddle.to_tensor([False, False, False], place=place)
+        x[:, mask] = paddle.to_tensor(
+            np.zeros([2, 0], dtype='float32'), place=place
+        )
+        np.testing.assert_array_equal(x.numpy(), np.zeros([2, 3]))
+
+        base = paddle.to_tensor(np.ones([2, 3], dtype='float32'), place=place)
+        base.stop_gradient = False
+        x = base * 1
+        value = paddle.to_tensor(np.zeros([2, 0], dtype='float32'), place=place)
+        value.stop_gradient = False
+        x[:, mask] = value
+        x.sum().backward()
+        np.testing.assert_array_equal(base.grad.numpy(), np.ones([2, 3]))
+        self.assertIsNotNone(value.grad)
+        np.testing.assert_equal(list(value.grad.shape), [2, 0])
+
+    def _check_place_empty_index(self, place):
+        empty_index = paddle.to_tensor([], dtype='int64', place=place)
+
+        x = paddle.to_tensor(np.zeros([2, 3], dtype='float32'), place=place)
+        x[empty_index] = paddle.to_tensor(
+            np.zeros([0, 3], dtype='float32'), place=place
+        )
+        np.testing.assert_array_equal(x.numpy(), np.zeros([2, 3]))
+
+        x[empty_index] = 1.0
+        np.testing.assert_array_equal(x.numpy(), np.zeros([2, 3]))
+
+        base = paddle.to_tensor(np.ones([2, 3], dtype='float32'), place=place)
+        base.stop_gradient = False
+        x = base * 1
+        value = paddle.to_tensor(np.zeros([0, 3], dtype='float32'), place=place)
+        value.stop_gradient = False
+        x[empty_index] = value
+        x.sum().backward()
+        np.testing.assert_array_equal(base.grad.numpy(), np.ones([2, 3]))
+        self.assertIsNotNone(value.grad)
+        np.testing.assert_equal(list(value.grad.shape), [0, 3])
+
+        # a broadcastable value keeps a zero gradient, nothing is written
+        base = paddle.to_tensor(np.ones([2, 3], dtype='float32'), place=place)
+        base.stop_gradient = False
+        x = base * 1
+        value = paddle.to_tensor(np.array([5.0], dtype='float32'), place=place)
+        value.stop_gradient = False
+        x[empty_index] = value
+        x.sum().backward()
+        np.testing.assert_array_equal(base.grad.numpy(), np.ones([2, 3]))
+        np.testing.assert_array_equal(value.grad.numpy(), np.zeros([1]))
+
+    def test_empty_tensor_value(self):
+        self._check_place(paddle.CPUPlace())
+        if core.is_compiled_with_cuda() or is_custom_device():
+            self._check_place(get_device_place())
+        if paddle.device.is_compiled_with_xpu():
+            self._check_place(paddle.XPUPlace(0))
+
+    def test_empty_index_tensor(self):
+        self._check_place_empty_index(paddle.CPUPlace())
+        if core.is_compiled_with_cuda() or is_custom_device():
+            self._check_place_empty_index(get_device_place())
+        if paddle.device.is_compiled_with_xpu():
+            self._check_place_empty_index(paddle.XPUPlace(0))
+
+
+class TestSetValueEmptyInputGradInDygraph(unittest.TestCase):
+    def setUp(self):
+        paddle.disable_static()
+
+    def _check_place(self, place):
+        x = paddle.to_tensor(np.zeros((0, 20), dtype='float32'), place=place)
+        x.stop_gradient = False
+        value = paddle.to_tensor(
+            np.random.rand(1024, 6).astype('float32'), place=place
+        )
+        value.stop_gradient = False
+        with self.assertRaises(ValueError):
+            x[:, :6] = value
+
+    def test_empty_input_grad(self):
+        self._check_place(paddle.CPUPlace())
+        if core.is_compiled_with_cuda() or is_custom_device():
+            self._check_place(get_device_place())
+        if paddle.device.is_compiled_with_xpu():
+            self._check_place(paddle.XPUPlace(0))
+
+
+class TestSetValueCompatibleEmptyTensorGradInDygraph(unittest.TestCase):
+    def setUp(self):
+        paddle.disable_static()
+
+    def _check_place(self, place):
+        x = paddle.to_tensor(np.zeros((0, 20), dtype='float32'), place=place)
+        x.stop_gradient = False
+        value = paddle.to_tensor(np.zeros((0, 6), dtype='float32'), place=place)
+        value.stop_gradient = False
+        x[:, :6] = value
+        x.sum().backward()
+        self.assertIsNotNone(value.grad)
+        np.testing.assert_equal(list(value.grad.shape), [0, 6])
+
+    def test_compatible_empty_tensor_grad(self):
+        self._check_place(paddle.CPUPlace())
+        if core.is_compiled_with_cuda() or is_custom_device():
+            self._check_place(get_device_place())
+        if paddle.device.is_compiled_with_xpu():
+            self._check_place(paddle.XPUPlace(0))
+
+
+@unittest.skipIf(
+    not (core.is_compiled_with_cuda() or is_custom_device()),
+    "core is not compiled with CUDA",
+)
+class TestSetValueWithStrideError(unittest.TestCase):
+    def test_same_place(self):
+        x = paddle.rand([5, 10], device=get_device_place())
+        y = paddle.rand([10, 5], device=get_device_place())
+        y.transpose_([1, 0])
+        x.set_value(y)
+        assert x.is_contiguous()
+
+    def test_different_place1(self):
+        # src place != dst place && src is not contiguous
+        x = paddle.rand([5, 10], device=get_device_place())
+        y = paddle.rand([10, 5], device=paddle.CPUPlace())
+        y.transpose_([1, 0])
+        x.set_value(y)
+        assert not x.is_contiguous()
+
+    def test_different_place2(self):
+        # src place != dst place && dst is not contiguous
+        with self.assertRaises(SystemError):
+            x = paddle.ones([5, 4], device=get_device_place())
+            x.transpose_([1, 0])
+            y = paddle.rand([4, 2], device=paddle.CPUPlace())
+            assert not x.is_contiguous()
+
+            x[:, 1:3].set_value(y)
 
 
 if __name__ == '__main__':

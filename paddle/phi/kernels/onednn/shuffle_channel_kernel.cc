@@ -18,19 +18,19 @@
 namespace phi {
 
 template <typename T>
-class ShuffleChannelMKLDNNHandler
-    : public phi::funcs::OneDNNHandlerNoCachingT<T, dnnl::shuffle_forward> {
+class ShuffleChannelONEDNNHandler
+    : public funcs::OneDNNHandlerNoCachingT<T, dnnl::shuffle_forward> {
  public:
-  ShuffleChannelMKLDNNHandler(const phi::DenseTensor* x,
+  ShuffleChannelONEDNNHandler(const DenseTensor* x,
                               const int group,
                               const dnnl::engine engine,
                               phi::Place cpu_place)
-      : phi::funcs::OneDNNHandlerNoCachingT<T, dnnl::shuffle_forward>(
-            engine, cpu_place) {
+      : funcs::OneDNNHandlerNoCachingT<T, dnnl::shuffle_forward>(engine,
+                                                                 cpu_place) {
     static constexpr int channel_axis = 1;
     this->AcquireForwardPrimitiveDescriptor(dnnl::prop_kind::forward_training,
-                                            x->mem_desc(),
-                                            x->mem_desc(),
+                                            phi::funcs::GetOneDNNMemDesc(*x),
+                                            phi::funcs::GetOneDNNMemDesc(*x),
                                             channel_axis,
                                             group);
   }
@@ -46,7 +46,7 @@ void ShuffleChannelMKLDNNKernel(const Context& dev_ctx,
   // oneDNN handles group using C/g instead of g
   const int tmp_group = x.dims()[1] / group;
 
-  ShuffleChannelMKLDNNHandler<T> handler(
+  ShuffleChannelONEDNNHandler<T> handler(
       &x, tmp_group, onednn_engine, dev_ctx.GetPlace());
 
   auto src_memory_p = handler.AcquireSrcMemory(&x);
@@ -59,7 +59,7 @@ void ShuffleChannelMKLDNNKernel(const Context& dev_ctx,
       astream, {{DNNL_ARG_SRC, *src_memory_p}, {DNNL_ARG_DST, *dst_memory_p}});
   astream.wait();
 
-  out->set_mem_desc(dst_memory_p->get_desc());
+  phi::funcs::SetOneDNNMemDesc(out, dst_memory_p->get_desc());
 }
 }  // namespace phi
 
@@ -68,4 +68,4 @@ PD_REGISTER_KERNEL(shuffle_channel,
                    ONEDNN,
                    phi::ShuffleChannelMKLDNNKernel,
                    float,
-                   phi::dtype::bfloat16) {}
+                   phi::bfloat16) {}

@@ -112,7 +112,7 @@ class OpenVINOEngineOp : public framework::OperatorBase {
                    OpenVINOEngine *engine) const {
     for (size_t i = 0; i < runtime_input_names_.size(); ++i) {
       auto x = runtime_input_names_[i];
-      auto &t = inference::analysis::GetFromScope<phi::DenseTensor>(scope, x);
+      auto &t = inference::analysis::GetFromScope<DenseTensor>(scope, x);
       auto t_shape = common::vectorize<size_t>(t.dims());
       if (t_shape.empty()) {
         PADDLE_ENFORCE_EQ(
@@ -202,26 +202,29 @@ class OpenVINOEngineOp : public framework::OperatorBase {
     VLOG(1) << "start openvino execute ";
     engine->Execute();
     VLOG(1) << "end openvino execute!";
+    std::vector<int> origin_fetch_outputs_dtype =
+        Attr<std::vector<int>>("origin_fetch_outputs_dtype");
     for (size_t i = 0; i < Outputs("Ys").size(); i++) {
       auto y = Outputs("Ys")[i];
+      auto ori_var_type = static_cast<framework::proto::VarType_Type>(
+          origin_fetch_outputs_dtype[i]);
       auto *fluid_v = scope.FindVar(y);
       PADDLE_ENFORCE_NOT_NULL(
           fluid_v,
           common::errors::NotFound(
               "Output variable %s is not found in Openvino subgraph.", y));
-      auto *fluid_t = fluid_v->GetMutable<phi::DenseTensor>();
-
-      auto ov_output_shape = engine->GetOuputShape(output_names_[i], i);
-      auto phi_type = engine->GetOuputType(
+      auto *fluid_t = fluid_v->GetMutable<DenseTensor>();
+      auto ov_output_shape = engine->GetOutputShape(output_names_[i], i);
+      auto phi_type = engine->GetOutputType(
           output_names_[i],
           i,
-          inference::openvino::PhiType2OVType(fluid_t->dtype()));
+          inference::openvino::VarType2OVType(ori_var_type));
       std::vector<int> ddim;
       for (size_t j = 0; j < ov_output_shape.size(); j++) {
         ddim.push_back(ov_output_shape[j]);
       }
       fluid_t->Resize(common::make_ddim(ddim));
-      engine->CopyOuputDataByName(
+      engine->CopyOutputDataByName(
           output_names_[i], i, fluid_t->mutable_data(dev_place, phi_type));
     }
   }

@@ -22,37 +22,46 @@
 namespace phi {
 
 template <typename T, typename Context>
-void ScatterKernel(const Context &ctx,
+void ScatterKernel(const Context &dev_ctx,
                    const DenseTensor &x,
                    const DenseTensor &index,
                    const DenseTensor &updates,
                    bool overwrite,
                    DenseTensor *out) {
+  if (index.numel() == 0) {
+    dev_ctx.template Alloc<T>(out);
+    Copy(dev_ctx, x, dev_ctx.GetPlace(), false, out);
+    return;
+  }
+  if (out && out->numel() == 0) {
+    dev_ctx.template Alloc<T>(out);
+    return;
+  }
   // In place output: Out = X, Out[Ids] = Updates
-  phi::Copy(ctx, x, ctx.GetPlace(), false, out);
+  Copy(dev_ctx, x, dev_ctx.GetPlace(), false, out);
   // Apply ScatterUpdate: Out[index] = Updates[:]
   const auto &index_type = index.dtype();
   bool index_type_match =
-      index_type == phi::DataType::INT32 || index_type == phi::DataType::INT64;
+      index_type == DataType::INT32 || index_type == DataType::INT64;
   PADDLE_ENFORCE_EQ(index_type_match,
                     true,
                     common::errors::InvalidArgument(
                         "Index holds the wrong type, it holds [%s],"
                         "but desires to be [%s] or [%s].",
                         index_type,
-                        phi::DataType::INT32,
-                        phi::DataType::INT64));
+                        DataType::INT32,
+                        DataType::INT64));
   if (overwrite) {
-    if (index_type == phi::DataType::INT32) {
-      phi::funcs::ScatterAssign<T, int32_t>(ctx, updates, index, out);
+    if (index_type == DataType::INT32) {
+      funcs::ScatterAssign<T, int32_t>(dev_ctx, updates, index, out);
     } else {
-      phi::funcs::ScatterAssign<T, int64_t>(ctx, updates, index, out);
+      funcs::ScatterAssign<T, int64_t>(dev_ctx, updates, index, out);
     }
   } else {
-    if (index_type == phi::DataType::INT32) {
-      phi::funcs::ScatterAssignAdd<T, int32_t>(ctx, updates, index, out);
+    if (index_type == DataType::INT32) {
+      funcs::ScatterAssignAdd<T, int32_t>(dev_ctx, updates, index, out);
     } else {
-      phi::funcs::ScatterAssignAdd<T, int64_t>(ctx, updates, index, out);
+      funcs::ScatterAssignAdd<T, int64_t>(dev_ctx, updates, index, out);
     }
   }
 }

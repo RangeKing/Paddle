@@ -29,12 +29,12 @@ void AsRealStridedKernel(const Context& dev_ctx,
         "FLAGS_use_stride_kernel is closed. Strided kernel "
         "be called, something wrong has happened!"));
   }
-  auto out_stride_v = common::vectorize(x.strides());
+  auto out_stride_v = vectorize(x.strides());
   for (auto& v : out_stride_v) {
     v *= 2;
   }
   out_stride_v.push_back(1);
-  out->set_strides(common::make_ddim(out_stride_v));
+  out->set_strides(make_ddim(out_stride_v));
 
   if (x.dtype() == DataType::COMPLEX64) {
     out->set_type(DataType::FLOAT32);
@@ -55,8 +55,8 @@ PD_REGISTER_KERNEL(as_real,
                    CPU,
                    STRIDED,
                    phi::AsRealStridedKernel,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {
+                   phi::complex64,
+                   phi::complex128) {
   kernel->OutputAt(0).SetDataType(phi::DataType::UNDEFINED);
 }
 
@@ -65,19 +65,19 @@ PD_REGISTER_KERNEL(as_real,
                    GPU,
                    STRIDED,
                    phi::AsRealStridedKernel,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {
+                   phi::complex64,
+                   phi::complex128) {
   kernel->OutputAt(0).SetDataType(phi::DataType::UNDEFINED);
 }
 #endif
 
-#ifdef PADDLE_WITH_CUSTOM_DEVICE
+#if defined(PADDLE_WITH_CUSTOM_DEVICE) && !defined(PADDLE_WITH_CUDA)
 PD_REGISTER_KERNEL(as_real,
                    Custom,
                    STRIDED,
                    phi::AsRealStridedKernel,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {
+                   phi::complex64,
+                   phi::complex128) {
   kernel->OutputAt(0).SetDataType(phi::DataType::UNDEFINED);
 }
 #endif

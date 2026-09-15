@@ -51,7 +51,7 @@ class UnittestBase(unittest.TestCase):
             config = paddle_infer.Config(
                 self.save_path + '.pdmodel', self.save_path + '.pdiparams'
             )
-        config.disable_mkldnn()
+        config.disable_onednn()
         predictor = paddle_infer.create_predictor(config)
         input_names = predictor.get_input_names()
         for i, shape in enumerate(self.shapes):
@@ -138,7 +138,7 @@ class TestTileTensor(UnittestBase):
             self.assertEqual(infer_out.shape, (6, 6, 10))
 
 
-class TestRegiterSupportTensorInOpMaker(unittest.TestCase):
+class TestRegisterSupportTensorInOpMaker(unittest.TestCase):
     def setUp(self):
         self.all_protos = OpProtoHolder.instance()
         self.support_tensor_attrs = {

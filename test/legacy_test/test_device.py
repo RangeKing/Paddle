@@ -11,16 +11,62 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import ctypes
 import unittest
+
+from op_test import get_device, get_device_class, is_custom_device
 
 import paddle
 from paddle import base
 from paddle.base import core, framework
 
 
+class TestSetDeviceEagerSwitch(unittest.TestCase):
+    """Test that paddle.set_device immediately switches the underlying
+    hardware device (e.g. cudaSetDevice) without creating any tensor."""
+
+    def _get_cuda_runtime_device_id(self):
+        """Use ctypes to call cudaGetDevice directly from CUDA runtime."""
+        try:
+            lib_name = 'libcudart.so'
+            cudart = ctypes.CDLL(lib_name)
+        except:
+            return None
+        device = ctypes.c_int(-1)
+        cudart.cudaGetDevice(ctypes.byref(device))
+        return device.value
+
+    def test_set_device_switches_cuda_device_immediately(self):
+        """After set_device('gpu:1'), cudaGetDevice should return 1
+        immediately, even before creating any tensor."""
+        if not core.is_compiled_with_cuda() or core.get_cuda_device_count() < 2:
+            return
+        paddle.disable_static()
+
+        paddle.device.set_device('gpu:1')
+        runtime_device = self._get_cuda_runtime_device_id()
+        if runtime_device is None:
+            return
+        self.assertEqual(
+            runtime_device,
+            1,
+            msg=f"Expected cudaGetDevice()=1 after set_device('gpu:1'), "
+            f"but got {runtime_device}",
+        )
+
+        paddle.device.set_device('gpu:0')
+        runtime_device = self._get_cuda_runtime_device_id()
+        self.assertEqual(
+            runtime_device,
+            0,
+            msg=f"Expected cudaGetDevice()=0 after set_device('gpu:0'), "
+            f"but got {runtime_device}",
+        )
+
+
 class TestStaticDeviceManage(unittest.TestCase):
     def _test_device(self, device_name, device_class):
+        paddle.enable_static()
         paddle.set_device(device_name)
 
         out1 = paddle.zeros(shape=[1, 3], dtype='float32')
@@ -34,17 +80,22 @@ class TestStaticDeviceManage(unittest.TestCase):
         device = paddle.get_device()
         self.assertEqual(isinstance(exe.place, device_class), True)
         self.assertEqual(device, device_name)
+        paddle.disable_static()
 
     def test_cpu_device(self):
         self._test_device("cpu", core.CPUPlace)
 
     def test_gpu_device(self):
         if core.is_compiled_with_cuda():
-            self._test_device("gpu:0", core.CUDAPlace)
+            self._test_device("gpu:0", get_device_class())
 
     def test_xpu_device(self):
         if core.is_compiled_with_xpu():
             self._test_device("xpu:0", core.XPUPlace)
+
+    def test_custom_device(self):
+        if is_custom_device():
+            self._test_device(get_device(True), get_device_class())
 
 
 class TestImperativeDeviceManage(unittest.TestCase):
@@ -71,7 +122,7 @@ class TestImperativeDeviceManage(unittest.TestCase):
                 device = paddle.get_device()
                 self.assertEqual(
                     isinstance(
-                        framework._current_expected_place(), core.CUDAPlace
+                        framework._current_expected_place(), get_device_class()
                     ),
                     True,
                 )
@@ -90,6 +141,61 @@ class TestImperativeDeviceManage(unittest.TestCase):
                 )
                 self.assertTrue(out.place.is_xpu_place())
                 self.assertEqual(device, "xpu:0")
+
+    def test_custom_device(self):
+        if is_custom_device():
+            with base.dygraph.guard():
+                paddle.set_device(get_device(True))
+                out1 = paddle.zeros(shape=[1, 3], dtype='float32')
+                out2 = paddle.ones(shape=[1, 3], dtype='float32')
+                out3 = paddle.concat(x=[out1, out2], axis=0)
+                device = paddle.get_device()
+                self.assertEqual(
+                    isinstance(
+                        framework._current_expected_place(), get_device_class()
+                    ),
+                    True,
+                )
+                self.assertEqual(device, get_device(True))
+
+
+class TestGetPaddlePlaceAdaptiveGPU(unittest.TestCase):
+    """Test that _get_paddle_place('gpu'/'cuda') respects the globally set device ID."""
+
+    def setUp(self):
+        paddle.disable_static()
+
+    def test_empty_device_cuda_follows_set_device(self):
+        """paddle.empty(device='cuda') should be placed on the device
+        selected by paddle.device.set_device('cuda:1'), not always GPU 0."""
+        if not core.is_compiled_with_cuda():
+            return
+        if core.get_cuda_device_count() < 2:
+            return
+        paddle.device.set_device('cuda:1')
+        a = paddle.empty(1, device='cuda')
+        place_str = str(a.place)
+        # restore default
+        paddle.device.set_device('cuda:0')
+        self.assertIn(
+            '1',
+            place_str,
+            msg=f"Expected tensor on GPU 1 but got place: {place_str}",
+        )
+
+    def test_empty_device_gpu_follows_set_device_cpu(self):
+        """paddle.empty(device='gpu') should also respect set_device('gpu:0')."""
+        if not core.is_compiled_with_cuda():
+            return
+        if core.get_cuda_device_count() < 1:
+            return
+        paddle.device.set_device('gpu:0')
+        a = paddle.empty(1, device='gpu')
+        self.assertTrue(a.place.is_gpu_place())
+
+        paddle.device.set_device('cpu')
+        a = paddle.empty(1, device='gpu')
+        self.assertTrue(a.place.is_gpu_place())
 
 
 if __name__ == '__main__':

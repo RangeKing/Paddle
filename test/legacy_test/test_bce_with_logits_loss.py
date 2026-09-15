@@ -12,13 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 import unittest
 
 import numpy as np
+from op_test import get_device_place, get_places
 
 import paddle
-from paddle import base
 
 
 def call_bce_layer(
@@ -143,15 +142,7 @@ class TestBCEWithLogitsLoss(unittest.TestCase):
     def test_BCEWithLogitsLoss(self):
         logit_np = np.random.uniform(0.1, 0.8, size=(20, 30)).astype(np.float64)
         label_np = np.random.randint(0, 2, size=(20, 30)).astype(np.float64)
-        places = []
-        if (
-            os.environ.get('FLAGS_CI_both_cpu_and_gpu', 'False').lower()
-            in ['1', 'true', 'on']
-            or not base.core.is_compiled_with_cuda()
-        ):
-            places.append(base.CPUPlace())
-        if base.core.is_compiled_with_cuda():
-            places.append(base.CUDAPlace(0))
+        places = get_places()
         reductions = ['sum', 'mean', 'none']
         for place in places:
             for reduction in reductions:
@@ -207,11 +198,7 @@ class TestBCEWithLogitsLoss(unittest.TestCase):
             np.float64
         )
         weight_np = np.random.random(size=(2, 3, 4, 10)).astype(np.float64)
-        place = (
-            base.CUDAPlace(0)
-            if base.core.is_compiled_with_cuda()
-            else base.CPUPlace()
-        )
+        place = get_device_place()
         for reduction in ['sum', 'mean', 'none']:
             dy_result = test_dygraph(
                 place,
@@ -272,11 +259,7 @@ class TestBCEWithLogitsLoss(unittest.TestCase):
         )
         pos_weight_np = np.random.random(size=(3, 4, 10)).astype(np.float64)
         weight_np = np.random.random(size=(2, 3, 4, 10)).astype(np.float64)
-        place = (
-            base.CUDAPlace(0)
-            if base.core.is_compiled_with_cuda()
-            else base.CPUPlace()
-        )
+        place = get_device_place()
         reduction = "mean"
 
         dy_result = test_dygraph(
@@ -320,12 +303,51 @@ class TestBCEWithLogitsLoss(unittest.TestCase):
 
         test_static_or_pir_mode()
 
+    def test_binary_cross_entropy_with_logits_alias(self):
+        paddle.disable_static()
+        self.addCleanup(paddle.enable_static)
+
+        logit = paddle.randn([4, 6], dtype="float32")
+        label = (paddle.rand([4, 6]) > 0.5).astype("float32")
+
+        out1 = paddle.nn.functional.binary_cross_entropy_with_logits(
+            logit=logit, label=label, reduction="none"
+        )
+        out2 = paddle.nn.functional.binary_cross_entropy_with_logits(
+            input=logit, target=label, reduction="none"
+        )
+        np.testing.assert_allclose(
+            out1.numpy(), out2.numpy(), rtol=1e-6, atol=1e-6
+        )
+
+        out1_mean = paddle.nn.functional.binary_cross_entropy_with_logits(
+            logit=logit, label=label, reduction="mean"
+        )
+        out2_mean = paddle.nn.functional.binary_cross_entropy_with_logits(
+            input=logit, target=label, reduction="mean"
+        )
+        np.testing.assert_allclose(
+            out1_mean.numpy(),
+            out2_mean.numpy(),
+            rtol=1e-6,
+            atol=1e-6,
+        )
+
+        with self.assertRaises(ValueError):
+            paddle.nn.functional.binary_cross_entropy_with_logits(
+                logit=logit, input=logit, label=label, reduction="none"
+            )
+        with self.assertRaises(ValueError):
+            paddle.nn.functional.binary_cross_entropy_with_logits(
+                logit=logit, label=label, target=label, reduction="none"
+            )
+
     def test_BCEWithLogitsLoss_error(self):
         paddle.disable_static()
         self.assertRaises(
             ValueError,
             paddle.nn.BCEWithLogitsLoss,
-            reduction="unsupport reduction",
+            reduction="unsupported reduction",
         )
         logit = paddle.to_tensor([[0.1, 0.3]], dtype='float32')
         label = paddle.to_tensor([[0.0, 1.0]], dtype='float32')
@@ -334,7 +356,7 @@ class TestBCEWithLogitsLoss(unittest.TestCase):
             paddle.nn.functional.binary_cross_entropy_with_logits,
             logit=logit,
             label=label,
-            reduction="unsupport reduction",
+            reduction="unsupported reduction",
         )
         paddle.enable_static()
 

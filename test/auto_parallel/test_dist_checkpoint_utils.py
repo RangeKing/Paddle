@@ -21,8 +21,11 @@ import numpy as np
 
 import paddle
 import paddle.distributed as dist
-from paddle.distributed.checkpoint.load_state_dict import get_checkpoint_files
-from paddle.distributed.checkpoint.utils import (
+from paddle.distributed.flex_checkpoint.dcp.load_state_dict import (
+    get_checkpoint_files,
+    get_rank_to_files,
+)
+from paddle.distributed.flex_checkpoint.dcp.utils import (
     flatten_state_dict,
     unflatten_state_dict,
 )
@@ -130,8 +133,8 @@ class TestDistCheckpointUtils(test_base.CommunicationTestDistBase):
         }
         (
             rank_to_files,
-            missing_keys,
-        ) = dist.checkpoint.load_state_dict.get_rank_to_files(
+            mw_name_compatibility_mapping,
+        ) = get_rank_to_files(
             metadata_list,
             local_load_files,
             new_state_dict,
@@ -140,7 +143,7 @@ class TestDistCheckpointUtils(test_base.CommunicationTestDistBase):
         )
         self.assertTrue(len(rank_to_files) == 1 and 0 in rank_to_files)
         self.assertTrue(rank_to_files[0] == ["0_0.distcp"])
-        self.assertTrue(len(missing_keys) == 0)
+        self.assertTrue(len(mw_name_compatibility_mapping) == 0)
 
         new_state_dict = {
             "w1": paddle.to_tensor([1, 2]),
@@ -148,8 +151,8 @@ class TestDistCheckpointUtils(test_base.CommunicationTestDistBase):
         }
         (
             rank_to_files,
-            missing_keys,
-        ) = dist.checkpoint.load_state_dict.get_rank_to_files(
+            mw_name_compatibility_mapping,
+        ) = get_rank_to_files(
             metadata_list,
             local_load_files,
             new_state_dict,
@@ -158,8 +161,7 @@ class TestDistCheckpointUtils(test_base.CommunicationTestDistBase):
         )
         self.assertTrue(len(rank_to_files) == 1 and 0 in rank_to_files)
         self.assertTrue(rank_to_files[0] == ["0_0.distcp"])
-        self.assertTrue(len(missing_keys) == 1)
-        self.assertTrue("w3" in missing_keys)
+        self.assertTrue(len(mw_name_compatibility_mapping) == 0)
 
         new_state_dict = {
             "w3": paddle.to_tensor([3, 4]),
@@ -167,8 +169,8 @@ class TestDistCheckpointUtils(test_base.CommunicationTestDistBase):
         }
         (
             rank_to_files,
-            missing_keys,
-        ) = dist.checkpoint.load_state_dict.get_rank_to_files(
+            mw_name_compatibility_mapping,
+        ) = get_rank_to_files(
             metadata_list,
             local_load_files,
             new_state_dict,
@@ -176,11 +178,30 @@ class TestDistCheckpointUtils(test_base.CommunicationTestDistBase):
             use_dist,
         )
         self.assertTrue(len(rank_to_files) == 0)
-        self.assertTrue(len(missing_keys) == 2)
-        self.assertTrue("w3" in missing_keys)
-        self.assertTrue("w4" in missing_keys)
+        self.assertTrue(len(mw_name_compatibility_mapping) == 0)
 
         ckpt_dir_tmp.cleanup()
+
+
+class TestMergeCheckpoint(test_base.CommunicationTestDistBase):
+    def setUp(self):
+        super().setUp(num_of_devices=1, timeout=120, nnode=1)
+        self._default_envs = {}
+        self._changeable_envs = {"backend": ["gpu"]}
+
+    def test_merge_skip(self):
+        envs_list = test_base.gen_product_envs_list(
+            self._default_envs, self._changeable_envs
+        )
+        for envs in envs_list:
+            ckpt_path_tmp = tempfile.TemporaryDirectory()
+            ckpt_path = ckpt_path_tmp.name
+            envs["ckpt_path"] = ckpt_path
+            self.run_test_case(
+                "semi_merge_shard_state_dict.py",
+                user_defined_envs=envs,
+            )
+            ckpt_path_tmp.cleanup()
 
 
 if __name__ == "__main__":

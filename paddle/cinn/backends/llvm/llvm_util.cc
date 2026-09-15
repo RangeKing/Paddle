@@ -15,6 +15,7 @@
 #include "paddle/cinn/backends/llvm/llvm_util.h"
 
 #include <glog/logging.h>
+#include <llvm/IR/DerivedTypes.h>
 #include <llvm/Support/Alignment.h>
 
 #include <atomic>
@@ -25,6 +26,7 @@ namespace backends {
 
 using cinn::common::bfloat16;
 using cinn::common::float16;
+using cinn::common::float8e4m3;
 
 llvm::Type *CinnTypeToLLVMType(cinn::common::Type type,
                                llvm::Module *m,
@@ -52,6 +54,8 @@ llvm::Type *CinnTypeToLLVMType(cinn::common::Type type,
   llvm::Type *f16 = llvm::Type::getHalfTy(m->getContext());
   llvm::Type *f32 = llvm::Type::getFloatTy(m->getContext());
   llvm::Type *f64 = llvm::Type::getDoubleTy(m->getContext());
+  llvm::Type *f8e4m3 = llvm::Type::getInt8Ty(
+      m->getContext());  // TODO(YuhanXu) : llvm not support fp8
   llvm::Type *arr =
       llvm::Type::getPrimitiveType(m->getContext(), llvm::Type::ArrayTyID);
   if (type.is_void() && type.is_cpp_handle()) {
@@ -87,6 +91,13 @@ llvm::Type *CinnTypeToLLVMType(cinn::common::Type type,
     ir_type = bf16;
   } else if (type.is_float16()) {
     ir_type = f16;
+  } else if (type.is_float8e4m3()) {
+    PADDLE_ENFORCE_NOT_NULL(
+        ir_type,
+        ::common::errors::InvalidArgument(
+            "LLVM can't convert type: f8e4m3."));  // TODO(YuhanXu) : llvm not
+                                                   // support fp8
+    ir_type = f8e4m3;
   } else if (type.is_void()) {
     ir_type = v;
   } else if (type.is_string()) {
@@ -96,7 +107,9 @@ llvm::Type *CinnTypeToLLVMType(cinn::common::Type type,
                       true,
                       ::common::errors::InvalidArgument(
                           "Customized type name should not be empty."));
-    ir_type = m->getTypeByName("struct." + type.customized_type());
+    const std::string struct_type_name = "struct." + type.customized_type();
+    ir_type =
+        llvm::StructType::getTypeByName(m->getContext(), struct_type_name);
   }
   PADDLE_ENFORCE_NOT_NULL(
       ir_type, ::common::errors::InvalidArgument("LLVM can't convert type."));
@@ -140,6 +153,7 @@ __(bfloat16)
 __(float16)
 __(float)
 __(double)
+__(float8e4m3)
 __(cinn_buffer_t)
 __(cinn_buffer_t *)
 __(cinn_pod_value_t *)

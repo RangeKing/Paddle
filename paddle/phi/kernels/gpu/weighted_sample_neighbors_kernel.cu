@@ -63,7 +63,9 @@ __global__ void GetSampleCountAndNeighborCountKernel(const T* col_ptr,
                                                      int* neighbor_count,
                                                      int sample_size,
                                                      int n) {
-  int i = threadIdx.x + blockIdx.x * blockDim.x;
+  int64_t i =
+      static_cast<int64_t>(threadIdx.x) +
+      static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x);
   if (i >= n) return;
   T nid = input_nodes[i];
   int neighbor_size = static_cast<int>(col_ptr[nid + 1] - col_ptr[nid]);
@@ -125,7 +127,7 @@ __launch_bounds__(BLOCK_SIZE) __global__
     bool topk_is_unique;
 
     using BlockRadixSelectT =
-        paddle::framework::BlockRadixTopKGlobalMemory<float, BLOCK_SIZE, true>;
+        funcs::BlockRadixTopKGlobalMemory<float, BLOCK_SIZE, true>;
     __shared__ typename BlockRadixSelectT::TempStorage share_storage;
 
     BlockRadixSelectT{share_storage}.radixTopKGetThreshold(
@@ -254,7 +256,7 @@ __launch_bounds__(BLOCK_SIZE) __global__
     RandomNumGen rng(gidx, random_seed);
     float weight_keys[ITEMS_PER_THREAD];
     int neighbor_idxs[ITEMS_PER_THREAD];
-    using BlockRadixTopKT = paddle::framework::
+    using BlockRadixTopKT = funcs::
         BlockRadixTopKRegister<float, BLOCK_SIZE, ITEMS_PER_THREAD, true, int>;
     __shared__ typename BlockRadixTopKT::TempStorage sort_tmp_storage;
 
@@ -317,7 +319,7 @@ void WeightedSampleNeighborsKernel(const Context& dev_ctx,
                                    const DenseTensor& col_ptr,
                                    const DenseTensor& edge_weight,
                                    const DenseTensor& x,
-                                   const paddle::optional<DenseTensor>& eids,
+                                   const optional<DenseTensor>& eids,
                                    int sample_size,
                                    bool return_eids,
                                    DenseTensor* out,
@@ -329,7 +331,8 @@ void WeightedSampleNeighborsKernel(const Context& dev_ctx,
   auto* x_data = x.data<T>();
   auto* eids_data =
       (eids.get_ptr() == nullptr ? nullptr : eids.get_ptr()->data<T>());
-  int bs = x.dims()[0];
+  int64_t bs = x.dims()[0];
+  // TODO(large-tensor): downstream functors may still use int
 
   thread_local std::random_device rd;
   thread_local std::mt19937 gen(rd());
@@ -342,19 +345,19 @@ void WeightedSampleNeighborsKernel(const Context& dev_ctx,
   int* out_count_data =
       dev_ctx.template Alloc<int>(out_count);  // finally copy sample_count
   int* neighbor_count_ptr = nullptr;
-  std::shared_ptr<phi::Allocation> neighbor_count;
-  auto sample_count = phi::memory_utils::Alloc(
-      dev_ctx.GetPlace(),
-      (bs + 1) * sizeof(int),
-      phi::Stream(reinterpret_cast<phi::StreamId>(dev_ctx.stream())));
+  std::shared_ptr<Allocation> neighbor_count;
+  auto sample_count =
+      memory_utils::Alloc(dev_ctx.GetPlace(),
+                          (bs + 1) * sizeof(int),
+                          Stream(reinterpret_cast<StreamId>(dev_ctx.stream())));
   int* sample_count_ptr = reinterpret_cast<int*>(sample_count->ptr());
 
   int grid_size = (bs + 127) / 128;
   if (need_neighbor_count) {
-    neighbor_count = phi::memory_utils::AllocShared(
+    neighbor_count = memory_utils::AllocShared(
         dev_ctx.GetPlace(),
         (bs + 1) * sizeof(int),
-        phi::Stream(reinterpret_cast<phi::StreamId>(dev_ctx.stream())));
+        Stream(reinterpret_cast<StreamId>(dev_ctx.stream())));
     neighbor_count_ptr = reinterpret_cast<int*>(neighbor_count->ptr());
     GetSampleCountAndNeighborCountKernel<T, true>
         <<<grid_size, 128, 0, dev_ctx.stream()>>>(col_ptr_data,
@@ -369,10 +372,10 @@ void WeightedSampleNeighborsKernel(const Context& dev_ctx,
             col_ptr_data, x_data, sample_count_ptr, nullptr, sample_size, bs);
   }
 
-  auto sample_offset = phi::memory_utils::Alloc(
-      dev_ctx.GetPlace(),
-      (bs + 1) * sizeof(int),
-      phi::Stream(reinterpret_cast<phi::StreamId>(dev_ctx.stream())));
+  auto sample_offset =
+      memory_utils::Alloc(dev_ctx.GetPlace(),
+                          (bs + 1) * sizeof(int),
+                          Stream(reinterpret_cast<StreamId>(dev_ctx.stream())));
   int* sample_offset_ptr = reinterpret_cast<int*>(sample_offset->ptr());
 
 #ifdef PADDLE_WITH_CUDA
@@ -435,10 +438,10 @@ void WeightedSampleNeighborsKernel(const Context& dev_ctx,
                     dev_ctx.stream());
     cudaStreamSynchronize(dev_ctx.stream());
 
-    auto tmh_weights = phi::memory_utils::Alloc(
+    auto tmh_weights = memory_utils::Alloc(
         dev_ctx.GetPlace(),
         target_neighbor_counts * sizeof(float),
-        phi::Stream(reinterpret_cast<phi::StreamId>(dev_ctx.stream())));
+        Stream(reinterpret_cast<StreamId>(dev_ctx.stream())));
     float* target_weights_keys_buf_ptr =
         reinterpret_cast<float*>(tmh_weights->ptr());
     constexpr int BLOCK_SIZE = 256;

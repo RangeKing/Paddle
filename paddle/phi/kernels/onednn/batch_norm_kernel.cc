@@ -29,8 +29,8 @@ void BatchNormKernel(const Context &dev_ctx,
                      const DenseTensor &x,
                      const DenseTensor &mean,
                      const DenseTensor &variance,
-                     const paddle::optional<DenseTensor> &scale,
-                     const paddle::optional<DenseTensor> &bias,
+                     const optional<DenseTensor> &scale,
+                     const optional<DenseTensor> &bias,
                      bool is_test,
                      float momentum,
                      float epsilon,
@@ -78,7 +78,7 @@ void BatchNormKernel(const Context &dev_ctx,
     variance_memory = handler.AcquireVarianceMemory(saved_variance);
   }
 
-  y->set_mem_desc(dst_memory->get_desc());
+  phi::funcs::SetOneDNNMemDesc(y, dst_memory->get_desc());
 
   std::shared_ptr<dnnl::memory> scale_memory(nullptr);
   std::shared_ptr<dnnl::memory> shift_memory(nullptr);
@@ -98,7 +98,7 @@ void BatchNormKernel(const Context &dev_ctx,
   astream.wait();
 
   if (!global_stats) {
-    const unsigned int C = common::vectorize(mean.dims())[0];
+    const unsigned int C = vectorize(mean.dims())[0];
 
     // onednn only compute stats for current batch
     // so we need compute momentum stats via Eigen lib

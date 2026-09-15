@@ -30,18 +30,22 @@ void CummaxGradKernel(const Context& dev_ctx,
                       int axis,
                       DataType dtype,
                       DenseTensor* x_grad) {
+  if (x_grad && x_grad->numel() == 0) {
+    dev_ctx.template Alloc<T>(x_grad);
+    return;
+  }
   dev_ctx.template Alloc<T>(x_grad);
-  phi::funcs::SetConstant<Context, T> functor;
+  funcs::SetConstant<Context, T> functor;
   functor(dev_ctx, x_grad, static_cast<T>(0));
   if (axis < 0) {
     axis = axis + x.dims().size();
   }
 
   if (dtype == DataType::INT32) {
-    phi::funcs::gpu_scatter_add_kernel<T, int32_t>(
+    funcs::gpu_scatter_add_kernel<T, int32_t>(
         *x_grad, axis, indices, out_grad, true, dev_ctx);
   } else if (dtype == DataType::INT64) {
-    phi::funcs::gpu_scatter_add_kernel<T, int64_t>(
+    funcs::gpu_scatter_add_kernel<T, int64_t>(
         *x_grad, axis, indices, out_grad, true, dev_ctx);
   }
 }
@@ -54,18 +58,22 @@ void CumminGradKernel(const Context& dev_ctx,
                       int axis,
                       DataType dtype,
                       DenseTensor* x_grad) {
+  if (x_grad && x_grad->numel() == 0) {
+    dev_ctx.template Alloc<T>(x_grad);
+    return;
+  }
   dev_ctx.template Alloc<T>(x_grad);
-  phi::funcs::SetConstant<Context, T> functor;
+  funcs::SetConstant<Context, T> functor;
   functor(dev_ctx, x_grad, static_cast<T>(0));
   if (axis < 0) {
     axis = axis + x.dims().size();
   }
 
   if (dtype == DataType::INT32) {
-    phi::funcs::gpu_scatter_add_kernel<T, int32_t>(
+    funcs::gpu_scatter_add_kernel<T, int32_t>(
         *x_grad, axis, indices, out_grad, true, dev_ctx);
   } else if (dtype == DataType::INT64) {
-    phi::funcs::gpu_scatter_add_kernel<T, int64_t>(
+    funcs::gpu_scatter_add_kernel<T, int64_t>(
         *x_grad, axis, indices, out_grad, true, dev_ctx);
   }
 }

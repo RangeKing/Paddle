@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 import paddle
 from paddle import _C_ops
+from paddle.utils.decorator_utils import param_one_alias
 
 from ...base.data_feeder import check_variable_and_dtype
 from ...base.layer_helper import LayerHelper
@@ -29,9 +30,10 @@ if TYPE_CHECKING:
 __all__ = []
 
 
+@param_one_alias(["x", "input"])
 def one_hot(
     x: Tensor,
-    num_classes: int,
+    num_classes: int = -1,
     name: str | None = None,
 ) -> Tensor:
     """
@@ -71,12 +73,18 @@ def one_hot(
             so it throws an exception.
 
 
+    .. note::
+        Alias Support: The parameter name ``input`` can be used as an alias for ``x``.
+        For example, ``one_hot(input=tensor_x, ...)`` is equivalent to ``one_hot(x=tensor_x, ...)``.
+
+
     Args:
-        x(Tensor): Tensor with shape :math:`[N_1, N_2, ..., N_k]` ,
+        x (Tensor): Tensor with shape :math:`[N_1, N_2, ..., N_k]` ,
             which contains at least one dimension. The data type is int32 or int64.
-        num_classes(int): An integer defining the `num_classes` of the one hot dimension. If input `x`
-            is word id, `num_classes` is generally the dictionary size.
-        name(str|None, optional): For detailed information, please refer
+            Alias: ``input``.
+        num_classes (int): An integer defining the `num_classes` of the one hot dimension. If input `x`
+            is word id, `num_classes` is generally the dictionary size. Default value: -1.
+        name (str|None, optional): For detailed information, please refer
            to :ref:`api_guide_Name`. Usually name is no need to set and
            None by default.
 
@@ -84,16 +92,16 @@ def one_hot(
         Tensor, The one-hot representations of `x`. A Tensor with type float32.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> # Correspond to the first example above, where label.shape is 4 and one_hot_label.shape is [4, 4].
             >>> label = paddle.to_tensor([1, 1, 3, 0], dtype='int64')
             >>> print(label.shape)
-            [4]
+            paddle.Size([4])
             >>> one_hot_label = paddle.nn.functional.one_hot(label, num_classes=4)
             >>> print(one_hot_label.shape)
-            [4, 4]
+            paddle.Size([4, 4])
             >>> print(one_hot_label)
             Tensor(shape=[4, 4], dtype=float32, place=Place(cpu), stop_gradient=True,
                    [[0., 1., 0., 0.],
@@ -102,7 +110,8 @@ def one_hot(
                     [1., 0., 0., 0.]])
 
     """
-
+    if not isinstance(num_classes, paddle.pir.Value) and num_classes == -1:
+        num_classes = x.max() + 1
     if in_dynamic_or_pir_mode():
         return _C_ops.one_hot(x, num_classes)
     else:
@@ -138,12 +147,12 @@ def embedding_renorm_(
         In the dynamic graph mode, the input weight will be updated in-place, and the return value will be the changed weight.
 
     Args:
-        x(Tensor): A Tensor with type int32/int64, which contains the id information. The value of the input id should
+        x (Tensor): A Tensor with type int32/int64, which contains the id information. The value of the input id should
             satisfy :math:`0<= id < weight.shape[0]` .
         weight (Tensor): The weight. A Tensor with shape of lookup table parameter. It should have two elements which
             indicates the size of the dictionary of embeddings and the size of each embedding vector respectively.
-        max_norm(float): The maximum norm for each embedding vector.
-        norm_type(float, optional): The p of the p-norm to compute for the max_norm option. Default: 2.0.
+        max_norm (float): The maximum norm for each embedding vector.
+        norm_type (float, optional): The p of the p-norm to compute for the max_norm option. Default: 2.0.
 
     Returns:
         Tensor, The updated weight. The data type is the same as :attr:`weight`.
@@ -161,6 +170,7 @@ def embedding_renorm_(
         return weight
 
 
+@param_one_alias(["x", "input"])
 def embedding(
     x: Tensor,
     weight: Tensor,
@@ -178,7 +188,7 @@ def embedding(
     with embedding size.
 
     Note:
-        The id in :attr:`x` must satisfy :math:`0 =< id < weight.shape[0]` ,
+        The id in :attr:`x` must satisfy :math:`0 <= id < weight.shape[0]` ,
         otherwise the program will throw an exception and exit.
 
     .. code-block:: text
@@ -200,36 +210,41 @@ def embedding(
             The input padding_idx is less than 0, it is automatically converted to padding_idx = -1 + 128 = 127
             It will pad all-zero data when id is 127.
 
+    .. note::
+        Alias Support: The parameter name ``input`` can be used as an alias for ``x``.
+        For example, ``embedding(input=tensor_x, ...)`` is equivalent to ``embedding(x=tensor_x, ...)``.
+
     Args:
-        x(Tensor): A Tensor with type int32/int64, which contains the id information. The value of the input id should
-            satisfy :math:`0<= id < weight.shape[0]` .
+        x (Tensor): A Tensor with type int32/int64, which contains the id information. The value of the input id should
+            satisfy :math:`0 <= id < weight.shape[0]` .
+            Alias: ``input``.
         weight (Tensor): The weight. A Tensor with shape of lookup table parameter. It should have two elements which
             indicates the size of the dictionary of embeddings and the size of each embedding vector respectively.
-        sparse(bool, optional): The flag indicating whether to use sparse update. This parameter only
+        sparse (bool, optional): The flag indicating whether to use sparse update. This parameter only
             affects the performance of the backwards gradient update. It is recommended to set
             True because sparse update is faster. But some optimizers does not support sparse update,
             such as :ref:`api_paddle_optimizer_adadelta_Adadelta` , :ref:`api_paddle_optimizer_adamax_Adamax` , :ref:`api_paddle_optimizer_lamb_Lamb`.
             In these cases, sparse must be False. Default: False.
-        padding_idx(int|None, optional): padding_idx needs to be in the interval [-weight.shape[0], weight.shape[0]).
+        padding_idx (int|None, optional): padding_idx needs to be in the interval [-weight.shape[0], weight.shape[0]).
             If :math:`padding\_idx < 0`, the :math:`padding\_idx` will automatically be converted
             to :math:`weight.shape[0] + padding\_idx` . It will output all-zero padding data whenever lookup
             encounters :math:`padding\_idx` in id. And the padding data will not be updated while training.
             If set None, it makes no effect to output. Default: None.
-        max_norm(float, optional): If provided, will renormalize the embedding vectors to have a norm larger than
+        max_norm (float, optional): If provided, will renormalize the embedding vectors to have a norm larger than
             :attr:`max\_norm` . It will inplace update the input embedding weight in dynamic graph mode. Default: None.
-        norm_type(float, optional): The p of the p-norm to compute for the max_norm option. Default: 2.0.
-        scale_grad_by_freq(bool, optional): Indicating whether to scale the gradients by the inverse frequency of the
+        norm_type (float, optional): The p of the p-norm to compute for the max_norm option. Default: 2.0.
+        scale_grad_by_freq (bool, optional): Indicating whether to scale the gradients by the inverse frequency of the
             word ids in input `x`. Default: False.
-        name(str|None, optional): For detailed information, please refer
+        name (str|None, optional): For detailed information, please refer
            to :ref:`api_guide_Name`. Usually name is no need to set and
            None by default.
 
     Returns:
-        Tensor, Embedding Tensor  mapped by x. The data type is the same as :attr:`weight`.
+        Tensor, Embedding Tensor mapped by x. The data type is the same as :attr:`weight`.
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> import paddle.nn as nn
@@ -243,7 +258,7 @@ def embedding(
              [4]
              [5]]
             >>> print(x.shape)
-            [3, 1]
+            paddle.Size([3, 1])
 
             >>> w = paddle.to_tensor(w0, stop_gradient=False)
             >>> print(w.numpy())
@@ -258,16 +273,15 @@ def embedding(
              [2. 2. 2.]
              [2. 2. 2.]]
             >>> print(w.shape)
-            [10, 3]
+            paddle.Size([10, 3])
 
-            >>> emb = nn.functional.embedding(
-            ...         x=x, weight=w, sparse=True, name="embedding")
+            >>> emb = nn.functional.embedding(x=x, weight=w, sparse=True, name="embedding")
             >>> print(emb.numpy())
             [[[2. 2. 2.]]
              [[2. 2. 2.]]
              [[2. 2. 2.]]]
             >>> print(emb.shape)
-            [3, 1, 3]
+            paddle.Size([3, 1, 3])
 
     """
     padding_idx = (
@@ -278,12 +292,14 @@ def embedding(
         )
     )
 
-    if padding_idx >= weight.shape[0] or padding_idx < -weight.shape[0]:
+    if weight.shape[0] != 0 and (
+        padding_idx >= weight.shape[0] or padding_idx < -weight.shape[0]
+    ):
         raise ValueError(
             f"padding_idx must be within [-{weight.shape[0]}, {weight.shape[0]})"
         )
 
-    if max_norm:
+    if max_norm and weight.size != 0:
         weight = embedding_renorm_(
             x, weight, max_norm=max_norm, norm_type=norm_type
         )

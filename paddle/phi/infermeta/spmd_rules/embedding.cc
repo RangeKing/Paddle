@@ -25,12 +25,11 @@ limitations under the License. */
 
 namespace phi::distributed {
 
-using phi::distributed::auto_parallel::str_join;
-
-SpmdInfo EmbeddingInferSpmdUnsupportVocabParallel(const DistMetaTensor& x,
-                                                  const DistMetaTensor& weight,
-                                                  int padding_idx,
-                                                  bool sparse) {
+SpmdInfo EmbeddingInferSpmdUnsupportedVocabParallel(
+    const DistMetaTensor& x,
+    const DistMetaTensor& weight,
+    int padding_idx,
+    bool sparse) {
   DistMetaTensor w(weight.dims(), weight.dist_attr());
   if (weight.dist_attr().dims_mapping()[0] >= 0) {
     auto w_dims_mapping = weight.dist_attr().dims_mapping();
@@ -47,8 +46,8 @@ SpmdInfo EmbeddingInferSpmd(const DistMetaTensor& x,
                             int padding_idx,
                             bool sparse) {
   // Step0: Verify input args based on embedding logic
-  auto x_shape = common::vectorize(x.dims());
-  auto weight_shape = common::vectorize(weight.dims());
+  auto x_shape = vectorize(x.dims());
+  auto weight_shape = vectorize(weight.dims());
   int x_ndim = static_cast<int>(x_shape.size());
   int weight_ndim = static_cast<int>(weight_shape.size());
   auto x_dist_attr_src = x.dist_attr();
@@ -173,9 +172,9 @@ SpmdInfo EmbeddingInferSpmdReverse(const DistMetaTensor& x,
                                    bool sparse) {
   // Step0: Verify input args based on embedding logic
   // InferBackward is called after InferForward, so we skip some checks.
-  auto x_shape = common::vectorize(x.dims());
+  auto x_shape = vectorize(x.dims());
   int x_ndim = static_cast<int>(x_shape.size());
-  auto out_shape = common::vectorize(out.dims());
+  auto out_shape = vectorize(out.dims());
   int out_ndim = static_cast<int>(out_shape.size());
 
   PADDLE_ENFORCE_EQ(x_ndim,
@@ -239,7 +238,7 @@ SpmdInfo EmbeddingGradInferSpmd(const DistMetaTensor& x,
 
   if (sparse) {
     PADDLE_THROW(common::errors::InvalidArgument(
-        "EmbeddingGradInferSpmd does't support sparse currently."));
+        "EmbeddingGradInferSpmd doesn't support sparse currently."));
   }
 
   // Propagate sharding info using composite operators.
@@ -267,9 +266,9 @@ SpmdInfo EmbeddingGradInferSpmd(const DistMetaTensor& x,
   t0_dims_mapping.emplace_back(-1);
   TensorDistAttr t0_dist_attr(x.dist_attr());
   t0_dist_attr.set_dims_mapping(t0_dims_mapping);
-  auto t0_shape = phi::vectorize(x.dims());
+  auto t0_shape = vectorize(x.dims());
   t0_shape.emplace_back(w_dst.dims()[0]);
-  DistMetaTensor t0(phi::make_ddim(t0_shape), t0_dist_attr);
+  DistMetaTensor t0(make_ddim(t0_shape), t0_dist_attr);
 
   // Step2: w_grad = einsum('...j, ...k -> jk', t0, out_grad_dst)
   // Step 2.1: Build Einsum Notation
@@ -322,22 +321,21 @@ SpmdInfo EmbeddingGradInferSpmd(const DistMetaTensor& x,
   w_grad = DistMetaTensor(w_grad.dims(), w_grad_dist_attr);
 
   VLOG(6) << "EmbeddingGradInferSpmd:\n"
-          << "Input x shape: [" << str_join(phi::vectorize(x.dims()))
+          << "Input x shape: [" << str_join(vectorize(x.dims()))
           << "], src_dims_mapping: [" << str_join(x.dist_attr().dims_mapping())
           << "], dst_dims_mapping: ["
           << str_join(x_dst.dist_attr().dims_mapping()) << "]\n"
-          << "Input weight shape: [" << str_join(phi::vectorize(weight.dims()))
+          << "Input weight shape: [" << str_join(vectorize(weight.dims()))
           << "], src_dims_mapping: ["
           << str_join(weight.dist_attr().dims_mapping())
           << "], dst_dims_mapping: ["
           << str_join(w_dst.dist_attr().dims_mapping()) << "]\n"
-          << "Input out_grad shape: ["
-          << str_join(phi::vectorize(out_grad.dims()))
+          << "Input out_grad shape: [" << str_join(vectorize(out_grad.dims()))
           << "], src_dims_mapping: ["
           << str_join(out_grad.dist_attr().dims_mapping())
           << "], dst_dims_mapping: ["
           << str_join(out_grad_dst.dist_attr().dims_mapping()) << "]\n"
-          << "Output w_grad shape: [" << str_join(phi::vectorize(w_grad.dims()))
+          << "Output w_grad shape: [" << str_join(vectorize(w_grad.dims()))
           << "], dims_mapping: [" << str_join(w_grad.dist_attr().dims_mapping())
           << "]\n\n";
 

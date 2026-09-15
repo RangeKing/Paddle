@@ -16,6 +16,7 @@
 #include "paddle/phi/backends/xpu/enforce_xpu.h"
 #include "paddle/phi/backends/xpu/xpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/xpu/xpu_api_wrapper.h"
 
 namespace phi {
@@ -27,6 +28,11 @@ void MatmulKernel(const Context& dev_ctx,
                   bool transpose_x,
                   bool transpose_y,
                   DenseTensor* out) {
+  if (x.numel() == 0 || y.numel() == 0) {
+    // input shape [1, 1, 5, 0], [1, 1, 0, 5], result shape is [1, 1, 5, 5]
+    Full<T, Context>(dev_ctx, out->dims(), 0, out);
+    return;
+  }
   using XPUType = typename XPUTypeTrait<T>::Type;
 
   dev_ctx.template Alloc<T>(out);
@@ -51,9 +57,9 @@ void MatmulWithFlattenKernel(const Context& dev_ctx,
                              DenseTensor* out) {
   using XPUType = typename XPUTypeTrait<T>::Type;
   const DenseTensor x_matrix =
-      x.dims().size() > 2 ? phi::ReshapeToMatrix(x, x_num_col_dims) : x;
+      x.dims().size() > 2 ? ReshapeToMatrix(x, x_num_col_dims) : x;
   const DenseTensor y_matrix =
-      y.dims().size() > 2 ? phi::ReshapeToMatrix(y, y_num_col_dims) : y;
+      y.dims().size() > 2 ? ReshapeToMatrix(y, y_num_col_dims) : y;
   dev_ctx.template Alloc<T>(out);
 
   const XPUType* x_ptr = reinterpret_cast<const XPUType*>(x_matrix.data<T>());
@@ -91,21 +97,21 @@ PD_REGISTER_KERNEL(matmul,
                    ALL_LAYOUT,
                    phi::MatmulKernel,
                    float,
-                   phi::dtype::bfloat16,
-                   phi::dtype::float16) {}
+                   phi::bfloat16,
+                   phi::float16) {}
 
 PD_REGISTER_KERNEL(matmul_with_flatten,
                    XPU,
                    ALL_LAYOUT,
                    phi::MatmulWithFlattenKernel,
                    float,
-                   phi::dtype::bfloat16,
-                   phi::dtype::float16) {}
+                   phi::bfloat16,
+                   phi::float16) {}
 
 PD_REGISTER_KERNEL(legacy_matmul,
                    XPU,
                    ALL_LAYOUT,
                    phi::LegacyMatmulKernel,
                    float,
-                   phi::dtype::bfloat16,
-                   phi::dtype::float16) {}
+                   phi::bfloat16,
+                   phi::float16) {}

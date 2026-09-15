@@ -14,16 +14,9 @@
 
 #pragma once
 
-#ifdef __NVCC__
-#include "cub/cub.cuh"
-#endif
-#ifdef __HIPCC__
-#include <hipcub/hipcub.hpp>
-namespace cub = hipcub;
-#endif
-
 #include "paddle/phi/backends/gpu/gpu_device_function.h"
 #include "paddle/phi/backends/gpu/gpu_primitives.h"
+#include "paddle/phi/kernels/funcs/cub.h"
 #include "paddle/phi/kernels/primitive/kernel_primitives.h"
 
 namespace phi {
@@ -52,12 +45,12 @@ __device__ __inline__ void CudaAtomicAddWithWarp(T* sum, T value) {
   typedef cub::WarpReduce<T> WarpReduce;
   typename WarpReduce::TempStorage temp_storage;
   value = WarpReduce(temp_storage).Sum(value);
-  if (cub::LaneId() == 0) phi::CudaAtomicAdd(sum, value);
+  if (cub::LaneId() == 0) CudaAtomicAdd(sum, value);
 }
 
 template <typename T, typename AccT, int VecSize, int Num>
-__device__ __forceinline__ void ThreadReduce(phi::Array<const T*, Num> arrs,
-                                             int size,
+__device__ __forceinline__ void ThreadReduce(Array<const T*, Num> arrs,
+                                             int64_t size,
                                              const int offset,
                                              AccT* out_mean,
                                              AccT* out_var) {
@@ -67,7 +60,7 @@ __device__ __forceinline__ void ThreadReduce(phi::Array<const T*, Num> arrs,
     y = arrs[1];
   }
   using VecT = kps::details::VectorType<T, VecSize>;
-  int tid = threadIdx.x;
+  int64_t tid = threadIdx.x;
   if (offset > 0) {
     x -= offset;
     if (Num == 2) {
@@ -92,7 +85,7 @@ __device__ __forceinline__ void ThreadReduce(phi::Array<const T*, Num> arrs,
       y += blockDim.x;
     }
   }
-  int remain = size % (VecSize * blockDim.x);
+  int64_t remain = size % (VecSize * static_cast<int64_t>(blockDim.x));
 
   T ins_x[VecSize];
   T ins_y[VecSize];
@@ -139,50 +132,47 @@ __device__ __forceinline__ void ThreadReduce(phi::Array<const T*, Num> arrs,
 
 template <typename T>
 __device__ __forceinline__ void ReduceMeanAndVar(
-    T* mean, T* var, T x_mean, T x_var, int size) {
-  const int nc = blockIdx.x;
+    T* mean, T* var, T x_mean, T x_var, int64_t size, int64_t ng) {
   x_mean = kps::details::BlockXReduce<T, kps::AddFunctor<T>>(
       x_mean, kps::AddFunctor<T>());
   x_var = kps::details::BlockXReduce<T, kps::AddFunctor<T>>(
       x_var, kps::AddFunctor<T>());
   __syncthreads();
   if (threadIdx.x == 0) {
-    mean[nc] = x_mean / size;
-    var[nc] = x_var / size;
+    mean[ng] = x_mean / size;
+    var[ng] = x_var / size;
   }
 }
 
 template <typename T, typename AccT>
-__global__ void ScalarGetMeanAndVarNCHW(const T* x,
-                                        AccT* mean,
-                                        AccT* var,
-                                        int size) {
-  int i = blockIdx.x;
-  AccT x_mean = static_cast<AccT>(0);
-  AccT x_var = static_cast<AccT>(0);
-  for (int j = threadIdx.x; j < size; j += blockDim.x) {
-    AccT val;
-    val = static_cast<AccT>(x[i * size + j]);
-    x_mean += val;
-    x_var += val * val;
+__global__ void ScalarGetMeanAndVarNCHW(
+    const T* x, AccT* mean, AccT* var, int64_t size, int64_t total_groups) {
+  for (int64_t i = blockIdx.x; i < total_groups; i += gridDim.x) {
+    AccT x_mean = static_cast<AccT>(0);
+    AccT x_var = static_cast<AccT>(0);
+    for (int64_t j = threadIdx.x; j < size; j += blockDim.x) {
+      AccT val;
+      val = static_cast<AccT>(x[i * size + j]);
+      x_mean += val;
+      x_var += val * val;
+    }
+    ReduceMeanAndVar<AccT>(mean, var, x_mean, x_var, size, i);
   }
-  ReduceMeanAndVar<AccT>(mean, var, x_mean, x_var, size);
 }
 
 template <typename T, typename AccT, int VecSize>
-__global__ void VectorizedGetMeanAndVarNCHW(const T* x,
-                                            AccT* mean,
-                                            AccT* var,
-                                            int size) {
-  int i = blockIdx.x;
-  AccT x_mean = static_cast<AccT>(0);
-  AccT x_var = static_cast<AccT>(0);
-  x += i * size;
-  const int input_offset = ((uint64_t)x) % ALIGN_BYTES / sizeof(T);
-  phi::Array<const T*, 1> ins;
-  ins[0] = x;
-  ThreadReduce<T, AccT, VecSize, 1>(ins, size, input_offset, &x_mean, &x_var);
-  ReduceMeanAndVar<AccT>(mean, var, x_mean, x_var, size);
+__global__ void VectorizedGetMeanAndVarNCHW(
+    const T* x, AccT* mean, AccT* var, int64_t size, int64_t total_groups) {
+  for (int64_t i = blockIdx.x; i < total_groups; i += gridDim.x) {
+    AccT x_mean = static_cast<AccT>(0);
+    AccT x_var = static_cast<AccT>(0);
+    x += i * size;
+    const int input_offset = ((uint64_t)x) % ALIGN_BYTES / sizeof(T);
+    Array<const T*, 1> ins;
+    ins[0] = x;
+    ThreadReduce<T, AccT, VecSize, 1>(ins, size, input_offset, &x_mean, &x_var);
+    ReduceMeanAndVar<AccT>(mean, var, x_mean, x_var, size, i);
+  }
 }
 
 }  // namespace phi

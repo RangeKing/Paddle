@@ -13,14 +13,13 @@
 // limitations under the License.
 
 #pragma once
+#include "paddle/phi/kernels/gpu/cvm_kernel.h"
 #include "paddle/phi/backends/gpu/gpu_primitives.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/funcs/eigen/common.h"
 #include "paddle/phi/kernels/impl/cvm_kernel_impl.h"
 
 namespace phi {
-
-using phi::PADDLE_CUDA_NUM_THREADS;
 
 template <typename T>
 __global__ void CvmComputeKernel(const bool use_cvm,

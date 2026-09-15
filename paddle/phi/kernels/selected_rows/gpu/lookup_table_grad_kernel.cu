@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include "paddle/phi/backends/gpu/gpu_primitives.h"
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/common/memory_utils.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/core/selected_rows.h"
@@ -31,26 +30,27 @@ __global__ void LookupTableGrad(T *table,
                                 const int64_t K,
                                 const int64_t D) {
   int idx = threadIdx.x;
-  int idy = blockIdx.x + threadIdx.y * GridDimX;
+  int64_t idy = static_cast<int64_t>(blockIdx.x) +
+                static_cast<int64_t>(threadIdx.y) * GridDimX;
 
   while (idy < K) {
     int64_t id = ids[idy];
     PADDLE_ENFORCE(
         id >= 0,
-        "Variable value (input) of OP(fluid.layers.embedding) "
+        "Variable value (input) of OP(lookup_table_grad) "
         "expected >= 0 and < %ld, but got %ld. Please check input value.",
         N,
         id);
     PADDLE_ENFORCE(
         id < N,
-        "Variable value (input) of OP(fluid.layers.embedding) "
+        "Variable value (input) of OP(lookup_table_grad) "
         "expected >= 0 and < %ld, but got %ld. Please check input value.",
         N,
         id);
     const T *out = output + idy * D;
     T *tab = table + id * D;
     for (int i = idx; i < D; i += BlockDimX) {
-      phi::CudaAtomicAdd(&tab[i], out[i]);
+      CudaAtomicAdd(&tab[i], out[i]);
     }
     idy += BlockDimY * GridDimX;
   }
@@ -83,14 +83,14 @@ void LookupTableGradCUDAKernel(
   auto d_output_t = &out_grad;
   auto d_table_t = w_grad;
 
-  int N = d_table_t->dims()[0];
-  int D = d_table_t->dims()[1];
-  int K = ids_t->numel();
+  int64_t N = d_table_t->dims()[0];
+  int64_t D = d_table_t->dims()[1];
+  int64_t K = ids_t->numel();
   const int64_t *ids = ids_t->data<int64_t>();
   const T *d_output = d_output_t->data<T>();
   T *d_table = dev_ctx.template Alloc<T>(d_table_t);
 
-  auto t = phi::EigenVector<T>::Flatten(*d_table_t);
+  auto t = EigenVector<T>::Flatten(*d_table_t);
   t.device(*dev_ctx.eigen_device()) = t.constant(static_cast<T>(0));
 
 #ifdef PADDLE_WITH_HIP
@@ -141,7 +141,7 @@ void LookupTableSparseGradCUDAKernel(
 
   auto stream = dev_ctx.stream();
   // copy GPU memory to CPU pinned memory
-  phi::Vector<int64_t> new_rows;
+  Vector<int64_t> new_rows;
   new_rows.resize(ids_num);
   auto gpu_place = dev_ctx.GetPlace();
 
@@ -190,7 +190,7 @@ PD_REGISTER_KERNEL(lookup_table_grad_sr,
                    phi::sr::LookupTableGradCUDAKernel,
                    float,
                    double,
-                   phi::dtype::float16) {}
+                   phi::float16) {}
 
 PD_REGISTER_KERNEL(lookup_table_sparse_grad_sr,
                    GPU,
@@ -198,4 +198,4 @@ PD_REGISTER_KERNEL(lookup_table_sparse_grad_sr,
                    phi::sr::LookupTableSparseGradCUDAKernel,
                    float,
                    double,
-                   phi::dtype::float16) {}
+                   phi::float16) {}

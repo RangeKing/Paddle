@@ -22,6 +22,7 @@
 #include "paddle/phi/backends/cpu/cpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/cpu/graph_send_recv_funcs.h"
+#include "paddle/phi/kernels/full_kernel.h"
 
 namespace phi {
 
@@ -56,7 +57,7 @@ void GraphSendRecvCpuLoop(const int& input_size,
     for (int i = 0; i < input_size; ++i) {
       if (*(dst_count + i) == 0) continue;
       auto dst_slice = dst->Slice(i, i + 1);
-      auto eigen_dst = phi::EigenVector<T>::Flatten(dst_slice);
+      auto eigen_dst = EigenVector<T>::Flatten(dst_slice);
       eigen_dst = eigen_dst / static_cast<T>(*(dst_count + i));
     }
   } else if (reduce_op == "MIN" || reduce_op == "MAX") {
@@ -78,7 +79,7 @@ void GraphSendRecvCpuLoop(const int& input_size,
 }
 
 template <typename Context, typename T, typename IndexT>
-void GraphSendRecvOpKernelLaunchHelper(const Context& ctx,
+void GraphSendRecvOpKernelLaunchHelper(const Context& dev_ctx,
                                        const DenseTensor& x,
                                        const DenseTensor& src_index,
                                        const DenseTensor& dst_index,
@@ -86,7 +87,10 @@ void GraphSendRecvOpKernelLaunchHelper(const Context& ctx,
                                        int64_t out_size,
                                        DenseTensor* out,
                                        DenseTensor* dst_count = nullptr) {
-  const int& index_size = src_index.dims()[0];  // NOLINT
+  // TODO(large-tensor): downstream functors may still use int; guard until
+  // upgraded.
+  const int64_t& index_size = src_index.dims()[0];
+  // NOLINT
 
   const auto& src_dims = x.dims();
   int64_t memset_size = 1;
@@ -97,18 +101,18 @@ void GraphSendRecvOpKernelLaunchHelper(const Context& ctx,
     }
   } else {
     // Set out dim following out_size.
-    std::vector<int64_t> dims_ = common::vectorize(src_dims);
+    std::vector<int64_t> dims_ = vectorize(src_dims);
     if (!dims_.empty()) {
       dims_[0] = out_size;
     }
-    out->Resize(common::make_ddim(dims_));
+    out->Resize(dims_);
     memset_size = out_size;
     for (int i = 1; i < src_dims.size(); ++i) {
       memset_size *= src_dims[i];
     }
   }
 
-  ctx.template Alloc<T>(out);
+  dev_ctx.template Alloc<T>(out);
   T* p_output = out->data<T>();
   const size_t& memset_bytes = memset_size * sizeof(T);
   memset(p_output, 0, memset_bytes);
@@ -129,7 +133,7 @@ void GraphSendRecvOpKernelLaunchHelper(const Context& ctx,
   } else if (reduce_op == "MEAN") {
     int64_t input_size = out_size <= 0 ? src_dims[0] : out_size;
     dst_count->Resize({input_size});
-    ctx.template Alloc<int>(dst_count);
+    dev_ctx.template Alloc<int>(dst_count);
     int* p_dst_count = dst_count->data<int>();
     memset(p_dst_count, 0, input_size * sizeof(int));
     GraphSendRecvCpuLoop<T, IndexT, GraphSendRecvSumFunctor<T>>(input_size,
@@ -144,7 +148,7 @@ void GraphSendRecvOpKernelLaunchHelper(const Context& ctx,
 }
 
 template <typename T, typename Context>
-void SendURecvKernel(const Context& ctx,
+void SendURecvKernel(const Context& dev_ctx,
                      const DenseTensor& x,
                      const DenseTensor& src_index,
                      const DenseTensor& dst_index,
@@ -154,8 +158,25 @@ void SendURecvKernel(const Context& ctx,
                      DenseTensor* dst_count) {
   auto index_type = src_index.dtype();
   auto& out_size_data = out_size.GetData();
-  if (index_type == phi::DataType::INT32) {
-    GraphSendRecvOpKernelLaunchHelper<Context, T, int32_t>(ctx,
+
+  if (x.numel() == 0 || src_index.numel() == 0 || dst_index.numel() == 0) {
+    if (out_size_data[0] <= 0) {
+      out->Resize(x.dims());
+    } else {
+      out->Resize(out_size_data);
+    }
+    if (reduce_op == "MEAN") {
+      int64_t input_size =
+          out_size_data[0] <= 0 ? x.dims()[0] : out_size_data[0];
+      dst_count->Resize({input_size});
+    }
+    Full<T, Context>(dev_ctx, out->dims(), 0, out);
+    Full<int32_t, Context>(dev_ctx, dst_count->dims(), 0, dst_count);
+    return;
+  }
+
+  if (index_type == DataType::INT32) {
+    GraphSendRecvOpKernelLaunchHelper<Context, T, int32_t>(dev_ctx,
                                                            x,
                                                            src_index,
                                                            dst_index,
@@ -163,8 +184,8 @@ void SendURecvKernel(const Context& ctx,
                                                            out_size_data[0],
                                                            out,
                                                            dst_count);
-  } else if (index_type == phi::DataType::INT64) {
-    GraphSendRecvOpKernelLaunchHelper<Context, T, int64_t>(ctx,
+  } else if (index_type == DataType::INT64) {
+    GraphSendRecvOpKernelLaunchHelper<Context, T, int64_t>(dev_ctx,
                                                            x,
                                                            src_index,
                                                            dst_index,

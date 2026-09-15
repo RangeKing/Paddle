@@ -31,7 +31,7 @@ class QAT(Quantization):
         config(QuantConfig): Quantization configuration
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> from paddle.quantization import QAT, QuantConfig
             >>> from paddle.quantization.quanters import FakeQuanterWithAbsMaxObserver
@@ -57,7 +57,7 @@ class QAT(Quantization):
         Return: The prepared model for quantization-aware training.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> from paddle.quantization import QAT, QuantConfig
                 >>> from paddle.quantization.quanters import FakeQuanterWithAbsMaxObserver
@@ -81,7 +81,7 @@ class QAT(Quantization):
                     )
                     (2): ObserveWrapper(
                       (_observer): FakeQuanterWithAbsMaxObserverLayer()
-                      (_observed): MaxPool2D(kernel_size=2, stride=2, padding=0)
+                      (_observed): MaxPool2D(kernel_size=2, stride=2, padding=0, dilation=1)
                     )
                     (3): QuantedConv2D(
                       (weight_quanter): FakeQuanterWithAbsMaxObserverLayer()
@@ -93,7 +93,7 @@ class QAT(Quantization):
                     )
                     (5): ObserveWrapper(
                       (_observer): FakeQuanterWithAbsMaxObserverLayer()
-                      (_observed): MaxPool2D(kernel_size=2, stride=2, padding=0)
+                      (_observed): MaxPool2D(kernel_size=2, stride=2, padding=0, dilation=1)
                     )
                   )
                   (fc): Sequential(
@@ -112,9 +112,9 @@ class QAT(Quantization):
                   )
                 )
         """
-        assert (
-            model.training
-        ), "Quantization-Aware Training should work on training models. Please set training mode by model.train()."
+        assert model.training, (
+            "Quantization-Aware Training should work on training models. Please set training mode by model.train()."
+        )
         _model = model if inplace else copy.deepcopy(model)
         self._config._specify(_model)
         self._convert_to_quant_layers(_model, self._config)

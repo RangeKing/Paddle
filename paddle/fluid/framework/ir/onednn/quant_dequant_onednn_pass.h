@@ -22,10 +22,10 @@ namespace paddle {
 namespace framework {
 namespace ir {
 
-class QuantDequantMkldnnPass : public FusePassBase {
+class QuantDequantOnednnPass : public FusePassBase {
  public:
-  QuantDequantMkldnnPass() = default;
-  virtual ~QuantDequantMkldnnPass() {}
+  QuantDequantOnednnPass() = default;
+  virtual ~QuantDequantOnednnPass() {}
 
  protected:
   void ApplyImpl(ir::Graph* graph) const override;
@@ -66,7 +66,7 @@ class QuantDequantMkldnnPass : public FusePassBase {
       const;
 
   void ConvertFromINT8ToFP32(const std::vector<float>& scales,
-                             phi::DenseTensor* weight_tensor,
+                             DenseTensor* weight_tensor,
                              int8_t* int8_weight_data,
                              float* fp32_weight_data,
                              const std::string& weight_var_name) const;
@@ -106,7 +106,7 @@ class QuantDequantMkldnnPass : public FusePassBase {
                     Scope* scope,
                     const std::string& weight_name) const;
 
-  void TransposeWeight(phi::DenseTensor* input) const;
+  void TransposeWeight(DenseTensor* input) const;
 
   void DequantizeOpWeights(
       Node* op_node,

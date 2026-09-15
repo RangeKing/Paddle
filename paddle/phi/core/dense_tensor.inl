@@ -24,31 +24,31 @@ limitations under the License. */
 public:
 /* @jim19930609: Remove dependency on protobuf after Tensor Unification.
  */
-explicit DenseTensor(phi::DataType dtype);
+explicit DenseTensor(DataType dtype);
 
 inline bool IsInitialized() const { return holder_ != nullptr; }
 
 template <typename T>
-T* mutable_data(const phi::Place& place, size_t requested_size = 0);
+T* mutable_data(const Place& place, size_t requested_size = 0);
 
 template <typename T>
 T* mutable_data(const DDim& dims,
-                const phi::Place& place,
+                const Place& place,
                 size_t requested_size = 0);
 
-void* mutable_data(const phi::Place& place,
-                   phi::DataType type,
+void* mutable_data(const Place& place,
+                   DataType type,
                    size_t requested_size = 0);
 
-void* mutable_data(const phi::Place& place, size_t requested_size = 0);
+void* mutable_data(const Place& place, size_t requested_size = 0);
 
-void* mutable_data(const phi::Place& place,
-                   phi::DataType type,
+void* mutable_data(const Place& place,
+                   DataType type,
                    const phi::Stream& stream);
 
 /* @jim19930609: Remove dependency on protobuf after Tensor Unification.
  */
-phi::DataType type() const;
+DataType type() const;
 
 // memory size returns the holding memory size in byte.
 size_t memory_size() const;
@@ -67,8 +67,6 @@ bool IsSharedBufferWith(const DenseTensor& src) const {
   return holder_ && holder_ == src.Holder();
 }
 
-const std::shared_ptr<phi::Allocation>& Holder() const { return holder_; }
-
 void set_offset(size_t offset) { meta_.offset = offset; }
 size_t offset() const { return meta_.offset; }
 
@@ -79,14 +77,11 @@ std::shared_ptr<phi::Allocation> MoveMemoryHolder() {
 void ResetHolder(const std::shared_ptr<phi::Allocation>& holder);
 
 void ResetHolderWithType(const std::shared_ptr<phi::Allocation>& holder,
-                         phi::DataType type);
+                         DataType type);
 
-void set_type(phi::DataType type);
+void set_type(DataType type);
 
 InplaceVersion& InplaceVersionCounter() { return *inplace_version_counter_; }
-
-/*! The internal of two tensors share the same memory block. */
-DenseTensor& ShareDataWith(const DenseTensor& src);
 
 /*! The internal of two tensors share the same memory block without checking the memory size for dist-tensor. */
 DenseTensor& ShareDataNoCheckWith(const DenseTensor& src);
@@ -99,15 +94,6 @@ DenseTensor Slice(int64_t begin_idx, int64_t end_idx) const;
 std::vector<DenseTensor> Split(int64_t split_size, int64_t axis) const;
 
 std::vector<DenseTensor> Chunk(int64_t chunks, int64_t axis) const;
-
-#ifdef PADDLE_WITH_DNNL
-
-public:
-const dnnl::memory::desc& mem_desc() const;
-
-void set_mem_desc(const dnnl::memory::desc& mem_desc);
-
-#endif
 
 /* ------------------------------ */
 /*   From phi::DenseTensor    */

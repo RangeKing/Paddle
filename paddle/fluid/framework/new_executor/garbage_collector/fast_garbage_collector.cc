@@ -32,8 +32,8 @@ void InterpreterCoreFastGarbageCollector::Add(Variable* var) {
     return;
   }
 
-  if (var->IsType<phi::DenseTensor>()) {
-    Add(var->GetMutable<phi::DenseTensor>()->MoveMemoryHolder());
+  if (var->IsType<DenseTensor>()) {
+    Add(var->GetMutable<DenseTensor>()->MoveMemoryHolder());
   } else if (
       var->IsType<
           operators::reader::
@@ -50,6 +50,7 @@ void InterpreterCoreFastGarbageCollector::Add(Variable* var) {
     for (auto& t : *tensor_arr) {
       Add(t.MoveMemoryHolder());
     }
+    tensor_arr->clear();
   } else if (var->IsType<phi::SparseCooTensor>()) {
     Add(var->GetMutable<phi::SparseCooTensor>()
             ->mutable_indices()

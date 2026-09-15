@@ -18,6 +18,7 @@
 
 #include "paddle/fluid/framework/new_executor/instruction/instruction_base.h"
 #include "paddle/fluid/framework/new_executor/interpreter/execution_config.h"
+#include "paddle/fluid/framework/new_executor/new_executor_defs.h"
 
 namespace ir {
 class Operation;
@@ -30,7 +31,7 @@ class Value;
 class PirInterpreter;
 class ValueExecutionInfo;
 
-/// The execute semantics of while op ['output' = while_op('cond', 'intput')]
+/// The execute semantics of while op ['output' = while_op('cond', 'input')]
 /// is:
 ///   'output' = 'input';
 ///   while('cond') {
@@ -42,8 +43,8 @@ class WhileInstruction : public InstructionBase {
 
  public:
   WhileInstruction(size_t id,
-                   const phi::Place& place,
-                   ::pir::Operation* op,
+                   const Place& place,
+                   pir::Operation* op,
                    ValueExecutionInfo* parent_exe_info,
                    interpreter::ExecutionConfig execution_config);
 
@@ -51,7 +52,7 @@ class WhileInstruction : public InstructionBase {
 
   const std::string& Name() const override { return name_; }
 
-  ::pir::Operation* Operation() const override { return op_; }
+  pir::Operation* Operation() const override { return op_; }
 
   PirInterpreter* BodyInterpreter() const { return body_inter_.get(); }
 
@@ -84,9 +85,9 @@ class WhileInstruction : public InstructionBase {
   std::unique_ptr<PirInterpreter> body_inter_;
   std::set<std::string> external_input_names_;
 
-  ::pir::Block* body_block_;
+  pir::Block* body_block_;
 
-  ::pir::Operation* op_;
+  pir::Operation* op_;
 
   CheckGCEarlyHook check_gc_early_;
 };

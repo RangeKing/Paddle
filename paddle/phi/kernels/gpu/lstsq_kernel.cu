@@ -12,14 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef PADDLE_WITH_HIP  // HIP not support cusolver
-
 #include <math.h>
 #include <algorithm>
 #include <complex>
 
+#include "paddle/common/enforce.h"
+#include "paddle/phi/backends/gpu/cuda/cudnn_workspace_helper.h"
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/slice.h"
 #include "paddle/phi/kernels/impl/lstsq_kernel_impl.h"
 #include "paddle/phi/kernels/impl/qr_kernel_impl.h"
@@ -28,7 +29,6 @@
 #include "paddle/phi/kernels/matmul_kernel.h"
 #include "paddle/phi/kernels/transpose_kernel.h"
 #include "paddle/phi/kernels/triangular_solve_kernel.h"
-
 namespace phi {
 
 enum class LapackDriverType : int { Gels, Gelsd, Gelsy, Gelss };
@@ -43,45 +43,65 @@ void LstsqKernel(const Context& dev_ctx,
                  DenseTensor* residuals,
                  DenseTensor* rank,
                  DenseTensor* singular_values) {
+  if (x.numel() == 0 || y.numel() == 0) {
+    if (solution) Full<T, Context>(dev_ctx, solution->dims(), 0, solution);
+    if (rank) Full<int64_t, Context>(dev_ctx, rank->dims(), 0, rank);
+    if (residuals)
+      GetResidualsTensor<Context, T>(
+          dev_ctx, x, y, driver_string, solution, residuals, rank);
+    if (singular_values)
+      Full<T, Context>(dev_ctx, singular_values->dims(), 0, singular_values);
+    return;
+  }
+
+  CUDNN_ENFORCE_TENSOR_SIZE_SUPPORTED(x);
+  CUDNN_ENFORCE_TENSOR_SIZE_SUPPORTED(y);
+
   auto x_dims = x.dims();
   auto y_dims = y.dims();
   int dim_size = x_dims.size();
-  int m = x_dims[dim_size - 2];
-  int n = x_dims[dim_size - 1];
-  int nrhs = y_dims[dim_size - 1];
+  const int64_t m_64 = x_dims[dim_size - 2];
+  const int64_t n_64 = x_dims[dim_size - 1];
+  const int64_t nrhs_64 = y_dims[dim_size - 1];
+  PADDLE_ENFORCE_LE_INT_MAX(m_64, "lstsq m");
+  PADDLE_ENFORCE_LE_INT_MAX(n_64, "lstsq n");
+  PADDLE_ENFORCE_LE_INT_MAX(nrhs_64, "lstsq nrhs");
+  const int m = static_cast<int>(m_64);
+  const int n = static_cast<int>(n_64);
+  const int nrhs = static_cast<int>(nrhs_64);
   int min_mn = std::min(m, n);
   int max_mn = std::max(m, n);
   int k = min_mn;
 
-  int x_stride = phi::GetMatrixStride(x_dims);
-  int y_stride = phi::GetMatrixStride(y_dims);
+  int x_stride = GetMatrixStride(x_dims);
+  int y_stride = GetMatrixStride(y_dims);
   int tau_stride = min_mn;
-  int batch_count = phi::GetBatchCount(x_dims);
+  int batch_count = GetBatchCount(x_dims);
 
   T rcond = rcond_scalar.to<T>();
 
-  DenseTensor* new_x = new DenseTensor();
-  new_x->Resize(common::make_ddim({batch_count, m, n}));
-  dev_ctx.template Alloc<T>(new_x);
-  phi::Copy<Context>(dev_ctx, x, dev_ctx.GetPlace(), true, new_x);
+  DenseTensor new_x;
+  new_x.Resize({batch_count, m, n});
+  dev_ctx.template Alloc<T>(&new_x);
+  Copy<Context>(dev_ctx, x, dev_ctx.GetPlace(), true, &new_x);
 
-  DenseTensor* new_y = new DenseTensor();
-  new_y->Resize(common::make_ddim({batch_count, m, nrhs}));
-  dev_ctx.template Alloc<T>(new_y);
-  phi::Copy<Context>(dev_ctx, y, dev_ctx.GetPlace(), true, new_y);
+  DenseTensor new_y;
+  new_y.Resize({batch_count, m, nrhs});
+  dev_ctx.template Alloc<T>(&new_y);
+  Copy<Context>(dev_ctx, y, dev_ctx.GetPlace(), true, &new_y);
 
   // Prepare tau
-  auto tau_dims_vec = common::vectorize<int>(x_dims);
+  auto tau_dims_vec = vectorize<int>(x_dims);
   tau_dims_vec.pop_back();
   tau_dims_vec[tau_dims_vec.size() - 1] = min_mn;
 
-  DenseTensor* tau = new DenseTensor();
-  tau->Resize(common::make_ddim(tau_dims_vec));
-  auto tau_data = dev_ctx.template Alloc<T>(tau);
+  DenseTensor tau;
+  tau.Resize(tau_dims_vec);
+  auto tau_data = dev_ctx.template Alloc<T>(&tau);
 
   if (m >= n) {
-    DenseTensor tmp_x = phi::TransposeLast2Dim<T>(dev_ctx, *new_x);
-    DenseTensor tmp_y = phi::TransposeLast2Dim<T>(dev_ctx, *new_y);
+    DenseTensor tmp_x = TransposeLast2Dim<T>(dev_ctx, new_x);
+    DenseTensor tmp_y = TransposeLast2Dim<T>(dev_ctx, new_y);
     auto x_data = tmp_x.data<T>();
     auto y_data = tmp_y.data<T>();
 
@@ -104,41 +124,41 @@ void LstsqKernel(const Context& dev_ctx,
                              y_data,
                              y_stride);
 
-    DenseTensor trans_r = phi::TransposeLast2Dim<T>(dev_ctx, tmp_x);
+    DenseTensor trans_r = TransposeLast2Dim<T>(dev_ctx, tmp_x);
     DenseTensor slice_r =
-        phi::funcs::Slice<T>(dev_ctx, trans_r, {-2}, {0}, {min_mn});
-    DenseTensor* res_r = new DenseTensor();
-    res_r->Resize(common::make_ddim({batch_count, min_mn, min_mn}));
-    dev_ctx.template Alloc<T>(res_r);
-    phi::TrilTriuKernel<T>(dev_ctx, slice_r, 0, false, res_r);
+        funcs::Slice<T>(dev_ctx, trans_r, {-2}, {0}, {min_mn});
+    DenseTensor res_r;
+    res_r.Resize({batch_count, min_mn, min_mn});
+    dev_ctx.template Alloc<T>(&res_r);
+    TrilTriuKernel<T>(dev_ctx, slice_r, 0, false, &res_r);
 
-    DenseTensor trans_y = phi::TransposeLast2Dim<T>(dev_ctx, tmp_y);
+    DenseTensor trans_y = TransposeLast2Dim<T>(dev_ctx, tmp_y);
     DenseTensor slice_y =
-        phi::funcs::Slice<T>(dev_ctx, trans_y, {-2}, {0}, {min_mn});
+        funcs::Slice<T>(dev_ctx, trans_y, {-2}, {0}, {min_mn});
 
     // Step 3, solve R X = Y
-    phi::TriangularSolveKernel<T, Context>(
-        dev_ctx, *res_r, slice_y, true, false, false, solution);
+    TriangularSolveKernel<T, Context>(
+        dev_ctx, res_r, slice_y, true, false, false, solution);
 
   } else {
-    auto x_data = dev_ctx.template Alloc<T>(new_x);
-    auto y_data = dev_ctx.template Alloc<T>(new_y);
+    auto x_data = dev_ctx.template Alloc<T>(&new_x);
+    auto y_data = dev_ctx.template Alloc<T>(&new_y);
 
     // step 1, compute QR factorization using geqrf
     BatchedGeqrf<Context, T>(
         dev_ctx, batch_count, n, m, x_data, n, tau_data, x_stride, tau_stride);
 
     // Step 2, solve R^H Z = Y
-    DenseTensor trans_r = phi::TransposeLast2Dim<T>(dev_ctx, *new_x);
+    DenseTensor trans_r = TransposeLast2Dim<T>(dev_ctx, new_x);
     DenseTensor slice_r =
-        phi::funcs::Slice<T>(dev_ctx, trans_r, {-2}, {0}, {min_mn});
-    DenseTensor* res_r = new DenseTensor();
-    res_r->Resize(common::make_ddim({batch_count, min_mn, min_mn}));
-    dev_ctx.template Alloc<T>(res_r);
-    phi::TrilTriuKernel<T>(dev_ctx, slice_r, 0, false, res_r);
+        funcs::Slice<T>(dev_ctx, trans_r, {-2}, {0}, {min_mn});
+    DenseTensor res_r;
+    res_r.Resize({batch_count, min_mn, min_mn});
+    dev_ctx.template Alloc<T>(&res_r);
+    TrilTriuKernel<T>(dev_ctx, slice_r, 0, false, &res_r);
 
-    phi::TriangularSolveKernel<T, Context>(
-        dev_ctx, *res_r, *new_y, true, true, false, solution);
+    TriangularSolveKernel<T, Context>(
+        dev_ctx, res_r, new_y, true, true, false, solution);
 
     // Step 3, X <- Q Z
     BatchedOrgqr<Context, T>(dev_ctx,
@@ -152,26 +172,17 @@ void LstsqKernel(const Context& dev_ctx,
                              x_stride,
                              tau_stride);
 
-    DenseTensor trans_q = phi::TransposeLast2Dim<T>(dev_ctx, *new_x);
-    DenseTensor slice_q =
-        phi::funcs::Slice<T>(dev_ctx, trans_q, {-1}, {0}, {m});
+    DenseTensor trans_q = TransposeLast2Dim<T>(dev_ctx, new_x);
+    DenseTensor slice_q = funcs::Slice<T>(dev_ctx, trans_q, {-1}, {0}, {m});
     DenseTensor solu_tensor =
-        phi::Matmul<T>(dev_ctx, slice_q, *solution, false, false);
-    phi::Copy<Context>(
-        dev_ctx, solu_tensor, dev_ctx.GetPlace(), true, solution);
+        Matmul<T>(dev_ctx, slice_q, *solution, false, false);
+    Copy<Context>(dev_ctx, solu_tensor, dev_ctx.GetPlace(), true, solution);
   }
-
-  if (batch_count == 1) solution->Resize(common::make_ddim({n, nrhs}));
-  GetResidualsTensor<Context, T>(dev_ctx, x, y, solution, residuals);
+  if (batch_count == 1) solution->Resize({n, nrhs});
+  GetResidualsTensor<Context, T>(
+      dev_ctx, x, y, driver_string, solution, residuals, rank);
 }
 
 }  // namespace phi
 
-PD_REGISTER_KERNEL(lstsq,  // cuda_only
-                   GPU,
-                   ALL_LAYOUT,
-                   phi::LstsqKernel,
-                   float,
-                   double) {}
-
-#endif  // not PADDLE_WITH_HIP
+PD_REGISTER_KERNEL(lstsq, GPU, ALL_LAYOUT, phi::LstsqKernel, float, double) {}

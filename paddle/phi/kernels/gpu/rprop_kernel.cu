@@ -31,7 +31,7 @@ __global__ void RpropKernelGPUImpl(const T* param,
                                    const MT* master_param,
                                    const T* learning_rate_range,
                                    const T* etas,
-                                   int num,
+                                   int64_t num,
                                    T* param_out,
                                    T* prev_out,
                                    T* learning_rate_out,
@@ -44,7 +44,7 @@ __global__ void RpropKernelGPUImpl(const T* param,
   MT one_data = static_cast<MT>(1);
   MT negative_one_data = static_cast<MT>(-1);
 
-  CUDA_KERNEL_LOOP(i, num) {
+  CUDA_KERNEL_LOOP_TYPE(i, num, int64_t) {
     MT param_data = master_param ? master_param[i] : static_cast<MT>(param[i]);
     MT grad_data = static_cast<MT>(grad[i]);
     MT prev_data = static_cast<MT>(prev[i]);
@@ -91,7 +91,7 @@ void RpropKernel(const Context& dev_ctx,
                  const DenseTensor& grad,
                  const DenseTensor& prev,
                  const DenseTensor& learning_rate,
-                 const paddle::optional<DenseTensor>& master_param,
+                 const optional<DenseTensor>& master_param,
                  const DenseTensor& learning_rate_range,
                  const DenseTensor& etas,
                  bool multi_precision,
@@ -99,17 +99,17 @@ void RpropKernel(const Context& dev_ctx,
                  DenseTensor* prev_out,
                  DenseTensor* learning_rate_out,
                  DenseTensor* master_param_out) {
-  using MPDType = typename phi::dtype::MPTypeTrait<T>::Type;
-  const MPDType* master_in_data =
-      multi_precision ? master_param->data<MPDType>() : nullptr;
-  MPDType* master_out_data =
-      multi_precision ? dev_ctx.template Alloc<MPDType>(master_param_out)
-                      : nullptr;
+  using MT = typename MPTypeTrait<T>::Type;
+  const MT* master_in_data =
+      multi_precision ? master_param->data<MT>() : nullptr;
+  MT* master_out_data =
+      multi_precision ? dev_ctx.template Alloc<MT>(master_param_out) : nullptr;
 
   int block = 512;
-  int grid = (param.numel() + block - 1) / block;
+  int64_t grid_max = dev_ctx.GetCUDAMaxGridDimSize()[0];
+  int grid = std::min((param.numel() + block - 1) / block, grid_max);
 
-  RpropKernelGPUImpl<T, MPDType><<<grid, block, 0, dev_ctx.stream()>>>(
+  RpropKernelGPUImpl<T, MT><<<grid, block, 0, dev_ctx.stream()>>>(
       param.data<T>(),
       grad.data<T>(),
       prev.data<T>(),
@@ -131,8 +131,8 @@ PD_REGISTER_KERNEL(rprop,
                    GPU,
                    ALL_LAYOUT,
                    phi::RpropKernel,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
+                   phi::float16,
+                   phi::bfloat16,
                    float,
                    double) {
   if (kernel_key.dtype() == phi::DataType::FLOAT16 ||
@@ -143,13 +143,8 @@ PD_REGISTER_KERNEL(rprop,
 #endif
 
 #ifdef PADDLE_WITH_HIP
-PD_REGISTER_KERNEL(rprop,
-                   GPU,
-                   ALL_LAYOUT,
-                   phi::RpropKernel,
-                   phi::dtype::float16,
-                   float,
-                   double) {
+PD_REGISTER_KERNEL(
+    rprop, GPU, ALL_LAYOUT, phi::RpropKernel, phi::float16, float, double) {
   if (kernel_key.dtype() == phi::DataType::FLOAT16) {
     kernel->OutputAt(3).SetDataType(phi::DataType::FLOAT32);
   }

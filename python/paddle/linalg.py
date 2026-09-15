@@ -12,6 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from paddle import Tensor
+
 from .tensor import inverse as inv
 from .tensor.linalg import (
     cholesky,
@@ -20,7 +27,6 @@ from .tensor.linalg import (
     cond,
     corrcoef,
     cov,
-    cross,
     det,
     diagonal,
     eig,
@@ -31,7 +37,9 @@ from .tensor.linalg import (
     householder_product,
     lstsq,
     lu,
+    lu_solve,
     lu_unpack,
+    matmul,
     matrix_exp,
     matrix_norm,
     matrix_power,
@@ -70,6 +78,7 @@ __all__ = [
     'multi_dot',
     'matrix_rank',
     'matrix_transpose',
+    'matmul',
     'svd',
     'svdvals',
     'qr',
@@ -77,6 +86,7 @@ __all__ = [
     'pca_lowrank',
     'svd_lowrank',
     'lu',
+    'lu_solve',
     'lu_unpack',
     'matrix_exp',
     'matrix_power',
@@ -93,3 +103,32 @@ __all__ = [
     'fp8_fp8_half_gemm_fused',
     'diagonal',
 ]
+
+
+def cross(
+    input: Tensor,
+    other: Tensor,
+    *,
+    dim: int = -1,
+    out: Tensor | None = None,
+) -> Tensor:
+    """
+    Computes the cross product of two 3-dimensional vectors along the specified dimension.
+
+    Refer to :ref:`api_paddle_cross` for more detail.
+
+    Args:
+        input (Tensor): The first input tensor.
+        other (Tensor): The second input tensor.
+        dim (int, optional): The dimension along which to compute the cross product.
+            Default: -1, which means the last dimension.
+        out (Tensor, optional): The output tensor. Default: None.
+        name (str, optional): Name for the operation. For more information, please
+            refer to :ref:`api_guide_Name`. Default: None.
+
+    Returns:
+        Tensor: The cross product of ``input`` and ``other``.
+    """
+    import paddle
+
+    return paddle.cross(input, other, axis=dim, out=out)

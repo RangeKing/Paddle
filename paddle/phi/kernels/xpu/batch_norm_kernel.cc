@@ -26,8 +26,8 @@ void BatchNormKernel(const Context& dev_ctx,
                      const DenseTensor& x,
                      const DenseTensor& mean,
                      const DenseTensor& variance,
-                     const paddle::optional<DenseTensor>& scale,
-                     const paddle::optional<DenseTensor>& bias,
+                     const optional<DenseTensor>& scale,
+                     const optional<DenseTensor>& bias,
                      bool is_test,
                      float momentum,
                      float epsilon,
@@ -40,10 +40,22 @@ void BatchNormKernel(const Context& dev_ctx,
                      DenseTensor* saved_mean,
                      DenseTensor* saved_variance,
                      DenseTensor* reserve_space) {
+  if (x.numel() == 0) {
+    dev_ctx.template Alloc<T>(y);
+    if (mean_out) dev_ctx.template Alloc<T>(mean_out);
+    if (variance_out) dev_ctx.template Alloc<T>(variance_out);
+    if (saved_mean) dev_ctx.template Alloc<T>(saved_mean);
+    if (saved_variance) dev_ctx.template Alloc<T>(saved_variance);
+    if (reserve_space) {
+      reserve_space->Resize({0});
+      dev_ctx.template Alloc<T>(reserve_space);
+    }
+    return;
+  }
   using XPUType = typename XPUTypeTrait<T>::Type;
   bool test_mode = is_test && (!trainable_statistics);
   bool global_stats = test_mode || use_global_stats;
-  const auto data_layout = common::StringToDataLayout(data_layout_str);
+  const auto data_layout = StringToDataLayout(data_layout_str);
   PADDLE_ENFORCE_EQ(data_layout_str == "NCHW" || data_layout_str == "NHWC",
                     true,
                     common::errors::InvalidArgument(
@@ -60,7 +72,7 @@ void BatchNormKernel(const Context& dev_ctx,
           "But received: the size of input's dimensions is [%d]",
           x_dims.size()));
 
-  int N = -1, C = -1, H = -1, W = -1, D = -1;
+  int64_t N = -1, C = -1, H = -1, W = -1, D = -1;
   funcs::ExtractNCWHD(x_dims, data_layout, &N, &C, &H, &W, &D);
   N = (N == 0) ? 1 : N;
   C = (C == 0) ? 1 : C;
@@ -73,8 +85,8 @@ void BatchNormKernel(const Context& dev_ctx,
   auto* Scale = scale.get_ptr();
   auto* Bias = bias.get_ptr();
 
-  phi::DenseTensor new_scale;
-  phi::DenseTensor new_bias;
+  DenseTensor new_scale;
+  DenseTensor new_bias;
 
   if (Scale) {
     new_scale = scale.get();
@@ -98,7 +110,6 @@ void BatchNormKernel(const Context& dev_ctx,
   dev_ctx.template Alloc<float>(variance_out);
   dev_ctx.template Alloc<float>(saved_mean);
   dev_ctx.template Alloc<float>(saved_variance);
-
   PADDLE_ENFORCE_LE(
       x_dims.size(),
       5,
@@ -154,14 +165,11 @@ void BatchNormKernel(const Context& dev_ctx,
 
 }  // namespace phi
 
-PD_REGISTER_KERNEL(batch_norm,
-                   XPU,
-                   ALL_LAYOUT,
-                   phi::BatchNormKernel,
-                   float,
-                   phi::dtype::float16) {
+PD_REGISTER_KERNEL(
+    batch_norm, XPU, ALL_LAYOUT, phi::BatchNormKernel, float, phi::float16) {
   kernel->OutputAt(1).SetDataType(phi::DataType::FLOAT32);
   kernel->OutputAt(2).SetDataType(phi::DataType::FLOAT32);
   kernel->OutputAt(3).SetDataType(phi::DataType::FLOAT32);
   kernel->OutputAt(4).SetDataType(phi::DataType::FLOAT32);
+  kernel->OutputAt(5).SetDataType(phi::DataType::UINT8);
 }

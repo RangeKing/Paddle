@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import functools
 import warnings
-from typing import TYPE_CHECKING, Callable, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 import paddle
 from paddle.distribution.bernoulli import Bernoulli
@@ -40,6 +40,8 @@ from paddle.distribution.uniform import Uniform
 from paddle.framework import in_dynamic_mode
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from paddle import Tensor
 
     _T = TypeVar('_T')
@@ -66,7 +68,7 @@ def kl_divergence(p: Distribution, q: Distribution) -> Tensor:
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -97,13 +99,13 @@ def register_kl(
         cls_q (type[Distribution]): The Distribution type of Instance q. Subclass derived from ``Distribution``.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
             >>> @paddle.distribution.register_kl(paddle.distribution.Beta, paddle.distribution.Beta)
             >>> def kl_beta_beta():
-            ...     pass # insert implementation here
+            ...     pass  # insert implementation here
     """
     if not issubclass(cls_p, Distribution) or not issubclass(
         cls_q, Distribution

@@ -24,61 +24,63 @@ namespace distributed {
 struct CommStaticCheck {
   static void CheckRank(int rank, int world_size);
 
-  static void CheckPlace(const phi::DenseTensor& tensor,
-                         phi::AllocationType place);
+  static void CheckPlace(const DenseTensor& tensor, AllocationType place);
 
-  static void CheckPlace(const phi::DenseTensor& out_tensor,
-                         const phi::DenseTensor& in_tensor,
-                         phi::AllocationType place);
+  static void CheckPlace(const DenseTensor& out_tensor,
+                         const DenseTensor& in_tensor,
+                         AllocationType place);
 
-  static void CheckDataType(const phi::DenseTensor& out_tensor,
-                            const phi::DenseTensor& in_tensor);
+  static void CheckDataType(const DenseTensor& out_tensor,
+                            const DenseTensor& in_tensor);
 
-  static void CheckShape(const phi::DenseTensor& tensor);
+  static void CheckDataType(const std::vector<DenseTensor>& out_tensors,
+                            const std::vector<DenseTensor>& in_tensors);
 
-  static void CheckShape(const phi::DenseTensor& out_tensor,
-                         const phi::DenseTensor& in_tensor,
+  static void CheckShape(const DenseTensor& tensor);
+
+  static void CheckShape(const DenseTensor& out_tensor,
+                         const DenseTensor& in_tensor,
                          int out_size_factor,
                          int in_size_factor);
 
-  static void CheckShape(const phi::DenseTensor& out_tensor,
-                         const phi::DenseTensor& in_tensor,
+  static void CheckShape(const DenseTensor& out_tensor,
+                         const DenseTensor& in_tensor,
                          int dst_rank,
                          int cur_rank,
                          int world_size,
                          int out_size_factor,
                          int in_size_factor,
-                         phi::AllocationType place = phi::AllocationType::GPU);
+                         AllocationType place = AllocationType::GPU);
 
   // for p2p
-  static void CheckShape(const phi::DenseTensor& tensor,
+  static void CheckShape(const DenseTensor& tensor,
                          int rank,
                          int world_size,
-                         phi::AllocationType place = phi::AllocationType::GPU);
+                         AllocationType place = AllocationType::GPU);
 
   // for collective
-  static void SameShape(const phi::DenseTensor& out_tensor,
-                        const phi::DenseTensor& in_tensor,
+  static void SameShape(const DenseTensor& out_tensor,
+                        const DenseTensor& in_tensor,
                         int dst_rank,
                         int cur_rank,
                         int world_size,
-                        phi::AllocationType place = phi::AllocationType::GPU);
+                        AllocationType place = AllocationType::GPU);
 
-  static void ScatterLikeShape(
-      const phi::DenseTensor& out_tensor,
-      const phi::DenseTensor& in_tensor,
-      int dst_rank,
-      int cur_rank,
-      int world_size,
-      phi::AllocationType place = phi::AllocationType::GPU);
+  static void ScatterLikeShape(const DenseTensor& out_tensor,
+                               const DenseTensor& in_tensor,
+                               int dst_rank,
+                               int cur_rank,
+                               int world_size,
+                               AllocationType place = AllocationType::GPU);
 
-  static void GatherLikeShape(
-      const phi::DenseTensor& out_tensor,
-      const phi::DenseTensor& in_tensor,
-      int dst_rank,
-      int cur_rank,
-      int world_size,
-      phi::AllocationType place = phi::AllocationType::GPU);
+  static void GatherLikeShape(const DenseTensor& out_tensor,
+                              const DenseTensor& in_tensor,
+                              int dst_rank,
+                              int cur_rank,
+                              int world_size,
+                              AllocationType place = AllocationType::GPU);
+
+  static void CheckGatherShape(const phi::DenseTensor& tensor);
 };
 
 }  //  namespace distributed

@@ -98,7 +98,7 @@ class TEST_API Executor {
   // This API is very slow.
   void Run(const ProgramDesc& program,
            Scope* scope,
-           std::map<std::string, const phi::DenseTensor*>* feed_targets,
+           std::map<std::string, const DenseTensor*>* feed_targets,
            std::map<std::string, FetchType*>* fetch_targets,
            bool create_local_scope = true,
            bool create_vars = true,
@@ -109,7 +109,7 @@ class TEST_API Executor {
   void RunPreparedContext(
       ExecutorPrepareContext* ctx,
       Scope* scope,
-      std::map<std::string, const phi::DenseTensor*>* feed_targets,
+      std::map<std::string, const DenseTensor*>* feed_targets,
       std::map<std::string, FetchType*>* fetch_targets,
       bool create_local_scope = true,
       bool create_vars = true,
@@ -146,7 +146,7 @@ class TEST_API Executor {
                           bool create_vars = true,
                           bool keep_kids = false);
 
-  void EnableMKLDNN(const ProgramDesc& program);
+  void EnableONEDNN(const ProgramDesc& program);
 
   std::shared_ptr<TrainerBase> InitForDataset(
       const ProgramDesc& main_program,

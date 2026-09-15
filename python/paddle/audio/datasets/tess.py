@@ -51,23 +51,26 @@ class TESS(AudioClassificationDataset):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +TIMEOUT(60)
             >>> import paddle
 
-            >>> mode = 'dev'
-            >>> tess_dataset = paddle.audio.datasets.TESS(mode=mode,  # type: ignore[arg-type]
-            ...                                         feat_type='raw')
+            >>> tess_dataset = paddle.audio.datasets.TESS(
+            ...     mode='dev',
+            ...     feat_type='raw',
+            ... )
             >>> for idx in range(5):
             ...     audio, label = tess_dataset[idx]
             ...     # do something with audio, label
             ...     print(audio.shape, label)
             ...     # [audio_data_length] , label_id
 
-            >>> tess_dataset = paddle.audio.datasets.TESS(mode=mode,  # type: ignore[arg-type]
-            ...                                         feat_type='mfcc',
-            ...                                         n_mfcc=40)
+            >>> tess_dataset = paddle.audio.datasets.TESS(
+            ...     mode='dev',
+            ...     feat_type='mfcc',
+            ...     n_mfcc=40,
+            ... )
             >>> for idx in range(5):
             ...     audio, label = tess_dataset[idx]
             ...     # do something with mfcc feature, label
@@ -106,12 +109,12 @@ class TESS(AudioClassificationDataset):
         archive: dict[str, str] | None = None,
         **kwargs: Any,
     ) -> None:
-        assert isinstance(n_folds, int) and (
-            n_folds >= 1
-        ), f'the n_folds should be integer and n_folds >= 1, but got {n_folds}'
-        assert split in range(
-            1, n_folds + 1
-        ), f'The selected split should be integer and should be 1 <= split <= {n_folds}, but got {split}'
+        assert isinstance(n_folds, int) and (n_folds >= 1), (
+            f'the n_folds should be integer and n_folds >= 1, but got {n_folds}'
+        )
+        assert split in range(1, n_folds + 1), (
+            f'The selected split should be integer and should be 1 <= split <= {n_folds}, but got {split}'
+        )
         if archive is not None:
             self.archive = archive
         files, labels = self._get_data(mode, n_folds, split)

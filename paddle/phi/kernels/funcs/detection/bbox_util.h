@@ -55,14 +55,14 @@ inline HOSTDEVICE T RoIArea(const T* box, bool pixel_offset = true) {
  */
 template <typename T>
 inline void BoxToDelta(const int box_num,
-                       const phi::DenseTensor& ex_boxes,
-                       const phi::DenseTensor& gt_boxes,
+                       const DenseTensor& ex_boxes,
+                       const DenseTensor& gt_boxes,
                        const float* weights,
                        const bool normalized,
-                       phi::DenseTensor* box_delta) {
-  auto ex_boxes_et = phi::EigenTensor<T, 2>::From(ex_boxes);
-  auto gt_boxes_et = phi::EigenTensor<T, 2>::From(gt_boxes);
-  auto trg = phi::EigenTensor<T, 2>::From(*box_delta);
+                       DenseTensor* box_delta) {
+  auto ex_boxes_et = EigenTensor<T, 2>::From(ex_boxes);
+  auto gt_boxes_et = EigenTensor<T, 2>::From(gt_boxes);
+  auto trg = EigenTensor<T, 2>::From(*box_delta);
   T ex_w, ex_h, ex_ctr_x, ex_ctr_y, gt_w, gt_h, gt_ctr_x, gt_ctr_y;
   for (int64_t i = 0; i < box_num; ++i) {
     ex_w = ex_boxes_et(i, 2) - ex_boxes_et(i, 0) + (normalized == false);
@@ -100,14 +100,18 @@ void Gather(
 }
 
 template <typename T>
-void BboxOverlaps(const phi::DenseTensor& r_boxes,
-                  const phi::DenseTensor& c_boxes,
-                  phi::DenseTensor* overlaps) {
-  auto r_boxes_et = phi::EigenTensor<T, 2>::From(r_boxes);
-  auto c_boxes_et = phi::EigenTensor<T, 2>::From(c_boxes);
-  auto overlaps_et = phi::EigenTensor<T, 2>::From(*overlaps);
-  int r_num = r_boxes.dims()[0];
-  int c_num = c_boxes.dims()[0];
+void BboxOverlaps(const DenseTensor& r_boxes,
+                  const DenseTensor& c_boxes,
+                  DenseTensor* overlaps) {
+  auto r_boxes_et = EigenTensor<T, 2>::From(r_boxes);
+  auto c_boxes_et = EigenTensor<T, 2>::From(c_boxes);
+  auto overlaps_et = EigenTensor<T, 2>::From(*overlaps);
+  // TODO(large-tensor): downstream functors may still use int
+  int64_t r_num = r_boxes.dims()[0];
+
+  // TODO(large-tensor): downstream functors may still use int
+  int64_t c_num = c_boxes.dims()[0];
+
   auto zero = static_cast<T>(0.0);
   T r_box_area, c_box_area, x_min, y_min, x_max, y_max, inter_w, inter_h,
       inter_area;
@@ -135,10 +139,14 @@ void BboxOverlaps(const phi::DenseTensor& r_boxes,
 // Calculate max IoU between each box and ground-truth and
 // each row represents one box
 template <typename T>
-void MaxIoU(const phi::DenseTensor& iou, phi::DenseTensor* max_iou) {
+void MaxIoU(const DenseTensor& iou, DenseTensor* max_iou) {
   const T* iou_data = iou.data<T>();
-  int row = iou.dims()[0];
-  int col = iou.dims()[1];
+  // TODO(large-tensor): downstream functors may still use int
+  int64_t row = iou.dims()[0];
+
+  // TODO(large-tensor): downstream functors may still use int
+  int64_t col = iou.dims()[1];
+
   T* max_iou_data = max_iou->data<T>();
   for (int i = 0; i < row; ++i) {
     const T* v = iou_data + i * col;
@@ -147,9 +155,9 @@ void MaxIoU(const phi::DenseTensor& iou, phi::DenseTensor* max_iou) {
   }
 }
 
-static void AppendProposals(phi::DenseTensor* dst,
+static void AppendProposals(DenseTensor* dst,
                             int64_t offset,
-                            const phi::DenseTensor& src) {
+                            const DenseTensor& src) {
   auto* out_data = dst->data();
   auto* to_add_data = src.data();
   size_t size_of_t = phi::SizeOf(src.dtype());
@@ -161,13 +169,13 @@ static void AppendProposals(phi::DenseTensor* dst,
 }
 
 template <class T>
-void ClipTiledBoxes(const phi::DeviceContext& ctx,
-                    const phi::DenseTensor& im_info,
-                    const phi::DenseTensor& input_boxes,
-                    phi::DenseTensor* out,
+void ClipTiledBoxes(const DeviceContext& dev_ctx,
+                    const DenseTensor& im_info,
+                    const DenseTensor& input_boxes,
+                    DenseTensor* out,
                     bool is_scale = true,
                     bool pixel_offset = true) {
-  T* out_data = ctx.Alloc<T>(out);
+  T* out_data = dev_ctx.Alloc<T>(out);
   const T* im_info_data = im_info.data<T>();
   const T* input_boxes_data = input_boxes.data<T>();
   T offset = pixel_offset ? static_cast<T>(1.0) : 0;
@@ -195,18 +203,18 @@ void ClipTiledBoxes(const phi::DeviceContext& ctx,
 
 // Filter the box with small area
 template <class T>
-void FilterBoxes(const phi::DeviceContext& ctx,
-                 const phi::DenseTensor* boxes,
+void FilterBoxes(const DeviceContext& dev_ctx,
+                 const DenseTensor* boxes,
                  float min_size,
-                 const phi::DenseTensor& im_info,
+                 const DenseTensor& im_info,
                  bool is_scale,
-                 phi::DenseTensor* keep,
+                 DenseTensor* keep,
                  bool pixel_offset = true) {
   const T* im_info_data = im_info.data<T>();
   const T* boxes_data = boxes->data<T>();
   keep->Resize({boxes->dims()[0]});
   min_size = std::max(min_size, 1.0f);
-  int* keep_data = ctx.Alloc<int>(keep);
+  int* keep_data = dev_ctx.Alloc<int>(keep);
   T offset = pixel_offset ? static_cast<T>(1.0) : 0;
 
   int keep_len = 0;
@@ -236,13 +244,13 @@ void FilterBoxes(const phi::DeviceContext& ctx,
 }
 
 template <class T>
-static void BoxCoder(const phi::DeviceContext& ctx,
-                     phi::DenseTensor* all_anchors,
-                     phi::DenseTensor* bbox_deltas,
-                     phi::DenseTensor* variances,
-                     phi::DenseTensor* proposals,
+static void BoxCoder(const DeviceContext& dev_ctx,
+                     DenseTensor* all_anchors,
+                     DenseTensor* bbox_deltas,
+                     DenseTensor* variances,
+                     DenseTensor* proposals,
                      const bool pixel_offset = true) {
-  T* proposals_data = ctx.Alloc<T>(proposals);
+  T* proposals_data = dev_ctx.Alloc<T>(proposals);
 
   int64_t row = all_anchors->dims()[0];
   int64_t len = all_anchors->dims()[1];

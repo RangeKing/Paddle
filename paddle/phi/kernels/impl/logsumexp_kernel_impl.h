@@ -17,11 +17,11 @@
 #include <vector>
 
 #include "paddle/phi/common/amp_type_traits.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/eigen/common.h"
 #include "paddle/phi/kernels/funcs/eigen/eigen_function.h"
 #include "paddle/phi/kernels/funcs/reduce_function.h"
 #include "paddle/phi/kernels/logsumexp_kernel.h"
-
 namespace phi {
 
 #define HANDLE_DIM(NDIM, RDIM)                                         \
@@ -34,7 +34,7 @@ template <typename T>
 struct LogsumexpFunctor {
   template <typename Context, typename X, typename Y, typename Dim>
   void operator()(const Context& place, X* x, Y* y, const Dim& dim) {
-    using MT = typename phi::dtype::MPTypeTrait<T>::Type;
+    using MT = typename MPTypeTrait<T>::Type;
     auto x_dim = x->dimensions();
     auto t_dim = x_dim;
     for (int i = 0; i < static_cast<int>(dim.size()); i++) {
@@ -67,6 +67,10 @@ void LogsumexpKernel(const Context& dev_ctx,
                      bool keepdim,
                      bool reduce_all,
                      DenseTensor* out) {
+  if (x.numel() == 0) {
+    Full<T, Context>(dev_ctx, out->dims(), -INFINITY, out);
+    return;
+  }
   std::vector<int64_t> axis;
   axis.reserve(axis_in.size());
   std::for_each(axis_in.begin(), axis_in.end(), [&axis](const int& t) {
@@ -85,8 +89,8 @@ void LogsumexpKernel(const Context& dev_ctx,
   }
   if (reduce_all) {
     // Flatten and reduce 1-D tensor
-    auto input = phi::EigenVector<T>::Flatten(x);
-    auto output = phi::EigenScalar<T>::From(*out);
+    auto input = EigenVector<T>::Flatten(x);
+    auto output = EigenScalar<T>::From(*out);
     auto& place = *dev_ctx.eigen_device();
     auto reduce_dim = Eigen::array<int, 1>({{0}});
     LogsumexpFunctor<T>()(place, &input, &output, reduce_dim);

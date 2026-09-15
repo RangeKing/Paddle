@@ -28,6 +28,10 @@ TOLERANCE = {
     "bfloat16": {"rtol": 1e-2, "atol": 1e-2},
 }
 
+CPU_TOLERANCE = {
+    "float32": {"rtol": 1e-5, "atol": 1e-5},
+}
+
 
 def rms_norm(weight, hidden):
     variance = paddle.mean(paddle.pow(hidden, 2), axis=-1, keepdim=True)
@@ -94,7 +98,7 @@ class TestDy2StaticAutoRecomputeRmsNorm(unittest.TestCase):
     def cal_rms_norm_res(self, place):
         weight, hidden = self.product_rms_norm_inputs(place)
         net = PrimNet()
-        net = paddle.jit.to_static(net, full_graph=True)
+        net = paddle.jit.to_static(net, full_graph=True, backend=None)
         program = net.forward.get_concrete_program(weight, hidden)[
             -1
         ].program.program
@@ -118,18 +122,22 @@ class TestDy2StaticAutoRecomputeRmsNorm(unittest.TestCase):
 
             self.prepare_run_actual_res()
             res_actual = self.cal_rms_norm_res(place)
+            tolerance = (
+                CPU_TOLERANCE.get(self.dtype, {}) if place == "cpu" else {}
+            )
+            tolerance = {**TOLERANCE[self.dtype], **tolerance}
             for desire, actual in zip(res_desire[1:], res_actual[1:]):
                 np.testing.assert_allclose(
                     desire,
                     actual,
-                    atol=TOLERANCE[self.dtype]["atol"],
-                    rtol=TOLERANCE[self.dtype]["rtol"],
+                    atol=tolerance["atol"],
+                    rtol=tolerance["rtol"],
                 )
             actual_program = res_actual[0]
             forward_ops = actual_program.global_block().ops[:14]
             mid_ops = actual_program.global_block().ops[14:17]
             backward_ops = actual_program.global_block().ops[17:]
-            saved_values = forward_ops[9].results()[0]
+            saved_values = forward_ops[10].results()[0]
             define_op = saved_values.get_defining_op()
             self.assertTrue(define_op.name() == "pd_op.rsqrt")
             for op in forward_ops:

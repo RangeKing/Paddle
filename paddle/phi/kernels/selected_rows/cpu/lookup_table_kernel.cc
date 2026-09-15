@@ -22,12 +22,10 @@
 #include "paddle/phi/kernels/funcs/selected_rows_functor.h"
 
 #include "paddle/phi/backends/cpu/cpu_context.h"
-#include "paddle/phi/common/bfloat16.h"
 #include "paddle/phi/core/kernel_registry.h"
 
 namespace phi {
 namespace sr {
-using DDim = phi::DDim;
 
 constexpr int64_t kNoPadding = -1;
 
@@ -59,63 +57,43 @@ void LookupTableKernel(const Context &dev_ctx,
   int64_t row_width = table_t.value().dims()[1];
   const auto *table = table_t.value().data<T>();
   auto *output = dev_ctx.template Alloc<T>(output_t);
-  auto input_data_type = table_t.value().dtype();
   for (int64_t i = 0; i < ids_numel; ++i) {
     if (padding_idx != kNoPadding && ids[i] == padding_idx) {
       memset(output + i * row_width, 0, row_width * sizeof(T));
     } else {
-      PADDLE_ENFORCE_GE(
-          ids[i],
-          0,
-          common::errors::InvalidArgument(
-              "Variable value (input) of OP(fluid.layers.embedding) "
-              "expected >= 0. But received %ld",
-              ids[i]));
+      PADDLE_ENFORCE_GE(ids[i],
+                        0,
+                        common::errors::InvalidArgument(
+                            "Variable value (input) of OP(lookup_table) "
+                            "expected >= 0. But received %ld",
+                            ids[i]));
       if (is_test) {
         auto id_index = table_t.GetIndexFromId(ids[i]);
 
         if (id_index != -1) {
-          if (input_data_type == phi::DataType::INT8 ||
-              input_data_type == phi::DataType::INT16 ||
-              input_data_type == phi::DataType::BFLOAT16) {
-            memcpy(output + i * row_width,
-                   table + id_index * row_width,
-                   row_width * sizeof(T));
-          } else {
-            auto blas = phi::funcs::GetBlas<phi::CPUContext, T>(dev_ctx);
-            blas.VCOPY(row_width,
-                       table + id_index * row_width,
-                       output + i * row_width);
-          }
+          memcpy(output + i * row_width,
+                 table + id_index * row_width,
+                 static_cast<size_t>(row_width) * sizeof(T));
         } else {
           memset(output + i * row_width, 0, row_width * sizeof(T));
         }
       } else {
         auto id_index = table_t.Index(ids[i]);
-        PADDLE_ENFORCE_GE(
-            ids[i],
-            0,
-            common::errors::InvalidArgument(
-                "Variable value (input) of OP(fluid.layers.embedding) "
-                "expected >= 0. But received %ld",
-                ids[i]));
+        PADDLE_ENFORCE_GE(ids[i],
+                          0,
+                          common::errors::InvalidArgument(
+                              "Variable value (input) of OP(lookup_table) "
+                              "expected >= 0. But received %ld",
+                              ids[i]));
         PADDLE_ENFORCE_GE(
             id_index,
             0,
             common::errors::InvalidArgument(
                 "the input key should be exists. But received %d.", id_index));
 
-        if (input_data_type == phi::DataType::INT8 ||
-            input_data_type == phi::DataType::INT16 ||
-            input_data_type == phi::DataType::BFLOAT16) {
-          memcpy(output + i * row_width,
-                 table + id_index * row_width,
-                 row_width * sizeof(T));
-        } else {
-          auto blas = phi::funcs::GetBlas<phi::CPUContext, T>(dev_ctx);
-          blas.VCOPY(
-              row_width, table + id_index * row_width, output + i * row_width);
-        }
+        memcpy(output + i * row_width,
+               table + id_index * row_width,
+               static_cast<size_t>(row_width) * sizeof(T));
       }
     }
   }
@@ -132,4 +110,4 @@ PD_REGISTER_KERNEL(lookup_table_sr,
                    double,
                    int8_t,
                    int16_t,
-                   phi::dtype::bfloat16) {}
+                   phi::bfloat16) {}

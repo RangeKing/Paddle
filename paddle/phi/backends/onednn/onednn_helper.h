@@ -13,13 +13,16 @@
 // limitations under the License.
 
 #pragma once
-
+#ifdef PADDLE_WITH_DNNL
+#include <memory>
 #include <thread>
+
 #include "dnnl.hpp"  // NOLINT
 #include "glog/logging.h"
 
 #include "paddle/common/layout.h"
 #include "paddle/phi/backends/onednn/onednn_context.h"
+#include "paddle/phi/backends/onednn/onednn_storage_properties.h"
 #include "paddle/phi/common/place.h"
 #include "paddle/phi/core/dense_tensor.h"
 
@@ -28,6 +31,26 @@ namespace funcs {
 
 using OneDNNMemoryFormat = dnnl::memory::format_tag;
 using OneDNNDataType = dnnl::memory::data_type;
+
+inline const dnnl::memory::desc& GetOneDNNMemDesc(const DenseTensor& tensor) {
+  if (!tensor.has_storage_properties()) {
+    static const dnnl::memory::desc undef_desc;
+    return undef_desc;
+  }
+  return tensor.storage_properties<OneDNNStorageProperties>().mem_desc;
+}
+
+inline void SetOneDNNMemDesc(DenseTensor* tensor,
+                             const dnnl::memory::desc& mem_desc) {
+  auto properties = std::make_unique<OneDNNStorageProperties>();
+  if (tensor->has_storage_properties()) {
+    properties->format =
+        tensor->storage_properties<OneDNNStorageProperties>().format;
+  }
+  properties->mem_desc = mem_desc;
+  tensor->set_storage_properties(std::move(properties));
+  tensor->set_layout(DataLayout::ONEDNN);
+}
 
 template <typename Type>
 void* to_void_cast(const Type* t) {
@@ -130,20 +153,20 @@ inline dnnl::memory::data_type OneDNNGetDataType<dtype::bfloat16>() {
 inline std::vector<std::vector<int64_t>> ToOneDNNPadding(
     const std::vector<int64_t>& paddings) {
   if (paddings.size() == 6) {
-    int padding_front = paddings[0];
-    int padding_back = paddings[1];
-    int padding_top = paddings[2];
-    int padding_bottom = paddings[3];
-    int padding_left = paddings[4];
-    int padding_right = paddings[5];
+    int64_t padding_front = paddings[0];
+    int64_t padding_back = paddings[1];
+    int64_t padding_top = paddings[2];
+    int64_t padding_bottom = paddings[3];
+    int64_t padding_left = paddings[4];
+    int64_t padding_right = paddings[5];
 
     return {{padding_front, padding_top, padding_left},
             {padding_back, padding_bottom, padding_right}};
   } else {
-    int padding_top = paddings[0];
-    int padding_bottom = paddings[1];
-    int padding_left = paddings[2];
-    int padding_right = paddings[3];
+    int64_t padding_top = paddings[0];
+    int64_t padding_bottom = paddings[1];
+    int64_t padding_left = paddings[2];
+    int64_t padding_right = paddings[3];
 
     return {{padding_top, padding_left}, {padding_bottom, padding_right}};
   }
@@ -320,3 +343,4 @@ enum class RNNReorderType { PP_NTC, PP_TNC, NTC_PP, TNC_PP };
 
 }  // namespace funcs
 }  // namespace phi
+#endif

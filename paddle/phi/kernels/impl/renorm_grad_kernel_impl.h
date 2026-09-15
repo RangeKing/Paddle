@@ -37,15 +37,18 @@ void RenormGradKernel(const Context& dev_ctx,
   auto dimension_each = input_dims[dim];
   dx->Resize(x.dims());
   dev_ctx.template Alloc<T>(dx);
-  phi::funcs::RenormGradFunc(dev_ctx,
-                             x_data,
-                             dout_data,
-                             dx->data<T>(),
-                             p,
-                             dim,
-                             max_norm,
-                             dimension_each,
-                             input_dims,
-                             numel);
+  if (dx && dx->numel() == 0) {
+    return;
+  }
+  funcs::RenormGradFunc(dev_ctx,
+                        x_data,
+                        dout_data,
+                        dx->data<T>(),
+                        p,
+                        dim,
+                        max_norm,
+                        dimension_each,
+                        input_dims,
+                        numel);
 }
 }  // namespace phi

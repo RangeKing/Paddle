@@ -27,7 +27,7 @@
 namespace phi {
 
 template <typename T, typename Context>
-void BroadcastTensorsGradKernel(const Context& ctx,
+void BroadcastTensorsGradKernel(const Context& dev_ctx,
                                 const std::vector<const DenseTensor*>& inputs,
                                 const std::vector<const DenseTensor*>& dout,
                                 std::vector<DenseTensor*> dx) {
@@ -42,7 +42,7 @@ void BroadcastTensorsGradKernel(const Context& ctx,
       num_ins,
       1,
       errors::InvalidArgument(
-          "Expected at least 2 input tensors, but only received d%.",
+          "Expected at least 2 input tensors, but only received %d.",
           in_tensors.size()));
 
   PADDLE_ENFORCE_EQ(
@@ -83,18 +83,18 @@ void BroadcastTensorsGradKernel(const Context& ctx,
     }
 
     bool just_copy = (reduce_dims_vec.size() == 0);
-    ctx.template Alloc<T>(output_tensor);
+    dev_ctx.template Alloc<T>(output_tensor);
     if (just_copy) {
       // Turns out to be a No-Op, simply copy tensors
-      phi::Copy(ctx, *input_tensor, ctx.GetPlace(), false, output_tensor);
+      Copy(dev_ctx, *input_tensor, dev_ctx.GetPlace(), false, output_tensor);
     } else {
       // reduce_sum implementation on CUDA
-      phi::SumKernel<T, Context>(ctx,
-                                 *input_tensor,
-                                 reduce_dims_vec,
-                                 output_tensor->dtype(),
-                                 false,
-                                 output_tensor);
+      SumKernel<T, Context>(dev_ctx,
+                            *input_tensor,
+                            reduce_dims_vec,
+                            output_tensor->dtype(),
+                            false,
+                            output_tensor);
     }
   }
 }
@@ -110,7 +110,7 @@ PD_REGISTER_KERNEL(broadcast_tensors_grad,
                    int64_t,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::complex64,
+                   phi::complex128) {}

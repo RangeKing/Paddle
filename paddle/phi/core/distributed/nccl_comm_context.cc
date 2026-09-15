@@ -29,23 +29,195 @@ namespace phi::distributed {
 // set this flag to `true` and recompile to enable dynamic checks
 constexpr bool FLAGS_enable_nccl_dynamic_check = false;
 
-NCCLCommContext::NCCLCommContext(int rank,
-                                 int size,
-                                 ncclUniqueId nccl_id,
-                                 int nccl_comm_init_option)
-    : CommContext(rank, size), nccl_version_(0), nccl_comm_(nullptr) {
-  if (nccl_comm_init_option > 0 && phi::dynload::ncclCommInitRank2.IsValid()) {
+NCCLCommContext::NCCLCommContext(
+    int rank,
+    int size,
+    ncclUniqueId nccl_id,
+    int nccl_comm_init_option,
+    std::shared_ptr<phi::distributed::NCCLConfig> nccl_config_ptr)
+    : CommContext(rank, size),
+      nccl_version_(0),
+      nccl_comm_(nullptr),
+      nranks(size_),
+      myrank(rank_),
+      param(nccl_comm_init_option) {
+  this->CreateNCCLComm(nccl_id, nccl_config_ptr);
+  NCCL_CHECK(phi::dynload::ncclGetVersion(&nccl_version_));
+}
+
+void NCCLCommContext::CreateNCCLComm(
+    ncclUniqueId nccl_id,
+    std::shared_ptr<phi::distributed::NCCLConfig> nccl_config_ptr) {
+  // A restart replaces the communicator on this very context, and a window
+  // handle only means anything to the communicator it was registered against.
+  // Drop the bookkeeping here so that RegisterWindow() cannot hand a stale
+  // handle back from its cache: deregister while the old communicator is still
+  // alive, or simply forget the windows when it is already gone.
+  if (nccl_comm_ != nullptr) {
+    DeregisterAllWindows();
+  } else {
+    windows_.clear();
+  }
+  if (param > 0 && phi::dynload::ncclCommInitRank2.IsValid()) {
     LOG(WARNING) << "Creating modified qp with ncclCommInitRank2.";
     NCCL_CHECK(phi::dynload::ncclCommInitRank2(
-        &nccl_comm_, size_, nccl_id, rank_, nccl_comm_init_option));
+        &nccl_comm_, nranks, nccl_id, myrank, param));
   } else {
-    if (nccl_comm_init_option > 0) {
+    if (param > 0) {
       LOG(WARNING) << "ncclCommInitRank2 is not supported.";
     }
-    NCCL_CHECK(
-        phi::dynload::ncclCommInitRank(&nccl_comm_, size_, nccl_id, rank_));
+    if (nccl_config_ptr != nullptr &&
+        phi::dynload::ncclCommInitRankConfigMemOpt.IsValid()) {
+      NCCL_CHECK(phi::dynload::ncclCommInitRankConfigMemOpt(
+          &nccl_comm_,
+          nranks,
+          nccl_id,
+          myrank,
+          nccl_config_ptr->GetOrigin(),
+          nccl_config_ptr->GetMemOpt()));
+    } else {
+      if (nccl_config_ptr != nullptr) {
+        LOG(WARNING) << "ncclCommInitRankConfigMemOpt is not supported.";
+      }
+#if defined(PADDLE_WITH_NCCL) && NCCL_VERSION_CODE >= 23007
+      // Without the internal MemOpt entry point, a requested ncclConfig_t (for
+      // instance a CTAPolicy) would be dropped silently, so fall back to the
+      // upstream config-aware initializer whenever there is a config to pass.
+      if (nccl_config_ptr != nullptr &&
+          nccl_config_ptr->GetOrigin() != nullptr &&
+          phi::dynload::ncclCommInitRankConfig.IsValid()) {
+        NCCL_CHECK(
+            phi::dynload::ncclCommInitRankConfig(&nccl_comm_,
+                                                 nranks,
+                                                 nccl_id,
+                                                 myrank,
+                                                 nccl_config_ptr->GetOrigin()));
+        return;
+      }
+#endif
+      NCCL_CHECK(
+          phi::dynload::ncclCommInitRank(&nccl_comm_, nranks, nccl_id, myrank));
+    }
   }
-  NCCL_CHECK(phi::dynload::ncclGetVersion(&nccl_version_));
+}
+
+void NCCLCommContext::DestroyNCCLComm() {
+  if (nccl_comm_ != nullptr) {
+    DeregisterAllWindows();
+    NCCL_CHECK(phi::dynload::ncclCommDestroy(nccl_comm_));
+    nccl_comm_ = nullptr;
+  }
+}
+
+void* NCCLCommContext::RegisterWindow(void* ptr, size_t size, int win_flags) {
+#if defined(PADDLE_WITH_NCCL) && NCCL_VERSION_CODE >= 23007
+  if (!phi::dynload::ncclCommWindowRegister.IsValid()) {
+    LOG(WARNING) << "ncclCommWindowRegister is not provided by the loaded NCCL "
+                    "library, which the zero-SM paths need (NCCL 2.30.7 or "
+                    "newer); buffer registration is skipped.";
+    return nullptr;
+  }
+  auto iter = windows_.find(ptr);
+  if (iter != windows_.end()) {
+    return iter->second.handle;
+  }
+  PADDLE_ENFORCE_EQ(
+      reinterpret_cast<uintptr_t>(ptr) % kNCCLWindowAlignment,
+      0,
+      common::errors::InvalidArgument(
+          "The buffer registered as a NCCL symmetric memory window must be "
+          "aligned to %d bytes, but got pointer %p.",
+          kNCCLWindowAlignment,
+          ptr));
+  PADDLE_ENFORCE_EQ(
+      size % kNCCLWindowAlignment,
+      0,
+      common::errors::InvalidArgument(
+          "The size of a buffer registered as a NCCL symmetric memory window "
+          "must be a multiple of %d bytes, but got %d.",
+          kNCCLWindowAlignment,
+          size));
+  ncclWindow_t win = nullptr;
+  NCCL_CHECK(phi::dynload::ncclCommWindowRegister(
+      nccl_comm_, ptr, size, &win, win_flags));
+  windows_.emplace(ptr, RegisteredWindow{reinterpret_cast<void*>(win), size});
+  VLOG(3) << "Registered NCCL window for buffer " << ptr << " of size " << size
+          << " with flags " << win_flags;
+  return reinterpret_cast<void*>(win);
+#else
+  LOG(WARNING) << "Paddle was compiled against NCCL " << NCCL_VERSION_CODE
+               << ", which has no symmetric memory window API. Buffer "
+                  "registration is skipped.";
+  return nullptr;
+#endif
+}
+
+void NCCLCommContext::DeregisterWindow(void* ptr) {
+#if defined(PADDLE_WITH_NCCL) && NCCL_VERSION_CODE >= 23007
+  auto iter = windows_.find(ptr);
+  if (iter == windows_.end()) {
+    return;
+  }
+  if (phi::dynload::ncclCommWindowDeregister.IsValid()) {
+    NCCL_CHECK(phi::dynload::ncclCommWindowDeregister(
+        nccl_comm_, reinterpret_cast<ncclWindow_t>(iter->second.handle)));
+  }
+  windows_.erase(iter);
+#endif
+}
+
+void NCCLCommContext::DeregisterAllWindows() {
+#if defined(PADDLE_WITH_NCCL) && NCCL_VERSION_CODE >= 23007
+  if (phi::dynload::ncclCommWindowDeregister.IsValid()) {
+    for (auto& item : windows_) {
+      NCCL_CHECK(phi::dynload::ncclCommWindowDeregister(
+          nccl_comm_, reinterpret_cast<ncclWindow_t>(item.second.handle)));
+    }
+  }
+  windows_.clear();
+#endif
+}
+
+bool NCCLCommContext::IsRegistered(const void* ptr, size_t size) const {
+  const auto* begin = static_cast<const char*>(ptr);
+  for (const auto& item : windows_) {
+    const auto* window_begin = static_cast<const char*>(item.first);
+    if (begin >= window_begin &&
+        begin + size <= window_begin + item.second.size) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool NCCLCommContext::IsAllToAllAvailable() const {
+#if defined(PADDLE_WITH_NCCL) && NCCL_VERSION_CODE >= 23007
+  return phi::dynload::ncclAlltoAll.IsValid();
+#else
+  return false;
+#endif
+}
+
+void NCCLCommContext::AllToAll(DenseTensor* out_tensor,
+                               const DenseTensor& in_tensor,
+                               gpuStream_t stream) {
+#if defined(PADDLE_WITH_NCCL) && NCCL_VERSION_CODE >= 23007
+  CommStaticCheck::SameShape(*out_tensor,
+                             in_tensor,
+                             /*dst_rank*/ rank_,
+                             /*cur_rank*/ rank_,
+                             size_);
+  NCCL_CHECK(phi::dynload::ncclAlltoAll(in_tensor.data(),
+                                        out_tensor->data(),
+                                        in_tensor.numel() / size_,
+                                        ToNCCLDataType(in_tensor.type()),
+                                        nccl_comm_,
+                                        stream));
+#else
+  PADDLE_THROW(common::errors::Unavailable(
+      "ncclAlltoAll is not available in the NCCL library Paddle was compiled "
+      "against, IsAllToAllAvailable() must be checked first."));
+#endif
 }
 
 int NCCLCommContext::GetNcclVersion() { return nccl_version_; }
@@ -76,8 +248,8 @@ void NCCLCommContext::SetCommEvent(
   comm_event_ = std::move(comm_event);
 }
 
-void NCCLCommContext::Broadcast(phi::DenseTensor* out_tensor,
-                                const phi::DenseTensor& in_tensor,
+void NCCLCommContext::Broadcast(DenseTensor* out_tensor,
+                                const DenseTensor& in_tensor,
                                 int root,
                                 gpuStream_t stream) {
   CommStaticCheck::SameShape(*out_tensor,
@@ -97,8 +269,8 @@ void NCCLCommContext::Broadcast(phi::DenseTensor* out_tensor,
                                          stream));
 }
 
-void NCCLCommContext::AllGather(phi::DenseTensor* out_tensor,
-                                const phi::DenseTensor& in_tensor,
+void NCCLCommContext::AllGather(DenseTensor* out_tensor,
+                                const DenseTensor& in_tensor,
                                 gpuStream_t stream) {
   phi::distributed::CommStaticCheck::GatherLikeShape(*out_tensor,
                                                      in_tensor,
@@ -118,10 +290,17 @@ void NCCLCommContext::AllGather(phi::DenseTensor* out_tensor,
                                          nccl_comm_,
                                          stream));
 }
-void NCCLCommContext::ReduceScatter(phi::DenseTensor* out_tensor,
-                                    const phi::DenseTensor& in_tensor,
+void NCCLCommContext::ReduceScatter(DenseTensor* out_tensor,
+                                    const DenseTensor& in_tensor,
                                     ncclRedOp_t reduce_type,
                                     gpuStream_t stream) {
+  PADDLE_ENFORCE_EQ(
+      in_tensor.dtype() != DataType::FLOAT8_E4M3FN &&
+          in_tensor.dtype() != DataType::FLOAT8_E5M2,
+      true,
+      common::errors::InvalidArgument(
+          "float8 dtypes are not currently supported for NCCL reductions"));
+
   phi::distributed::CommStaticCheck::ScatterLikeShape(*out_tensor,
                                                       in_tensor,
                                                       /*dst_rank*/ rank_,
@@ -142,7 +321,7 @@ void NCCLCommContext::ReduceScatter(phi::DenseTensor* out_tensor,
                                              stream));
 }
 
-void NCCLCommContext::Send(const phi::DenseTensor& in_tensor,
+void NCCLCommContext::Send(const DenseTensor& in_tensor,
                            const int64_t& count,
                            const int& peer,
                            gpuStream_t stream) {
@@ -162,7 +341,7 @@ void NCCLCommContext::Send(const phi::DenseTensor& in_tensor,
           << common::product(in_tensor.dims()) << " to " << peer;
 }
 
-void NCCLCommContext::Recv(phi::DenseTensor* out_tensor,
+void NCCLCommContext::Recv(DenseTensor* out_tensor,
                            const int64_t& count,
                            const int& peer,
                            gpuStream_t stream) {
@@ -181,10 +360,17 @@ void NCCLCommContext::Recv(phi::DenseTensor* out_tensor,
           << common::product(out_tensor->dims()) << " from " << peer;
 }
 
-void NCCLCommContext::AllReduce(phi::DenseTensor* out_tensor,
-                                const phi::DenseTensor& in_tensor,
+void NCCLCommContext::AllReduce(DenseTensor* out_tensor,
+                                const DenseTensor& in_tensor,
                                 ncclRedOp_t reduce_type,
                                 gpuStream_t stream) {
+  PADDLE_ENFORCE_EQ(
+      in_tensor.dtype() != DataType::FLOAT8_E4M3FN &&
+          in_tensor.dtype() != DataType::FLOAT8_E5M2,
+      true,
+      common::errors::InvalidArgument(
+          "float8 dtypes are not currently supported for NCCL reductions"));
+
   phi::distributed::CommStaticCheck::SameShape(*out_tensor,
                                                in_tensor,
                                                /*dst_rank*/ rank_,
@@ -205,11 +391,18 @@ void NCCLCommContext::AllReduce(phi::DenseTensor* out_tensor,
                                          stream));
 }
 
-void NCCLCommContext::Reduce(phi::DenseTensor* out_tensor,
-                             const phi::DenseTensor& in_tensor,
+void NCCLCommContext::Reduce(DenseTensor* out_tensor,
+                             const DenseTensor& in_tensor,
                              ncclRedOp_t reduce_type,
                              int root,
                              gpuStream_t stream) {
+  PADDLE_ENFORCE_EQ(
+      in_tensor.dtype() != DataType::FLOAT8_E4M3FN &&
+          in_tensor.dtype() != DataType::FLOAT8_E5M2,
+      true,
+      common::errors::InvalidArgument(
+          "float8 dtypes are not currently supported for NCCL reductions"));
+
   phi::distributed::CommStaticCheck::SameShape(*out_tensor,
                                                in_tensor,
                                                /*dst_rank*/ root,

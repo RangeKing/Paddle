@@ -116,7 +116,7 @@ class SparseFcOpConverter : public OpConverter {
     PADDLE_ENFORCE_NOT_NULL(
         Y_v,
         common::errors::NotFound(
-            "Can not find %s presistable var of sparse_fc in scope.", w_name));
+            "Can not find %s persistable var of sparse_fc in scope.", w_name));
     auto* Y_t = Y_v->GetMutable<phi::DenseTensor>();
     int x_num_col_dims =
         op_desc.HasAttr("x_num_col_dims")
@@ -156,20 +156,21 @@ class SparseFcOpConverter : public OpConverter {
             "The sparse_fc's weight should be a matrix with 2 dims, but "
             "it's %d-dimensional.",
             Y_t->dims().size()));  // a matrix
-    int m = Y_t->dims()[0];
-    int n = Y_t->dims()[1];
-    auto transpose_weight = [](const float* src, float* dst, int m, int n) {
-      for (int i = 0; i < m; i++) {
-        for (int j = 0; j < n; j++) {
-          dst[j * m + i] = src[i * n + j];
-        }
-      }
-    };
+    int64_t m = Y_t->dims()[0];
+    int64_t n = Y_t->dims()[1];
+    auto transpose_weight =
+        [](const float* src, float* dst, int64_t m, int64_t n) {
+          for (int64_t i = 0; i < m; i++) {
+            for (int64_t j = 0; j < n; j++) {
+              dst[j * m + i] = src[i * n + j];
+            }
+          }
+        };
     bool with_fp16 = engine_->WithFp16() && !engine_->disable_trt_plugin_fp16();
-    auto regist_fc = [&](nvinfer1::ITensor* inputs,
-                         int n_output,
-                         TensorRTEngine::Weight& weight,
-                         TensorRTEngine::Weight& bias) {
+    auto register_fc = [&](nvinfer1::ITensor* inputs,
+                           int n_output,
+                           TensorRTEngine::Weight& weight,
+                           TensorRTEngine::Weight& bias) {
       if (enable_int8 || support_int8) {
         // add conv1x1 layer
         nvinfer1::DimsHW nv_ksize(1, 1);
@@ -235,10 +236,10 @@ class SparseFcOpConverter : public OpConverter {
         }
       }
     };
-    auto regist_sparse_fc = [&](nvinfer1::ITensor* inputs,
-                                int n_output,
-                                TensorRTEngine::Weight* weight,
-                                TensorRTEngine::Weight* bias) {
+    auto register_sparse_fc = [&](nvinfer1::ITensor* inputs,
+                                  int n_output,
+                                  TensorRTEngine::Weight* weight,
+                                  TensorRTEngine::Weight* bias) {
       if (enable_int8 || support_int8) {
         // add conv layer
         float out_scale = 0;
@@ -331,7 +332,7 @@ class SparseFcOpConverter : public OpConverter {
       TensorRTEngine::Weight bias{nvinfer1::DataType::kFLOAT,
                                   static_cast<void*>(bias_data),
                                   static_cast<size_t>(bias_num)};
-      regist_fc(X, n_output, weight, bias);
+      register_fc(X, n_output, weight, bias);
     } else {  // need reshape input before and after fc
       PADDLE_ENFORCE_GT(
           x_dim.nbDims,
@@ -382,7 +383,7 @@ class SparseFcOpConverter : public OpConverter {
       if (enable_int8 || support_int8) {
         engine_->SetTensorDynamicRange(reshape_itensor, in_scale);
       }
-      regist_sparse_fc(reshape_itensor, n_output, &weight, &bias);
+      register_sparse_fc(reshape_itensor, n_output, &weight, &bias);
     }
   }
 };

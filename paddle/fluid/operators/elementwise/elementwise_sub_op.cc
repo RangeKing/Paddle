@@ -36,17 +36,15 @@ class ElementwiseSubOpMaker : public ElementwiseOpMaker {
   std::string GetEquation() const override { return "Out = X - Y"; }
 
   void AddInputX() override {
-    AddInput(
-        "X",
-        "(Variable), Tensor or phi::DenseTensor of any dimensions. Its dtype "
-        "should be int32, int64, float32, float64.");
+    AddInput("X",
+             "(Variable), Tensor or DenseTensor of any dimensions. Its dtype "
+             "should be int32, int64, float32, float64.");
   }
 
   void AddInputY() override {
-    AddInput(
-        "Y",
-        "(Variable), Tensor or phi::DenseTensor of any dimensions. Its dtype "
-        "should be int32, int64, float32, float64.");
+    AddInput("Y",
+             "(Variable), Tensor or DenseTensor of any dimensions. Its dtype "
+             "should be int32, int64, float32, float64.");
   }
 
   std::string GetOpFunctionality() const override {
@@ -74,7 +72,7 @@ class ElementwiseSubCompositeGradOpMaker
         axis,
         -1,
         common::errors::InvalidArgument(
-            "We only support axis = -1 in composite sub_grad but we got: ",
+            "We only support axis = -1 in composite sub_grad but we got: %d.",
             axis));
     VLOG(6) << "Running sub_grad composite func";
     prim::subtract_grad<prim::DescTensor>(x, y, out_grad, axis, dx_ptr, dy_ptr);
@@ -125,7 +123,7 @@ class ElementwiseSubCompositeDoubleGradOpMaker
                       -1,
                       common::errors::InvalidArgument(
                           "We only support axis = -1 in composite "
-                          "subtract_doubel_grad but we got: ",
+                          "subtract_double_grad but we got: %d.",
                           axis));
 
     paddle::Tensor* grad_out_grad = this->GetOutputPtr(&grad_out_grad_t);

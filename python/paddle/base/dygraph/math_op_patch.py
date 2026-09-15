@@ -14,18 +14,33 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
 
+import paddle
 from paddle import _C_ops
+from paddle.utils.decorator_utils import (
+    size_args_decorator_patch,
+)
 
 from .. import core
-from ..framework import convert_np_dtype_to_dtype_
+from ..framework import convert_nptype_to_datatype_or_vartype
 
 if TYPE_CHECKING:
+    from typing import Any
+
+    from numpy.typing import NDArray
+
     from paddle import Tensor
-    from paddle._typing import DTypeLike
+    from paddle._typing import (
+        DTypeLike,
+        NestedNumericSequence,
+        PlaceLike,
+        ShapeLike,
+        TensorLike,
+    )
 
 _supported_int_dtype_ = [
     core.VarDesc.VarType.UINT8,
@@ -65,11 +80,71 @@ _complex_dtypes = [
 _already_patch_eager_tensor = False
 
 
+_supported_dtype_conversions = {
+    # float
+    'float16': 'float16',
+    'half': 'float16',
+    'bfloat16': 'bfloat16',
+    'float32': 'float32',
+    'float': 'float32',
+    'float64': 'float64',
+    'double': 'float64',
+    # int
+    'int8': 'int8',
+    'char': 'int8',
+    # We handle uint8 conversion separately
+    # 'uint8': 'uint8',
+    # 'byte': 'uint8',
+    'int16': 'int16',
+    'short': 'int16',
+    'int32': 'int32',
+    'int': 'int32',
+    'int64': 'int64',
+    'long': 'int64',
+    # other
+    'bool': 'bool',
+    'complex64': 'complex64',
+    'complex128': 'complex128',
+    'cfloat': 'complex64',
+    'cdouble': 'complex128',
+}
+
+
+def _rebuild_tensor(
+    data: NDArray[Any],
+    dtype: DTypeLike,
+    device: PlaceLike,
+    requires_grad,
+) -> Tensor:
+    return paddle.tensor(
+        data,
+        dtype,
+        device,
+        requires_grad,
+    )
+
+
+class TensorSize(int):
+    as_shape: list[int]
+
+    def __new__(cls, shape):
+        instance = super().__new__(cls, int(np.prod(shape)))
+        instance.as_shape = shape
+        return instance
+
+    def __call__(self, dim=None):
+        shape = paddle.Size(self.as_shape)
+        if dim is None:
+            return shape
+        return shape[dim]
+
+
 def monkey_patch_math_tensor():
     """
     Similar to monkey_patch_variable.
     The difference is, in dygraph mode, use auto-generated op functions for better performance.
     """
+    global paddle
 
     def astype(self: Tensor, dtype: DTypeLike) -> Tensor:
         """
@@ -84,7 +159,7 @@ def monkey_patch_math_tensor():
             Tensor: a new Tensor with target dtype
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> import numpy as np
@@ -97,12 +172,56 @@ def monkey_patch_math_tensor():
                 new tensor's dtype is: paddle.float32
         """
         if not isinstance(dtype, (core.VarDesc.VarType, core.DataType)):
-            dtype = convert_np_dtype_to_dtype_(dtype)
+            dtype = convert_nptype_to_datatype_or_vartype(dtype)
 
         if self.dtype == dtype:
             return self
 
         return _C_ops.cast(self, dtype)
+
+    def byte(self: Tensor) -> Tensor:
+        # since paddle don't support float to uint8, so we need to convert it to int8 first
+        if self.is_floating_point():
+            tensor = astype(self, 'int8')
+            return astype(tensor, 'uint8')
+        elif self.is_complex():
+            real = astype(self.real(), 'int8')
+            logging.warning(
+                "Casting complex values to real discards the imaginary part"
+            )
+            return astype(real, 'uint8')
+        else:
+            return astype(self, 'uint8')
+
+    def _create_dtype_conversion_methods():
+        """
+        Batch create all data type conversion methods
+        """
+        methods = []
+
+        for method_name, target_dtype in _supported_dtype_conversions.items():
+
+            def make_conversion_method(dtype):
+                def conversion_method(self: Tensor) -> Tensor:
+                    return astype(self, dtype)
+
+                return conversion_method
+
+            method_impl = make_conversion_method(target_dtype)
+            method_impl.__name__ = method_name
+            method_impl.__doc__ = f"""
+            Cast a Tensor to {target_dtype} data type if it differs from the current dtype;
+            otherwise, return the original Tensor.
+            Returns:
+                Tensor: a new Tensor with {target_dtype} dtype
+            """
+
+            methods.append((method_name, method_impl))
+
+        return methods
+
+    def type_as(self: Tensor, other: Tensor) -> Tensor:
+        return self.astype(other.dtype)
 
     def _scalar_elementwise_op_(
         var: Tensor, scale: float, bias: float
@@ -116,41 +235,30 @@ def monkey_patch_math_tensor():
         return var.abs()
 
     def _complex_(var: Tensor) -> complex:
-        numel = np.prod(var.shape)
-        assert (
-            numel == 1
-        ), "only one element variable can be converted to complex."
+        numel = np.prod(var.shape, dtype="int64")
+        assert numel == 1, (
+            "only one element variable can be converted to complex."
+        )
         assert var._is_initialized(), "variable's tensor is not initialized"
         if not var.is_complex():
             var = var.astype('complex64')
-        return complex(np.array(var))
+        return complex(var.item())
 
     def _float_(var: Tensor) -> float:
-        numel = np.prod(var.shape)
-        assert (
-            numel == 1
-        ), "only one element variable can be converted to float."
+        numel = np.prod(var.shape, dtype="int64")
+        assert numel == 1, (
+            "only one element variable can be converted to float."
+        )
         assert var._is_initialized(), "variable's tensor is not initialized"
         if (
             var.dtype == core.VarDesc.VarType.BF16
             or var.dtype == core.DataType.BFLOAT16
         ):
             var = var.astype('float32')
-        return float(np.array(var))
-
-    def _long_(var: Tensor) -> int:
-        numel = np.prod(var.shape)
-        assert numel == 1, "only one element variable can be converted to long."
-        assert var._is_initialized(), "variable's tensor is not initialized"
-        if (
-            var.dtype == core.VarDesc.VarType.BF16
-            or var.dtype == core.DataType.BFLOAT16
-        ):
-            var = var.astype('float32')
-        return int(np.array(var))
+        return float(var.item())
 
     def _int_(var: Tensor) -> int:
-        numel = np.prod(var.shape)
+        numel = np.prod(var.shape, dtype="int64")
         assert numel == 1, "only one element variable can be converted to int."
         assert var._is_initialized(), "variable's tensor is not initialized"
         if (
@@ -158,7 +266,7 @@ def monkey_patch_math_tensor():
             or var.dtype == core.DataType.BFLOAT16
         ):
             var = var.astype('float32')
-        return int(np.array(var))
+        return int(var.item())
 
     def _len_(var: Tensor) -> int:
         assert var.ndim > 0, "len() of a 0-D tensor is wrong"
@@ -170,17 +278,17 @@ def monkey_patch_math_tensor():
             return var.shape[0]
 
     def _index_(var: Tensor) -> int:
-        numel = np.prod(var.shape)
-        assert (
-            numel == 1
-        ), "only one element variable can be converted to python index."
+        numel = np.prod(var.shape, dtype="int64")
+        assert numel == 1, (
+            "only one element variable can be converted to python index."
+        )
         assert var._is_initialized(), "variable's tensor is not initialized"
         if (
             var.dtype == core.VarDesc.VarType.BF16
             or var.dtype == core.DataType.BFLOAT16
         ):
             var = var.astype('float32')
-        return int(np.array(var))
+        return int(var.item())
 
     @property
     def _ndim(var: Tensor) -> int:
@@ -194,6 +302,15 @@ def monkey_patch_math_tensor():
 
     @property
     def _size_(var: Tensor) -> int:
+        return TensorSize(var.shape)
+
+    def nelement(var: Tensor) -> int:
+        """
+        Returns the number of elements for current Tensor. Alias for attribute ``size``.
+
+        Returns:
+            int: the number of elements for current Tensor
+        """
         return int(np.prod(var.shape))
 
     @property
@@ -206,6 +323,24 @@ def monkey_patch_math_tensor():
 
     @property
     def _mT_(var: Tensor) -> Tensor:
+        """
+        Return the last two dimensions of a Tensor transposed.
+
+        Args:
+            var (Tensor): The input Tensor, which must have at least 2 dimensions.
+
+        Returns:
+            Tensor: A new Tensor with its last two dimensions swapped.
+
+        Examples:
+            .. code-block:: pycon
+
+                >>> import paddle
+                >>> x = paddle.randn([2, 3, 4])
+                >>> x_transposed = x.mT
+                >>> x_transposed.shape
+                paddle.Size([2, 4, 3])
+        """
         if len(var.shape) < 2:
             raise ValueError(
                 f"Tensor.ndim({var.ndim}) is required to be greater than or equal to 2."
@@ -215,25 +350,447 @@ def monkey_patch_math_tensor():
         out = _C_ops.transpose(var, perm)
         return out
 
+    @property
+    def _mH_(var: Tensor) -> Tensor:
+        """
+        Return the conjugate transpose of the last two dimensions of a Tensor.
+
+        Accessing this property is equivalent to calling x.mT.conj().
+
+        Args:
+            var (Tensor): The input Tensor, which must be at least 2-D or 0-D.
+
+        Returns:
+            Tensor: A new Tensor with its last two dimensions swapped and
+                the elements conjugated. If the input is 0-D, returns the
+                Tensor itself.
+
+        Examples:
+            .. code-block:: pycon
+
+                >>> import paddle
+                >>> x = paddle.to_tensor([[1.0 + 1.0j, 2.0 + 2.0j], [3.0 + 3.0j, 4.0 + 4.0j]])
+                >>> x_mH = x.mH
+                >>> print(x_mH)
+                Tensor(shape=[2, 2], dtype=complex64, place=Place(cpu), stop_gradient=True,
+                       [[(1-1j), (3-3j)],
+                        [(2-2j), (4-4j)]])
+                >>> x_0d = paddle.to_tensor(1.0 + 1.0j)
+                >>> x_0d_mH = x_0d.mH
+                >>> print(x_0d_mH)
+                Tensor(shape=[], dtype=complex64, place=Place(cpu), stop_gradient=True,
+                       (1+1j))
+        """
+        if len(var.shape) == 0:
+            return _C_ops.conj(var)
+        if len(var.shape) < 2:
+            raise ValueError(
+                f"Tensor.ndim({var.ndim}) is required to be greater than or equal to 2 "
+                f"or 0-D."
+            )
+        perm = list(range(len(var.shape)))
+        perm[-1], perm[-2] = perm[-2], perm[-1]
+        out = _C_ops.transpose(var, perm)
+        out = _C_ops.conj(out)
+        return out
+
+    @property
+    def _H_(var: Tensor) -> Tensor:
+        """
+        Return the conjugate transpose of a Tensor.
+
+        The conjugate transpose of a 2-D Tensor is equivalent to transposing the
+        Tensor and then taking the conjugate of each element (i.e., x.T.conj()).
+        For 0-D Tensor, returns the conjugated Tensor.
+
+        Args:
+            var (Tensor): The input Tensor, which must be 0-D or 2-D.
+
+        Returns:
+            Tensor: A new Tensor with its dimensions transposed and elements conjugated.
+                If the input is 0-D, returns the conjugated Tensor.
+
+        Examples:
+            .. code-block:: pycon
+
+                >>> import paddle
+                >>> x = paddle.to_tensor([[1.0 + 1.0j, 2.0 + 2.0j], [3.0 + 3.0j, 4.0 + 4.0j]])
+                >>> x_H = x.H
+                >>> print(x_H)
+                Tensor(shape=[2, 2], dtype=complex64, place=Place(cpu), stop_gradient=True,
+                       [[(1-1j), (3-3j)],
+                        [(2-2j), (4-4j)]])
+                >>> x_0d = paddle.to_tensor(1.0 + 1.0j)
+                >>> x_0d_H = x_0d.H
+                >>> print(x_0d_H)
+                Tensor(shape=[], dtype=complex64, place=Place(cpu), stop_gradient=True,
+                       (1+1j))
+        """
+        if len(var.shape) == 0:
+            return _C_ops.conj(var)
+        if len(var.shape) != 2:
+            raise ValueError(
+                f"Only 0-D or 2-D tensors support .H (conjugate transpose), "
+                f"but got tensor with {len(var.shape)} dimension(s)."
+            )
+        out = _C_ops.transpose(var, [1, 0])
+        out = _C_ops.conj(out)
+        return out
+
+    def _new_full_(
+        var: Tensor,
+        size: ShapeLike,
+        fill_value: bool | float | paddle.Tensor,
+        *,
+        dtype: DTypeLike | None = None,
+        device: PlaceLike | None = None,
+        requires_grad: bool = False,
+        pin_memory: bool = False,
+    ) -> Tensor:
+        """
+        Create a new Tensor of specified shape and fill it with a given value.
+
+        Args:
+            var (Tensor): A reference Tensor for default dtype and device.
+            size (ShapeLike): Shape of the new Tensor.
+            fill_value (bool | float | Tensor): Value to fill the Tensor with.
+            dtype (DTypeLike, optional): Desired data type of the new Tensor. Defaults to `var.dtype`.
+            device (PlaceLike, optional): Device on which to place the new Tensor. Defaults to `var.place`.
+            requires_grad (bool, optional): Whether to track gradients. Default: False.
+            pin_memory (bool, optional): Whether to pin memory. Default: False.
+
+        Returns:
+            Tensor: A new Tensor filled with `fill_value`.
+
+        Examples:
+            .. code-block:: pycon
+
+                >>> import paddle
+                >>> x = paddle.ones([2, 2])
+                >>> y = x.new_full([3, 3], 5.0)
+                >>> y.numpy()
+                array([[5., 5., 5.],
+                       [5., 5., 5.],
+                       [5., 5., 5.]], dtype=float32)
+        """
+
+        if dtype is None:
+            dtype = var.dtype
+        if device is None:
+            device = var.place
+
+        return paddle.full(
+            size,
+            fill_value,
+            dtype=dtype,
+            device=device,
+            requires_grad=requires_grad,
+            pin_memory=pin_memory,
+        )
+
+    def _new_tensor_(
+        var: Tensor,
+        data: TensorLike | NestedNumericSequence,
+        dtype: DTypeLike | None = None,
+        device: PlaceLike | None = None,
+        requires_grad: bool = False,
+    ) -> Tensor:
+        """
+        Creates a new tensor from ``data`` with the same device and dtype as this tensor.
+
+        Args:
+            var (Tensor): A reference Tensor for default dtype and device.
+            data: Data for the new tensor. Can be a list, numpy array, or Tensor.
+            dtype (DTypeLike|None, optional): Desired data type. If None, uses
+                the dtype of this tensor. Default: None.
+            device (PlaceLike|None, optional): Desired device. If None, uses
+                the place of this tensor. Default: None.
+            requires_grad (bool, optional): If True, gradient computation will
+                be enabled for the new tensor. Default: False.
+
+        Returns:
+            Tensor: A new tensor on the specified device.
+        """
+        if dtype is None:
+            dtype = var.dtype
+        if device is None:
+            device = var.place
+        return paddle.to_tensor(
+            data, dtype=dtype, place=device, stop_gradient=not requires_grad
+        )
+
+    @size_args_decorator_patch
+    def _new_empty_(
+        var: Tensor,
+        size: ShapeLike,
+        *,
+        dtype: DTypeLike | None = None,
+        device: PlaceLike | None = None,
+        requires_grad: bool = False,
+        pin_memory: bool = False,
+    ) -> Tensor:
+        """
+        Create a new uninitialized Tensor of the specified shape.
+
+        Args:
+            var (Tensor): A reference Tensor for default dtype and device.
+            size (ShapeLike): Shape of the new Tensor.
+            dtype (DTypeLike, optional): Desired data type of the new Tensor. Defaults to `var.dtype`.
+            device (PlaceLike, optional): Device on which to place the new Tensor. Defaults to `var.place`.
+            requires_grad (bool, optional): Whether to track gradients. Default: False.
+            pin_memory (bool, optional): Whether to pin memory. Default: False.
+
+        Returns:
+            Tensor: A new uninitialized Tensor with the specified shape.
+
+        Examples:
+            .. code-block:: pycon
+
+                >>> import paddle
+                >>> x = paddle.ones([2, 2])
+                >>> y = x.new_empty(3, 3)  # type: ignore
+                >>> y.shape
+                paddle.Size([3, 3])
+        """
+
+        if dtype is None:
+            dtype = var.dtype
+        if device is None:
+            device = var.place
+
+        return paddle.empty(
+            size,
+            dtype,
+            device=device,
+            requires_grad=requires_grad,
+            pin_memory=pin_memory,
+        )
+
+    @size_args_decorator_patch
+    def _new_ones_(
+        var: Tensor,
+        size: ShapeLike,
+        *,
+        dtype: DTypeLike | None = None,
+        device: PlaceLike | None = None,
+        requires_grad: bool = False,
+        pin_memory: bool = False,
+    ) -> Tensor:
+        """
+        Create a new Tensor of the specified shape filled with ones.
+
+        Args:
+            var (Tensor): A reference Tensor for default dtype and device.
+            size (ShapeLike): Shape of the new Tensor.
+            dtype (DTypeLike, optional): Desired data type of the new Tensor. Defaults to `var.dtype`.
+            device (PlaceLike, optional): Device on which to place the new Tensor. Defaults to `var.place`.
+            requires_grad (bool, optional): Whether to track gradients. Default: False.
+            pin_memory (bool, optional): Whether to pin memory. Default: False.
+
+        Returns:
+            Tensor: A new Tensor filled with ones.
+
+        Examples:
+            .. code-block:: pycon
+
+                >>> import paddle
+                >>> x = paddle.zeros([2, 2])
+                >>> y = x.new_ones(3, 3)  # type: ignore
+                >>> y.numpy()
+                array([[1., 1., 1.],
+                       [1., 1., 1.],
+                       [1., 1., 1.]], dtype=float32)
+        """
+
+        if dtype is None:
+            dtype = var.dtype
+        if device is None:
+            device = var.place
+
+        return paddle.full(
+            size,
+            1,
+            dtype,
+            device=device,
+            requires_grad=requires_grad,
+            pin_memory=pin_memory,
+        )
+
+    @size_args_decorator_patch
+    def _new_zeros_(
+        var: Tensor,
+        size: ShapeLike,
+        *,
+        dtype: DTypeLike | None = None,
+        device: PlaceLike | None = None,
+        requires_grad: bool = False,
+        pin_memory: bool = False,
+    ) -> Tensor:
+        """
+        Create a new Tensor of the specified shape filled with zeros.
+
+        Args:
+            var (Tensor): A reference Tensor for default dtype and device.
+            size (ShapeLike): Shape of the new Tensor.
+            dtype (DTypeLike, optional): Desired data type of the new Tensor. Defaults to `var.dtype`.
+            device (PlaceLike, optional): Device on which to place the new Tensor. Defaults to `var.place`.
+            requires_grad (bool, optional): Whether to track gradients. Default: False.
+            pin_memory (bool, optional): Whether to pin memory. Default: False.
+
+        Returns:
+            Tensor: A new Tensor filled with zeros.
+
+        Examples:
+            .. code-block:: pycon
+
+                >>> import paddle
+                >>> x = paddle.ones([2, 2])
+                >>> y = x.new_zeros(3, 3)  # type: ignore[misc, arg-type]
+                >>> y.numpy()
+                array([[0., 0., 0.],
+                       [0., 0., 0.],
+                       [0., 0., 0.]], dtype=float32)
+        """
+
+        if dtype is None:
+            dtype = var.dtype
+        if device is None:
+            device = var.place
+
+        return paddle.full(
+            size,
+            0,
+            dtype,
+            device=device,
+            requires_grad=requires_grad,
+            pin_memory=pin_memory,
+        )
+
+    @property
+    def requires_grad(self: Tensor) -> bool:
+        """
+        Whether this Tensor requires gradient computation.
+
+        This is a convenience property that returns the opposite of stop_gradient.
+        Setting requires_grad=True is equivalent to setting stop_gradient=False.
+
+        Examples:
+            .. code-block:: pycon
+
+                >>> import paddle
+                >>> x = paddle.randn([2, 3])
+                >>> print(x.requires_grad)  # False by default
+                >>>
+                >>> x.requires_grad = False
+                >>> print(x.stop_gradient)  # True
+        """
+        return not self.stop_gradient
+
+    @requires_grad.setter
+    def requires_grad(self: Tensor, value: bool) -> None:
+        """
+        Set whether this Tensor requires gradient computation.
+
+        Args:
+            value (bool): True to enable gradient computation, False to disable.
+        """
+        if not isinstance(value, bool):
+            raise TypeError(
+                f"requires_grad must be bool, but got {type(value)}"
+            )
+        self.stop_gradient = not value
+
+    def requires_grad_(self, requires_grad: bool = True) -> Tensor:
+        """
+        Set whether this Tensor requires gradient computation.
+
+        Args:
+            requires_grad (bool): True to enable gradient computation, False to disable.
+        """
+        if not isinstance(requires_grad, bool):
+            raise TypeError(
+                f"requires_grad must be bool, but got {type(requires_grad)}"
+            )
+        self.stop_gradient = not requires_grad
+        return self
+
+    @property
+    def itemsize(self: Tensor) -> int:
+        """
+        Returns the number of bytes allocated on the machine for a single element of the Tensor.
+
+        Examples:
+            .. code-block:: pycon
+
+                >>> import paddle
+                >>> x = paddle.randn((2, 3), dtype=paddle.float64)
+                >>> x.itemsize
+                8
+        """
+        return self.element_size()
+
+    @property
+    def nbytes(self: Tensor) -> int:
+        """
+        Returns the number of bytes allocated for elements of the dense Tensor. Defined to be ``size`` * ``element_size()``
+        """
+        if self.is_sparse():
+            raise RuntimeError(
+                "nbytes is not defined for sparse tensors. "
+                "Add nbytes of indices and values for sparse storage size, "
+                "or multiply numel by element_size for the equivalent dense tensor."
+            )
+        return self.size * self.element_size()
+
+    def _reduce_ex_(self: Tensor, proto):
+        data_numpy = self.numpy()
+        place = str(self.place)[6:-1]  # Place(gpu:1) -> gpu:1
+        dtype = str(self.dtype)[7:]  # paddle.int32 -> int32
+        requires_grad = self.requires_grad
+        return _rebuild_tensor, (
+            data_numpy,
+            dtype,
+            place,
+            requires_grad,
+        )
+
     eager_methods = [
         ('__neg__', _neg_),
         ('__abs__', _abs_),
         ('__complex__', _complex_),
         ('__float__', _float_),
-        ('__long__', _long_),
         ('__int__', _int_),
         ('__len__', _len_),
         ('__index__', _index_),
         ('astype', astype),
+        ('byte', byte),
+        ('uint8', byte),
+        ('type_as', type_as),
         ('dim', dim),
         ('ndimension', ndimension),
         ('ndim', _ndim),
         ('size', _size_),
+        ('nelement', nelement),
         ('T', _T_),
         ('mT', _mT_),
+        ('mH', _mH_),
+        ('H', _H_),
+        ('new_full', _new_full_),
+        ('new_tensor', _new_tensor_),
+        ('new_empty', _new_empty_),
+        ('new_ones', _new_ones_),
+        ('new_zeros', _new_zeros_),
+        ("requires_grad", requires_grad),
+        ("requires_grad_", requires_grad_),
         # for logical compare
         ('__array_ufunc__', None),
+        ('itemsize', itemsize),
+        ('nbytes', nbytes),
+        ('__reduce_ex__', _reduce_ex_),
     ]
+
+    dtype_conversion_methods = _create_dtype_conversion_methods()
+    eager_methods.extend(dtype_conversion_methods)
 
     eager_cpp_level_patch = [
         "__add__",

@@ -17,6 +17,11 @@
 #include "paddle/phi/backends/xpu/xpu_context.h"
 #include "paddle/phi/core/distributed/comm_context.h"
 
+#if defined(PADDLE_WITH_FLAGCX)
+#include "paddle/phi/backends/dynload/flagcx.h"
+#include "paddle/phi/core/distributed/flagcx_tools.h"
+#endif
+
 namespace phi {
 class DenseTensor;
 namespace distributed {
@@ -24,6 +29,9 @@ namespace distributed {
 class BKCLCommContext final : public CommContext {
  public:
   BKCLCommContext(int rank, int size, BKCLUniqueId BKCL_id);
+#if defined(PADDLE_WITH_FLAGCX)
+  BKCLCommContext(int rank, int size, flagcxHandlerGroup_t flagcx_handler);
+#endif
   ~BKCLCommContext() override = default;
 
   BKCLContext_t GetBKCLComm();
@@ -44,41 +52,56 @@ class BKCLCommContext final : public CommContext {
 
   void SetDevContext(std::unique_ptr<phi::XPUContext>&& dev_ctx);
 
-  void Broadcast(phi::DenseTensor* out_tensor,
-                 const phi::DenseTensor& in_tensor,
+  void Broadcast(DenseTensor* out_tensor,
+                 const DenseTensor& in_tensor,
                  int root,
                  XPUStream stream);
 
-  void Send(const phi::DenseTensor& in_tensor,
+  void Send(const DenseTensor& in_tensor,
             const int64_t& count,
             const int& peer,
             XPUStream stream);
 
-  void Recv(phi::DenseTensor* out_tensor,
+  void Recv(DenseTensor* out_tensor,
             const int64_t& count,
             const int& peer,
             XPUStream stream);
 
-  void ReduceScatter(phi::DenseTensor* out_tensor,
-                     const phi::DenseTensor& in_tensor,
+  void ReduceScatter(DenseTensor* out_tensor,
+                     const DenseTensor& in_tensor,
                      BKCLOp reduce_type,
                      XPUStream stream);
 
-  void AllGather(phi::DenseTensor* out_tensor,
-                 const phi::DenseTensor& in_tensor,
+#if defined(PADDLE_WITH_FLAGCX)
+  void Scatter(DenseTensor* out_tensor,
+               const DenseTensor& in_tensor,
+               int root,
+               XPUStream stream);
+#endif
+
+  void AllGather(DenseTensor* out_tensor,
+                 const DenseTensor& in_tensor,
                  XPUStream stream);
 
-  void AllReduce(phi::DenseTensor* out_tensor,
-                 const phi::DenseTensor& in_tensor,
+  void AllReduce(DenseTensor* out_tensor,
+                 const DenseTensor& in_tensor,
                  BKCLOp reduce_type,
                  XPUStream stream);
 
-  void AllToAll(phi::DenseTensor* out_tensor,
-                const phi::DenseTensor& in_tensor,
+  void AllToAll(DenseTensor* out_tensor,
+                const DenseTensor& in_tensor,
                 XPUStream stream);
 
-  void Reduce(phi::DenseTensor* out_tensor,
-              const phi::DenseTensor& in_tensor,
+  void AllToAllUnequalSplit(DenseTensor* out_tensor,
+                            const DenseTensor& in_tensor,
+                            const DenseTensor& out_size_tensor,
+                            const DenseTensor& out_offset_tensor,
+                            const DenseTensor& in_size_tensor,
+                            const DenseTensor& in_offset_tensor,
+                            XPUStream stream);
+
+  void Reduce(DenseTensor* out_tensor,
+              const DenseTensor& in_tensor,
               BKCLOp reduce_type,
               int root,
               XPUStream stream);
@@ -86,6 +109,10 @@ class BKCLCommContext final : public CommContext {
   void GroupStart();
 
   void GroupEnd();
+
+#if defined(PADDLE_WITH_FLAGCX)
+  flagcxRedOp_t BkclToFlagcxRedType(BKCLOp redOp);
+#endif
 
  private:
   DISABLE_COPY_AND_ASSIGN(BKCLCommContext);
@@ -99,6 +126,12 @@ class BKCLCommContext final : public CommContext {
 
   // used for compute wait comm, comm_stream-->event-->compute_stream
   std::shared_ptr<std::remove_pointer<XPUEvent>::type> comm_event_;
+
+#if defined(PADDLE_WITH_FLAGCX)
+
+ public:
+  flagcxHandlerGroup_t flagcx_handler_;
+#endif
 };
 
 }  // namespace distributed

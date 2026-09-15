@@ -13,10 +13,9 @@
 // limitations under the License.
 
 #include "paddle/phi/backends/cpu/cpu_context.h"
-#include "paddle/phi/common/bfloat16.h"
-#include "paddle/phi/common/complex.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/cpu/elementwise.h"
+#include "paddle/phi/kernels/funcs/sleef_vectorized_math.h"
 #include "paddle/phi/kernels/impl/elementwise_kernel_impl.h"
 
 namespace phi {
@@ -27,6 +26,10 @@ void MaximumRawKernel(const Context& dev_ctx,
                       const DenseTensor& y,
                       int axis,
                       DenseTensor* out) {
+  if (out && out->numel() == 0) {
+    dev_ctx.template Alloc<T>(out);
+    return;
+  }
   // allocate memory for out
   dev_ctx.template Alloc<T>(out);
   funcs::ElementwiseCompute<funcs::MaximumFunctor<T>, T>(
@@ -39,6 +42,10 @@ void MinimumRawKernel(const Context& dev_ctx,
                       const DenseTensor& y,
                       int axis,
                       DenseTensor* out) {
+  if (out && out->numel() == 0) {
+    dev_ctx.template Alloc<T>(out);
+    return;
+  }
   // allocate memory for out
   dev_ctx.template Alloc<T>(out);
   funcs::ElementwiseCompute<funcs::MinimumFunctor<T>, T>(
@@ -51,10 +58,14 @@ void RemainderRawKernel(const Context& dev_ctx,
                         const DenseTensor& y,
                         int axis,
                         DenseTensor* out) {
+  if (out && out->numel() == 0) {
+    dev_ctx.template Alloc<T>(out);
+    return;
+  }
   // allocate memory for out
   dev_ctx.template Alloc<T>(out);
-  auto x_dims = x.dims();
-  auto y_dims = y.dims();
+  const auto& x_dims = x.dims();
+  const auto& y_dims = y.dims();
   if (x_dims.size() >= y_dims.size()) {  // NOLINT
     funcs::ElementwiseCompute<funcs::RemainderFunctor<T>, T>(
         dev_ctx, x, y, funcs::RemainderFunctor<T>(), out, axis);
@@ -83,6 +94,48 @@ void FloorDivideRawKernel(const Context& dev_ctx,
   }
 }
 
+#ifdef PADDLE_WITH_SLEEF
+template <typename T, typename Context>
+void ElementwisePowSameDimsHelper(const Context& dev_ctx,
+                                  const DenseTensor& x,
+                                  const DenseTensor& y,
+                                  int axis,
+                                  DenseTensor* out) {
+  // Use unified vectorized Sleef implementation from sleef_vectorized_math.h
+  if constexpr (std::is_same<T, float>::value ||
+                std::is_same<T, double>::value) {
+    bool is_contiguous = true;
+    auto x_strides = x.strides();
+    auto y_strides = y.strides();
+    auto dims = x.dims();
+    int64_t expected_stride = 1;
+    for (int i = dims.size() - 1; i >= 0; --i) {
+      if (x_strides[i] != expected_stride || y_strides[i] != expected_stride) {
+        is_contiguous = false;
+        break;
+      }
+      expected_stride *= dims[i];
+    }
+
+    if (is_contiguous) {
+      const T* x_data = x.data<T>();
+      const T* y_data = y.data<T>();
+      T* out_data = out->data<T>();
+      int64_t numel = x.numel();
+
+      // Use unified vectorized implementation
+      funcs::sleef_vec::vpow(out_data, x_data, y_data, numel);
+    } else {
+      funcs::ElementwiseCompute<funcs::ElementwisePowFunctor<T>, T>(
+          dev_ctx, x, y, funcs::ElementwisePowFunctor<T>(), out, axis);
+    }
+  } else {
+    funcs::ElementwiseCompute<funcs::ElementwisePowFunctor<T>, T>(
+        dev_ctx, x, y, funcs::ElementwisePowFunctor<T>(), out, axis);
+  }
+}
+#endif
+
 template <typename T, typename Context>
 void ElementwisePowRawKernel(const Context& dev_ctx,
                              const DenseTensor& x,
@@ -94,6 +147,12 @@ void ElementwisePowRawKernel(const Context& dev_ctx,
   auto x_dims = x.dims();
   auto y_dims = y.dims();
   if (x_dims.size() >= y_dims.size()) {
+#ifdef PADDLE_WITH_SLEEF
+    if (x_dims == y_dims) {
+      ElementwisePowSameDimsHelper<T>(dev_ctx, x, y, axis, out);
+      return;
+    }
+#endif
     funcs::ElementwiseCompute<funcs::ElementwisePowFunctor<T>, T>(
         dev_ctx, x, y, funcs::ElementwisePowFunctor<T>(), out, axis);
   } else {
@@ -112,7 +171,7 @@ PD_REGISTER_KERNEL(maximum_raw,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::bfloat16) {}
+                   phi::bfloat16) {}
 PD_REGISTER_KERNEL(minimum_raw,
                    CPU,
                    ALL_LAYOUT,
@@ -121,13 +180,15 @@ PD_REGISTER_KERNEL(minimum_raw,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::bfloat16) {}
+                   phi::bfloat16) {}
 PD_REGISTER_KERNEL(remainder_raw,
                    CPU,
                    ALL_LAYOUT,
                    phi::RemainderRawKernel,
                    float,
                    double,
+                   phi::complex64,
+                   phi::complex128,
                    int,
                    int64_t) {}
 PD_REGISTER_KERNEL(floor_divide_raw,
@@ -141,8 +202,8 @@ PD_REGISTER_KERNEL(floor_divide_raw,
                    int64_t,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}
 PD_REGISTER_KERNEL(elementwise_pow_raw,
                    CPU,
                    ALL_LAYOUT,
@@ -151,4 +212,6 @@ PD_REGISTER_KERNEL(elementwise_pow_raw,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::bfloat16) {}
+                   phi::bfloat16,
+                   phi::complex64,
+                   phi::complex128) {}

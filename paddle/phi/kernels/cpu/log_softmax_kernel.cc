@@ -23,10 +23,8 @@
 
 namespace phi {
 
-template <typename T,
-          int MajorType = Eigen::RowMajor,
-          typename IndexType = Eigen::DenseIndex>
-using EigenMatrixTemplate = EigenMatrix<T, MajorType, IndexType>;
+template <typename T, int MajorType = Eigen::RowMajor>
+using EigenMatrixTemplate = EigenMatrix<T, MajorType>;
 
 template <typename T>
 struct ValueClip {
@@ -38,7 +36,7 @@ struct ValueClip {
 
 template <typename Context, typename T>
 struct LogSoftmaxFunctor {
-  void operator()(const Context& context,
+  void operator()(const Context& dev_ctx,
                   const DenseTensor* X,
                   DenseTensor* Y,
                   const int axis) {
@@ -49,7 +47,7 @@ struct LogSoftmaxFunctor {
     int axis_dim = static_cast<int>(X->dims()[axis]);
     const int n = funcs::SizeToAxis(axis, X->dims());
     const int d = funcs::SizeFromAxis(axis, X->dims());
-    phi::DDim dim_2d{n, d};
+    DDim dim_2d{n, d};
 
     auto logits = EigenMatrixTemplate<T>::From(*X, dim_2d);
     auto log_softmax = EigenMatrixTemplate<T>::From(*Y, dim_2d);
@@ -72,7 +70,7 @@ struct LogSoftmaxFunctor {
     if (num_remain == 1) {
       // axis == -1, axis and class in same dimension, calculate along
       // class dimension directly for higher performance
-      log_softmax.device(*context.eigen_device()) =
+      log_softmax.device(*dev_ctx.eigen_device()) =
           (logits - logits.maximum(along_axis)
                         .eval()
                         .reshape(batch_by_one)
@@ -81,7 +79,7 @@ struct LogSoftmaxFunctor {
     } else {
       // axis != -1, class dimension split into (axis, remain), max and sum
       // should be calculated along axis dimension
-      log_softmax.device(*context.eigen_device()) =
+      log_softmax.device(*dev_ctx.eigen_device()) =
           (logits.reshape(batch_axis_remain) - logits.reshape(batch_axis_remain)
                                                    .maximum(along_axis)
                                                    .eval()
@@ -91,7 +89,7 @@ struct LogSoftmaxFunctor {
               .unaryExpr(ValueClip<T>());
     }
 
-    log_softmax.device(*context.eigen_device()) =
+    log_softmax.device(*dev_ctx.eigen_device()) =
         log_softmax - log_softmax.exp()
                           .eval()
                           .reshape(batch_axis_remain)
@@ -112,7 +110,7 @@ void LogSoftmaxKernel(const Context& dev_ctx,
   dev_ctx.template Alloc<T>(out);
   // For 0D Tensor
   if (rank == 0) {
-    phi::funcs::set_constant(dev_ctx, out, static_cast<T>(0.0));
+    funcs::set_constant(dev_ctx, out, static_cast<T>(0.0));
     return;
   }
   if (x.numel() != 0) {

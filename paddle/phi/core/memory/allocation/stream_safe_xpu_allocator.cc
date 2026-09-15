@@ -14,6 +14,7 @@
 
 #include "paddle/phi/core/memory/allocation/stream_safe_xpu_allocator.h"
 #include <thread>
+#include "glog/logging.h"
 
 #include "paddle/phi/api/profiler/event_tracing.h"
 #include "paddle/phi/backends/xpu/enforce_xpu.h"
@@ -38,6 +39,10 @@ StreamSafeXPUAllocation::StreamSafeXPUAllocation(
 bool StreamSafeXPUAllocation::RecordStream(XPUStream stream) {
   VLOG(8) << "Try record stream " << stream << " for address " << ptr();
   if (stream == owning_stream_) {
+    VLOG(8) << "stream " << stream << " is the same as owning stream "
+            << owning_stream_;
+    VLOG(8) << "Skip recording the same stream " << stream << " for address "
+            << ptr();
     return false;
   }
 
@@ -57,9 +62,13 @@ bool StreamSafeXPUAllocation::CanBeFreed() {
        it != outstanding_event_map_.end();
        ++it) {
     XPUEvent& event = it->second;
-
-    PADDLE_ENFORCE_XRE_SUCCESS(xpu_event_destroy(event));
-    VLOG(8) << "Destroy event " << event;
+    if (xpu_event_query(event) == XPU_SUCCESS) {
+      PADDLE_ENFORCE_XRE_SUCCESS(xpu_event_destroy(event));
+      VLOG(8) << "Destroy event " << event;
+    } else {
+      outstanding_event_map_.erase(outstanding_event_map_.begin(), it);
+      return false;
+    }
   }
   return true;
 }
@@ -88,7 +97,7 @@ void StreamSafeXPUAllocation::RecordStreamPrivate(XPUStream stream) {
 
 StreamSafeXPUAllocator::StreamSafeXPUAllocator(
     std::shared_ptr<Allocator> underlying_allocator,
-    phi::XPUPlace place,
+    XPUPlace place,
     XPUStream default_stream)
     : underlying_allocator_(std::move(underlying_allocator)),
       place_(std::move(place)),
@@ -164,7 +173,7 @@ void StreamSafeXPUAllocator::FreeImpl(phi::Allocation* allocation) {
   }
 }
 
-uint64_t StreamSafeXPUAllocator::ReleaseImpl(const phi::Place& place) {
+uint64_t StreamSafeXPUAllocator::ReleaseImpl(const Place& place) {
   std::lock_guard<SpinLock> lock_guard(allocator_map_lock_);
   std::vector<StreamSafeXPUAllocator*>& allocators = allocator_map_[place];
   uint64_t released_size = 0;
@@ -201,7 +210,7 @@ uint64_t StreamSafeXPUAllocator::ProcessUnfreedAllocationsAndRelease() {
 
 thread_local std::once_flag StreamSafeXPUAllocation::once_flag_;
 
-std::map<phi::Place, std::vector<StreamSafeXPUAllocator*>>
+std::map<Place, std::vector<StreamSafeXPUAllocator*>>
     StreamSafeXPUAllocator::allocator_map_;
 SpinLock StreamSafeXPUAllocator::allocator_map_lock_;
 

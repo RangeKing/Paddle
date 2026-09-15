@@ -16,6 +16,7 @@
 
 #include "paddle/phi/backends/cpu/cpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/common_shape.h"
 #include "paddle/phi/kernels/funcs/eigen/common.h"
 #include "paddle/phi/kernels/funcs/eigen/eigen_function.h"
@@ -23,12 +24,8 @@
 
 namespace phi {
 
-inline void GetDims(const phi::DDim& dim,
-                    int axis,
-                    int* pre,
-                    int* n,
-                    int* post,
-                    bool asvector) {
+inline void GetDims(
+    const DDim& dim, int axis, int* pre, int* n, int* post, bool asvector) {
   *pre = 1;
   *post = 1;
   *n = static_cast<int>(dim[axis]);
@@ -47,7 +44,7 @@ inline void GetDims(const phi::DDim& dim,
 template <typename T, typename Context>
 void PNormKernel(const Context& dev_ctx,
                  const DenseTensor& x,
-                 float porder,
+                 double porder,
                  int axis,
                  float epsilon UNUSED,
                  bool keepdim UNUSED,
@@ -61,20 +58,21 @@ void PNormKernel(const Context& dev_ctx,
   int pre = 0, n = 0, post = 0;
   GetDims(xdim, axis, &pre, &n, &post, asvector);
 
-  for (int i = 0; i < xdim.size(); i++) {
-    PADDLE_ENFORCE_LT(0,
-                      xdim[i],
-                      errors::InvalidArgument(
-                          "The dims of Input(X) should be greater than 0."));
+  if (x.numel() == 0) {
+    if (out->numel() > 0) {
+      std::vector<int64_t> vec_dims = vectorize(out->dims());
+      Full<T, Context>(dev_ctx, vec_dims, static_cast<T>(0), out);
+    }
+    return;
   }
 
   auto* place = dev_ctx.eigen_device();
 
-  Eigen::DSizes<int, 3> shape(pre, n, post);
-  Eigen::DSizes<int, 2> norm_shape(pre, post);
+  Eigen::DSizes<int64_t, 3> shape(pre, n, post);
+  Eigen::DSizes<int64_t, 2> norm_shape(pre, post);
 
-  auto x_e = phi::EigenVector<T>::Flatten(*in_x);
-  auto norm_e = phi::EigenVector<T>::Flatten(*out);
+  auto x_e = EigenVector<T>::Flatten(*in_x);
+  auto norm_e = EigenVector<T>::Flatten(*out);
 
   auto xr = x_e.reshape(shape);
   auto norm = norm_e.reshape(norm_shape);
@@ -91,7 +89,7 @@ void PNormKernel(const Context& dev_ctx,
   } else if (porder == -INFINITY) {
     norm.device(*place) = xr.abs().minimum(rdim);
   } else {
-    norm.device(*place) = xr.abs().pow(porder).sum(rdim).pow(1.0f / porder);
+    norm.device(*place) = xr.abs().pow(porder).sum(rdim).pow(1.0 / porder);
   }
 }
 }  // namespace phi

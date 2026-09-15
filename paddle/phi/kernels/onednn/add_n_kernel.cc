@@ -17,14 +17,14 @@
 #include "paddle/phi/core/kernel_registry.h"
 
 namespace phi {
-bool AddNCheckIfOneDNNSupport(const KernelContext* ctx) {
-  for (size_t i = 0; i < ctx->InputsSize(); i++) {
-    if (!DenseTensor::classof(ctx->MutableIutputAt(i))) {
+bool AddNCheckIfOneDNNSupport(const KernelContext* dev_ctx) {
+  for (size_t i = 0; i < dev_ctx->InputsSize(); i++) {
+    if (!DenseTensor::classof(dev_ctx->MutableInputAt(i))) {
       return false;
     }
   }
-  KernelContext* ctx_tmp = const_cast<KernelContext*>(ctx);
-  if (!DenseTensor::classof(ctx_tmp->MutableOutputAt(0))) {
+  KernelContext* dev_ctx_tmp = const_cast<KernelContext*>(dev_ctx);
+  if (!DenseTensor::classof(dev_ctx_tmp->MutableOutputAt(0))) {
     return false;
   }
   return true;
@@ -41,7 +41,7 @@ class SumOneDNNHandler : public OneDNNHandlerNoCachingT<T, dnnl::sum> {
 
       : OneDNNHandlerNoCachingT<T, dnnl::sum>(engine, cpu_place),
         num_inputs_(0) {
-    auto dst_tz = common::vectorize<int64_t>(out->dims());
+    auto dst_tz = vectorize<int64_t>(out->dims());
     auto src_tz = dst_tz;
 
     std::vector<dnnl::memory::desc> srcs_md;
@@ -51,7 +51,7 @@ class SumOneDNNHandler : public OneDNNHandlerNoCachingT<T, dnnl::sum> {
       if (input_it->numel() == 0) {
         continue;
       }
-      srcs_md.push_back(input_it->mem_desc());
+      srcs_md.push_back(phi::funcs::GetOneDNNMemDesc(*input_it));
       ++num_inputs_;
     }
     std::vector<float> scales(num_inputs_, 1.0f);
@@ -86,11 +86,6 @@ template <typename T, typename Context>
 void AddNKernel(const Context& dev_ctx,
                 const std::vector<const TensorBase*>& x,
                 DenseTensor* out) {
-  PADDLE_ENFORCE_EQ(
-      dev_ctx.GetPlace().GetType() == AllocationType::CPU,
-      true,
-      errors::PreconditionNotMet("oneDNN AddN kernel must use CPUPlace"));
-
   const auto& onednn_engine = dev_ctx.GetEngine();
 
   PADDLE_ENFORCE_NE(
@@ -130,11 +125,11 @@ void AddNKernel(const Context& dev_ctx,
   sum_p->execute(astream, args);
   astream.wait();
 
-  out->set_mem_desc(dst_mem->get_desc());
+  phi::funcs::SetOneDNNMemDesc(out, dst_mem->get_desc());
 }
 }  // namespace phi
 
 PD_REGISTER_KERNEL(
-    add_n, OneDNN, ONEDNN, phi::AddNKernel, float, phi::dtype::bfloat16) {
+    add_n, OneDNN, ONEDNN, phi::AddNKernel, float, phi::bfloat16) {
   kernel->check_if_onednn_kernel_support_ = phi::AddNCheckIfOneDNNSupport;
 }

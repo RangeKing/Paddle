@@ -32,7 +32,7 @@
 namespace phi {
 
 template <typename T>
-using MultiPrecisionType = typename phi::dtype::MPTypeTrait<T>::Type;
+using MultiPrecisionType = typename MPTypeTrait<T>::Type;
 
 __device__ __forceinline__ float Sqrt(float x) { return sqrtf(x); }
 __device__ __forceinline__ double Sqrt(double x) { return sqrt(x); }
@@ -92,10 +92,10 @@ __device__ inline void VectorizeLarsUpdate(const T* __restrict__ grad,
                                            const MT rescale_grad,
                                            const int tid,
                                            const int grid_stride,
-                                           const int numel,
+                                           const int64_t numel,
                                            MT* master_param_out = nullptr) {
-  using VecType = phi::AlignedVector<T, VecSize>;
-  using VecMType = phi::AlignedVector<MT, VecSize>;
+  using VecType = AlignedVector<T, VecSize>;
+  using VecMType = AlignedVector<MT, VecSize>;
   int main = numel >> (VecSize >> 1);
   int tail_offset = main * VecSize;
 
@@ -133,7 +133,7 @@ __device__ inline void VectorizeLarsUpdate(const T* __restrict__ grad,
     }
   }
 
-  for (int i = tid + tail_offset; i < numel; i += grid_stride) {
+  for (int64_t i = tid + tail_offset; i < numel; i += grid_stride) {
     MT grad_val = static_cast<MT>(grad[i]) * rescale_grad;
     MT param_val = param[i];
     MT velocity_tmp =
@@ -154,7 +154,8 @@ __device__ inline void VectorizeLarsUpdate(const T* __restrict__ grad,
   --rdc=true compile flag, then L2_norm kernel can be set with __device__ and
   cooperative_groups::grid_group also can be involved. Otherwise, adding this
   flag may affect much, L2_norm kernel shall be set with __global__.*/
-// TODO(limingshu): declaration of cooperative_groups wapper is invalid in host.
+// TODO(limingshu): declaration of cooperative_groups wrapper is invalid in
+// host.
 template <typename T, typename MT>
 __forceinline__ __device__ void L2NormKernel(
     const cooperative_groups::grid_group* cg,
@@ -185,19 +186,19 @@ __global__ void L2NormKernel(
     g_tmp += (tmp1 * tmp1);
     tid += grid_stride;
   }
-  p_tmp = phi::funcs::BlockReduceSum<MT>(p_tmp, FINAL_MASK);
-  g_tmp = phi::funcs::BlockReduceSum<MT>(g_tmp, FINAL_MASK);
+  p_tmp = funcs::BlockReduceSum<MT>(p_tmp, FINAL_MASK);
+  g_tmp = funcs::BlockReduceSum<MT>(g_tmp, FINAL_MASK);
 
   if (threadIdx.x == 0) {
     p_buffer[blockIdx.x] = p_tmp;
     g_buffer[blockIdx.x] = g_tmp;
   }
 #if CUDA_VERSION >= 11000
-  cg->sync();  // Grid sync for writring partial result to gloabl memory
+  cg->sync();  // Grid sync for writing partial result to global memory
   MT p_part_sum = threadIdx.x < gridDim.x ? p_buffer[threadIdx.x] : 0;
   MT g_part_sum = threadIdx.x < gridDim.x ? g_buffer[threadIdx.x] : 0;
-  MT tmp0 = phi::funcs::BlockReduceSum<MT>(p_part_sum, FINAL_MASK);
-  MT tmp1 = phi::funcs::BlockReduceSum<MT>(g_part_sum, FINAL_MASK);
+  MT tmp0 = funcs::BlockReduceSum<MT>(p_part_sum, FINAL_MASK);
+  MT tmp1 = funcs::BlockReduceSum<MT>(g_part_sum, FINAL_MASK);
   if (threadIdx.x == 0) {
     s_buffer[0] = tmp0;
     s_buffer[1] = tmp1;
@@ -286,7 +287,7 @@ __forceinline__ __device__ void MomentumUpdate(
 
 #if CUDA_VERSION >= 11000
 template <typename T, typename MT>
-struct LarsParamWarpper {
+struct LarsParamWrapper {
   int64_t numel_arr[LARS_MAX_MERGED_OPS];
   int repeat_arr[LARS_MAX_MERGED_OPS];
   const T* __restrict__ g_arr[LARS_MAX_MERGED_OPS];
@@ -298,7 +299,7 @@ struct LarsParamWarpper {
 };
 
 template <typename T, typename MT>
-__global__ void MergedMomentumLarsKernel(LarsParamWarpper<T, MT> lars_warpper,
+__global__ void MergedMomentumLarsKernel(LarsParamWrapper<T, MT> lars_wrapper,
                                          MT* __restrict__ p_buffer,
                                          MT* __restrict__ g_buffer,
                                          const int op_num,
@@ -308,33 +309,35 @@ __global__ void MergedMomentumLarsKernel(LarsParamWarpper<T, MT> lars_warpper,
                                          const MT rescale_grad,
                                          const bool is_amp) {
   int grid_stride = gridDim.x * LARS_BLOCK_SIZE;
-  int tid = threadIdx.x + blockIdx.x * blockDim.x;
+  int64_t tid =
+      static_cast<int64_t>(threadIdx.x) +
+      static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x);
   const cooperative_groups::grid_group cg = cooperative_groups::this_grid();
   for (int i = 0; i < op_num; ++i) {
-    int numel = lars_warpper.numel_arr[i];
+    int numel = lars_wrapper.numel_arr[i];
     MT param_norm = static_cast<MT>(0);
     MT grad_norm = static_cast<MT>(0);
     L2NormKernel<T, MT>(&cg,
-                        lars_warpper.p_out_arr[i],
-                        lars_warpper.g_arr[i],
+                        lars_wrapper.p_out_arr[i],
+                        lars_wrapper.g_arr[i],
                         p_buffer,
                         g_buffer,
                         numel,
-                        lars_warpper.repeat_arr[i],
+                        lars_wrapper.repeat_arr[i],
                         rescale_grad,
                         0,
                         &param_norm,
                         &grad_norm);
-    MomentumUpdate<T, MT>(lars_warpper.p_out_arr[i],
-                          lars_warpper.g_arr[i],
-                          lars_warpper.v_out_arr[i],
-                          lars_warpper.p_out_arr[i],
-                          lars_warpper.v_out_arr[i],
-                          lars_warpper.master_p_out_arr[i],
-                          lars_warpper.master_p_out_arr[i],
-                          lars_warpper.lr_arr[i],
+    MomentumUpdate<T, MT>(lars_wrapper.p_out_arr[i],
+                          lars_wrapper.g_arr[i],
+                          lars_wrapper.v_out_arr[i],
+                          lars_wrapper.p_out_arr[i],
+                          lars_wrapper.v_out_arr[i],
+                          lars_wrapper.master_p_out_arr[i],
+                          lars_wrapper.master_p_out_arr[i],
+                          lars_wrapper.lr_arr[i],
                           mu,
-                          lars_warpper.weight_decay_arr[i],
+                          lars_wrapper.weight_decay_arr[i],
                           lars_coeff,
                           epsilon,
                           rescale_grad,
@@ -368,7 +371,9 @@ __global__ void MomentumLarsKernel(const T* param,
                                    const int thresh,
                                    const int64_t numel,
                                    const bool is_amp) {
-  int tid = threadIdx.x + blockIdx.x * blockDim.x;
+  int64_t tid =
+      static_cast<int64_t>(threadIdx.x) +
+      static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x);
   int grid_stride = gridDim.x * LARS_BLOCK_SIZE;
 #if CUDA_VERSION >= 11000
   const cooperative_groups::grid_group cg = cooperative_groups::this_grid();
@@ -390,10 +395,9 @@ __global__ void MomentumLarsKernel(const T* param,
   MT param_part_norm = threadIdx.x < thresh ? p_buffer[threadIdx.x] : 0;
   MT grad_part_norm = threadIdx.x < thresh ? g_buffer[threadIdx.x] : 0;
   __syncthreads();
-  MT param_norm =
-      Sqrt(phi::funcs::BlockReduceSum<MT>(param_part_norm, FINAL_MASK));
-  MT grad_norm = Sqrt(rescale_grad_pow * phi::funcs::BlockReduceSum<MT>(
-                                             grad_part_norm, FINAL_MASK));
+  MT param_norm = Sqrt(funcs::BlockReduceSum<MT>(param_part_norm, FINAL_MASK));
+  MT grad_norm = Sqrt(rescale_grad_pow *
+                      funcs::BlockReduceSum<MT>(grad_part_norm, FINAL_MASK));
 #endif
   MomentumUpdate<T, MT>(param,
                         grad,
@@ -479,7 +483,7 @@ void LarsMomentumKernel(
     const std::vector<const DenseTensor*>& velocity,
     const std::vector<const DenseTensor*>& learning_rate,
     const std::vector<const DenseTensor*>& grad,
-    const paddle::optional<std::vector<const DenseTensor*>>& master_param,
+    const optional<std::vector<const DenseTensor*>>& master_param,
     const std::vector<float>& weight_decay_arr,
     float mu,
     float lars_coeff,
@@ -492,9 +496,10 @@ void LarsMomentumKernel(
   using MT = MultiPrecisionType<T>;
   int num_blocks_per_sm = 0;
   int sm_num = dev_ctx.GetSMCount();
-  // phi::DenseTensor tmp_buffer_t = ctx.AllocateTmpTensor<MT, phi::GPUContext>(
+  // DenseTensor tmp_buffer_t = dev_ctx.AllocateTmpTensor<MT,
+  // GPUContext>(
   //     {LARS_BLOCK_SIZE << 1}, cuda_ctx);
-  phi::DenseTensor tmp_buffer_t;
+  DenseTensor tmp_buffer_t;
   tmp_buffer_t.Resize({LARS_BLOCK_SIZE << 1});
   MT* p_buffer = dev_ctx.template Alloc<MT>(&tmp_buffer_t);
   MT* g_buffer = p_buffer + LARS_BLOCK_SIZE;
@@ -507,23 +512,23 @@ void LarsMomentumKernel(
   int op_num = grad.size();
 #if CUDA_VERSION >= 11000
   if (op_num > 1) {
-    LarsParamWarpper<T, MT> lars_warpper;
+    LarsParamWrapper<T, MT> lars_wrapper;
     PADDLE_ENFORCE_LT(
         op_num,
         LARS_MAX_MERGED_OPS,
         errors::InvalidArgument(
-            "The maximum number of merged-ops supported is (%d), but"
-            "lars op required for trainning this model is (%d)\n",
+            "The maximum number of merged-ops supported is (%d), but "
+            "lars op required for training this model is (%d)\n",
             LARS_MAX_MERGED_OPS,
             op_num));
 
     /* Implementation of lars optimizer consists of following two steps:
       1. Figure out the L2 norm statistic result of grad data and param data.
       2. Update param and velocity with usage of L2 norm statistic result.
-    Step1 and step2 can be merged with api provided by nvida
+    Step1 and step2 can be merged with api provided by nvidia
       cudaLaunchCooperativeKernel:
-      - The thread quantity shall less than pyhsical SM limited threads
-      - Launche as thread-block can synchronizlly execute. */
+      - The thread quantity shall less than physical SM limited threads
+      - Launches as thread-block can synchronizlly execute. */
     cudaOccupancyMaxActiveBlocksPerMultiprocessor(
         &num_blocks_per_sm,
         MergedMomentumLarsKernel<T, MT>,
@@ -534,19 +539,19 @@ void LarsMomentumKernel(
     for (int i = 0; i < op_num; ++i) {
       size_t temp_numel = param[i]->numel();
       total_numel += temp_numel;
-      lars_warpper.numel_arr[i] = temp_numel;
-      lars_warpper.g_arr[i] = grad[i]->data<T>();
-      lars_warpper.lr_arr[i] = learning_rate[i]->data<MT>();
-      lars_warpper.p_out_arr[i] = dev_ctx.template Alloc<T>(param_out[i]);
-      lars_warpper.v_out_arr[i] = dev_ctx.template Alloc<MT>(velocity_out[i]);
-      lars_warpper.weight_decay_arr[i] = static_cast<MT>(weight_decay_arr[i]);
+      lars_wrapper.numel_arr[i] = temp_numel;
+      lars_wrapper.g_arr[i] = grad[i]->data<T>();
+      lars_wrapper.lr_arr[i] = learning_rate[i]->data<MT>();
+      lars_wrapper.p_out_arr[i] = dev_ctx.template Alloc<T>(param_out[i]);
+      lars_wrapper.v_out_arr[i] = dev_ctx.template Alloc<MT>(velocity_out[i]);
+      lars_wrapper.weight_decay_arr[i] = static_cast<MT>(weight_decay_arr[i]);
       PADDLE_ENFORCE_EQ(
           param[i]->data<T>(),
-          lars_warpper.p_out_arr[i],
+          lars_wrapper.p_out_arr[i],
           errors::InvalidArgument(
               "Input(Param) and Output(ParamOut) must be the same Tensors."));
       PADDLE_ENFORCE_EQ(velocity[i]->data<MT>(),
-                        lars_warpper.v_out_arr[i],
+                        lars_wrapper.v_out_arr[i],
                         errors::InvalidArgument(
                             "Input(Velocity) and Output(VelocityOut) must be "
                             "the same Tensors."));
@@ -555,21 +560,21 @@ void LarsMomentumKernel(
     LarsThreadConfig<float> lars_thread_config(
         avg_numel, sm_num, num_blocks_per_sm);
     for (int i = 0; i < op_num; ++i) {
-      lars_warpper.repeat_arr[i] =
-          lars_thread_config.GetRepeatTimes(lars_warpper.numel_arr[i]);
+      lars_wrapper.repeat_arr[i] =
+          lars_thread_config.GetRepeatTimes(lars_wrapper.numel_arr[i]);
     }
     if (multi_precision) {
       for (int i = 0; i < op_num; ++i) {
-        lars_warpper.master_p_out_arr[i] =
+        lars_wrapper.master_p_out_arr[i] =
             dev_ctx.template Alloc<MT>(master_param_out[i]);
         PADDLE_ENFORCE_EQ(master_param.get()[i]->data<MT>(),
-                          lars_warpper.master_p_out_arr[i],
+                          lars_wrapper.master_p_out_arr[i],
                           errors::InvalidArgument(
                               "Input(MasterParam) and Output(MasterParamOut) "
                               "must be the same Tensors."));
       }
     }
-    void* cuda_param[] = {reinterpret_cast<void*>(&lars_warpper),
+    void* cuda_param[] = {reinterpret_cast<void*>(&lars_wrapper),
                           reinterpret_cast<void*>(&p_buffer),
                           reinterpret_cast<void*>(&g_buffer),
                           reinterpret_cast<void*>(&op_num),
@@ -578,7 +583,7 @@ void LarsMomentumKernel(
                           reinterpret_cast<void*>(&epsilon_),
                           reinterpret_cast<void*>(&rescale_grad_),
                           reinterpret_cast<void*>(&multi_precision)};
-    // Lanuch all sm theads, and thead of each block synchronizedly cooperate.
+    // Launch all sm threads, and thead of each block synchronized cooperate.
     cudaLaunchCooperativeKernel(
         reinterpret_cast<void*>(MergedMomentumLarsKernel<T, MT>),
         lars_thread_config.grid_for_lars,
@@ -630,7 +635,7 @@ void LarsMomentumKernel(
         reinterpret_cast<void*>(&thresh),  // Just a placeholder
         reinterpret_cast<void*>(&numel),
         reinterpret_cast<void*>(&multi_precision)};
-    // Lanuch all sm theads.
+    // Launch all sm threads.
     cudaLaunchCooperativeKernel(
         reinterpret_cast<void*>(MomentumLarsKernel<T, MT>),
         lars_thread_config.grid_for_lars,
@@ -676,7 +681,7 @@ PD_REGISTER_KERNEL(lars_momentum,
                    phi::LarsMomentumKernel,
                    float,
                    double,
-                   phi::dtype::float16) {
+                   phi::float16) {
   if (kernel_key.dtype() == phi::DataType::FLOAT16) {
     kernel->OutputAt(1).SetDataType(phi::DataType::FLOAT32);
     kernel->OutputAt(2).SetDataType(phi::DataType::FLOAT32);

@@ -20,6 +20,7 @@ import time
 from enum import IntEnum, unique
 
 import paddle
+from paddle.base.core import get_all_custom_device_type
 from paddle.distributed.launch.context.node import Node
 from paddle.distributed.launch.utils.kv_client import KVClient
 from paddle.distributed.launch.utils.kv_server import KVServer
@@ -287,7 +288,7 @@ class Link:
         self._bandwidth = None
         # latency is stored by millisecond
         self._latency = None
-        # linke between mesh, machine, device
+        # linked between mesh, machine, device
         self._link_level = None
         self._hop = None
         self._topo = topo
@@ -1338,7 +1339,7 @@ def get_default_cluster(json_config=None, auto_config=None):
                         retry = False
                         logger.info("server stopped success")
                     else:
-                        logger.info("server stoped failed! retry later")
+                        logger.info("server stopped failed! retry later")
                         time.sleep(1)
             logger.info(
                 f'cluster_topo_info: {json.dumps(cluster.mesh_group.to_json(), indent=3)}'
@@ -1381,7 +1382,10 @@ def get_default_cluster(json_config=None, auto_config=None):
             node_count = int(global_device_count) // local_device_count
 
         if os.getenv("PADDLE_DISTRI_BACKEND", None) == "xccl":
-            gpu_name = os.getenv("PADDLE_XCCL_BACKEND", None)
+            custom_device_types = get_all_custom_device_type()
+            gpu_name = (
+                str(custom_device_types[0]) if custom_device_types else None
+            )
             gpu_model = gpu_name
             memory = int(
                 paddle.base.core.libpaddle._get_device_total_memory(gpu_name)

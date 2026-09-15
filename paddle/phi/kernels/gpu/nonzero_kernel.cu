@@ -12,28 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifdef __NVCC__
-#include "cub/cub.cuh"
-#endif
-#ifdef __HIPCC__
-#include <hipcub/hipcub.hpp>
-namespace cub = hipcub;
-#endif
-
+#include "paddle/phi/kernels/nonzero_kernel.h"
 #include "paddle/common/ddim.h"
 #include "paddle/phi/core/dense_tensor.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/funcs/cub.h"
 #include "paddle/phi/kernels/funcs/math_function.h"
 #include "paddle/phi/kernels/funcs/select_impl.cu.h"
-#include "paddle/phi/kernels/nonzero_kernel.h"
 
 namespace phi {
 template <typename MaskT, typename IndexT, typename OutT>
 struct IndexFunctor {
-  IndexT strides[phi::DDim::kMaxRank];
+  IndexT strides[DDim::kMaxRank];
   int rank;
 
-  explicit IndexFunctor(const phi::DDim &in_dims) {
+  explicit IndexFunctor(const DDim &in_dims) {
     rank = in_dims.size();
     // Get strides according to in_dims
     strides[0] = 1;
@@ -65,13 +58,37 @@ template <typename T, typename Context>
 void NonZeroKernel(const Context &dev_ctx,
                    const DenseTensor &condition,
                    DenseTensor *out) {
+  if (condition.numel() == 0) {
+    dev_ctx.template Alloc<int64_t>(out);
+    return;
+  }
   DenseTensor in_data;
   auto dims = condition.dims();
   using Functor = IndexFunctor<T, int64_t, int64_t>;
   Functor index_functor = Functor(dims);
-  phi::funcs::SelectKernel<T, T, int64_t, 0, Functor>(
+  funcs::SelectKernel<T, T, int64_t, 0, Functor>(
       dev_ctx, condition, in_data, out, index_functor);
 }
+
+template <typename T, typename Context>
+void RestrictNonZeroKernel(const Context &dev_ctx,
+                           const DenseTensor &condition,
+                           const int64_t total_true_num,
+                           DenseTensor *out) {
+  DenseTensor in_data;
+  auto dims = condition.dims();
+  if (condition.numel() == 0) {
+    dev_ctx.template Alloc<int64_t>(out);
+    return;
+  }
+
+  using Functor = IndexFunctor<T, int64_t, int64_t>;
+  Functor index_functor{dims};
+
+  funcs::RestrictSelectKernel<T, T, int64_t, 0, Functor>(
+      dev_ctx, condition, in_data, total_true_num, out, index_functor);
+}
+
 }  // namespace phi
 
 PD_REGISTER_KERNEL(nonzero,
@@ -81,10 +98,15 @@ PD_REGISTER_KERNEL(nonzero,
                    int64_t,
                    int,
                    int16_t,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
+                   phi::float16,
+                   phi::bfloat16,
                    bool,
                    float,
-                   double) {
+                   double,
+                   phi::complex64,
+                   phi::complex128) {
   kernel->OutputAt(0).SetDataType(phi::DataType::INT64);
 }
+
+PD_REGISTER_KERNEL(
+    restrict_nonzero, GPU, ALL_LAYOUT, phi::RestrictNonZeroKernel, bool) {}

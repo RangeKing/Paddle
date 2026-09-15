@@ -98,26 +98,36 @@ bool PyObject_CheckLong(PyObject* obj) {
 }
 
 int32_t PyObject_ToInt32(PyObject* obj) {
-  int32_t res = 0;
+  int64_t res = 0;
   if ((PyLong_Check(obj) && !PyBool_Check(obj)) ||  // NOLINT
       PyObject_CheckVarType(obj) ||                 // NOLINT
       PyObject_CheckDataType(obj) ||                // NOLINT
       (PyObject_CheckTensor(obj) &&
        reinterpret_cast<TensorObject*>(obj)->tensor.numel() == 1)) {
-    res = static_cast<int32_t>(PyLong_AsLong(obj));
-    return res;
-  }
-  std::string type_name =
-      std::string(reinterpret_cast<PyTypeObject*>(obj->ob_type)->tp_name);
-  if (type_name.find("numpy.int") != std::string::npos) {
-    auto num_obj = PyNumber_Long(obj);
-    res = static_cast<int32_t>(PyLong_AsLong(num_obj));
-    Py_DECREF(num_obj);
+    res = PyLong_AsLongLong(obj);
   } else {
-    PADDLE_THROW(
-        common::errors::InvalidType("Cannot convert %s to long", type_name));
+    std::string type_name =
+        std::string(reinterpret_cast<PyTypeObject*>(obj->ob_type)->tp_name);
+    if (type_name.find("numpy.int") != std::string::npos) {
+      auto num_obj = PyNumber_Long(obj);
+      res = PyLong_AsLongLong(num_obj);
+      Py_DECREF(num_obj);
+    } else {
+      PADDLE_THROW(
+          common::errors::InvalidType("Cannot convert %s to int32", type_name));
+    }
   }
-  return res;
+
+  if (res > std::numeric_limits<int32_t>::max() ||
+      res < std::numeric_limits<int32_t>::min()) {
+    PADDLE_THROW(common::errors::OutOfRange(
+        "Integer value %ld exceeds int32 range [%d, %d]",
+        res,
+        std::numeric_limits<int32_t>::min(),
+        std::numeric_limits<int32_t>::max()));
+  }
+
+  return static_cast<int32_t>(res);
 }
 
 uint32_t PyObject_ToUInt32(PyObject* obj) {
@@ -285,6 +295,16 @@ bool CastPyArg2Boolean(PyObject* obj,
 
   return false;
 }
+bool CastPyArg2Boolean(PyObject* obj,
+                       const std::string& op_type,
+                       ssize_t arg_pos,
+                       bool default_value) {
+  if (obj) {
+    return CastPyArg2Boolean(obj, op_type, arg_pos);
+  } else {
+    return default_value;
+  }
+}
 
 void CastPyArg2AttrBoolean(PyObject* obj,
                            paddle::framework::AttributeMap& attrs,  // NOLINT
@@ -307,6 +327,16 @@ int CastPyArg2Int(PyObject* obj, const std::string& op_type, ssize_t arg_pos) {
   }
 
   return 0;
+}
+int CastPyArg2Int(PyObject* obj,
+                  const std::string& op_type,
+                  ssize_t arg_pos,
+                  int default_value) {
+  if (obj != nullptr) {
+    return CastPyArg2Int(obj, op_type, arg_pos);
+  } else {
+    return default_value;
+  }
 }
 
 void CastPyArg2AttrInt(PyObject* obj,
@@ -332,6 +362,16 @@ int64_t CastPyArg2Long(PyObject* obj,
   }
 
   return 0;
+}
+int64_t CastPyArg2Long(PyObject* obj,
+                       const std::string& op_type,
+                       ssize_t arg_pos,
+                       int64_t default_value) {
+  if (obj != nullptr) {
+    return CastPyArg2Long(obj, op_type, arg_pos);
+  } else {
+    return default_value;
+  }
 }
 
 void CastPyArg2AttrLong(PyObject* obj,
@@ -361,7 +401,16 @@ float CastPyArg2Float(PyObject* obj,
                       ssize_t arg_pos) {
   return static_cast<float>(CastPyArg2Double(obj, op_type, arg_pos));
 }
-
+float CastPyArg2Float(PyObject* obj,
+                      const std::string& op_type,
+                      ssize_t arg_pos,
+                      float default_value) {
+  if (obj != nullptr) {
+    return CastPyArg2Float(obj, op_type, arg_pos);
+  } else {
+    return default_value;
+  }
+}
 void CastPyArg2AttrFloat(PyObject* obj,
                          paddle::framework::AttributeMap& attrs,  // NOLINT
                          const std::string& key,
@@ -385,6 +434,16 @@ double CastPyArg2Double(PyObject* obj,
   }
 
   return 0.0;
+}
+double CastPyArg2Double(PyObject* obj,
+                        const std::string& op_type,
+                        ssize_t arg_pos,
+                        double default_value) {
+  if (obj != nullptr) {
+    return CastPyArg2Double(obj, op_type, arg_pos);
+  } else {
+    return default_value;
+  }
 }
 
 phi::dtype::complex<float> CastPyArg2Complex(PyObject* obj,
@@ -457,6 +516,16 @@ std::string CastPyArg2String(PyObject* obj,
 
   return "";
 }
+std::string CastPyArg2String(PyObject* obj,
+                             const std::string& op_type,
+                             ssize_t arg_pos,
+                             std::string default_value) {
+  if (obj != nullptr) {
+    return CastPyArg2String(obj, op_type, arg_pos);
+  } else {
+    return default_value;
+  }
+}
 
 void CastPyArg2AttrString(PyObject* obj,
                           paddle::framework::AttributeMap& attrs,  // NOLINT
@@ -515,7 +584,16 @@ std::vector<bool> CastPyArg2Booleans(PyObject* obj,
 
   return value;
 }
-
+std::vector<bool> CastPyArg2Booleans(PyObject* obj,
+                                     const std::string& op_type,
+                                     ssize_t arg_pos,
+                                     std::vector<bool> default_value) {
+  if (obj != nullptr) {
+    return CastPyArg2Booleans(obj, op_type, arg_pos);
+  } else {
+    return default_value;
+  }
+}
 void CastPyArg2AttrBooleans(PyObject* obj,
                             paddle::framework::AttributeMap& attrs,  // NOLINT
                             const std::string& key,
@@ -583,6 +661,8 @@ std::vector<int> CastPyArg2Ints(PyObject* obj,
       }
       Py_DECREF(item);
     }
+  } else if (PyObject_CheckLong(obj)) {
+    value.emplace_back(PyObject_ToInt32(obj));
   } else {
     PADDLE_THROW(common::errors::InvalidType(
         "%s(): argument (position %d) must be "
@@ -593,6 +673,16 @@ std::vector<int> CastPyArg2Ints(PyObject* obj,
   }
 
   return value;
+}
+std::vector<int> CastPyArg2Ints(PyObject* obj,
+                                const std::string& op_type,
+                                ssize_t arg_pos,
+                                std::vector<int> default_value) {
+  if (obj != nullptr && obj != Py_None) {
+    return CastPyArg2Ints(obj, op_type, arg_pos);
+  } else {
+    return default_value;
+  }
 }
 
 void CastPyArg2AttrInts(PyObject* obj,
@@ -674,6 +764,16 @@ std::vector<int64_t> CastPyArg2Longs(PyObject* obj,
 
   return value;
 }
+std::vector<int64_t> CastPyArg2Longs(PyObject* obj,
+                                     const std::string& op_type,
+                                     ssize_t arg_pos,
+                                     std::vector<int64_t> default_value) {
+  if (obj) {
+    return CastPyArg2Longs(obj, op_type, arg_pos);
+  } else {
+    return default_value;
+  }
+}
 
 void CastPyArg2AttrLongs(PyObject* obj,
                          paddle::framework::AttributeMap& attrs,  // NOLINT
@@ -749,6 +849,16 @@ std::vector<float> CastPyArg2Floats(PyObject* obj,
   }
 
   return value;
+}
+std::vector<float> CastPyArg2Floats(PyObject* obj,
+                                    const std::string& op_type,
+                                    ssize_t arg_pos,
+                                    std::vector<float> default_value) {
+  if (obj != nullptr) {
+    return CastPyArg2Floats(obj, op_type, arg_pos);
+  } else {
+    return default_value;
+  }
 }
 
 void CastPyArg2AttrFloats(PyObject* obj,
@@ -826,7 +936,16 @@ std::vector<double> CastPyArg2Float64s(PyObject* obj,
 
   return value;
 }
-
+std::vector<double> CastPyArg2Float64s(PyObject* obj,
+                                       const std::string& op_type,
+                                       ssize_t arg_pos,
+                                       std::vector<double> default_value) {
+  if (obj != nullptr) {
+    return CastPyArg2Float64s(obj, op_type, arg_pos);
+  } else {
+    return default_value;
+  }
+}
 void CastPyArg2AttrFloat64s(PyObject* obj,
                             paddle::framework::AttributeMap& attrs,  // NOLINT
                             const std::string& key,
@@ -846,9 +965,10 @@ void CastPyArg2AttrScalars(PyObject* obj,
 std::vector<std::string> CastPyArg2Strings(PyObject* obj,
                                            const std::string& op_type,
                                            ssize_t arg_pos) {
-  std::vector<std::string> value;
+  std::vector<std::string_view> views;
   if (PyList_Check(obj)) {
     Py_ssize_t len = PyList_Size(obj);
+    views.reserve(len);
     PyObject* item = nullptr;
     for (Py_ssize_t i = 0; i < len; i++) {
       item = PyList_GetItem(obj, i);
@@ -856,7 +976,7 @@ std::vector<std::string> CastPyArg2Strings(PyObject* obj,
         Py_ssize_t size = 0;
         const char* data = nullptr;
         data = PyUnicode_AsUTF8AndSize(item, &size);
-        value.emplace_back(std::string(data, (size_t)size));  // NOLINT
+        views.emplace_back(std::string_view(data, (size_t)size));  // NOLINT
       } else {
         PADDLE_THROW(common::errors::InvalidType(
             "%s(): argument (position %d) must be "
@@ -869,6 +989,7 @@ std::vector<std::string> CastPyArg2Strings(PyObject* obj,
     }
   } else if (PyTuple_Check(obj)) {
     Py_ssize_t len = PyTuple_Size(obj);
+    views.reserve(len);
     PyObject* item = nullptr;
     for (Py_ssize_t i = 0; i < len; i++) {
       item = PyTuple_GetItem(obj, i);
@@ -876,7 +997,7 @@ std::vector<std::string> CastPyArg2Strings(PyObject* obj,
         Py_ssize_t size = 0;
         const char* data = nullptr;
         data = PyUnicode_AsUTF8AndSize(item, &size);
-        value.emplace_back(std::string(data, (size_t)size));  // NOLINT
+        views.emplace_back(std::string_view(data, (size_t)size));  // NOLINT
       } else {
         PADDLE_THROW(common::errors::InvalidType(
             "%s(): argument (position %d) must be "
@@ -895,10 +1016,24 @@ std::vector<std::string> CastPyArg2Strings(PyObject* obj,
         arg_pos + 1,
         ((PyTypeObject*)obj->ob_type)->tp_name));  // NOLINT
   }
-
+  std::vector<std::string> value;
+  value.reserve(views.size());
+  for (const auto& view : views) {
+    value.emplace_back(view);
+  }
   return value;
 }
-
+std::vector<std::string> CastPyArg2Strings(
+    PyObject* obj,
+    const std::string& op_type,
+    ssize_t arg_pos,
+    std::vector<std::string> default_value) {
+  if (obj != nullptr) {
+    return CastPyArg2Strings(obj, op_type, arg_pos);
+  } else {
+    return default_value;
+  }
+}
 void CastPyArg2AttrStrings(PyObject* obj,
                            paddle::framework::AttributeMap& attrs,  // NOLINT
                            const std::string& key,
@@ -991,12 +1126,12 @@ void CastPyArg2AttrIRBlock(PyObject* obj,
                            const std::string& key,
                            const std::string& op_type,
                            ssize_t arg_pos) {
-  VLOG(1) << "After Process pir::Block*";
+  VLOG(3) << "After Process pir::Block*";
   ::pybind11::detail::instance* inst =
       (::pybind11::detail::instance*)obj;  // NOLINT
   void** vh = inst->simple_layout ? inst->simple_value_holder
                                   : &inst->nonsimple.values_and_holders[0];
-  attrs[key] = reinterpret_cast<::pir::Block*&>(vh[0]);
+  attrs[key] = reinterpret_cast<pir::Block*&>(vh[0]);
 }
 
 void CastPyArg2AttrIRProgram(PyObject* obj,
@@ -1004,9 +1139,9 @@ void CastPyArg2AttrIRProgram(PyObject* obj,
                              const std::string& key,
                              const std::string& op_type,
                              ssize_t arg_pos) {
-  VLOG(1) << "After Process pir::Program*";
-  const std::shared_ptr<::pir::Program> program =
-      ::py::handle(obj).cast<std::shared_ptr<::pir::Program>>();
+  VLOG(3) << "After Process pir::Program*";
+  const std::shared_ptr<pir::Program> program =
+      ::py::handle(obj).cast<std::shared_ptr<pir::Program>>();
   attrs[key] = program;
 }
 
@@ -1015,7 +1150,7 @@ void CastPyArg2AttrValues(PyObject* obj,
                           const std::string& key,
                           const std::string& op_type,
                           ssize_t arg_pos) {
-  std::vector<::pir::Value> results;
+  std::vector<pir::Value> results;
   if (PyList_Check(obj)) {
     Py_ssize_t len = PyList_Size(obj);
     PyObject* item = nullptr;
@@ -1026,7 +1161,7 @@ void CastPyArg2AttrValues(PyObject* obj,
           (::pybind11::detail::instance*)item;  // NOLINT
       void** vh = inst->simple_layout ? inst->simple_value_holder
                                       : &inst->nonsimple.values_and_holders[0];
-      ::pir::Value* value = reinterpret_cast<::pir::Value*>(vh[0]);
+      pir::Value* value = reinterpret_cast<pir::Value*>(vh[0]);
       results.emplace_back(pir::Value(value->impl()));
     }
   } else {
@@ -1038,7 +1173,7 @@ void CastPyArg2AttrValues(PyObject* obj,
         ((PyTypeObject*)obj->ob_type)->tp_name));  // NOLINT
   }
   attrs[key] = results;
-  VLOG(1) << "Pybind: Cast " << results.size() << " Value Finished.";
+  VLOG(4) << "Pybind: Cast " << results.size() << " Value Finished.";
 }
 
 void ConstructAttrMapFromPyArgs(
@@ -1059,7 +1194,7 @@ void ConstructAttrMapFromPyArgs(
 
   PyObject* obj = nullptr;
   for (ssize_t arg_pos = attr_start; arg_pos < attr_end; arg_pos += 2) {
-    VLOG(1) << "Start Process " << arg_pos;
+    VLOG(5) << "Start Process " << arg_pos;
     Py_ssize_t key_len = 0;
     const char* key_ptr = nullptr;
     obj = PyTuple_GET_ITEM(args, arg_pos);
@@ -1075,7 +1210,7 @@ void ConstructAttrMapFromPyArgs(
     }
 
     std::string key(key_ptr, (size_t)key_len);  // NOLINT
-    VLOG(1) << "Start Process " << key;
+    VLOG(5) << "Start Process " << key;
     auto iter = attr_type_map->find(key);
     if (iter == attr_type_map->end()) {
       continue;
@@ -1135,7 +1270,7 @@ void ConstructAttrMapFromPyArgs(
   }
 }
 
-void ConstructAttrMapForRunProgram(
+void ConstructAttrMapForLegacyRunProgram(
     const std::string& op_type,
     PyObject* args,
     ssize_t attr_start,
@@ -1148,7 +1283,6 @@ void ConstructAttrMapForRunProgram(
                         "but attr_start = %d, attr_end = %d.",
                         attr_start,
                         attr_end));
-
   using CastFuncType = void (*)(PyObject*,
                                 paddle::framework::AttributeMap&,
                                 const std::string&,
@@ -1156,33 +1290,24 @@ void ConstructAttrMapForRunProgram(
                                 ssize_t);
   // Static map from keys to casting function pointers
   static const std::unordered_map<std::string, CastFuncType> kAttrFuncMap = {
-      {"cuda_graph_capture_mode", CastPyArg2AttrString},
-      {"global_block", CastPyArg2AttrIRBlock},
-      {"forward_program", CastPyArg2AttrIRProgram},
-      {"backward_program", CastPyArg2AttrIRProgram},
+      {"forward_global_block", CastPyArg2AttrBlock},
+      {"backward_global_block", CastPyArg2AttrBlock},
       {"is_test", CastPyArg2AttrBoolean},
+      {"program_id", CastPyArg2AttrLong},
+      {"param_grad_names", CastPyArg2AttrStrings},
+      {"x_names", CastPyArg2AttrStrings},
+      {"out_grad_names", CastPyArg2AttrStrings},
+      {"x_grad_names", CastPyArg2AttrStrings},
+      {"in_pir_pt_mode", CastPyArg2AttrBoolean},
       {"use_interpretorcore", CastPyArg2AttrBoolean},
-      {"in_sot_mode", CastPyArg2AttrBoolean},
+      {"global_block", CastPyArg2AttrBlock},
       {"start_op_index", CastPyArg2AttrLong},
       {"end_op_index", CastPyArg2AttrLong},
-      {"program_id", CastPyArg2AttrLong},
-      {"cuda_graph_pool_id", CastPyArg2AttrLong},
-      {"fx", CastPyArg2AttrValues},
-      {"fp", CastPyArg2AttrValues},
-      {"fm", CastPyArg2AttrValues},
-      {"fo", CastPyArg2AttrValues},
-      {"bx", CastPyArg2AttrValues},
-      {"no_need_buffers", CastPyArg2AttrValues},
-      {"bp", CastPyArg2AttrValues},
-      {"bm", CastPyArg2AttrValues},
-      {"bo_g", CastPyArg2AttrValues},
-      {"bx_g", CastPyArg2AttrValues},
-      {"bp_g", CastPyArg2AttrValues},
-      {"bo", CastPyArg2AttrValues}};
+  };
 
   PyObject* obj = nullptr;
   for (ssize_t arg_pos = attr_start; arg_pos < attr_end; arg_pos += 2) {
-    VLOG(1) << "Start Process " << arg_pos;
+    VLOG(3) << "Start Process " << arg_pos;
     Py_ssize_t key_len = 0;
     const char* key_ptr = nullptr;
     obj = PyTuple_GET_ITEM(args, arg_pos);
@@ -1196,7 +1321,7 @@ void ConstructAttrMapForRunProgram(
           ((PyTypeObject*)obj->ob_type)->tp_name));  // NOLINT
     }
     std::string_view key_view(key_ptr, static_cast<size_t>(key_len));
-    VLOG(1) << "Start Process " << key_view;
+    VLOG(3) << "Start Process " << key_view;
     obj = PyTuple_GET_ITEM(args, arg_pos + 1);
     auto it = kAttrFuncMap.find(std::string(key_view));
     if (it != kAttrFuncMap.end()) {
@@ -1204,9 +1329,119 @@ void ConstructAttrMapForRunProgram(
       it->second(obj, attrs, std::string(key_view), op_type, arg_pos);
     } else {
       PADDLE_THROW(common::errors::InvalidArgument(
-          "%.*s is not defined in this function.",
+          "Attribute key %.*s is not recognized for operator %s.",
           static_cast<int>(key_view.size()),
-          key_view.data()));  // NOLINT
+          key_view.data(),
+          op_type.c_str()));  // NOLINT
+    }
+  }
+}
+
+PyObject* ConstructProgramAttrMapForRunProgram(PyObject* self, PyObject* args) {
+  const std::string op_type = "run_program";
+  PyObject* attrs_dict = nullptr;
+  if (!PyArg_ParseTuple(args, "O", &attrs_dict)) {
+    return nullptr;
+  }
+  paddle::framework::AttributeMap* attrs_ptr =
+      new (std::nothrow) paddle::framework::AttributeMap();
+  if (!attrs_ptr) {
+    PADDLE_THROW(common::errors::InvalidArgument(
+        "%s(): failed to allocate memory for AttributeMap.", op_type));
+  }
+  ConstructAttrMapForRunProgram(op_type, attrs_dict, *attrs_ptr);
+  PyObject* py_attrs_capsule = PyCapsule_New(
+      attrs_ptr, "paddle.framework.AttributeMap", [](PyObject* capsule) {
+        paddle::framework::AttributeMap* data =
+            reinterpret_cast<paddle::framework::AttributeMap*>(
+                PyCapsule_GetPointer(capsule, "paddle.framework.AttributeMap"));
+        if (data) {
+          delete data;
+        }
+      });
+
+  if (!py_attrs_capsule) {
+    delete attrs_ptr;
+    PyErr_SetString(PyExc_RuntimeError,
+                    "Failed to create PyCapsule for AttributeMap.");
+    return nullptr;
+  }
+  return py_attrs_capsule;
+}
+
+void ConstructCudaGraphAttrMapForRunProgram(
+    const std::string& op_type,
+    PyObject* args,
+    ssize_t arg_pos,
+    paddle::framework::AttributeMap& attrs) {  // NOLINT
+  PyObject* attrs_dict = PyTuple_GET_ITEM(args, arg_pos);
+  ConstructAttrMapForRunProgram(op_type, attrs_dict, attrs);
+}
+
+void ConstructAttrMapForRunProgram(
+    const std::string& op_type,
+    PyObject* attrs_dict,
+    paddle::framework::AttributeMap& attrs) {  // NOLINT
+
+  if (!PyDict_Check(attrs_dict)) {
+    PADDLE_THROW(common::errors::InvalidArgument(
+        "%s(): argument must be dict, but got %s",
+        op_type,
+        reinterpret_cast<PyTypeObject*>(attrs_dict->ob_type)->tp_name));
+  }
+
+  using CastFuncType = void (*)(PyObject*,
+                                paddle::framework::AttributeMap&,
+                                const std::string&,
+                                const std::string&,
+                                ssize_t);
+  // Static map from keys to casting function pointers
+  static const std::unordered_map<std::string, CastFuncType> kAttrFuncMap = {
+      {"forward_program", CastPyArg2AttrIRProgram},
+      {"backward_program", CastPyArg2AttrIRProgram},
+      {"is_test", CastPyArg2AttrBoolean},
+      {"in_sot_mode", CastPyArg2AttrBoolean},
+      {"program_id", CastPyArg2AttrLong},
+      {"fo_values", CastPyArg2AttrValues},
+      {"fx_names", CastPyArg2AttrStrings},
+      {"fp_names", CastPyArg2AttrStrings},
+      {"fm_names", CastPyArg2AttrStrings},
+      {"fo_names", CastPyArg2AttrStrings},
+      {"bx_names", CastPyArg2AttrStrings},
+      {"bp_names", CastPyArg2AttrStrings},
+      {"bm_names", CastPyArg2AttrStrings},
+      {"bo_names", CastPyArg2AttrStrings},
+      {"bx_g_names", CastPyArg2AttrStrings},
+      {"bp_g_names", CastPyArg2AttrStrings},
+      {"bo_g_names", CastPyArg2AttrStrings},
+      {"no_need_buffers_names", CastPyArg2AttrStrings},
+      {"cuda_graph_state", CastPyArg2AttrLong},
+      {"cuda_graph_dispatch_key", CastPyArg2AttrLong},
+  };
+
+  PyObject *key, *value;
+  Py_ssize_t pos = 0;
+  while (PyDict_Next(attrs_dict, &pos, &key, &value)) {
+    Py_ssize_t key_len = 0;
+    const char* key_ptr = nullptr;
+    if (PyObject_CheckString(key)) {
+      key_ptr = PyUnicode_AsUTF8AndSize(key, &key_len);
+    } else {
+      PADDLE_THROW(common::errors::InvalidArgument(
+          "%s(): dict key must be str, but got %s",
+          op_type,
+          reinterpret_cast<PyTypeObject*>(key->ob_type)->tp_name));
+    }
+    std::string_view key_view(key_ptr, static_cast<size_t>(key_len));
+    auto it = kAttrFuncMap.find(std::string(key_view));
+    if (it != kAttrFuncMap.end()) {
+      it->second(value, attrs, std::string(key_view), op_type, 0);
+    } else {
+      PADDLE_THROW(common::errors::InvalidArgument(
+          "Attribute key %.*s is not recognized for operator %s.",
+          static_cast<int>(key_view.size()),
+          key_view.data(),
+          op_type.c_str()));
     }
   }
 }
@@ -1271,9 +1506,9 @@ ssize_t GetIdxFromCoreOpsInfoMap(
         core_ops_info_map,
     const std::string& op_type,
     const std::string& name) {
-  // `core_ops_info_map` can be `core_ops_args_info` or `core_ops_returns_info`.
-  // `core_ops_args_info`: get index from core_ops_args_info[op_type] according
-  // to input name.
+  // `core_ops_info_map` can be `core_ops_args_info` or
+  // `core_ops_returns_info`. `core_ops_args_info`: get index from
+  // core_ops_args_info[op_type] according to input name.
   // `core_ops_returns_info`: get index from core_ops_returns_info[op_type]
   // according to return name.
   if (!core_ops_info_map.count(op_type)) {
@@ -1292,4 +1527,75 @@ ssize_t GetIdxFromCoreOpsInfoMap(
   return -1;
 }
 
+static PyMethodDef OpFunctionCommonMethods[] = {
+    // NOLINT
+    {"construct_program_attribute_map",
+     (PyCFunction)ConstructProgramAttrMapForRunProgram,
+     METH_VARARGS,
+     "create attribute map for run program"},
+    {nullptr, nullptr, 0, nullptr}};
+
+void BindOpFunctionCommon(PyObject* module) {
+  if (PyModule_AddFunctions(module, OpFunctionCommonMethods) < 0) {
+    PADDLE_THROW(common::errors::Fatal(
+        "Init Paddle error in BindOpFunctionCommon(PyModule_AddFunctions)."));
+    return;
+  }
+}
+
+// For parse argruments from args and kwargs
+// Get item from PyObject* args or PyObject* kwargs
+PyObject* GetItemFromArgsOrKWArgs(PyObject* args,
+                                  int pos,
+                                  PyObject* kwargs,
+                                  const std::vector<std::string>& keywords,
+                                  int nargs,
+                                  int* remaining_kwargs,
+                                  bool dispensable) {
+  // get item from args first if pos < nargs
+  if (pos < nargs) {
+    PyObject* arg = PyTuple_GetItem(args, pos);
+    if (arg) {
+      return arg;
+    }
+  } else {
+    // get item from kwargs
+    if (kwargs) {
+      PyObject* arg = nullptr;
+      for (const std::string& keyword : keywords) {
+        arg = PyDict_GetItemString(kwargs, keyword.c_str());
+        if (arg) {
+          *remaining_kwargs = *remaining_kwargs - 1;
+          return arg;
+        }
+      }
+    }
+  }
+
+  if (!dispensable) {
+    PADDLE_THROW(common::errors::InvalidArgument(
+        "Argument '%s' (position %d) must be provided", keywords[0], pos));
+  }
+  return nullptr;
+}
+
+void CheckRemainingParamsValidity(PyObject* args,
+                                  PyObject* kwargs,
+                                  int remaining_kwargs,
+                                  int nargs,
+                                  bool inplace) {
+  const std::string ignored_arg_name = "name";
+  const std::string ignored_arg_out = "out";
+  if (remaining_kwargs == 0) return;
+  PyObject* name = PyDict_GetItemString(kwargs, ignored_arg_name.c_str());
+  PyObject* out = PyDict_GetItemString(kwargs, ignored_arg_out.c_str());
+  if (inplace) {
+    if (remaining_kwargs == 1 && name) return;
+  } else {
+    if (remaining_kwargs == 1 && (name || out)) return;
+    if (remaining_kwargs == 2 && (name && out)) return;
+  }
+  PADDLE_THROW(common::errors::InvalidArgument("has too many arguments"));
+  return;
+}
 }  // namespace paddle::pybind

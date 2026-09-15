@@ -17,14 +17,14 @@
 namespace phi {
 
 void SerializeToStream(std::ostream& os,
-                       const phi::SelectedRows& selected_rows,
-                       const phi::DeviceContext& dev_ctx) {
+                       const SelectedRows& selected_rows,
+                       const DeviceContext& dev_ctx) {
   {  // the 1st field, uint32_t version
     constexpr uint32_t version = 0;
     os.write(reinterpret_cast<const char*>(&version), sizeof(version));
   }
   {
-    // the 2st field, rows information
+    // the 2nd field, rows information
     auto& rows = selected_rows.rows();
     uint64_t size = rows.size();
     os.write(reinterpret_cast<const char*>(&size), sizeof(size));
@@ -33,7 +33,7 @@ void SerializeToStream(std::ostream& os,
     }
   }
   {
-    // the 3st field, the height of SelectedRows
+    // the 3rd field, the height of SelectedRows
     int64_t height = selected_rows.height();
     os.write(reinterpret_cast<const char*>(&height), sizeof(height));
   }
@@ -41,25 +41,24 @@ void SerializeToStream(std::ostream& os,
   TensorToStream(os, selected_rows.value(), dev_ctx);
 }
 
-void SerializeToStream(std::ostream& os,
-                       const phi::SelectedRows& selected_rows) {
-  phi::DeviceContextPool& pool = phi::DeviceContextPool::Instance();
-  const phi::DeviceContext* dev_ctx = nullptr;
+void SerializeToStream(std::ostream& os, const SelectedRows& selected_rows) {
+  DeviceContextPool& pool = DeviceContextPool::Instance();
+  const DeviceContext* dev_ctx = nullptr;
   auto place = selected_rows.place();
   dev_ctx = pool.Get(place);
   SerializeToStream(os, selected_rows, *dev_ctx);
 }
 
-void DeserializeFromStream(std::istream& is, phi::SelectedRows* selected_rows) {
-  phi::DeviceContextPool& pool = phi::DeviceContextPool::Instance();
-  const phi::DeviceContext* dev_ctx = nullptr;
-  dev_ctx = pool.Get(phi::CPUPlace());
+void DeserializeFromStream(std::istream& is, SelectedRows* selected_rows) {
+  DeviceContextPool& pool = DeviceContextPool::Instance();
+  const DeviceContext* dev_ctx = nullptr;
+  dev_ctx = pool.Get(CPUPlace());
   DeserializeFromStream(is, selected_rows, *dev_ctx);
 }
 
 void DeserializeFromStream(std::istream& is,
-                           phi::SelectedRows* selected_rows,
-                           const phi::DeviceContext& dev_ctx) {
+                           SelectedRows* selected_rows,
+                           const DeviceContext& dev_ctx) {
   {
     // the 1st field, unit32_t version for SelectedRows
     uint32_t version = 0;
@@ -70,7 +69,7 @@ void DeserializeFromStream(std::istream& is,
                           "Only version 0 SelectedRows is supported."));
   }
   {
-    // the 2st field, rows information
+    // the 2nd field, rows information
     uint64_t size = 0;
     is.read(reinterpret_cast<char*>(&size), sizeof(size));
     PADDLE_ENFORCE_EQ(
@@ -84,7 +83,7 @@ void DeserializeFromStream(std::istream& is,
     }
   }
   {
-    // the 3st field, the height of the SelectedRows
+    // the 3rd field, the height of the SelectedRows
     int64_t height = 0;
     is.read(reinterpret_cast<char*>(&height), sizeof(int64_t));
     selected_rows->set_height(height);

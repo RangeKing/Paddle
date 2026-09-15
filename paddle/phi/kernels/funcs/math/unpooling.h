@@ -22,39 +22,39 @@ namespace math {
 template <typename DeviceContext, typename T>
 class Unpool2dMaxFunctor {
  public:
-  void operator()(const DeviceContext& context,
-                  const phi::DenseTensor& input,
-                  const phi::DenseTensor& indices,
-                  phi::DenseTensor* output);
+  void operator()(const DeviceContext& dev_ctx,
+                  const DenseTensor& input,
+                  const DenseTensor& indices,
+                  DenseTensor* output);
 };
 template <typename DeviceContext, class T>
 class Unpool2dMaxGradFunctor {
  public:
-  void operator()(const DeviceContext& context,
-                  const phi::DenseTensor& input,
-                  const phi::DenseTensor& indices,
-                  const phi::DenseTensor& output,
-                  const phi::DenseTensor& output_grad,
-                  phi::DenseTensor* input_grad);
+  void operator()(const DeviceContext& dev_ctx,
+                  const DenseTensor& input,
+                  const DenseTensor& indices,
+                  const DenseTensor& output,
+                  const DenseTensor& output_grad,
+                  DenseTensor* input_grad);
 };
 
 template <typename DeviceContext, typename T>
 class Unpool3dMaxFunctor {
  public:
-  void operator()(const DeviceContext& context,
-                  const phi::DenseTensor& input,
-                  const phi::DenseTensor& indices,
-                  phi::DenseTensor* output);
+  void operator()(const DeviceContext& dev_ctx,
+                  const DenseTensor& input,
+                  const DenseTensor& indices,
+                  DenseTensor* output);
 };
 template <typename DeviceContext, class T>
 class Unpool3dMaxGradFunctor {
  public:
-  void operator()(const DeviceContext& context,
-                  const phi::DenseTensor& input,
-                  const phi::DenseTensor& indices,
-                  const phi::DenseTensor& output,
-                  const phi::DenseTensor& output_grad,
-                  phi::DenseTensor* input_grad);
+  void operator()(const DeviceContext& dev_ctx,
+                  const DenseTensor& input,
+                  const DenseTensor& indices,
+                  const DenseTensor& output,
+                  const DenseTensor& output_grad,
+                  DenseTensor* input_grad);
 };
 }  // namespace math
 }  // namespace phi

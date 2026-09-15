@@ -18,12 +18,10 @@ limitations under the License. */
 #include "paddle/common/flags.h"
 #include "paddle/fluid/framework/new_executor/standalone_executor.h"
 #include "paddle/fluid/operators/controlflow/control_flow_op_helper.h"
-
-#ifdef PADDLE_WITH_DNNL
 #include "paddle/fluid/platform/onednn_helper.h"
-#endif
 
 COMMON_DECLARE_bool(use_mkldnn);
+COMMON_DECLARE_bool(use_onednn);
 
 namespace paddle::operators {
 
@@ -62,10 +60,9 @@ class ConditionalBlockOp : public ConditionalOp {
       // vector or tensor, whether need to execute the operators in sub-block
       // depends on the input variables (Input).
       auto xs = InputTensors(scope, ConditionalOp::kInputs);
-      need_run =
-          std::all_of(xs.begin(), xs.end(), [](const phi::DenseTensor *t) {
-            return t->numel() != 0;
-          });
+      need_run = std::all_of(xs.begin(), xs.end(), [](const DenseTensor *t) {
+        return t->numel() != 0;
+      });
     }
 
     if (need_run) {
@@ -85,7 +82,7 @@ class ConditionalBlockOp : public ConditionalOp {
       // Executor on being destroyed clears oneDNN cache and resets
       // registered model data layout. This is unwanted for nested
       // Executors (executors declared inside control ops)
-      platform::DontClearMKLDNNCache(dev_place);
+      platform::DontClearONEDNNCache(dev_place);
 #endif
       auto *block = Attr<framework::BlockDesc *>("sub_block");
       VLOG(3) << "Conditional block.idx = " << block->ID()
@@ -160,10 +157,9 @@ class ConditionalBlockGradOp : public ConditionalOp {
       need_run = ScalarCondition(xs);
     } else {
       auto xs = this->InputTensors(scope, ConditionalOp::kInputs);
-      need_run =
-          std::all_of(xs.begin(), xs.end(), [](const phi::DenseTensor *t) {
-            return t->numel() != 0;
-          });
+      need_run = std::all_of(xs.begin(), xs.end(), [](const DenseTensor *t) {
+        return t->numel() != 0;
+      });
     }
 
     const auto &inputs = Inputs(ConditionalOp::kInputs);
@@ -283,7 +279,7 @@ class ConditionalBlockGradInferShape : public framework::InferShapeBase {
 class ConditionalBlockGradInferVarType : public framework::VarTypeInference {
  public:
   void operator()(framework::InferVarTypeContext *ctx) const override {
-    // NOTE(Aurelius84): VarType of Output is phi::DenseTensor by default. In
+    // NOTE(Aurelius84): VarType of Output is DenseTensor by default. In
     // case of Input is {Tensor, DenseTensorArray}, we need synchronous the
     // Input's VarType into Input@GRAD to avoid generating {Tensor, Tensor} as
     // Input@GRAD.

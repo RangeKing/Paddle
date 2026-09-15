@@ -56,7 +56,7 @@ void PostprocessMedianGradKernel(const Context& dev_ctx,
     }
   }
 
-  input->Resize(common::make_ddim(reshape_back));
+  input->Resize(reshape_back);
   funcs::TransCompute<Context, T>(
       static_cast<int>(trans_back.size()), dev_ctx, *input, x, trans_back);
 }
@@ -72,14 +72,14 @@ void PreprocessMedianKernel(const Context& dev_ctx,
   std::vector<int64_t> reshape;
 
   std::vector<int64_t> axes = raw_axes.GetData();
-  int64_t axes_size = static_cast<int>(axes.size());
-  for (int64_t i = 0; i < axes_size; i++) {
+  int axes_size = static_cast<int>(axes.size());
+  for (int i = 0; i < axes_size; i++) {
     if (axes[i] < 0) {
       axes[i] += rank;
     }
   }
 
-  for (int64_t i = 0; i < rank; i++) {
+  for (int i = 0; i < rank; i++) {
     if (std::find(axes.begin(), axes.end(), i) == axes.end()) {
       perm.push_back(i);
       reshape.push_back(input_dim[i]);
@@ -87,7 +87,7 @@ void PreprocessMedianKernel(const Context& dev_ctx,
   }
 
   int64_t post_numel = 1;
-  for (int64_t i = 0; i < rank; i++) {
+  for (int i = 0; i < rank; i++) {
     if (std::find(axes.begin(), axes.end(), i) != axes.end()) {
       perm.push_back(i);
       post_numel *= input_dim[i];
@@ -104,7 +104,7 @@ void PreprocessMedianKernel(const Context& dev_ctx,
   dev_ctx.template Alloc<T>(x);
   funcs::TransCompute<Context, T>(ndims, dev_ctx, input, x, perm);
 
-  x->Resize(common::make_ddim(reshape));
+  x->Resize(reshape);
 }
 
 }  // namespace funcs

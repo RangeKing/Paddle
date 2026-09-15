@@ -18,11 +18,22 @@ from .mp_layers import (  # noqa: F401
     RowParallelLinear,
     VocabParallelEmbedding,
 )
-from .pp_layers import LayerDesc, PipelineLayer, SharedLayerDesc  # noqa: F401
+from .pp_layers import (  # noqa: F401
+    LayerDesc,
+    LocalSharedLayerDesc,
+    PipelineLayer,
+    SharedLayerDesc,
+)
 from .random import (  # noqa: F401
     RNGStatesTracker,
     get_rng_state_tracker,
     model_parallel_random_seed,
+)
+from .spec_utils import (
+    LayerSpec as LayerSpec,
+    build_spec_layer as build_spec_layer,
+    get_spec_layer as get_spec_layer,
+    import_spec_layer as import_spec_layer,
 )
 
 __all__ = []

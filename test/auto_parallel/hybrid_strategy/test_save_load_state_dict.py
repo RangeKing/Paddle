@@ -18,6 +18,7 @@ import unittest
 
 import collective.test_communication_api_base as test_base
 
+# should be set to FLAGS_enable_pir_api=1
 os.environ['FLAGS_enable_pir_api'] = '0'
 
 
@@ -29,10 +30,17 @@ class TestSaveLoadStateDict(test_base.CommunicationTestDistBase):
     def test_reshard(self):
         # save with 1 device
         ckpt_path = tempfile.TemporaryDirectory()
+        ckpt_path_2 = tempfile.TemporaryDirectory()
+        ckpt_path_3 = tempfile.TemporaryDirectory()
         super().setUp(num_of_devices=1, timeout=120, nnode=1)
         self.run_test_case(
             "semi_auto_save_state_dict.py",
-            user_defined_envs={"device_num": "1", "ckpt_path": ckpt_path.name},
+            user_defined_envs={
+                "device_num": "1",
+                "ckpt_path": ckpt_path.name,
+                "ckpt_path_2": ckpt_path_2.name,
+                "ckpt_path_3": ckpt_path_3.name,
+            },
         )
 
         # load with 1, 2, 4, 8 devices
@@ -41,6 +49,8 @@ class TestSaveLoadStateDict(test_base.CommunicationTestDistBase):
         )
         for envs in envs_list:
             envs["ckpt_path"] = ckpt_path.name
+            envs["ckpt_path_2"] = ckpt_path_2.name
+            envs["ckpt_path_3"] = ckpt_path_3.name
             super().setUp(
                 num_of_devices=int(envs["device_num"]),
                 timeout=180,
@@ -51,13 +61,22 @@ class TestSaveLoadStateDict(test_base.CommunicationTestDistBase):
                 user_defined_envs=envs,
             )
         ckpt_path.cleanup()
+        ckpt_path_2.cleanup()
+        ckpt_path_3.cleanup()
 
-        # save with 4 devices
+        # save with 2 devices
         ckpt_path = tempfile.TemporaryDirectory()
-        super().setUp(num_of_devices=4, timeout=120, nnode=1)
+        ckpt_path_2 = tempfile.TemporaryDirectory()
+        ckpt_path_3 = tempfile.TemporaryDirectory()
+        super().setUp(num_of_devices=2, timeout=120, nnode=1)
         self.run_test_case(
             "semi_auto_save_state_dict.py",
-            user_defined_envs={"device_num": "4", "ckpt_path": ckpt_path.name},
+            user_defined_envs={
+                "device_num": "2",
+                "ckpt_path": ckpt_path.name,
+                "ckpt_path_2": ckpt_path_2.name,
+                "ckpt_path_3": ckpt_path_3.name,
+            },
         )
         # load with 1, 2, 4, 8 devices
         envs_list = test_base.gen_product_envs_list(
@@ -65,6 +84,8 @@ class TestSaveLoadStateDict(test_base.CommunicationTestDistBase):
         )
         for envs in envs_list:
             envs["ckpt_path"] = ckpt_path.name
+            envs["ckpt_path_2"] = ckpt_path_2.name
+            envs["ckpt_path_3"] = ckpt_path_3.name
             super().setUp(
                 num_of_devices=int(envs["device_num"]),
                 timeout=180,
@@ -75,6 +96,8 @@ class TestSaveLoadStateDict(test_base.CommunicationTestDistBase):
                 user_defined_envs=envs,
             )
         ckpt_path.cleanup()
+        ckpt_path_2.cleanup()
+        ckpt_path_3.cleanup()
 
     def test_mutual_load_between_dynamic_and_static(self):
         changeable_envs = {"device_num": ["2"]}
@@ -92,6 +115,65 @@ class TestSaveLoadStateDict(test_base.CommunicationTestDistBase):
             )
             self.run_test_case(
                 "semi_auto_parallel_mutual_load_between_dynamic_and_static.py",
+                user_defined_envs=envs,
+            )
+            ckpt_path.cleanup()
+
+    def test_save_safetensors_load_fc(self):
+        """Test saving safetensors files and loading with flex checkpoint."""
+        ckpt_path = tempfile.TemporaryDirectory()
+        super().setUp(num_of_devices=2, timeout=120, nnode=1)
+        self.run_test_case(
+            "save_safetensors_load_fc.py",
+            user_defined_envs={
+                "device_num": "2",
+                "ckpt_path": ckpt_path.name,
+            },
+        )
+        ckpt_path.cleanup()
+
+    def test_save_safetensors_load_fc_with_index(self):
+        """Test saving safetensors files and loading with flex checkpoint when model.safetensors.index.json exists."""
+        ckpt_path = tempfile.TemporaryDirectory()
+        super().setUp(num_of_devices=2, timeout=120, nnode=1)
+        self.run_test_case(
+            "save_safetensors_load_fc.py",
+            user_defined_envs={
+                "device_num": "2",
+                "ckpt_path": ckpt_path.name,
+                "test_func": "test_save_safetensors_load_fc_with_index",
+            },
+        )
+        ckpt_path.cleanup()
+
+    def test_save_load_state_dict_with_aoa_config_reverse(self):
+        """Test saving state dict and loading with flex checkpoint."""
+        ckpt_path = tempfile.TemporaryDirectory()
+        super().setUp(num_of_devices=1, timeout=60, nnode=1)
+        self.run_test_case(
+            "save_load_state_dict_with_aoa_config_reverse.py",
+            user_defined_envs={
+                "device_num": "1",
+                "ckpt_path": ckpt_path.name,
+            },
+        )
+        ckpt_path.cleanup()
+
+    def test_save_load_with_error_message(self):
+        """Test logger missing key and unexpected keys."""
+        ckpt_path = tempfile.TemporaryDirectory()
+        envs_list = test_base.gen_product_envs_list(
+            self._default_envs, {"device_num": ["1", "2"]}
+        )
+        for envs in envs_list:
+            envs["ckpt_path"] = ckpt_path.name
+            super().setUp(
+                num_of_devices=int(envs["device_num"]),
+                timeout=60,
+                nnode=1,
+            )
+            self.run_test_case(
+                "test_save_load_with_error_message.py",
                 user_defined_envs=envs,
             )
             ckpt_path.cleanup()

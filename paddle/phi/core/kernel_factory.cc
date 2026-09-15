@@ -212,14 +212,14 @@ bool KernelFactory::HasKernel(const std::string& kernel_name,
       }
     }
     // check in xpu
-    bool xpu_unsupport = !phi::backends::xpu::is_xpu_support_op(
+    bool xpu_unsupported = !phi::backends::xpu::is_xpu_support_op(
         fluid_op_name, kernel_key.dtype());
     VLOG(6) << "Current KernelKey is " << kernel_key;
     // Fall back to CPU, when FLAGS_enable_api_kernel_fallback is true and op
     // was unregistered in xpu and kp
     if (FLAGS_enable_api_kernel_fallback &&
         (kernel_iter == iter->second.end() ||
-         (xpu_unsupport && !has_kp_kernel))) {
+         (xpu_unsupported && !has_kp_kernel))) {
       return false;
     }
 #elif defined(PADDLE_WITH_XPU) && !defined(PADDLE_WITH_XPU_KP)
@@ -236,7 +236,7 @@ bool KernelFactory::HasKernel(const std::string& kernel_name,
 }
 
 void KernelFactory::AddToLowPrecisionKernelList(
-    const std::string& name, const phi::DataType& kernel_key_type) {
+    const std::string& name, const DataType& kernel_key_type) {
   if (FLAGS_low_precision_op_list >= 1) {
     auto op_name = phi::TransToFluidOpName(name);
     if (op_name.find("_grad") != std::string::npos) {
@@ -247,11 +247,11 @@ void KernelFactory::AddToLowPrecisionKernelList(
       auto count = OpCount();
       low_precision_kernels_[op_name] = count;
     }
-    if (kernel_key_type == phi::DataType::FLOAT16) {
+    if (kernel_key_type == DataType::FLOAT16) {
       low_precision_kernels_[op_name].fp16_called_ += 1;
-    } else if (kernel_key_type == phi::DataType::BFLOAT16) {
+    } else if (kernel_key_type == DataType::BFLOAT16) {
       low_precision_kernels_[op_name].bf16_called_ += 1;
-    } else if (kernel_key_type == phi::DataType::FLOAT32) {
+    } else if (kernel_key_type == DataType::FLOAT32) {
       low_precision_kernels_[op_name].fp32_called_ += 1;
     } else {
       low_precision_kernels_[op_name].other_called_ += 1;
@@ -274,11 +274,10 @@ KernelResult KernelFactory::SelectKernelOrThrowError(
                     kernels_.end(),
                     common::errors::NotFound(
                         "The kernel `%s` is not registered.", kernel_name));
-
   if (FLAGS_use_stride_kernel && use_strided_kernel) {
     auto stride_kernel_iter = iter->second.find(
         {const_kernel_key.backend() == paddle::experimental::Backend::GPUDNN
-             ? paddle::experimental::Backend::GPU
+             ? paddle::experimental::get_accelerat_backend()
              : const_kernel_key.backend(),
          phi::DataLayout::STRIDED,
          const_kernel_key.dtype()});
@@ -287,7 +286,8 @@ KernelResult KernelFactory::SelectKernelOrThrowError(
     }
 #ifdef PADDLE_WITH_CUSTOM_DEVICE
     if (stride_kernel_iter == iter->second.end() &&
-        const_kernel_key.backend() > phi::Backend::NUM_BACKENDS) {
+        (const_kernel_key.backend() > phi::Backend::NUM_BACKENDS ||
+         const_kernel_key.backend() == phi::Backend::GPUDNN)) {
       stride_kernel_iter = iter->second.find({phi::Backend::CUSTOM,
                                               phi::DataLayout::STRIDED,
                                               const_kernel_key.dtype()});
@@ -301,15 +301,17 @@ KernelResult KernelFactory::SelectKernelOrThrowError(
   KernelKey kernel_key = KernelKey(const_kernel_key.backend(),
                                    phi::DataLayout::ALL_LAYOUT,
                                    const_kernel_key.dtype());
-#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP) || \
+    defined(PADDLE_WITH_CUSTOM_DEVICE)
   if (kernel_key.backend() == Backend::GPUDNN) {
     auto kernel_iter = iter->second.find(
         {Backend::GPUDNN, phi::DataLayout::ALL_LAYOUT, kernel_key.dtype()});
     if (kernel_iter != iter->second.end()) {
       return {kernel_iter->second, false, false};
     }
-    kernel_key =
-        KernelKey(Backend::GPU, kernel_key.layout(), kernel_key.dtype());
+    kernel_key = KernelKey(paddle::experimental::get_accelerat_backend(),
+                           kernel_key.layout(),
+                           kernel_key.dtype());
   }
 #endif
   auto kernel_iter = iter->second.find(kernel_key);
@@ -341,21 +343,22 @@ KernelResult KernelFactory::SelectKernelOrThrowError(
     }
   }
   // check in xpu
-  bool xpu_unsupport =
+  bool xpu_unsupported =
       !phi::backends::xpu::is_xpu_support_op(fluid_op_name, kernel_key.dtype());
   VLOG(6) << "Current KernelKey is " << kernel_key;
   // Fall back to CPU, when FLAGS_enable_api_kernel_fallback is true and op
   // was unregistered in xpu and kp
   if (FLAGS_enable_api_kernel_fallback &&
-      (kernel_iter == iter->second.end() || (xpu_unsupport && !has_kp_kernel))
+      (kernel_iter == iter->second.end() || (xpu_unsupported && !has_kp_kernel))
 #elif defined(PADDLE_WITH_XPU) && !defined(PADDLE_WITH_XPU_KP)
   VLOG(6) << "fluid_op_name: " << TransToFluidOpName(kernel_name);
-  bool is_xpu_support1 = phi::backends::xpu::is_xpu_support_op(
-      TransToFluidOpName(kernel_name), kernel_key.dtype());
-  bool is_xpu_support2 =
-      phi::backends::xpu::is_xpu_support_op(kernel_name, kernel_key.dtype());
+  bool is_xpu_unsupported =
+      kernel_key.backend() == Backend::XPU &&
+      !phi::backends::xpu::is_xpu_support_op(TransToFluidOpName(kernel_name),
+                                             kernel_key.dtype()) &&
+      !phi::backends::xpu::is_xpu_support_op(kernel_name, kernel_key.dtype());
   if ((FLAGS_enable_api_kernel_fallback && kernel_iter == iter->second.end()) ||
-      (!is_xpu_support1 && !is_xpu_support2)
+      is_xpu_unsupported
 #elif defined(PADDLE_WITH_CUSTOM_DEVICE)
   if (kernel_iter == iter->second.end() &&
       kernel_key.backend() > phi::Backend::NUM_BACKENDS) {
@@ -363,6 +366,7 @@ KernelResult KernelFactory::SelectKernelOrThrowError(
                                      phi::DataLayout::ALL_LAYOUT,
                                      kernel_key.dtype()});
   }
+
   if (FLAGS_enable_api_kernel_fallback &&
       (kernel_iter == iter->second.end() ||
        phi::backends::custom_device::is_in_custom_black_list(
@@ -385,8 +389,7 @@ KernelResult KernelFactory::SelectKernelOrThrowError(
             kernel_key,
             kernel_name,
             KernelSelectionErrorMessage(kernel_name, kernel_key)));
-
-    VLOG(3) << "missing " << kernel_key.backend() << " kernel: " << kernel_name
+    VLOG(1) << "missing " << kernel_key.backend() << " kernel: " << kernel_name
             << ", expected_kernel_key:" << kernel_key
             << ", fallbacking to CPU one!";
 
@@ -493,32 +496,34 @@ std::ostream& operator<<(std::ostream& os, const Kernel& kernel) {
   bool need_comma = false;
   for (auto& in_def : kernel.args_def().input_defs()) {
     if (need_comma) os << ",";
-    os << "\"" << in_def.backend << ", " << in_def.layout << ", "
-       << in_def.dtype << "\"";
+    os << "\n\tbackend: " << in_def.backend << ", "
+       << " layout: " << in_def.layout << ", "
+       << " dtype: " << in_def.dtype;
     need_comma = true;
   }
-  os << "],";
+  os << "\n],";
 
   // output
-  os << "\"output\":[";
+  os << "\n\"output\":[";
   need_comma = false;
   for (auto& out_def : kernel.args_def().output_defs()) {
     if (need_comma) os << ",";
-    os << "\"" << out_def.backend << ", " << out_def.layout << ", "
-       << out_def.dtype << "\"";
+    os << "\n\tbackend: " << out_def.backend << ", "
+       << " layout: " << out_def.layout << ", "
+       << " dtype: " << out_def.dtype;
     need_comma = true;
   }
-  os << "],";
+  os << "\n],";
 
   // attr
-  os << "\"attribute\":[";
+  os << "\n\"attribute\":[";
   need_comma = false;
   for (auto& arg_def : kernel.args_def().attribute_defs()) {
     if (need_comma) os << ",";
-    os << "\"" << arg_def.type_index << "\"";
+    os << "\n\t\"" << arg_def.type_index << "\"";
     need_comma = true;
   }
-  os << "]}";
+  os << "\n]}";
 
   return os;
 }

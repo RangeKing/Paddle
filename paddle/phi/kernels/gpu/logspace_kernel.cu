@@ -14,6 +14,7 @@
 
 #include "paddle/phi/kernels/logspace_kernel.h"
 
+#include "paddle/common/enforce.h"
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/common/amp_type_traits.h"
 #include "paddle/phi/core/kernel_registry.h"
@@ -26,12 +27,14 @@ namespace phi {
 template <typename T>
 __global__ void LogspaceKernelInner(
     T start, T stop, double step, T base, int64_t size, T* out) {
-  using MPType = typename phi::dtype::MPTypeTrait<T>::Type;
-  MPType mt_start = static_cast<MPType>(start);
-  MPType mt_stop = static_cast<MPType>(stop);
-  MPType mt_base = static_cast<MPType>(base);
+  using MT = typename MPTypeTrait<T>::Type;
+  MT mt_start = static_cast<MT>(start);
+  MT mt_stop = static_cast<MT>(stop);
+  MT mt_base = static_cast<MT>(base);
 
-  int64_t index = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t index =
+      static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x) +
+      static_cast<int64_t>(threadIdx.x);
 
   for (; index < size; index += blockDim.x * gridDim.x) {
     if (index < size / 2) {
@@ -48,43 +51,43 @@ __global__ void LogspaceKernelInner(
 
 template <typename T>
 __global__ void LogspaceSpecialKernel(T start, T base, T* out) {
-  using MPType = typename phi::dtype::MPTypeTrait<T>::Type;
-  MPType mt_start = static_cast<MPType>(start);
-  MPType mt_base = static_cast<MPType>(base);
+  using MT = typename MPTypeTrait<T>::Type;
+  MT mt_start = static_cast<MT>(start);
+  MT mt_base = static_cast<MT>(base);
 
   out[0] = static_cast<T>(
       pow(static_cast<double>(mt_base), static_cast<double>(mt_start)));
 }
 
 template <typename T, typename Context>
-void LogspaceKernel(const Context& ctx,
+void LogspaceKernel(const Context& dev_ctx,
                     const DenseTensor& start,
                     const DenseTensor& stop,
                     const DenseTensor& number,
                     const DenseTensor& base,
                     DataType dtype,
                     DenseTensor* out) {
-  using MPType = typename phi::dtype::MPTypeTrait<T>::Type;
+  using MT = typename MPTypeTrait<T>::Type;
 
-  auto start_t = phi::funcs::TransDataType(ctx, start, dtype);
-  auto stop_t = phi::funcs::TransDataType(ctx, stop, dtype);
-  auto base_t = phi::funcs::TransDataType(ctx, base, dtype);
+  auto start_t = funcs::TransDataType(dev_ctx, start, dtype);
+  auto stop_t = funcs::TransDataType(dev_ctx, stop, dtype);
+  auto base_t = funcs::TransDataType(dev_ctx, base, dtype);
 
   DenseTensor n_start;
   DenseTensor n_stop;
   DenseTensor n_num;
   DenseTensor n_base;
-  phi::Copy(ctx, start_t, phi::CPUPlace(), false, &n_start);
+  Copy(dev_ctx, start_t, CPUPlace(), false, &n_start);
   T start_data = n_start.data<T>()[0];
-  phi::Copy(ctx, stop_t, phi::CPUPlace(), false, &n_stop);
+  Copy(dev_ctx, stop_t, CPUPlace(), false, &n_stop);
   T stop_data = n_stop.data<T>()[0];
-  phi::Copy(ctx, number, phi::CPUPlace(), false, &n_num);
+  Copy(dev_ctx, number, CPUPlace(), false, &n_num);
   int64_t num = static_cast<int64_t>(n_num.data<int32_t>()[0]);
-  phi::Copy(ctx, base_t, phi::CPUPlace(), false, &n_base);
+  Copy(dev_ctx, base_t, CPUPlace(), false, &n_base);
   T base_data = n_base.data<T>()[0];
 
-  MPType mt_start_data = static_cast<MPType>(start_data);
-  MPType mt_stop_data = static_cast<MPType>(stop_data);
+  MT mt_start_data = static_cast<MT>(start_data);
+  MT mt_stop_data = static_cast<MT>(stop_data);
 
   PADDLE_ENFORCE_GT(
       num,
@@ -93,13 +96,15 @@ void LogspaceKernel(const Context& ctx,
                                       "than 0, but received num is %d",
                                       num));
 
-  out->Resize(common::make_ddim({num}));
-  T* out_data = ctx.template Alloc<T>(out);
+  out->Resize({num});
+  T* out_data = dev_ctx.template Alloc<T>(out);
 
   double step = 0;
-  auto stream = ctx.stream();
+  auto stream = dev_ctx.stream();
   int block = 512;
-  int grid = (num + block - 1) / block;
+  int64_t grid_64 = (num + block - 1) / block;
+  PADDLE_ENFORCE_LE_UINT32_MAX(grid_64, "grid");
+  uint32_t grid = static_cast<uint32_t>(grid_64);
   if (num != 1) {
     step = (static_cast<double>(mt_stop_data - mt_start_data)) / (num - 1);
     LogspaceKernelInner<T><<<grid, block, 0, stream>>>(
@@ -120,5 +125,5 @@ PD_REGISTER_KERNEL(logspace,
                    int32_t,
                    int64_t,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}

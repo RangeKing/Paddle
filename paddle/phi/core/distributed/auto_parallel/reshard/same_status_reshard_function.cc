@@ -30,8 +30,8 @@ bool SameStatusReshardFunction::IsSuitable(
     const DistTensor& in, const TensorDistAttr& out_dist_attr) {
   const auto& in_dist_attr = in.dist_attr();
 
-  RESHARD_SHORTCUT_IF_FALSE(in_dist_attr.dims_mapping() ==
-                            out_dist_attr.dims_mapping());
+  RESHARD_SHORTCUT_IF_FALSE(in_dist_attr.multi_dims_mapping() ==
+                            out_dist_attr.multi_dims_mapping());
   RESHARD_SHORTCUT_IF_FALSE(in_dist_attr.partial_dims() ==
                             out_dist_attr.partial_dims());
 
@@ -44,7 +44,7 @@ bool SameStatusReshardFunction::IsSuitable(
   return true;
 }
 
-void SameStatusReshardFunction::Eval(phi::DeviceContext* dev_ctx,
+void SameStatusReshardFunction::Eval(DeviceContext* dev_ctx,
                                      const DistTensor& in,
                                      const TensorDistAttr& out_dist_attr,
                                      DistTensor* out) {
@@ -55,14 +55,6 @@ void SameStatusReshardFunction::Eval(phi::DeviceContext* dev_ctx,
   const auto& out_process_mesh = out_dist_attr.process_mesh();
   const auto& out_process_ids = out_process_mesh.process_ids();
   auto all_process_ids = GetUnionProcessIds(in_process_ids, out_process_ids);
-  auto dtype = in.dtype();
-  // TODO(liyurui): Use dynamic shape will lead to poor performance, but we
-  // don't have any other good idea now. For the following reasons:
-  // 1. We can not ensure the meta being right deduce by the infermeta.
-  // 2. The meta of some kernels can't decide in compile time.
-  // 3. DenseTensor with empty value only need infermeta and skip the real
-  // kernel execution.
-  bool dynamic_shape = true;
 
   // TODO(GhostScreaming): After cross-mesh reshard, current device may
   // needs to execute next layer. When it construct next layer's backward
@@ -73,9 +65,9 @@ void SameStatusReshardFunction::Eval(phi::DeviceContext* dev_ctx,
   VLOG(3) << "Same_status_reshard_function create an empty DenseTensor for "
              "cross-mesh DistTensor.";
   *(out->unsafe_mutable_value()) =
-      phi::DenseTensor(std::make_shared<phi::Allocation>(
-                           nullptr, 0, phi::distributed::GetDefaultPlace()),
-                       in.value().meta());
+      DenseTensor(std::make_shared<phi::Allocation>(
+                      nullptr, 0, phi::distributed::GetDefaultPlace()),
+                  in.value().meta());
 
   std::vector<std::pair<int64_t, int64_t>> p2p_pair;
   for (size_t i = 0; i < out_process_ids.size(); ++i) {
@@ -92,21 +84,27 @@ void SameStatusReshardFunction::Eval(phi::DeviceContext* dev_ctx,
       // actually. According to this reason, just use the kernel directly.
       RESHARD_FUNCTOR_WITH_COMM(dev_ctx,
                                 PSendKernel,
-                                dtype,
+                                in.dtype(),
                                 all_process_ids,
                                 in.value(),
                                 dst_local_rank,
-                                dynamic_shape);
+                                /*dynamic_shape=*/true);
+      // TODO(liyurui): Use dynamic shape will lead to poor performance, but we
+      // don't have any other good idea now. For the following reasons:
+      // 1. We can not ensure the meta being right deduce by the infermeta.
+      // 2. The meta of some kernels can't decide in compile time.
+      // 3. DenseTensor with empty value only need infermeta and skip the real
+      // kernel execution.
     } else if (dst == cur_global_rank) {
       VLOG(3) << "Recv from src " << src << " to dst " << dst;
       int64_t src_local_rank = GetLocalRankInParticipate(all_process_ids, src);
       RESHARD_FUNCTOR_WITH_COMM(dev_ctx,
                                 PRecv,
-                                dtype,
+                                in.dtype(),
                                 all_process_ids,
                                 src_local_rank,
                                 {} /*out_shape*/,
-                                dynamic_shape,
+                                /*dynamic_shape=*/true,
                                 GetMutableTensor(out));
     }
   }

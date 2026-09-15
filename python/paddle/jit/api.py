@@ -23,24 +23,23 @@ import threading
 import types
 import warnings
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from types import ModuleType
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
+    Literal,
     Protocol,
+    TypeAlias,
     TypedDict,
     TypeVar,
     overload,
 )
 
 from typing_extensions import (
-    Literal,
     NotRequired,
     ParamSpec,
-    TypeAlias,
     Unpack,
 )
 
@@ -65,18 +64,22 @@ from paddle.framework import use_pir_api
 from paddle.nn import Layer
 from paddle.static.io import save_inference_model
 from paddle.utils.environments import (
-    BooleanEnvironmentVariable,
     EnvironmentVariableGuard,
 )
 
 from .dy2static import logging_utils
-from .dy2static.convert_call_func import ConversionOptions, add_ignore_module
+from .dy2static.convert_call_func import add_ignore_module
 from .dy2static.program_translator import (
     ASTStaticFunction,
     ProgramTranslator,
     StaticFunction,
     SymbolicStaticFunction,
     unwrap_decorators,
+)
+from .dy2static.utils import (
+    ENV_ENABLE_SOT,
+    Backend,
+    infer_use_cinn_backend,
 )
 from .pir_translated_layer import PIR_INFER_MODEL_SUFFIX, PirTranslatedLayer
 from .translated_layer import (
@@ -105,9 +108,6 @@ if TYPE_CHECKING:
     class _LoadOptions(TypedDict):
         model_filename: NotRequired[str]
         params_filename: NotRequired[str]
-
-
-ENV_ENABLE_SOT = BooleanEnvironmentVariable("ENABLE_FALL_BACK", True)
 
 
 _LayerT = TypeVar("_LayerT", bound=Layer)
@@ -152,30 +152,21 @@ def ignore_module(modules: list[ModuleType]) -> None:
         modules (list[ModuleType]): Ignored modules that you want to add
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import scipy
-            >>> import astor
+            >>> import networkx
 
             >>> import paddle
             >>> from paddle.jit import ignore_module
             >>> modules = [
             ...     scipy,
-            ...     astor,
+            ...     networkx,
             ... ]
             >>> ignore_module(modules)
 
     """
     add_ignore_module(modules)
-
-
-def _check_and_set_backend(backend, build_strategy):
-    if backend not in ['CINN', None]:
-        raise ValueError(
-            f"The backend of to_static should be 'CINN' or None, but received {backend}."
-        )
-    if backend == 'CINN':
-        build_strategy.build_cinn_pass = True
 
 
 class _ToStaticOptions(TypedDict):
@@ -227,7 +218,7 @@ def to_static(
     function=None,
     input_spec=None,
     build_strategy=None,
-    backend=None,
+    backend="CINN",
     **kwargs,
 ):
     """
@@ -246,19 +237,24 @@ def to_static(
         build_strategy (BuildStrategy|None): This argument is used to compile the
             converted program with the specified options, such as operators' fusion
             in the computational graph and memory optimization during the execution
-            of the computational graph. For more information about build_strategy,
-            please refer to :code:`paddle.static.BuildStrategy`. The default is None.
-        backend(str, Optional): Specifies compilation backend, which can be `CINN` or
-            None. When backend is `CINN`, CINN compiler will be used to speed up
-            training and inference.
-        kwargs: Support keys including `property`, set `property` to True if the function
-            is python property.
+            of the computational graph. For more information about :attr:`build_strategy`,
+            please refer to :ref:`paddle.static.BuildStrategy <cn_api_paddle_static_BuildStrategy>`.
+            The default is ``None``.
+        backend(str, Optional): Specifies compilation backend, which can be ``"CINN"`` or
+            ``None``. When backend is ``"CINN"``, CINN compiler will be used to speed up
+            training and inference. default value is ``"CINN"``.
+        kwargs: Support keys including :attr:`property` and :attr:`full_graph`.
+
+          - property (bool): If True, the function will be treated as a property
+            function. The default is False.
+          - full_graph (bool): If True, the function will be converted into a
+            full static graph. The default is False.
 
     Returns:
         Tensor(s): containing the numerical result.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +SKIP('`paddle.jit.to_static` can not run in xdoctest')
             >>> import paddle
@@ -271,7 +267,6 @@ def to_static(
             ...     else:
             ...         x_v = x + 1
             ...     return x_v
-            ...
             >>> x = paddle.ones([1, 2], dtype='float32')
             >>> x_v = func(x)
             >>> print(x_v)
@@ -281,10 +276,22 @@ def to_static(
     """
     property = kwargs.get("property", False)
     full_graph = kwargs.get("full_graph", None)
+    build_strategy = build_strategy or BuildStrategy()
+    if not isinstance(build_strategy, BuildStrategy):
+        raise TypeError(
+            f"Required type(build_strategy) shall be `paddle.static.BuildStrategy`, but received {type(build_strategy).__name__}"
+        )
+    backend = Backend.from_arg(backend)
+    if infer_use_cinn_backend(backend, build_strategy):
+        backend = Backend.CINN
+    elif backend.is_pcc():
+        pass
+    else:
+        backend = Backend.PHI
 
     def decorated(python_func):
         """
-        Decorates a python function into a ASTStaticFunction object.
+        Decorates a python function into a ASTStaticFunction or SymbolicStaticFunction object.
         """
 
         nonlocal full_graph
@@ -292,16 +299,15 @@ def to_static(
             flag = ENV_ENABLE_SOT.get()
             full_graph = not flag
 
-        if sys.version_info >= (3, 14) and not full_graph:
+        if sys.version_info >= (3, 15) and not full_graph:
             warnings.warn(
-                "full_graph=False is not supported in Python 3.14+. Set full_graph=True automatically"
+                "full_graph=False is not supported in Python 3.15+. Set full_graph=True automatically"
             )
             full_graph = True
 
-        StaticClass = {
-            False: SymbolicStaticFunction,
-            True: ASTStaticFunction,
-        }[full_graph]
+        StaticClass = (
+            ASTStaticFunction if full_graph else SymbolicStaticFunction
+        )
 
         # Step 1. unwrap the function if it is already decorated.
         _, python_func = unwrap_decorators(python_func)
@@ -320,13 +326,6 @@ def to_static(
 
         return static_layer
 
-    build_strategy = build_strategy or BuildStrategy()
-    if not isinstance(build_strategy, BuildStrategy):
-        raise TypeError(
-            f"Required type(build_strategy) shall be `paddle.static.BuildStrategy`, but received {type(build_strategy).__name__}"
-        )
-    _check_and_set_backend(backend, build_strategy)
-
     # for usage: `to_static(foo, ...)`
     if function is not None:
         if isinstance(function, Layer):
@@ -343,69 +342,6 @@ def to_static(
 
     # for usage: `@to_static`
     return decorated
-
-
-class _NotToStaticDecorator(Protocol):
-    @overload
-    def __call__(
-        self, func: Callable[_InputT, _RetT]
-    ) -> Callable[_InputT, _RetT]: ...
-
-    @overload
-    def __call__(self, func: None = ...) -> _NotToStaticDecorator: ...
-
-
-@overload
-def not_to_static(
-    func: Callable[_InputT, _RetT]
-) -> Callable[_InputT, _RetT]: ...
-
-
-@overload
-def not_to_static(func: None = ...) -> _NotToStaticDecorator: ...
-
-
-def not_to_static(func=None):
-    """
-    A Decorator to suppresses the convention of a function.
-
-    Args:
-        func(callable): The function to decorate.
-
-    Returns:
-        callable: A function which won't be converted in Dynamic-to-Static.
-
-    Examples:
-        .. code-block:: python
-
-            >>> # doctest: +SKIP('`paddle.jit.to_static` can not run in xdoctest')
-            >>> import paddle
-
-            >>> @paddle.jit.not_to_static
-            ... def func_not_to_static(x):
-            ...     res = x - 1
-            ...     return res
-
-            >>> @paddle.jit.to_static
-            ... def func(x):
-            ...     if paddle.mean(x) < 0:
-            ...         out = func_not_to_static(x)
-            ...     else:
-            ...         out = x + 1
-            ...     return out
-            ...
-            >>> x = paddle.ones([1, 2], dtype='float32')
-            >>> out = func(x)
-            >>> print(out)
-            Tensor(shape=[1, 2], dtype=float32, place=Place(cpu), stop_gradient=True,
-            [[2., 2.]])
-    """
-    if func is None:
-        return not_to_static
-
-    options = ConversionOptions(not_convert=True)
-    options.attach(func)
-    return func
 
 
 class _SaveLoadConfig:
@@ -615,7 +551,6 @@ def _get_input_var_and_names(inputs, input_spec, input_names_after_prune):
             elif spec.name not in input_var_names:
                 warnings.warn(name_no_exists_error % spec.name)
             else:
-                # do nothing
                 pass
     else:
         # prune
@@ -650,7 +585,7 @@ def _get_output_vars(outputs, output_spec, with_hook=False):
     )
     output_spec_is_not_value_error = (
         "tensor `%s` is not support in pir mode, "
-        "because pir value has no name sometimes, especially as ouptut,"
+        "because pir value has no name sometimes, especially as output,"
         "so we can't check tensor's name with output var name, please"
         "change as pir.value(to_static layer's output)"
         "or int(the position of to_static layer's output)"
@@ -753,14 +688,14 @@ def _build_load_path_and_config(path, config):
     directory_format_exist = os.path.isdir(path)
     if prefix_format_exist and directory_format_exist:
         raise ValueError(
-            f"The {path}.pdmodel and {path} directory exist at the same time, "
+            f"The {path}.pdmodel(json) and {path} directory exist at the same time, "
             "don't know which one to load, please make sure that the specified target "
             "of ``path`` is unique."
         )
     elif not prefix_format_exist and not directory_format_exist:
         raise ValueError(
             f"The ``path`` ({path}) to load model not exists. "
-            "Please make sure that *.pdmodel exists or "
+            "Please make sure that *.pdmodel(json) exists or "
             "don't using ``skip_forward=True`` to jit.save."
         )
     else:
@@ -819,7 +754,7 @@ def _register_save_pre_hook(hook):
         HookRemoveHelper: a HookRemoveHelper object that can be used to remove the added hook by calling `hook_remove_helper.remove()`.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +SKIP('`paddle.jit.api.to_static` can not run in xdoctest')
             >>> import numpy as np
@@ -835,12 +770,10 @@ def _register_save_pre_hook(hook):
             ...
             ...     def forward(self, x):
             ...         return self._linear(x)
-            ...
             >>> saving_count = 0
             >>> def save_pre_hook(layer, input_spec, configs):
             ...     global saving_count
             ...     saving_count += 1
-            ...
             >>> remove_handler = paddle.jit.api._register_save_pre_hook(save_pre_hook)
 
             >>> layer = LinearNet()
@@ -1004,7 +937,7 @@ def save(
         None
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +SKIP('`paddle.jit.to_static` can not run in xdoctest')
             >>> # example 1: save layer
@@ -1021,13 +954,13 @@ def save(
             >>> CLASS_NUM = 10
 
             >>> # define a random dataset
-            >>> class RandomDataset(paddle.io.Dataset): # type: ignore[type-arg]
+            >>> class RandomDataset(paddle.io.Dataset):  # type: ignore[type-arg]
             ...     def __init__(self, num_samples):
             ...         self.num_samples = num_samples
             ...
             ...     def __getitem__(self, idx):
             ...         image = np.random.random([IMAGE_SIZE]).astype('float32')
-            ...         label = np.random.randint(0, CLASS_NUM - 1, (1, )).astype('int64')
+            ...         label = np.random.randint(0, CLASS_NUM - 1, (1,)).astype('int64')
             ...         return image, label
             ...
             ...     def __len__(self):
@@ -1050,8 +983,7 @@ def save(
             ...             loss.backward()
             ...             opt.step()
             ...             opt.clear_grad()
-            ...             print("Epoch {} batch {}: loss = {}".format(
-            ...                 epoch_id, batch_id, np.mean(loss.numpy())))
+            ...             print("Epoch {} batch {}: loss = {}".format(epoch_id, batch_id, np.mean(loss.numpy())))
 
             >>> # 1. train & save model.
 
@@ -1062,11 +994,12 @@ def save(
 
             >>> # create data loader
             >>> dataset = RandomDataset(BATCH_NUM * BATCH_SIZE)
-            >>> loader = paddle.io.DataLoader(dataset,
+            >>> loader = paddle.io.DataLoader(
+            ...     dataset,
             ...     batch_size=BATCH_SIZE,
             ...     shuffle=True,
             ...     drop_last=True,
-            ...     num_workers=2
+            ...     num_workers=2,
             ... )
 
             >>> # train
@@ -1237,6 +1170,7 @@ def save(
                     inner_layer.forward,
                     input_spec=inner_input_spec,
                     full_graph=True,
+                    backend=None,
                 )
 
                 concrete_program = (
@@ -1276,6 +1210,7 @@ def save(
                     static_func,
                     input_spec=inner_input_spec,
                     full_graph=True,
+                    backend=None,
                 )
                 concrete_program = static_function.concrete_program
 
@@ -1561,7 +1496,7 @@ def load(
     Examples:
         1. Load model saved by ``paddle.jit.save`` then performing inference and fine-tune training.
 
-            .. code-block:: python
+            .. code-block:: pycon
                 :name: code-example1
 
                 >>> # doctest: +SKIP('`paddle.jit.to_static` can not run in xdoctest')
@@ -1578,13 +1513,13 @@ def load(
                 >>> CLASS_NUM = 10
 
                 >>> # define a random dataset
-                >>> class RandomDataset(paddle.io.Dataset): # type: ignore[type-arg]
+                >>> class RandomDataset(paddle.io.Dataset):  # type: ignore[type-arg]
                 ...     def __init__(self, num_samples):
                 ...         self.num_samples = num_samples
                 ...
                 ...     def __getitem__(self, idx):
                 ...         image = np.random.random([IMAGE_SIZE]).astype('float32')
-                ...         label = np.random.randint(0, CLASS_NUM - 1, (1, )).astype('int64')
+                ...         label = np.random.randint(0, CLASS_NUM - 1, (1,)).astype('int64')
                 ...         return image, label
                 ...
                 ...     def __len__(self):
@@ -1598,7 +1533,6 @@ def load(
                 ...     @paddle.jit.to_static
                 ...     def forward(self, x):
                 ...         return self._linear(x)
-                ...
                 >>> def train(layer, loader, loss_fn, opt):
                 ...     for epoch_id in range(EPOCH_NUM):
                 ...         for batch_id, (image, label) in enumerate(loader()):
@@ -1607,8 +1541,7 @@ def load(
                 ...             loss.backward()
                 ...             opt.step()
                 ...             opt.clear_grad()
-                ...             print("Epoch {} batch {}: loss = {}".format(
-                ...                 epoch_id, batch_id, np.mean(loss.numpy())))
+                ...             print("Epoch {} batch {}: loss = {}".format(epoch_id, batch_id, np.mean(loss.numpy())))
 
                 >>> # 1. train & save model.
 
@@ -1624,7 +1557,7 @@ def load(
                 ...     batch_size=BATCH_SIZE,
                 ...     shuffle=True,
                 ...     drop_last=True,
-                ...     num_workers=2
+                ...     num_workers=2,
                 ... )
 
                 >>> # train
@@ -1652,7 +1585,7 @@ def load(
 
         2. Load model saved by ``paddle.static.save_inference_model`` then performing and fine-tune training.
 
-            .. code-block:: python
+            .. code-block:: pycon
                 :name: code-example2
 
                 >>> # doctest: +SOLO('can not use multiprocessing testing `DataLoader`')
@@ -1671,13 +1604,13 @@ def load(
                 >>> CLASS_NUM = 10
 
                 >>> # define a random dataset
-                >>> class RandomDataset(paddle.io.Dataset): # type: ignore[type-arg]
+                >>> class RandomDataset(paddle.io.Dataset):  # type: ignore[type-arg]
                 ...     def __init__(self, num_samples):
                 ...         self.num_samples = num_samples
                 ...
                 ...     def __getitem__(self, idx):
                 ...         image = np.random.random([IMAGE_SIZE]).astype('float32')
-                ...         label = np.random.randint(0, CLASS_NUM - 1, (1, )).astype('int64')
+                ...         label = np.random.randint(0, CLASS_NUM - 1, (1,)).astype('int64')
                 ...         return image, label
                 ...
                 ...     def __len__(self):
@@ -1700,14 +1633,15 @@ def load(
 
                 >>> # create data loader
                 >>> dataset = RandomDataset(BATCH_NUM * BATCH_SIZE)
-                >>> loader = paddle.io.DataLoader(dataset,
+                >>> loader = paddle.io.DataLoader(
+                ...     dataset,
                 ...     feed_list=[image, label],
                 ...     places=place,
                 ...     batch_size=BATCH_SIZE,
                 ...     shuffle=True,
                 ...     drop_last=True,
                 ...     return_list=False,
-                ...     num_workers=2
+                ...     num_workers=2,
                 ... )
 
                 >>> # 1. train and save inference model
@@ -1715,7 +1649,7 @@ def load(
                 ...     exe.run(
                 ...         static.default_main_program(),
                 ...         feed=data,
-                ...         fetch_list=[avg_loss]
+                ...         fetch_list=[avg_loss],
                 ...     )
 
                 >>> model_path = "fc.example.model"
@@ -1723,7 +1657,7 @@ def load(
                 ...     model_path,
                 ...     [image],
                 ...     [pred],
-                ...     exe
+                ...     exe,
                 ... )
 
                 >>> # 2. load model
@@ -1743,12 +1677,13 @@ def load(
                 >>> fc.train()
                 >>> loss_fn = nn.CrossEntropyLoss()
                 >>> adam = opt.Adam(learning_rate=0.001, parameters=fc.parameters())
-                >>> loader = paddle.io.DataLoader(dataset,
+                >>> loader = paddle.io.DataLoader(
+                ...     dataset,
                 ...     places=place,
                 ...     batch_size=BATCH_SIZE,
                 ...     shuffle=True,
                 ...     drop_last=True,
-                ...     num_workers=2
+                ...     num_workers=2,
                 ... )
                 >>> for epoch_id in range(EPOCH_NUM):
                 ...     for batch_id, (image, label) in enumerate(loader()):
@@ -1757,8 +1692,7 @@ def load(
                 ...         loss.backward()
                 ...         adam.step()
                 ...         adam.clear_grad()
-                ...         print("Epoch {} batch {}: loss = {}".format(
-                ...             epoch_id, batch_id, np.mean(loss.numpy())))
+                ...         print("Epoch {} batch {}: loss = {}".format(epoch_id, batch_id, np.mean(loss.numpy())))
     """
     # 1. construct correct config
     config = _parse_load_config(configs)

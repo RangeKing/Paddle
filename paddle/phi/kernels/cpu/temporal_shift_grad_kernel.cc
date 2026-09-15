@@ -23,17 +23,17 @@ namespace phi {
 template <typename T>
 void TemporalShiftBwNCHW(const T* output_grad,
                          T* input_grad,
-                         const int ntchw,
-                         const int tchw,
-                         const int chw,
-                         const int hw,
+                         const int64_t ntchw,
+                         const int64_t tchw,
+                         const int64_t chw,
+                         const int64_t hw,
                          const int t,
                          const int c1,
                          const int c2) {
   int src_it = 0;
-  for (int i = 0; i < ntchw; i++) {
-    int it = (i % tchw) / chw;
-    int ic = (i % chw) / hw;
+  for (int64_t i = 0; i < ntchw; i++) {
+    int64_t it = (i % tchw) / chw;
+    int64_t ic = (i % chw) / hw;
 
     if (ic < c1) {
       src_it = it + 1;
@@ -54,17 +54,17 @@ void TemporalShiftBwNCHW(const T* output_grad,
 template <typename T>
 void TemporalShiftBwNHWC(const T* output_grad,
                          T* input_grad,
-                         const int nthwc,
-                         const int thwc,
-                         const int hwc,
+                         const int64_t nthwc,
+                         const int64_t thwc,
+                         const int64_t hwc,
                          const int t,
                          const int c,
                          const int c1,
                          const int c2) {
   int src_it = 0;
-  for (int i = 0; i < nthwc; i++) {
-    int it = (i % thwc) / hwc;
-    int ic = i % c;
+  for (int64_t i = 0; i < nthwc; i++) {
+    int64_t it = (i % thwc) / hwc;
+    int64_t ic = i % c;
 
     if (ic < c1) {
       src_it = it + 1;
@@ -89,39 +89,43 @@ void TemporalShiftGradKernel(const Context& dev_ctx,
                              float shift_ratio,
                              const std::string& data_format_str,
                              DenseTensor* x_grad) {
+  if (x_grad && x_grad->numel() == 0) {
+    dev_ctx.template Alloc<T>(x_grad);
+    return;
+  }
   auto* input_grad = x_grad;
   auto* output_grad = &out_grad;
   int t = seg_num;
-  const DataLayout data_layout = common::StringToDataLayout(data_format_str);
+  const DataLayout data_layout = StringToDataLayout(data_format_str);
 
   const int nt = static_cast<int>(output_grad->dims()[0]);
-  const int c = static_cast<int>(data_layout == DataLayout::kNCHW
+  const int c = static_cast<int>(data_layout == DataLayout::NCHW
                                      ? output_grad->dims()[1]
                                      : output_grad->dims()[3]);
-  const int h = static_cast<int>(data_layout == DataLayout::kNCHW
+  const int h = static_cast<int>(data_layout == DataLayout::NCHW
                                      ? output_grad->dims()[2]
                                      : output_grad->dims()[1]);
-  const int w = static_cast<int>(data_layout == DataLayout::kNCHW
+  const int w = static_cast<int>(data_layout == DataLayout::NCHW
                                      ? output_grad->dims()[3]
                                      : output_grad->dims()[2]);
 
-  const int hw = h * w;
-  const int chw = c * hw;
-  const int tchw = t * chw;
-  const int ntchw = nt * chw;
+  const int64_t hw = static_cast<int64_t>(h) * w;
+  const int64_t chw = static_cast<int64_t>(c) * hw;
+  const int64_t tchw = static_cast<int64_t>(t) * chw;
+  const int64_t ntchw = static_cast<int64_t>(nt) * chw;
 
   const int c1 = static_cast<int>(static_cast<float>(c) * shift_ratio);
   const int c2 = static_cast<int>(static_cast<float>(c) * 2.f * shift_ratio);
 
   DDim in_grad_dims =
-      (data_layout == DataLayout::kNCHW ? common::make_ddim({nt, c, h, w})
-                                        : common::make_ddim({nt, h, w, c}));
+      (data_layout == DataLayout::NCHW ? make_ddim({nt, c, h, w})
+                                       : make_ddim({nt, h, w, c}));
   const T* output_grad_data = output_grad->data<T>();
   input_grad->Resize(in_grad_dims);
 
   T* input_grad_data = dev_ctx.template Alloc<T>(input_grad);
 
-  if (data_layout == DataLayout::kNCHW) {
+  if (data_layout == DataLayout::NCHW) {
     TemporalShiftBwNCHW<T>(
         output_grad_data, input_grad_data, ntchw, tchw, chw, hw, t, c1, c2);
   } else {

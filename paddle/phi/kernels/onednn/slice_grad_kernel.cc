@@ -19,8 +19,9 @@
 
 namespace phi {
 
-bool SliceGradCheckIfOneDNNSupport(const KernelContext* ctx) {
-  if (ctx->InputAt<phi::DenseTensor>(1).mem_desc().get_inner_nblks() == 0) {
+bool SliceGradCheckIfOneDNNSupport(const KernelContext* dev_ctx) {
+  if (phi::funcs::GetOneDNNMemDesc(dev_ctx->InputAt<DenseTensor>(1))
+          .get_inner_nblks() == 0) {
     return true;
   }
   return false;
@@ -38,7 +39,7 @@ void SliceGradKernel(const Context& dev_ctx,
                      DenseTensor* input_grad) {
   const auto& onednn_engine = dev_ctx.GetEngine();
 
-  auto dx_dims = common::vectorize(input_grad->dims());
+  auto dx_dims = vectorize(input_grad->dims());
 
   auto starts_vec = starts.GetData();
   auto ends_vec = ends.GetData();
@@ -61,9 +62,9 @@ void SliceGradKernel(const Context& dev_ctx,
   funcs::ReorderOneDNNHandler reorder_handler(
       slice_dims, out_grad.dtype(), out_grad_type, onednn_engine);
 
-  auto reorder_src_memory_p =
-      reorder_handler.AcquireSrcMemory(out_grad.mem_desc().reshape(slice_dims),
-                                       funcs::to_void_cast(out_grad.data<T>()));
+  auto reorder_src_memory_p = reorder_handler.AcquireSrcMemory(
+      phi::funcs::GetOneDNNMemDesc(out_grad).reshape(slice_dims),
+      funcs::to_void_cast(out_grad.data<T>()));
   auto reorder_dst_memory_p = reorder_handler.AcquireDstMemory(
       input_grad,
       dx_dims,
@@ -80,16 +81,12 @@ void SliceGradKernel(const Context& dev_ctx,
   reorder_p->execute(astream, *reorder_src_memory_p, *slice_mem_p);
   astream.wait();
 
-  input_grad->set_mem_desc(reorder_dst_memory_p->get_desc());
+  phi::funcs::SetOneDNNMemDesc(input_grad, reorder_dst_memory_p->get_desc());
 }
 
 }  // namespace phi
 
-PD_REGISTER_KERNEL(slice_grad,
-                   OneDNN,
-                   ONEDNN,
-                   phi::SliceGradKernel,
-                   float,
-                   phi::dtype::bfloat16) {
+PD_REGISTER_KERNEL(
+    slice_grad, OneDNN, ONEDNN, phi::SliceGradKernel, float, phi::bfloat16) {
   kernel->check_if_onednn_kernel_support_ = phi::SliceGradCheckIfOneDNNSupport;
 }

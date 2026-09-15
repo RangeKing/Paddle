@@ -14,6 +14,7 @@
 
 from paddle import _legacy_C_ops
 from paddle.common_ops_import import check_variable_and_dtype
+from paddle.distributed import fleet
 from paddle.framework import LayerHelper, in_dynamic_mode
 
 
@@ -61,13 +62,13 @@ def global_scatter(
         global_count (Tensor): Tensor which have n_expert * world_size elements that indicates
             how many data needed to be received. The tensor data type should be int64.
         group (Group, optional): The group instance return by new_group or None for global default group. Default: None.
-        use_calc_stream (bool, optional): Wether to use calculation stream (True) or communication stream. Default: True.
+        use_calc_stream (bool, optional): Whether to use calculation stream (True) or communication stream. Default: True.
 
     Returns:
         out (Tensor): The data received from all experts.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env:DISTRIBUTED)
             >>> import paddle
@@ -79,9 +80,9 @@ def global_scatter(
             >>> d_model = 2
             >>> in_feat = d_model
             >>> local_input_buf = paddle.to_tensor(
-            ...     [[1, 2],[3, 4],[5, 6],[7, 8],[9, 10]],
+            ...     [[1, 2], [3, 4], [5, 6], [7, 8], [9, 10]],
             ...     dtype='float32',
-            ...     stop_gradient=False
+            ...     stop_gradient=False,
             ... )
             >>> if paddle.distributed.ParallelEnv().local_rank == 0:
             ...     local_count = paddle.to_tensor([2, 1, 1, 1], dtype="int64")
@@ -89,9 +90,10 @@ def global_scatter(
             >>> else:
             ...     local_count = paddle.to_tensor([1, 1, 2, 1], dtype="int64")
             ...     global_count = paddle.to_tensor([1, 1, 2, 1], dtype="int64")
-            >>> a = moe_utils.global_scatter(local_input_buf,
+            >>> a = moe_utils.global_scatter(
+            ...     local_input_buf,
             ...     local_count,
-            ...     global_count
+            ...     global_count,
             ... )
             >>> a.stop_gradient = False
             >>> print(a)
@@ -186,13 +188,13 @@ def global_gather(
         global_count (Tensor): Tensor which have n_expert * world_size elements that indicates
             how many data needed to be sent. Tensor data type should be int64.
         group (Group, optional): The group instance return by new_group or None for global default group. Default: None.
-        use_calc_stream (bool, optional): Wether to use calculation stream (True) or communication stream. Default: True.
+        use_calc_stream (bool, optional): Whether to use calculation stream (True) or communication stream. Default: True.
 
     Returns:
         out (Tensor): The data received from all experts.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env:DISTRIBUTED)
             >>> import paddle
@@ -204,9 +206,9 @@ def global_gather(
             >>> d_model = 2
             >>> in_feat = d_model
             >>> local_input_buf = paddle._to_tensor(
-            ...     [[1, 2],[3, 4],[5, 6],[7, 8],[9, 10]],
+            ...     [[1, 2], [3, 4], [5, 6], [7, 8], [9, 10]],
             ...     dtype='float32',
-            ...     stop_gradient=False
+            ...     stop_gradient=False,
             ... )
             >>> if paddle.distributed.ParallelEnv().local_rank == 0:
             ...     local_count = paddle.to_tensor([2, 1, 1, 1], dtype="int64")
@@ -217,7 +219,7 @@ def global_gather(
             >>> a = moe_utils.global_gather(
             ...     local_input_buf,
             ...     local_count,
-            ...     global_count
+            ...     global_count,
             ... )
             >>> print(a)
             >>> # out for rank 0: [[1, 2], [3, 4], [7, 8], [1, 2], [7, 8]]
@@ -277,3 +279,30 @@ def global_gather(
             },
         )
         return out
+
+
+def get_complete_pp_mesh(mesh):
+    """
+    Get complete pp mesh with given mesh.
+
+    Args:
+        mesh (Mesh): Mesh object.
+
+    Returns:
+        Mesh: Complete mesh.
+
+    """
+    process_id = mesh.process_ids[0]
+    global_mesh = fleet.auto.get_mesh()
+
+    if global_mesh and "pp" in global_mesh.dim_names:
+        pp_degree = global_mesh.get_dim_size("pp")
+        for i in range(pp_degree):
+            pp_mesh = global_mesh.get_mesh_with_dim("pp", i)
+            if process_id in pp_mesh.process_ids:
+                return pp_mesh
+        AssertionError(
+            f"Current mesh: {mesh} not found in global mesh {global_mesh}"
+        )
+    else:
+        return mesh

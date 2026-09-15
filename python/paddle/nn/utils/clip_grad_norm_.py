@@ -33,7 +33,7 @@ def clip_grad_norm_(
     norm_type: float = 2.0,
     error_if_nonfinite: bool = False,
 ) -> Tensor:
-    r"""Clips gradient norm of the iteratable parameters.
+    r"""Clips gradient norm of the iterable parameters.
 
     Norms are calculated together on all gradients, just as they are
     connected into one vector. The gradient will be modified in place.
@@ -54,7 +54,7 @@ def clip_grad_norm_(
         Total norm of the parameter gradients (treated as a single vector).
 
     Example:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 

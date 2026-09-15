@@ -43,7 +43,7 @@ static std::vector<std::vector<int>> IntVec1DTo2D(const std::vector<int>& vec,
 
 template <typename T, typename Context>
 void SpatialTransformerResblockXPUKernel(
-    const Context& ctx,
+    const Context& dev_ctx,
     const DenseTensor& x,
     const std::vector<const DenseTensor*>& x_max,
     const std::vector<const DenseTensor*>& conv_bias,
@@ -62,12 +62,13 @@ void SpatialTransformerResblockXPUKernel(
     bool include_silu,
     DenseTensor* out,
     DenseTensor* out_max) {
-#ifdef PADDLE_WITH_XPU_XFT
+  // not suppotr in current xft
+#if defined(PADDLE_WITH_XPU_XFT_NOT_SUPPORT)
   using XPUType = typename XPUTypeTrait<T>::Type;
 
   auto* in1 = reinterpret_cast<const XPUType*>(x.data<T>());
   const XPUType* in2 = nullptr;
-  auto* out_data = reinterpret_cast<XPUType*>(ctx.template Alloc<T>(out));
+  auto* out_data = reinterpret_cast<XPUType*>(dev_ctx.template Alloc<T>(out));
   int batch = static_cast<int>(x.dims()[0]);
   int channel = static_cast<int>(x.dims()[1]);
   int nh = static_cast<int>(x.dims()[2]);
@@ -112,16 +113,29 @@ void SpatialTransformerResblockXPUKernel(
   std::vector<std::vector<int>> kernel_dims_2d;
   // prepare conv params
   for (size_t i = 0; i < conv_filter.size(); i++) {
-    int xn = conv_filter[i]->dims()[0];
-    int nc = conv_filter[i]->dims()[1];
-    int nh = conv_filter[i]->dims()[2];
-    int nw = conv_filter[i]->dims()[3];
+    int64_t xn = conv_filter[i]->dims()[0];
+    int64_t nc = conv_filter[i]->dims()[1];
+    int64_t nh = conv_filter[i]->dims()[2];
+    int64_t nw = conv_filter[i]->dims()[3];
+
+    // TODO(large-tensor): XPU xftTensor not support int64
+    PADDLE_ENFORCE_LE_INT_MAX(xn, "xn");
+    PADDLE_ENFORCE_LE_INT_MAX(nc, "nc");
+    PADDLE_ENFORCE_LE_INT_MAX(nh, "nh");
+    PADDLE_ENFORCE_LE_INT_MAX(nw, "nw");
+
     xft_conv_weights_.emplace_back(
         const_cast<int16_t*>(
             reinterpret_cast<const int16_t*>(conv_filter[i]->data<int16_t>())),
         const_cast<float*>(conv_filter_max[i]->data<float>()),
-        xft::xftTensor<int16_t, 4>::dim_t{channel, xn, nh, nw});
-    kernel_dims_2d.emplace_back(std::vector<int>{xn, nc, nh, nw});
+        xft::xftTensor<int16_t, 4>::dim_t{channel,
+                                          static_cast<int>(xn),
+                                          static_cast<int>(nh),
+                                          static_cast<int>(nw)});
+    kernel_dims_2d.emplace_back(std::vector<int>{static_cast<int>(xn),
+                                                 static_cast<int>(nc),
+                                                 static_cast<int>(nh),
+                                                 static_cast<int>(nw)});
   }
 
   // prepare bias
@@ -158,7 +172,7 @@ void SpatialTransformerResblockXPUKernel(
   // output
   xft::xftTensor<XPUType, 4> output_tensor(out_data, {batch, channel, nh, nw});
   int r = xft::st_resblock_fusion<XPUType, int16_t, int16_t>(
-      ctx.x_context(),
+      dev_ctx.x_context(),
       in_tensor,
       in_silu_tensor,
       xft_gn_weight_,
@@ -185,4 +199,4 @@ PD_REGISTER_KERNEL(spatial_transformer_resblock_xpu,
                    ALL_LAYOUT,
                    phi::fusion::SpatialTransformerResblockXPUKernel,
                    float,
-                   phi::dtype::float16) {}
+                   phi::float16) {}

@@ -72,10 +72,10 @@ class DistributedDropout(DistributedOperatorImplContainer):
         if changed:
             (
                 _,
-                infered_output_dims_mappings,
+                inferred_output_dims_mappings,
             ) = merge_forward_backward_dims_mapping(fw_results, bw_results)
             dist_op.dist_attr.set_output_dims_mapping(
-                mask_name, infered_output_dims_mappings[0]
+                mask_name, inferred_output_dims_mappings[0]
             )
 
         return changed
@@ -109,17 +109,17 @@ class DistributedDropoutImpl0(DistributedElementwiseImpl0):
         src_op = dist_op_context.cur_src_op
         rank_id = dist_op_context.rank_id
         op_dist_attr = ctx.get_op_dist_attr_for_program(src_op)
-        assert (
-            op_dist_attr is not None
-        ), f"forward op [{src_op}] don't have dist attribute !"
+        assert op_dist_attr is not None, (
+            f"forward op [{src_op}] don't have dist attribute !"
+        )
 
         if is_enable_auto_rand_ctrl() and not op_dist_attr.is_recompute:
             # check validation of inputs / outputs
             assert 'X' in kwargs, "input [{}] is not given".format('X')
-            assert (
-                len(kwargs['X']) == 1
-            ), "input X should be only one tensor but got {}".format(
-                kwargs['X']
+            assert len(kwargs['X']) == 1, (
+                "input X should be only one tensor but got {}".format(
+                    kwargs['X']
+                )
             )
             assert 'Seed' in kwargs, "input [{}] is not given".format('Seed')
 

@@ -17,7 +17,6 @@ limitations under the License. */
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/strings/unicode.h"
 
-using pstring = ::phi::dtype::pstring;
 namespace phi {
 namespace strings {
 
@@ -167,7 +166,17 @@ void StringUpperKernel(const ContextT& dev_ctx,
                           UTF8CaseConverter<ContextT, UTF8ToUpper>,
                           ContextT>()(dev_ctx, x, use_utf8_encoding, out);
 }
+#ifdef _WIN32
+template PADDLE_API void StringLowerKernel<GPUContext>(const GPUContext&,
+                                                       const StringTensor& x,
+                                                       bool,
+                                                       StringTensor*);
 
+template PADDLE_API void StringUpperKernel<GPUContext>(const GPUContext&,
+                                                       const StringTensor& x,
+                                                       bool,
+                                                       StringTensor*);
+#endif
 }  // namespace strings
 }  // namespace phi
 

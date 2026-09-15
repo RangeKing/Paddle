@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "paddle/phi/kernels/gpu/yolo_box_post_kernel.h"
+#include "paddle/common/enforce.h"
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/backends/gpu/gpu_launch_config.h"
 #include "paddle/phi/common/memory_utils.h"
@@ -94,7 +96,8 @@ static float BoxIOU(Box a, Box b) {
 static void PostNMS(std::vector<Detection>* det_bboxes,
                     float thresh,
                     int classes) {
-  int total = det_bboxes->size();
+  PADDLE_ENFORCE_LE_INT_MAX(det_bboxes->size(), "detection boxes size");
+  int total = static_cast<int>(det_bboxes->size());
   if (total <= 0) {
     return;
   }
@@ -138,9 +141,15 @@ __global__ void YoloBoxNum(const float* input,
                            const int class_num,
                            const int anchors_num,
                            float prob_thresh) {
-  int x_id = blockIdx.x * blockDim.x + threadIdx.x;
-  int y_id = blockIdx.y * blockDim.y + threadIdx.y;
-  int z_id = blockIdx.z * blockDim.z + threadIdx.z;
+  int64_t x_id =
+      static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x) +
+      static_cast<int64_t>(threadIdx.x);
+  int64_t y_id =
+      static_cast<int64_t>(blockIdx.y) * static_cast<int64_t>(blockDim.y) +
+      static_cast<int64_t>(threadIdx.y);
+  int64_t z_id =
+      static_cast<int64_t>(blockIdx.z) * static_cast<int64_t>(blockDim.z) +
+      static_cast<int64_t>(threadIdx.z);
   if ((x_id >= grid_size) || (y_id >= grid_size) || (z_id >= anchors_num)) {
     return;
   }
@@ -167,9 +176,15 @@ __global__ void YoloTensorParseKernel(const float* input,
                                       const int neth,
                                       int* biases,
                                       float prob_thresh) {
-  int x_id = blockIdx.x * blockDim.x + threadIdx.x;
-  int y_id = blockIdx.y * blockDim.y + threadIdx.y;
-  int z_id = blockIdx.z * blockDim.z + threadIdx.z;
+  int64_t x_id =
+      static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x) +
+      static_cast<int64_t>(threadIdx.x);
+  int64_t y_id =
+      static_cast<int64_t>(blockIdx.y) * static_cast<int64_t>(blockDim.y) +
+      static_cast<int64_t>(threadIdx.y);
+  int64_t z_id =
+      static_cast<int64_t>(blockIdx.z) * static_cast<int64_t>(blockDim.z) +
+      static_cast<int64_t>(threadIdx.z);
   if ((x_id >= grid_size) || (y_id >= grid_size) || (z_id >= anchors_num)) {
     return;
   }
@@ -395,9 +410,10 @@ void YoloBoxPostKernel(const Context& dev_ctx,
       downsample_ratio0, downsample_ratio1, downsample_ratio2};
   // clip_bbox and scale_x_y is not used now!
 
-  int batch = image_shape.dims()[0];
+  int64_t batch = image_shape.dims()[0];
+
   TensorInfo* ts_info = new TensorInfo[batch * boxes_input.size()];
-  for (int i = 0; i < batch * static_cast<int>(boxes_input.size()); i++) {
+  for (int64_t i = 0; i < batch * boxes_input.size(); i++) {
 #ifdef PADDLE_WITH_HIP
     hipMalloc(
         reinterpret_cast<void**>(&ts_info[i].bboxes_dev_ptr),
@@ -530,7 +546,9 @@ void YoloBoxPostKernel(const Context& dev_ctx,
       }
     }
     PostNMS(&bbox_det_vec, nms_threshold, class_num);
-    for (int i = 0; i < bbox_det_vec.size(); i++) {
+    PADDLE_ENFORCE_LE_INT_MAX(bbox_det_vec.size(), "bbox_det_num");
+    const int bbox_det_num = static_cast<int>(bbox_det_vec.size());
+    for (int i = 0; i < bbox_det_num; i++) {
       boxes_scores_data[boxes_scores_id++] =
           bbox_det_vec[i].max_prob_class_index;
       boxes_scores_data[boxes_scores_id++] = bbox_det_vec[i].objectness;
@@ -542,7 +560,7 @@ void YoloBoxPostKernel(const Context& dev_ctx,
           bbox_det_vec[i].bbox.h + bbox_det_vec[i].bbox.y;
       free(bbox_det_vec[i].prob);
     }
-    boxes_num_data[batch_id] = bbox_det_vec.size();
+    boxes_num_data[batch_id] = bbox_det_num;
   }
 
 #ifdef PADDLE_WITH_HIP

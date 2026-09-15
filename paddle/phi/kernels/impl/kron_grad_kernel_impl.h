@@ -14,9 +14,9 @@
 
 #pragma once
 
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/impl/kron_kernel_impl.h"
 #include "paddle/phi/kernels/reduce_sum_kernel.h"
-
 namespace phi {
 
 template <typename T>
@@ -164,15 +164,15 @@ struct KronGradOpFunctor {
     int64_t numel_x = x.numel();
     int64_t numel_y = y.numel();
 
-    const phi::DDim &dim_x = x.dims();
-    const phi::DDim &dim_y = y.dims();
-    const phi::DDim &dim_dout = dout.dims();
-    const phi::DDim stride_x =
-        dim_x.size() == 0 ? phi::DDim(dim_x) : common::stride(dim_x);
-    const phi::DDim stride_y =
-        dim_y.size() == 0 ? phi::DDim(dim_y) : common::stride(dim_y);
-    const phi::DDim stride_dout =
-        dim_dout.size() == 0 ? phi::DDim(dim_dout) : common::stride(dim_dout);
+    const DDim &dim_x = x.dims();
+    const DDim &dim_y = y.dims();
+    const DDim &dim_dout = dout.dims();
+    const DDim stride_x =
+        dim_x.size() == 0 ? DDim(dim_x) : common::stride(dim_x);
+    const DDim stride_y =
+        dim_y.size() == 0 ? DDim(dim_y) : common::stride(dim_y);
+    const DDim stride_dout =
+        dim_dout.size() == 0 ? DDim(dim_dout) : common::stride(dim_dout);
 
     const int64_t *p_stride_x = nullptr;
     const int64_t *p_stride_y = nullptr;
@@ -235,12 +235,10 @@ struct KronGradOpFunctor {
 #if defined(__NVCC__) || defined(__HIPCC__)
     auto stream = dev_ctx.stream();  // it is a cuda device_context
     if (dx) {
-      phi::SumKernel<T, Context>(
-          dev_ctx, dout_x, {1}, dout_x.dtype(), false, dx);
+      SumKernel<T, Context>(dev_ctx, dout_x, {1}, dout_x.dtype(), false, dx);
     }
     if (dy) {
-      phi::SumKernel<T, Context>(
-          dev_ctx, dout_y, {1}, dout_y.dtype(), false, dy);
+      SumKernel<T, Context>(dev_ctx, dout_y, {1}, dout_y.dtype(), false, dy);
     }
 #else
     auto *place = dev_ctx.eigen_device();
@@ -248,29 +246,50 @@ struct KronGradOpFunctor {
     if (dx) {
       auto eigen_dout_x = EigenMatrix<T>::Reshape(dout_x, 1);
       auto eigen_vec_dx = EigenVector<T>::Flatten(*dx);
-      eigen_vec_dx.device(*place) = eigen_dout_x.sum(reduce_dim);
+      if constexpr (std::is_same_v<T, float16> || std::is_same_v<T, bfloat16>) {
+        eigen_vec_dx.device(*place) = eigen_dout_x.template cast<float>()
+                                          .sum(reduce_dim)
+                                          .template cast<T>();
+      } else {
+        eigen_vec_dx.device(*place) = eigen_dout_x.sum(reduce_dim);
+      }
     }
     if (dy) {
       auto eigen_dout_y = EigenMatrix<T>::Reshape(dout_y, 1);
       auto eigen_vec_dy = EigenVector<T>::Flatten(*dy);
-      eigen_vec_dy.device(*place) = eigen_dout_y.sum(reduce_dim);
+      if constexpr (std::is_same_v<T, float16> || std::is_same_v<T, bfloat16>) {
+        eigen_vec_dy.device(*place) = eigen_dout_y.template cast<float>()
+                                          .sum(reduce_dim)
+                                          .template cast<T>();
+      } else {
+        eigen_vec_dy.device(*place) = eigen_dout_y.sum(reduce_dim);
+      }
     }
 #endif
   }
 };
 
 template <typename T, typename Context>
-void KronGradKernel(const Context &ctx,
+void KronGradKernel(const Context &dev_ctx,
                     const DenseTensor &x,
                     const DenseTensor &y,
                     const DenseTensor &out_grad,
                     DenseTensor *x_grad,
                     DenseTensor *y_grad) {
+  if (out_grad.numel() == 0) {
+    if (x_grad) {
+      Full<T, Context>(dev_ctx, x_grad->dims(), 0, x_grad);
+    }
+    if (y_grad) {
+      Full<T, Context>(dev_ctx, y_grad->dims(), 0, y_grad);
+    }
+    return;
+  }
   if (x_grad) {
-    ctx.template Alloc<T>(x_grad);
+    dev_ctx.template Alloc<T>(x_grad);
   }
   if (y_grad) {
-    ctx.template Alloc<T>(y_grad);
+    dev_ctx.template Alloc<T>(y_grad);
   }
 
   int ndims = out_grad.dims().size();
@@ -292,7 +311,7 @@ void KronGradKernel(const Context &ctx,
   }
 
   KronGradOpFunctor<Context, T> func;
-  func(ctx, out_grad, xx, yy, pdxx, pdyy);
+  func(dev_ctx, out_grad, xx, yy, pdxx, pdyy);
 }
 
 }  // namespace phi

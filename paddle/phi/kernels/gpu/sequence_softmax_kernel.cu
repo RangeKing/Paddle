@@ -13,16 +13,8 @@
 // limitations under the License.
 
 #include <algorithm>
-#ifdef __NVCC__
-#include <cub/cub.cuh>
-#endif
-
-#ifdef __HIPCC__
-#include <hipcub/hipcub.hpp>
-namespace cub = hipcub;
-#endif
-
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/funcs/cub.h"
 #include "paddle/phi/kernels/funcs/math.h"
 #include "paddle/phi/kernels/impl/sequence_softmax_kernel_impl.h"
 
@@ -37,19 +29,19 @@ using BlockReduceTempStorage = typename BlockReduce<T, BlockDim>::TempStorage;
 template <typename T, int BlockDim>
 __global__ void sequence_softmax_kernel(const T *in_data,
                                         const size_t *ref_lod,
-                                        const size_t src_hight,
+                                        const size_t src_height,
                                         T *out_data) {
   __shared__ BlockReduceTempStorage<T, BlockDim> temp_storage;
   __shared__ T shared_max_data;
   __shared__ T shared_sum_data;
 
-  for (int i = blockIdx.x; i < src_hight; i += gridDim.x) {
+  for (size_t i = blockIdx.x; i < src_height; i += gridDim.x) {
     size_t start = ref_lod[i];
     size_t span = ref_lod[i + 1] - start;
 
     // Find the max ele
     T max_ele = -FLT_MAX;
-    for (int tid = threadIdx.x; tid < span; tid += blockDim.x) {
+    for (size_t tid = threadIdx.x; tid < span; tid += blockDim.x) {
       T ele = in_data[start + tid];
       max_ele = max_ele > ele ? max_ele : ele;
     }
@@ -62,9 +54,9 @@ __global__ void sequence_softmax_kernel(const T *in_data,
 
     // sum
     T sum_data = 0;
-    for (int tid = threadIdx.x; tid < span; tid += blockDim.x) {
+    for (size_t tid = threadIdx.x; tid < span; tid += blockDim.x) {
       T ele = in_data[start + tid];
-      sum_data += phi::funcs::real_exp(ele - shared_max_data);
+      sum_data += funcs::real_exp(ele - shared_max_data);
     }
     sum_data =
         BlockReduce<T, BlockDim>(temp_storage).Reduce(sum_data, cub::Sum());
@@ -74,36 +66,36 @@ __global__ void sequence_softmax_kernel(const T *in_data,
     __syncthreads();
 
     // get final resit
-    for (int tid = threadIdx.x; tid < span; tid += blockDim.x) {
+    for (size_t tid = threadIdx.x; tid < span; tid += blockDim.x) {
       T ele = in_data[start + tid];
-      ele = phi::funcs::real_exp(ele - shared_max_data) / shared_sum_data;
+      ele = funcs::real_exp(ele - shared_max_data) / shared_sum_data;
       out_data[start + tid] = ele;
     }
   }
 }
 
 template <typename T>
-struct SequenceSoftmaxFunctor<phi::GPUContext, T> {
-  void operator()(const phi::GPUContext &context,
+struct SequenceSoftmaxFunctor<GPUContext, T> {
+  void operator()(const GPUContext &dev_ctx,
                   const DenseTensor &x,
-                  const phi::Vector<size_t> &ref_lod, /*referenced lod*/
+                  const Vector<size_t> &ref_lod, /*referenced lod*/
                   DenseTensor *out) {
     int height = ref_lod.size() - 1;
 
     const int kThreadsPerBlock = 32;
     int thread_x = kThreadsPerBlock;
-    int max_threads = context.GetMaxPhysicalThreadCount();
+    int max_threads = dev_ctx.GetMaxPhysicalThreadCount();
     int max_blocks = std::max(max_threads / kThreadsPerBlock, 1);
 
     dim3 block_size(thread_x);
     dim3 grid_size(max_blocks);
-    phi::MixVector<size_t> mixv_ref_lod(&ref_lod);
+    MixVector<size_t> mixv_ref_lod(&ref_lod);
     sequence_softmax_kernel<T, kThreadsPerBlock>
-        <<<grid_size, block_size, 0, context.stream()>>>(
+        <<<grid_size, block_size, 0, dev_ctx.stream()>>>(
             x.data<T>(),
-            mixv_ref_lod.CUDAData(context.GetPlace()),
+            mixv_ref_lod.CUDAData(dev_ctx.GetPlace()),
             height,
-            context.Alloc<T>(out));
+            dev_ctx.Alloc<T>(out));
   }
 };
 

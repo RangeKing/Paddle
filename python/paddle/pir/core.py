@@ -42,6 +42,9 @@ vartype_to_datatype = {
     VarDesc.VarType.INT64: DataType.INT64,
     VarDesc.VarType.BOOL: DataType.BOOL,
     VarDesc.VarType.UINT8: DataType.UINT8,
+    VarDesc.VarType.UINT16: DataType.UINT16,
+    VarDesc.VarType.UINT32: DataType.UINT32,
+    VarDesc.VarType.UINT64: DataType.UINT64,
     VarDesc.VarType.INT8: DataType.INT8,
     VarDesc.VarType.COMPLEX64: DataType.COMPLEX64,
     VarDesc.VarType.COMPLEX128: DataType.COMPLEX128,
@@ -53,7 +56,7 @@ vartype_to_datatype = {
 
 datatype_to_vartype = {v: k for k, v in vartype_to_datatype.items()}
 
-np_type_to_paddle_type = {
+nptype_to_datatype = {
     np.dtype("float32"): DataType.FLOAT32,
     np.dtype("float64"): DataType.FLOAT64,
     np.dtype("float16"): DataType.FLOAT16,
@@ -63,6 +66,8 @@ np_type_to_paddle_type = {
     np.dtype("bool_"): DataType.BOOL,
     np.dtype("uint16"): DataType.BFLOAT16,
     np.dtype("uint8"): DataType.UINT8,
+    np.dtype("uint32"): DataType.UINT32,
+    np.dtype("uint64"): DataType.UINT64,
     np.dtype("int8"): DataType.INT8,
     np.dtype("complex64"): DataType.COMPLEX64,
     np.dtype("complex128"): DataType.COMPLEX128,
@@ -75,14 +80,14 @@ np_type_to_paddle_type = {
     np.bool_: DataType.BOOL,
     np.uint16: DataType.BFLOAT16,
     np.uint8: DataType.UINT8,
+    np.uint32: DataType.UINT32,
+    np.uint64: DataType.UINT64,
     np.int8: DataType.INT8,
     np.complex64: DataType.COMPLEX64,
     np.complex128: DataType.COMPLEX128,
-    "float8_e4m3fn": DataType.FLOAT8_E4M3FN,
-    "float8_e5m2": DataType.FLOAT8_E5M2,
 }
 
-_PADDLE_PIR_DTYPE_2_NUMPY_DTYPE = {
+datatype_to_str = {
     DataType.BOOL: 'bool',
     DataType.FLOAT16: 'float16',
     DataType.BFLOAT16: 'uint16',
@@ -93,6 +98,9 @@ _PADDLE_PIR_DTYPE_2_NUMPY_DTYPE = {
     DataType.INT32: 'int32',
     DataType.INT64: 'int64',
     DataType.UINT8: 'uint8',
+    DataType.UINT16: 'uint16',
+    DataType.UINT32: 'uint32',
+    DataType.UINT64: 'uint64',
     DataType.COMPLEX64: 'complex64',
     DataType.COMPLEX128: 'complex128',
     DataType.FLOAT8_E4M3FN: 'float8_e4m3fn',
@@ -100,9 +108,31 @@ _PADDLE_PIR_DTYPE_2_NUMPY_DTYPE = {
 }
 
 
-def convert_np_dtype_to_dtype_(np_dtype) -> DataType:
+str_to_datatype = {
+    "float32": DataType.FLOAT32,
+    "float64": DataType.FLOAT64,
+    "float16": DataType.FLOAT16,
+    "int32": DataType.INT32,
+    "int16": DataType.INT16,
+    "int64": DataType.INT64,
+    "bool": DataType.BOOL,
+    "bool_": DataType.BOOL,
+    "uint16": DataType.BFLOAT16,
+    "uint8": DataType.UINT8,
+    "uint32": DataType.UINT32,
+    "uint64": DataType.UINT64,
+    "int8": DataType.INT8,
+    "complex64": DataType.COMPLEX64,
+    "complex128": DataType.COMPLEX128,
+    "bfloat16": DataType.BFLOAT16,
+    "float8_e4m3fn": DataType.FLOAT8_E4M3FN,
+    "float8_e5m2": DataType.FLOAT8_E5M2,
+}
+
+
+def convert_nptype_to_datatype(np_dtype) -> DataType:
     """
-    Convert the data type in numpy to the data type in Paddle.
+    Convert a NumPy or string dtype to Paddle PIR DataType.
 
     Args:
         np_dtype (np.dtype|str): The data type in numpy or valid data type
@@ -113,19 +143,13 @@ def convert_np_dtype_to_dtype_(np_dtype) -> DataType:
 
     """
     # Convert the data type string to numpy data type.
-    if isinstance(np_dtype, str) and np_dtype == "bfloat16":
-        # since there is still no support for bfloat16 in NumPy,
-        # uint16 is used for casting bfloat16
-        dtype = np.dtype("uint16")
-    elif isinstance(np_dtype, str) and np_dtype == "float8_e4m3fn":
-        dtype = 'float8_e4m3fn'
-    elif isinstance(np_dtype, str) and np_dtype == "float8_e5m2":
-        dtype = 'float8_e5m2'
-    else:
-        dtype = np.dtype(np_dtype)
-
-    if dtype in np_type_to_paddle_type:
-        return np_type_to_paddle_type[dtype]
+    if isinstance(np_dtype, str):
+        key = np_dtype.lower().strip()
+        if key in str_to_datatype:
+            return str_to_datatype[key]
+    dtype = np.dtype(np_dtype)
+    if dtype in nptype_to_datatype:
+        return nptype_to_datatype[dtype]
     else:
         raise ValueError(f"Not supported numpy dtype {dtype}")
 
@@ -154,7 +178,7 @@ def default_startup_program():
     Returns type:
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -185,7 +209,7 @@ def default_main_program():
         Program: A ``Program`` which holding the descriptions of OPs and tensors in the network.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -196,7 +220,7 @@ def default_main_program():
             >>> out = paddle.add(x, y)
 
             >>> # print the number of blocks in the program, 1 in this case
-            >>> print(paddle.static.default_main_program().num_blocks) # 1
+            >>> print(paddle.static.default_main_program().num_blocks)  # 1
             >>> # print the default_main_program
             >>> print(paddle.static.default_main_program())
     """
@@ -217,6 +241,8 @@ def switch_main_program(program, insertion_point=None):
     prev_program = _main_program_
     prev_insertion_point = get_current_insertion_point()
     _main_program_ = program
+    if program == prev_program and insertion_point is None:
+        insertion_point = prev_insertion_point
     if insertion_point is None:
         set_insertion_point_to_block_end(_main_program_.global_block())
     else:
@@ -256,7 +282,7 @@ def program_guard(main_program, startup_program=None):
             Default: None.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
             :name: code-example-1
 
             >>> import paddle
@@ -272,7 +298,7 @@ def program_guard(main_program, startup_program=None):
     to construct either of startup program or main program.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
             :name: code-example-2
 
             >>> import paddle
@@ -323,7 +349,7 @@ def create_parameter(
         )
     if dtype is not None:
         if not isinstance(dtype, DataType):
-            dtype = convert_np_dtype_to_dtype_(dtype)
+            dtype = convert_nptype_to_datatype(dtype)
     value_name = name
     if not value_name:
         value_name = unique_name.generate('parameter')
@@ -393,7 +419,7 @@ def create_parameter(
 
 def create_persistable_value(dtype, shape, name=None, **kwargs):
     """
-    Create Value that is persistable in startup program and main program. The Value is initilized in startup program and
+    Create Value that is persistable in startup program and main program. The Value is initialized in startup program and
     used in main program.
 
     Returns:
@@ -405,7 +431,7 @@ def create_persistable_value(dtype, shape, name=None, **kwargs):
         )
     if dtype is not None:
         if not isinstance(dtype, DataType):
-            dtype = convert_np_dtype_to_dtype_(dtype)
+            dtype = convert_nptype_to_datatype(dtype)
     value_name = name
     if not value_name:
         value_name = unique_name.generate('persistable_value')
@@ -485,7 +511,7 @@ def _convert_into_value(tensor):
     Convert Tensor into Value.
     """
     import paddle
-    from paddle.jit.pir_dy2static.parameter_recorder import (
+    from paddle.jit.dy2static.parameter_recorder import (
         _global_parameter_recorder,
     )
 
@@ -537,7 +563,7 @@ def set_state_dict(program, state_dict, scope=None):
         None
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> import paddle.static as static

@@ -11,8 +11,6 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License. */
-#include "paddle/phi/common/bfloat16.h"
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/kernels/funcs/eigen/eigen_function.h"
 #include "paddle/phi/kernels/funcs/eigen/extensions.h"
 
@@ -20,10 +18,10 @@ namespace phi::funcs {
 
 template <typename T>
 struct EigenErf<Eigen::DefaultDevice, T> {
-  using InType = Eigen::TensorMap<
-      Eigen::Tensor<const T, 1, Eigen::RowMajor, Eigen::DenseIndex>>;
+  using InType =
+      Eigen::TensorMap<Eigen::Tensor<const T, 1, Eigen::RowMajor, int64_t>>;
   using OutType =
-      Eigen::TensorMap<Eigen::Tensor<T, 1, Eigen::RowMajor, Eigen::DenseIndex>>;
+      Eigen::TensorMap<Eigen::Tensor<T, 1, Eigen::RowMajor, int64_t>>;
   static void Eval(const Eigen::DefaultDevice& dev,
                    OutType out,
                    const InType& in) {
@@ -33,10 +31,10 @@ struct EigenErf<Eigen::DefaultDevice, T> {
 
 template <typename T>
 struct EigenErfGrad<Eigen::DefaultDevice, T> {
-  using InType = Eigen::TensorMap<
-      Eigen::Tensor<const T, 1, Eigen::RowMajor, Eigen::DenseIndex>>;
+  using InType =
+      Eigen::TensorMap<Eigen::Tensor<const T, 1, Eigen::RowMajor, int64_t>>;
   using OutType =
-      Eigen::TensorMap<Eigen::Tensor<T, 1, Eigen::RowMajor, Eigen::DenseIndex>>;
+      Eigen::TensorMap<Eigen::Tensor<T, 1, Eigen::RowMajor, int64_t>>;
   static void Eval(const Eigen::DefaultDevice& dev,
                    OutType din,
                    const InType& in,

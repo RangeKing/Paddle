@@ -90,11 +90,11 @@ pir::FloatAttribute deserializeAttrFromJson<pir::FloatAttribute, float>(
   if (attr_json->contains(VOID_DATA)) {
     auto string = attr_json->at(VOID_DATA).template get<std::string>();
     if (string == "NAN") {
-      return pir::FloatAttribute::get(ctx, std::nanf(""));
+      return pir::FloatAttribute::get(ctx, NAN);
     } else if (string == "INF") {
-      return pir::FloatAttribute::get(ctx, FLT_MAX);
+      return pir::FloatAttribute::get(ctx, INFINITY);
     } else if (string == "-INF") {
-      return pir::FloatAttribute::get(ctx, FLT_MIN);
+      return pir::FloatAttribute::get(ctx, -INFINITY);
     }
   }
 
@@ -108,11 +108,11 @@ pir::DoubleAttribute deserializeAttrFromJson<pir::DoubleAttribute, double>(
   if (attr_json->contains(VOID_DATA)) {
     auto string = attr_json->at(VOID_DATA).template get<std::string>();
     if (string == "NAN") {
-      return pir::DoubleAttribute::get(ctx, std::nanf(""));
+      return pir::DoubleAttribute::get(ctx, NAN);
     } else if (string == "INF") {
-      return pir::DoubleAttribute::get(ctx, DBL_MAX);
+      return pir::DoubleAttribute::get(ctx, INFINITY);
     } else if (string == "-INF") {
-      return pir::DoubleAttribute::get(ctx, DBL_MIN);
+      return pir::DoubleAttribute::get(ctx, -INFINITY);
     }
   }
   double data = attr_json->at(DATA).template get<double>();
@@ -194,9 +194,10 @@ pir::Attribute deserializeAttrFromJson_scalarAttr(Json* attr_json,
         phi::dtype::complex(scalar_real, scalar_imag);
     scalar = phi::Scalar(data);
   } else {
-    PADDLE_ENFORCE(false,
-                   common::errors::InvalidArgument(
-                       "Invalid tensor data type `", dtype_, "`."));
+    PADDLE_ENFORCE(
+        false,
+        common::errors::InvalidArgument("Invalid tensor data type `%s`.",
+                                        phi::DataTypeToString(dtype_)));
   }
 
   return paddle::dialect::ScalarAttribute::get(ctx, scalar);
@@ -222,6 +223,15 @@ deserializeAttrFromJson<paddle::dialect::PlaceAttribute, int8_t>(
   std::string dev_type = data_json.at(2).template get<std::string>();  // string
   phi::Place place = phi::Place(type, id, dev_type);
   return paddle::dialect::PlaceAttribute::get(ctx, place);
+}
+
+template <>
+paddle::dialect::DataLayoutAttribute
+deserializeAttrFromJson<paddle::dialect::DataLayoutAttribute, std::string>(
+    Json* attr_json, pir::IrContext* ctx) {
+  std::string data = attr_json->at(DATA).template get<std::string>();
+  DataLayout data_type = common::StringToDataLayout(data);
+  return paddle::dialect::DataLayoutAttribute::get(ctx, data_type);
 }
 
 pir::Type parseType(Json* type_json) {
@@ -428,7 +438,7 @@ pir::Attribute AttrTypeReader::ReadPaddleOperatorAttr(
                                         std::vector<int64_t>>(attr_json, ctx);
   } else if (attr_name == paddle::dialect::ScalarAttribute::name()) {
     VLOG(8) << "Parse ScalarAttribute .";
-    // this func's return type is pir::Attribute which is diffrent
+    // this func's return type is pir::Attribute which is different
     // from paddle::dialect::ScalarAttribute
     return pir::deserializeAttrFromJson_scalarAttr(attr_json, ctx);
   } else if (attr_name == paddle::dialect::DataTypeAttribute::name()) {
@@ -439,6 +449,10 @@ pir::Attribute AttrTypeReader::ReadPaddleOperatorAttr(
     VLOG(8) << "Parse PlaceAttribute .";
     return pir::deserializeAttrFromJson<paddle::dialect::PlaceAttribute,
                                         int8_t>(attr_json, ctx);
+  } else if (attr_name == paddle::dialect::DataLayoutAttribute::name()) {
+    VLOG(8) << "Parse DataLayoutAttribute .";
+    return pir::deserializeAttrFromJson<paddle::dialect::DataLayoutAttribute,
+                                        std::string>(attr_json, ctx);
   } else {
     PADDLE_ENFORCE(false,
                    common::errors::InvalidArgument(
@@ -477,7 +491,7 @@ T deserializeTypeFromJsonIncludeParseType(Json* type_json,
 
   std::vector<int64_t> dims =
       data_json.at(1).template get<std::vector<int64_t>>();
-  phi::DDim ddim = phi::make_ddim(dims);
+  DDim ddim = phi::make_ddim(dims);
   pir::DataLayout data_layout =
       common::StringToDataLayout(data_json.at(2).template get<std::string>());
 
@@ -507,7 +521,7 @@ deserializeTypeFromJsonIncludeParseType<paddle::dialect::DenseTensorArrayType>(
 
   std::vector<int64_t> dims =
       data_json.at(1).template get<std::vector<int64_t>>();
-  phi::DDim ddim = phi::make_ddim(dims);
+  DDim ddim = phi::make_ddim(dims);
   pir::DataLayout data_layout =
       common::StringToDataLayout(data_json.at(2).template get<std::string>());
 
@@ -523,11 +537,11 @@ deserializeTypeFromJsonIncludeParseType<paddle::dialect::SparseCooTensorType>(
 
   std::vector<int64_t> dims =
       data_json.at(1).template get<std::vector<int64_t>>();
-  phi::DDim ddim = phi::make_ddim(dims);
+  DDim ddim = phi::make_ddim(dims);
 
   std::vector<int64_t> non_zero_dims =
       data_json.at(2).template get<std::vector<int64_t>>();
-  phi::DDim non_zero_ddim = phi::make_ddim(non_zero_dims);
+  DDim non_zero_ddim = phi::make_ddim(non_zero_dims);
   pir::DataLayout data_layout =
       common::StringToDataLayout(data_json.at(3).template get<std::string>());
   Json* non_zero_indices_json = &(data_json.at(4));
@@ -556,7 +570,7 @@ deserializeTypeFromJsonIncludeParseType<paddle::dialect::SparseCsrTensorType>(
 
   std::vector<int64_t> dims =
       data_json.at(1).template get<std::vector<int64_t>>();
-  phi::DDim ddim = phi::make_ddim(dims);
+  DDim ddim = phi::make_ddim(dims);
   pir::DataLayout data_layout =
       common::StringToDataLayout(data_json.at(2).template get<std::string>());
   Json* non_zero_crows_json = &(data_json.at(3));
@@ -595,10 +609,10 @@ deserializeTypeFromJsonIncludeParseType<paddle::dialect::DistDenseTensorType>(
   paddle::dialect::TensorDistAttribute tensor_dist_attr =
       deserializeTensorDistAttr(&(data_json.at(1)), ctx);
 
-  // deserialize common::DDim local_ddim;
+  // deserialize DDim local_ddim;
   std::vector<int64_t> dims =
       data_json.at(2).template get<std::vector<int64_t>>();
-  phi::DDim local_ddim = phi::make_ddim(dims);
+  DDim local_ddim = phi::make_ddim(dims);
 
   return paddle::dialect::DistDenseTensorType::get(
       ctx, dense_tensor_type, tensor_dist_attr, local_ddim);
@@ -640,6 +654,12 @@ pir::Type AttrTypeReader::ReadBuiltInType(const std::string type_name,
   } else if (type_name == pir::IndexType::name()) {
     VLOG(8) << "Parse IndexType ... ";
     return pir::deserializeTypeFromJson<pir::IndexType>(type_json, ctx);
+  } else if (type_name == pir::Float8E4M3FNType::name()) {
+    VLOG(8) << "Parse IndexType ... ";
+    return pir::deserializeTypeFromJson<pir::Float8E4M3FNType>(type_json, ctx);
+  } else if (type_name == pir::Float8E5M2Type::name()) {
+    VLOG(8) << "Parse IndexType ... ";
+    return pir::deserializeTypeFromJson<pir::Float8E5M2Type>(type_json, ctx);
   } else if (type_name == pir::Complex64Type::name()) {
     VLOG(8) << "Parse Complex64Type ... ";
     return pir::deserializeTypeFromJson<pir::Complex64Type>(type_json, ctx);

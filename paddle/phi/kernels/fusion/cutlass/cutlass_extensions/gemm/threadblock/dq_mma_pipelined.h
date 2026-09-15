@@ -68,14 +68,14 @@ template <
     //  MaskedTileIterator)
     typename IteratorA_,
     /// Iterates over tiles of A operand in shared memory
-    /// (concept: WriteableTileIterator | RandomAccessTileIterator)
+    /// (concept: WritableTileIterator | RandomAccessTileIterator)
     typename SmemIteratorA_,
     /// Iterates over tiles of B operand in global memory
     //  (concept: ReadableTileIterator | ForwardTileIterator |
     //  MaskedTileIterator)
     typename IteratorB_,
     /// Iterates over tiles of B operand in shared memory
-    /// (concept: WriteableTileIterator | RandomAccessTileIterator)
+    /// (concept: WritableTileIterator | RandomAccessTileIterator)
     typename SmemIteratorB_,
     /// Data type for the scales
     typename IteratorScale_,
@@ -159,7 +159,7 @@ class DqMmaPipelined : public DqMmaBase<Shape_,
   /// Complex transform on B operand
   static ComplexTransform const kTransformB = Operator::kTransformB;
 
-  // staticaly assert kStages for DqMmaPipelined is two (Double-buffered
+  // statically assert kStages for DqMmaPipelined is two (Double-buffered
   // pipeline)
   static_assert((Base::kStages == 2),
                 "DqMmaPipelined requires kStages set to value 2");

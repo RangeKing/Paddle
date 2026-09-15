@@ -89,10 +89,13 @@ def init_communicator(block, rank, ranks, ring_id):
         type='fill_constant', outputs={'Out': tmp_var}, attrs={'value': 1}
     )
     block.append_op(
-        type='c_allreduce_sum',
-        inputs={'X': tmp_var},
-        outputs={'Out': tmp_var},
-        attrs={'ring_id': ring_id, 'use_calc_stream': True},
+        type='all_reduce',
+        inputs={'x': tmp_var},
+        outputs={'out': tmp_var},
+        attrs={
+            'ring_id': ring_id,
+            'reduce_type': paddle.distributed.ReduceOp.SUM,
+        },
     )
     block.append_op(
         type='c_sync_calc_stream',
@@ -105,10 +108,12 @@ def init_communicator(block, rank, ranks, ring_id):
 def broadcast_parameters(block, parameters, ring_id):
     for p in parameters:
         block.append_op(
-            type='c_broadcast',
-            inputs={'X': p},
-            outputs={'Out': p},
-            attrs={'ring_id': ring_id, 'use_calc_stream': True},
+            type='broadcast',
+            inputs={'x': p},
+            outputs={'out': p},
+            attrs={
+                'ring_id': ring_id,
+            },
         )
 
 
@@ -133,9 +138,9 @@ class DistributedFusedLamb(Optimizer):
         use_hierarchical_allreduce=False,
         name=None,
     ):
-        assert (
-            not paddle.in_dynamic_mode()
-        ), "DistributedFusedLamb does not support dygraph mode"
+        assert not paddle.in_dynamic_mode(), (
+            "DistributedFusedLamb does not support dygraph mode"
+        )
         super().__init__(learning_rate=learning_rate, grad_clip=None, name=name)
 
         self._beta1 = beta1
@@ -145,9 +150,9 @@ class DistributedFusedLamb(Optimizer):
             lamb_weight_decay if lamb_weight_decay is not None else 0.0
         )
         if grad_clip is not None:
-            assert isinstance(
-                grad_clip, ClipGradByGlobalNorm
-            ), "Only ClipGradByGlobalNorm is supported in DistributedFusedLamb"
+            assert isinstance(grad_clip, ClipGradByGlobalNorm), (
+                "Only ClipGradByGlobalNorm is supported in DistributedFusedLamb"
+            )
             max_global_grad_norm = grad_clip.clip_norm
         else:
             max_global_grad_norm = -1.0
@@ -265,16 +270,17 @@ class DistributedFusedLamb(Optimizer):
         flattened = []
         for p, g in params_grads:
             flattened.extend([p, g])
-        with flattened[0].block.program._optimized_guard(flattened), name_scope(
-            "optimizer"
+        with (
+            flattened[0].block.program._optimized_guard(flattened),
+            name_scope("optimizer"),
         ):
             self._apply_gradients_impl(params_grads)
 
     def _apply_gradients_impl(self, params_grads):
         for p, g in params_grads:
-            assert (
-                g.type == core.VarDesc.VarType.DENSE_TENSOR
-            ), "Only support dense gradient"
+            assert g.type == core.VarDesc.VarType.DENSE_TENSOR, (
+                "Only support dense gradient"
+            )
             g.persistable = True  # the gradient must be persistable for fusion
 
         fp32_fused_param = self._create_persistable_var('fp32_fused_param')
@@ -342,9 +348,9 @@ class DistributedFusedLamb(Optimizer):
             nproc_per_node = nranks
         else:
             nproc_per_node = self._nproc_per_node
-        assert (
-            nranks % nproc_per_node == 0
-        ), "nranks should be exactly divided by nproc_per_node"
+        assert nranks % nproc_per_node == 0, (
+            "nranks should be exactly divided by nproc_per_node"
+        )
 
         shard_inside_node = nranks > nproc_per_node
         local_rank = rank % nproc_per_node
@@ -446,9 +452,9 @@ class DistributedFusedLamb(Optimizer):
                 lr = self._create_param_lr(p_g)
             else:
                 new_lr = self._create_param_lr(p_g)
-                assert id(lr) == id(
-                    new_lr
-                ), "The learning rate for each parameter should be the same"
+                assert id(lr) == id(new_lr), (
+                    "The learning rate for each parameter should be the same"
+                )
         assert lr is not None
 
         lamb_op = main_block.append_op(

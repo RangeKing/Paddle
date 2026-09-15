@@ -13,6 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License. */
 
 #pragma once
+#include "paddle/common/enforce.h"
 #include "paddle/common/macros.h"
 #include "paddle/phi/backends/all_context.h"
 #include "paddle/phi/backends/gpu/gpu_launch_config.h"
@@ -28,9 +29,8 @@ struct ForRange {
 };
 
 template <>
-struct ForRange<phi::CPUContext> {
-  ForRange(const phi::CPUContext& dev_ctx UNUSED, size_t limit)
-      : limit_(limit) {}
+struct ForRange<CPUContext> {
+  ForRange(const CPUContext& dev_ctx UNUSED, size_t limit) : limit_(limit) {}
 
   template <typename Function>
   void operator()(Function func) const {
@@ -46,25 +46,39 @@ struct ForRange<phi::CPUContext> {
 
 template <typename Function>
 __global__ static void ForRangeElemwiseOpGridIsOne(Function func) {
-  size_t idx = static_cast<size_t>(threadIdx.x);
-  func(idx);
+  func(threadIdx.x);
 }
 
 template <typename Function>
-__global__ static void ForRangeElemwiseOp(Function func, size_t limit) {
-  size_t idx = static_cast<size_t>(blockIdx.x * blockDim.x + threadIdx.x);
+__global__ static void ForRangeElemwiseOp(Function func, unsigned int limit) {
+  unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx < limit) {
+    func(idx);
+  }
+}
+
+template <typename Function>
+__global__ static void ForRangeElemwiseOpLargeSize(Function func,
+                                                   size_t limit) {
+  size_t idx =
+      static_cast<size_t>(blockIdx.x) * static_cast<size_t>(blockDim.x) +
+      static_cast<size_t>(threadIdx.x);
   if (idx < limit) {
     func(idx);
   }
 }
 
 template <>
-struct ForRange<phi::GPUContext> {
-  ForRange(const phi::GPUContext& dev_ctx, size_t limit)
+struct ForRange<GPUContext> {
+  ForRange(const GPUContext& dev_ctx, size_t limit)
       : dev_ctx_(dev_ctx), limit_(limit) {}
 
   template <typename Function>
   inline void operator()(Function func) const {
+    // Handle zero-size case: early return to avoid invalid CUDA kernel launch
+    if (limit_ == 0) {
+      return;
+    }
 #if WITH_NV_JETSON
     // JETSON_NANO will throw core dump when threads > 128
     int num_thread = 256;
@@ -79,13 +93,19 @@ struct ForRange<phi::GPUContext> {
     if (grid_size == 1) {
       ForRangeElemwiseOpGridIsOne<<<1, block_size, 0, dev_ctx_.stream()>>>(
           func);
+    } else if (block_size * grid_size >
+               std::numeric_limits<unsigned int>::max()) {
+      ForRangeElemwiseOpLargeSize<<<grid_size,
+                                    block_size,
+                                    0,
+                                    dev_ctx_.stream()>>>(func, limit_);
     } else {
       ForRangeElemwiseOp<<<grid_size, block_size, 0, dev_ctx_.stream()>>>(
           func, limit_);
     }
   }
 
-  const phi::GPUContext& dev_ctx_;
+  const GPUContext& dev_ctx_;
   size_t limit_;
 };
 

@@ -18,6 +18,9 @@ import numpy as np
 
 import paddle
 
+# NOTE(Pan Zhaowu): using legacy linear to fulfill promise of array equal in test_ast_prim_cinn
+paddle.set_flags({"FLAGS_use_legacy_linear": True})
+
 
 class TestBase(unittest.TestCase):
     def setUp(self):
@@ -31,7 +34,7 @@ class TestBase(unittest.TestCase):
         self.train_atol = 1e-6
         self.with_precision_compare = True
         self.with_train = True
-        # override customized settting
+        # override customized setting
         self.init()
         if self.inputs:
             self.set_input_grad()
@@ -51,19 +54,20 @@ class TestBase(unittest.TestCase):
     def train(self, net, to_static, with_prim=False, with_cinn=False):
         paddle.seed(123)
         if to_static:
-            paddle.set_flags({'FLAGS_prim_all': with_prim})
+            paddle.base.core._set_prim_all_enabled(with_prim)
             if with_cinn:
-                build_strategy = paddle.static.BuildStrategy()
-                build_strategy.build_cinn_pass = True
                 net = paddle.jit.to_static(
                     net(),
-                    build_strategy=build_strategy,
+                    backend="CINN",
                     full_graph=True,
                     input_spec=self.input_specs,
                 )
             else:
                 net = paddle.jit.to_static(
-                    net(), full_graph=True, input_spec=self.input_specs
+                    net(),
+                    backend=None,
+                    full_graph=True,
+                    input_spec=self.input_specs,
                 )
         if self.with_train:
             net.train()

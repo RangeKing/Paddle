@@ -12,13 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 import unittest
 
 import numpy as np
+from op_test import get_device, get_places
 
 import paddle
-from paddle import base
 
 
 class TensorFillDiagonal_Test(unittest.TestCase):
@@ -31,21 +30,13 @@ class TensorFillDiagonal_Test(unittest.TestCase):
         )
 
         typelist = ['float32', 'float64', 'int32', 'int64']
-        places = []
-        if (
-            os.environ.get('FLAGS_CI_both_cpu_and_gpu', 'False').lower()
-            in ['1', 'true', 'on']
-            or not base.core.is_compiled_with_cuda()
-        ):
-            places.append(base.CPUPlace())
-        if base.core.is_compiled_with_cuda():
-            places.append(base.CUDAPlace(0))
+        places = get_places()
 
         for idx, p in enumerate(places):
             if idx == 0:
                 paddle.set_device('cpu')
             else:
-                paddle.set_device('gpu')
+                paddle.set_device(get_device())
             for dtype in typelist:
                 x = paddle.ones((3, 3), dtype=dtype)
                 x.stop_gradient = False
@@ -72,21 +63,13 @@ class TensorFillDiagonal_Test(unittest.TestCase):
         )
 
         typelist = ['float32', 'float64', 'int32', 'int64']
-        places = []
-        if (
-            os.environ.get('FLAGS_CI_both_cpu_and_gpu', 'False').lower()
-            in ['1', 'true', 'on']
-            or not base.core.is_compiled_with_cuda()
-        ):
-            places.append(base.CPUPlace())
-        if base.core.is_compiled_with_cuda():
-            places.append(base.CUDAPlace(0))
+        places = get_places()
 
         for idx, p in enumerate(places):
             if idx == 0:
                 paddle.set_device('cpu')
             else:
-                paddle.set_device('gpu')
+                paddle.set_device(get_device())
             for dtype in typelist:
                 x = paddle.ones((3, 3), dtype=dtype)
                 x.stop_gradient = False
@@ -110,21 +93,13 @@ class TensorFillDiagonal_Test(unittest.TestCase):
         )
 
         typelist = ['bool']
-        places = []
-        if (
-            os.environ.get('FLAGS_CI_both_cpu_and_gpu', 'False').lower()
-            in ['1', 'true', 'on']
-            or not base.core.is_compiled_with_cuda()
-        ):
-            places.append(base.CPUPlace())
-        if base.core.is_compiled_with_cuda():
-            places.append(base.CUDAPlace(0))
+        places = get_places()
 
         for idx, p in enumerate(places):
             if idx == 0:
                 paddle.set_device('cpu')
             else:
-                paddle.set_device('gpu')
+                paddle.set_device(get_device())
             for dtype in typelist:
                 x = paddle.ones((3, 3), dtype=dtype)
                 x.stop_gradient = True
@@ -157,21 +132,13 @@ class TensorFillDiagonal_Test(unittest.TestCase):
         ).astype('float32')
 
         typelist = ['float32', 'float64', 'int32', 'int64']
-        places = []
-        if (
-            os.environ.get('FLAGS_CI_both_cpu_and_gpu', 'False').lower()
-            in ['1', 'true', 'on']
-            or not base.core.is_compiled_with_cuda()
-        ):
-            places.append(base.CPUPlace())
-        if base.core.is_compiled_with_cuda():
-            places.append(base.CUDAPlace(0))
+        places = get_places()
 
         for idx, p in enumerate(places):
             if idx == 0:
                 paddle.set_device('cpu')
             else:
-                paddle.set_device('gpu')
+                paddle.set_device(get_device())
             for dtype in typelist:
                 x = paddle.ones((7, 3), dtype=dtype)
                 x.stop_gradient = False
@@ -214,21 +181,13 @@ class TensorFillDiagonal_Test(unittest.TestCase):
         ).astype('float32')
 
         typelist = ['float32', 'float64', 'int32', 'int64']
-        places = []
-        if (
-            os.environ.get('FLAGS_CI_both_cpu_and_gpu', 'False').lower()
-            in ['1', 'true', 'on']
-            or not base.core.is_compiled_with_cuda()
-        ):
-            places.append(base.CPUPlace())
-        if base.core.is_compiled_with_cuda():
-            places.append(base.CUDAPlace(0))
+        places = get_places()
 
         for idx, p in enumerate(places):
             if idx == 0:
                 paddle.set_device('cpu')
             else:
-                paddle.set_device('gpu')
+                paddle.set_device(get_device())
             for dtype in typelist:
                 x = paddle.ones((7, 3), dtype=dtype)
                 x.stop_gradient = False
@@ -263,21 +222,13 @@ class TensorFillDiagonal_Test(unittest.TestCase):
         ).astype('float32')
 
         typelist = ['float32', 'float64', 'int32', 'int64']
-        places = []
-        if (
-            os.environ.get('FLAGS_CI_both_cpu_and_gpu', 'False').lower()
-            in ['1', 'true', 'on']
-            or not base.core.is_compiled_with_cuda()
-        ):
-            places.append(base.CPUPlace())
-        if base.core.is_compiled_with_cuda():
-            places.append(base.CUDAPlace(0))
+        places = get_places()
 
         for idx, p in enumerate(places):
             if idx == 0:
                 paddle.set_device('cpu')
             else:
-                paddle.set_device('gpu')
+                paddle.set_device(get_device())
             for dtype in typelist:
                 x = paddle.ones((3, 3, 3), dtype=dtype)
                 x.stop_gradient = False
@@ -294,6 +245,85 @@ class TensorFillDiagonal_Test(unittest.TestCase):
                     (y.grad.numpy().astype('float32') == expected_grad).all(),
                     True,
                 )
+
+
+class TensorFillDiagonal_ZeroSize(unittest.TestCase):
+    def _test_normal(self, shape):
+        expected_np = np.random.random(shape)
+        expected_grad = np.random.random(shape)
+
+        places = get_places()
+
+        for idx, p in enumerate(places):
+            if idx == 0:
+                paddle.set_device('cpu')
+            else:
+                paddle.set_device(get_device())
+
+            x = paddle.ones(shape)
+            x.stop_gradient = False
+            y = x * 2
+            y.retain_grads()
+            y.fill_diagonal_(1, offset=0, wrap=True)
+            loss = y.sum()
+            loss.backward()
+
+            self.assertEqual(
+                (y.numpy().astype('float32') == expected_np).all(), True
+            )
+            self.assertEqual(
+                (y.grad.numpy().astype('float32') == expected_grad).all(),
+                True,
+            )
+
+    def test_normal(self):
+        self._test_normal([0, 3])
+        self._test_normal([0, 0])
+
+
+class TestFillDiagonalAlias(unittest.TestCase):
+    def test_alias_fill_value_success(self):
+        """
+        Test case: Verify that 'fill_value' can be used as an alias for 'value'.
+        """
+        # 1. Initialize data
+        x = paddle.zeros([4, 4], dtype='float32')
+        # 2. Use the new alias parameter 'fill_value'
+        # This aligns with PyTorch's API
+        x.fill_diagonal_(fill_value=5.0)
+        # 3. Verify results
+        x_np = x.numpy()
+        # Check if diagonal elements are updated correctly
+        for i in range(4):
+            self.assertEqual(x_np[i, i], 5.0)
+        # Check if off-diagonal elements remain 0
+        # (Manually reset diagonal to 0 and check if the whole matrix is 0)
+        np.fill_diagonal(x_np, 0)
+        self.assertTrue(np.all(x_np == 0))
+
+    def test_alias_conflict(self):
+        """
+        Test case: Verify that providing both 'value' and 'fill_value' raises an error.
+        To avoid ambiguity, specifying both parameters is prohibited.
+        """
+        x = paddle.zeros([3, 3], dtype='float32')
+        # Expect TypeError or ValueError when both arguments are provided
+        with self.assertRaises(ValueError):
+            x.fill_diagonal_(value=1.0, fill_value=2.0)
+
+    def test_positional_args(self):
+        x = paddle.zeros([4, 4], dtype='float32')
+        x.fill_diagonal_(5.0, False)
+        x_np = x.numpy()
+        for i in range(4):
+            self.assertEqual(x_np[i, i], 5.0)
+        np.fill_diagonal(x_np, 0)
+        self.assertTrue(np.all(x_np == 0))
+
+    def test_too_many_positional_args(self):
+        x = paddle.zeros([3, 3], dtype='float32')
+        with self.assertRaises(TypeError):
+            x.fill_diagonal_(1.0, False, 0)
 
 
 if __name__ == '__main__':

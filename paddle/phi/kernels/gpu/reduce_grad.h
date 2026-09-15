@@ -61,8 +61,8 @@ void ReduceGradKernel(const Context& dev_ctx,
   std::vector<int> reduce_dims =
       funcs::details::GetReduceDim(dims, dim_size, reduce_all);
 
-  auto update_dims = common::vectorize(d_x->dims());
-  int reduce_num = 1;
+  auto update_dims = vectorize(d_x->dims());
+  int64_t reduce_num = 1;
   for (auto i : reduce_dims) {
     reduce_num *= (in_x->dims())[i];
     update_dims[i] = 1;
@@ -70,7 +70,7 @@ void ReduceGradKernel(const Context& dev_ctx,
   // make new tensor
   DenseTensor new_d_out(d_out->dtype());
   new_d_out.ShareDataWith(*d_out);
-  new_d_out.Resize(common::make_ddim(update_dims));
+  new_d_out.Resize(update_dims);
 
   dev_ctx.Alloc(d_x, x.dtype());
 

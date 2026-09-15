@@ -28,7 +28,7 @@ limitations under the License. */
 #include "paddle/phi/core/dense_tensor.h"
 #include "paddle/phi/core/enforce.h"
 
-// MIOPEN do not have epslion definition
+// MIOPEN do not have epsilon definition
 #define CUDNN_BN_MIN_EPSILON 1e-05
 
 COMMON_DECLARE_bool(cudnn_deterministic);
@@ -45,8 +45,8 @@ inline const char* miopenGetErrorString(miopenStatus_t status) {
       return "miopenStatusNotInitialized";
     case miopenStatusAllocFailed:
       return "miopenStatusAllocFailed";
-    case miopenStatusBadParm:
-      return "miopenStatusBadParm";
+    case miopenStatusBadParm:        // typos: disable-line
+      return "miopenStatusBadParm";  // typos: disable-line
     case miopenStatusInternalError:
       return "miopenStatusInternalError";
     case miopenStatusInvalidValue:
@@ -67,14 +67,6 @@ inline const char* miopenGetErrorString(miopenStatus_t status) {
 
 #define CUDNN_VERSION_MIN(major, minor, patch) \
   (CUDNN_VERSION >= CUDNN_VERSION_COMPUTE(major, minor, patch))
-
-enum class DataLayout {  // Not use
-  kNHWC,
-  kNCHW,
-  kNCDHW,
-  kNDHWC,  // add, liyamei
-  kNCHW_VECT_C,
-};
 
 enum class PoolingMode {
   kMaximum,
@@ -185,13 +177,13 @@ class CudnnDataType<float> {
 
 inline miopenTensorFormat_t GetCudnnTensorFormat(const DataLayout& order) {
   switch (order) {
-    case DataLayout::kNHWC:
+    case DataLayout::NHWC:
       return MIOPEN_TENSOR_NHWC;
-    case DataLayout::kNCHW:
+    case DataLayout::NCHW:
       return MIOPEN_TENSOR_NCHW;
-    case DataLayout::kNCDHW:
+    case DataLayout::NCDHW:
       return MIOPEN_TENSOR_NCHW;
-    case DataLayout::kNDHWC:
+    case DataLayout::NDHWC:
       return MIOPEN_TENSOR_NHWC;
     default:
       PADDLE_THROW(common::errors::Unimplemented(
@@ -199,7 +191,6 @@ inline miopenTensorFormat_t GetCudnnTensorFormat(const DataLayout& order) {
   }
   return MIOPEN_TENSOR_NCHW;
 }
-
 class ScopedTensorDescriptor {
  public:
   ScopedTensorDescriptor() {
@@ -296,10 +287,10 @@ class ScopedDropoutDescriptor {
   }
 
   inline miopenDropoutDescriptor_t descriptor(const miopenHandle_t& handle,
-                                              const phi::Place& place,
+                                              const Place& place,
                                               bool initialized,
                                               float dropout_prob_,
-                                              phi::DenseTensor* dropout_state_,
+                                              DenseTensor* dropout_state_,
                                               int seed,
                                               size_t state_size) {
     if (dropout_state_ == nullptr) {  // for no dropout or test
@@ -391,7 +382,7 @@ class ScopedFilterDescriptor {
       // NOTE: input filter(C) of the filter is already asserted to be C/groups.
     }
     std::vector<int> stride_dim(kernel_with_group.size());
-    stride_dim.push_back(1);
+    stride_dim[kernel_with_group.size() - 1] = 1;
     for (int k = kernel_with_group.size() - 2; k >= 0; k--) {
       stride_dim[k] = stride_dim[k + 1] * kernel_with_group[k + 1];
     }

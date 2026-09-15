@@ -13,6 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License. */
 
 #pragma once
+#include <glog/logging.h>
 #include <memory.h>
 
 #include <cstring>
@@ -34,10 +35,15 @@ namespace funcs {
  * return: output tensor
  */
 template <typename T, typename IndexT = int>
-void CPUGather(const phi::CPUContext& ctx UNUSED,
+void CPUGather(const CPUContext& dev_ctx UNUSED,
                const DenseTensor& src,
                const DenseTensor& index,
                DenseTensor* output) {
+  if (src.numel() == 0 || index.numel() == 0) {
+    VLOG(6) << "Do nothing for CPUGather since inputs has 0-size tensor.";
+    return;
+  }
+
   if (index.dims().size() == 2) {
     PADDLE_ENFORCE_EQ(
         index.dims()[1],
@@ -92,13 +98,14 @@ void CPUGather(const phi::CPUContext& ctx UNUSED,
             -index_dim_size,
             p_index[i],
             i));
-    IndexT index_ = (p_index[i] < 0 ? p_index[i] + index_dim_size : p_index[i]);
+    int64_t index_ =
+        (p_index[i] < 0 ? p_index[i] + index_dim_size : p_index[i]);
     memcpy(p_output + i * slice_size, p_src + index_ * slice_size, slice_bytes);
   }
 }
 
 template <typename T, typename IndexT = int>
-void CPUGatherNd(const phi::CPUContext& ctx UNUSED,
+void CPUGatherNd(const CPUContext& dev_ctx UNUSED,
                  const DenseTensor& input,
                  const DenseTensor& index,
                  DenseTensor* output) {
@@ -114,7 +121,7 @@ void CPUGatherNd(const phi::CPUContext& ctx UNUSED,
   // final dim
   int64_t end_size = index_dims[index_dims_size - 1];
   // remain dim
-  auto remain_ddim = common::slice_ddim(index_dims, 0, index_dims_size - 1);
+  auto remain_ddim = slice_ddim(index_dims, 0, index_dims_size - 1);
   int64_t remain_numel = common::product(remain_ddim);
   // slice size
   int64_t slice_size = 1;
@@ -127,7 +134,7 @@ void CPUGatherNd(const phi::CPUContext& ctx UNUSED,
     int64_t index_ = 0;
     int64_t temp = 1;
     for (int64_t j = end_size - 1; j >= 0; --j) {
-      IndexT index_value = p_index[i * end_size + j];
+      int64_t index_value = static_cast<int64_t>(p_index[i * end_size + j]);
       PADDLE_ENFORCE_LT(
           index_value,
           input_dims[j],
@@ -152,7 +159,7 @@ void CPUGatherNd(const phi::CPUContext& ctx UNUSED,
 }
 
 template <typename T, typename U>
-void GatherV2Function(const phi::CPUContext& ctx,
+void GatherV2Function(const CPUContext& dev_ctx,
                       const DenseTensor* input,
                       const DenseTensor* index,
                       int axis,
@@ -204,10 +211,10 @@ void GatherV2Function(const phi::CPUContext& ctx,
     outer_dim_size *= input_dim[i];
     out_dim_vec.push_back(input_dim[i]);
   }
-  auto out_dim = common::make_ddim(out_dim_vec);
+  auto out_dim = make_ddim(out_dim_vec);
 
   out->Resize(out_dim);
-  auto* out_data = ctx.Alloc<T>(out);
+  auto* out_data = dev_ctx.Alloc<T>(out);
 
   int out_index = 0;
   for (int64_t i = 0; i < inner_dim_size; i++) {
@@ -226,7 +233,7 @@ void GatherV2Function(const phi::CPUContext& ctx,
 }
 
 template <typename T, typename U>
-void GatherV2GradFunction(const phi::CPUContext& ctx,
+void GatherV2GradFunction(const CPUContext& dev_ctx,
                           const DenseTensor* input,
                           const DenseTensor* index,
                           const int axis,
@@ -256,21 +263,23 @@ void GatherV2GradFunction(const phi::CPUContext& ctx,
     outer_dim_size *= input_dim[i];
   }
 
-  auto* out_data = ctx.Alloc<T>(out);
+  auto* out_data = dev_ctx.Alloc<T>(out);
   auto out_dim = out->dims();
   int64_t out_index_dim_size = out_dim[axis_index];
   // set_constant only supports input of type float value
-  phi::funcs::set_constant(ctx, out, static_cast<float>(0.0));
+  funcs::set_constant(dev_ctx, out, static_cast<float>(0.0));
 
   for (int64_t i = 0; i < inner_dim_size; i++) {
     for (int64_t j = 0; j < input_index_dim_size; j++) {
       const int64_t index_data_j =
-          (index_data[j] < 0 ? index_data[j] + input_index_dim_size
+          (index_data[j] < 0 ? index_data[j] + out_index_dim_size
                              : index_data[j]);
       for (int64_t k = 0; k < outer_dim_size; k++) {
         int64_t index = k + index_data_j * outer_dim_size +
                         i * outer_dim_size * out_index_dim_size;
-        out_data[index] += input_data[j * outer_dim_size + k];
+        out_data[index] +=
+            input_data[i * input_index_dim_size * outer_dim_size +
+                       j * outer_dim_size + k];
       }
     }
   }

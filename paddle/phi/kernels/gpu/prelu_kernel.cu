@@ -32,10 +32,13 @@ void PReluKernel(const Context& dev_ctx,
                  const std::string& mode,
                  DenseTensor* out) {
   dev_ctx.template Alloc<T>(out);
+  if (out && out->numel() == 0) {
+    return;
+  }
   const T* x_ptr = x.data<T>();
   const T* alpha_ptr = alpha.data<T>();
 
-  int numel = x.numel();
+  int64_t numel = x.numel();
   auto dim = x.dims();
   auto x_rank = dim.size();
 
@@ -48,26 +51,23 @@ void PReluKernel(const Context& dev_ctx,
     size_t channel = channel_last ? dim[x_rank - 1] : dim[1];
     if (channel_last) {
       auto func = PReluChannelLastWiseCUDAFunctor<T>(x_ptr, alpha_ptr, channel);
-      phi::IndexKernel<T, PReluChannelLastWiseCUDAFunctor<T>>(
-          dev_ctx, out, func);
+      IndexKernel<T, PReluChannelLastWiseCUDAFunctor<T>>(dev_ctx, out, func);
     } else {
       size_t plane_size = numel / dim[0] / channel;
       auto func = PReluChannelFirstWiseCUDAFunctor<T>(
           x_ptr, alpha_ptr, numel, channel, plane_size);
-      phi::IndexKernel<T, PReluChannelFirstWiseCUDAFunctor<T>>(
-          dev_ctx, out, func);
+      IndexKernel<T, PReluChannelFirstWiseCUDAFunctor<T>>(dev_ctx, out, func);
     }
   } else if (mode == "element") {
     size_t spatial_size = numel / dim[0];
     auto func =
         PreluElementWiseDirectCUDAFunctor<T>(x_ptr, alpha_ptr, spatial_size);
-    phi::IndexKernel<T, PreluElementWiseDirectCUDAFunctor<T>>(
-        dev_ctx, out, func);
+    IndexKernel<T, PreluElementWiseDirectCUDAFunctor<T>>(dev_ctx, out, func);
   } else {
     std::vector<const DenseTensor*> ins = {&x};
     std::vector<DenseTensor*> outs = {out};
     auto func = PreluScalarDirectCUDAFunctor<T>(alpha_ptr);
-    phi::funcs::ElementwiseKernel<T>(dev_ctx, ins, &outs, func);
+    funcs::ElementwiseKernel<T>(dev_ctx, ins, &outs, func);
   }
 }
 
@@ -78,6 +78,6 @@ PD_REGISTER_KERNEL(prelu,
                    ALL_LAYOUT,
                    phi::PReluKernel,
                    float,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
+                   phi::float16,
+                   phi::bfloat16,
                    double) {}

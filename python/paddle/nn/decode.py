@@ -143,7 +143,7 @@ class Decoder:
         `decoder.step()` would emit a bool `finished` value at each decoding
         step. The emitted `finished` can be used to determine whether every
         batch entries is finished directly, or it can be combined with the
-        finished tracker keeped in `dynamic_decode` by performing a logical OR
+        finished tracker kept in `dynamic_decode` by performing a logical OR
         to take the already finished into account.
 
         If `False`, the latter would be took when performing `dynamic_decode`,
@@ -195,20 +195,20 @@ class BeamSearchDecoder(Decoder):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import numpy as np
             >>> import paddle
             >>> from paddle.nn import BeamSearchDecoder, dynamic_decode
             >>> from paddle.nn import GRUCell, Linear, Embedding
-            >>> trg_embeder = Embedding(100, 32)
+            >>> trg_embedder = Embedding(100, 32)
             >>> output_layer = Linear(32, 32)
             >>> decoder_cell = GRUCell(input_size=32, hidden_size=32)
             >>> decoder = BeamSearchDecoder(decoder_cell,
             ...                             start_token=0,
             ...                             end_token=1,
             ...                             beam_size=4,
-            ...                             embedding_fn=trg_embeder,
+            ...                             embedding_fn=trg_embedder,
             ...                             output_fn=output_layer)
             ...
     """
@@ -1337,26 +1337,26 @@ def dynamic_decode(
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.nn import BeamSearchDecoder, dynamic_decode
             >>> from paddle.nn import GRUCell, Linear, Embedding
-            >>> trg_embeder = Embedding(100, 32)
+            >>> trg_embedder = Embedding(100, 32)
             >>> output_layer = Linear(32, 32)
             >>> decoder_cell = GRUCell(input_size=32, hidden_size=32)
             >>> decoder = BeamSearchDecoder(decoder_cell,
             ...                             start_token=0,
             ...                             end_token=1,
             ...                             beam_size=4,
-            ...                             embedding_fn=trg_embeder,
+            ...                             embedding_fn=trg_embedder,
             ...                             output_fn=output_layer)
             >>> encoder_output = paddle.ones((4, 8, 32), dtype=paddle.get_default_dtype())
             >>> outputs = dynamic_decode(decoder=decoder,
             ...                          inits=decoder_cell.get_initial_states(encoder_output),
             ...                          max_step_num=10)
             >>> print(outputs[0].shape)
-            [4, 11, 4]
+            paddle.Size([4, 11, 4])
     """
     if in_dynamic_mode():
         return _dynamic_decode_imperative(

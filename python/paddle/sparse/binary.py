@@ -58,9 +58,6 @@ _pir_int_dtype_ = {
 
 def matmul(x: Tensor, y: Tensor, name: str | None = None) -> Tensor:
     """
-    Note:
-        This API is only supported from ``CUDA 11.0`` .
-
     Applies matrix multiplication of two Tensors.
 
     The supported input/output Tensor type are as follows:
@@ -87,7 +84,7 @@ def matmul(x: Tensor, y: Tensor, name: str | None = None) -> Tensor:
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env:GPU)
             >>> import paddle
@@ -96,7 +93,7 @@ def matmul(x: Tensor, y: Tensor, name: str | None = None) -> Tensor:
             >>> # csr @ dense -> dense
             >>> crows = [0, 1, 2, 3]
             >>> cols = [1, 2, 0]
-            >>> values = [1., 2., 3.]
+            >>> values = [1.0, 2.0, 3.0]
             >>> csr = paddle.sparse.sparse_csr_tensor(crows, cols, values, [3, 3])
             >>> print(csr)
             Tensor(shape=[3, 3], dtype=paddle.float32, place=Place(gpu:0), stop_gradient=True,
@@ -114,7 +111,7 @@ def matmul(x: Tensor, y: Tensor, name: str | None = None) -> Tensor:
 
             >>> # coo @ dense -> dense
             >>> indices = [[0, 1, 2], [1, 2, 0]]
-            >>> values = [1., 2., 3.]
+            >>> values = [1.0, 2.0, 3.0]
             >>> coo = paddle.sparse.sparse_coo_tensor(indices, values, [3, 3])
             >>> print(coo)
             Tensor(shape=[3, 3], dtype=paddle.float32, place=Place(gpu:0), stop_gradient=True,
@@ -130,9 +127,9 @@ def matmul(x: Tensor, y: Tensor, name: str | None = None) -> Tensor:
                     [2., 2.],
                     [3., 3.]])
     """
-    assert (
-        in_dynamic_or_pir_mode()
-    ), "Currently, Sparse API only support dynamic mode or pir mode."
+    assert in_dynamic_or_pir_mode(), (
+        "Currently, Sparse API only support dynamic mode or pir mode."
+    )
     return _C_ops.sparse_matmul(x, y)
 
 
@@ -140,9 +137,6 @@ def masked_matmul(
     x: Tensor, y: Tensor, mask: Tensor, name: str | None = None
 ) -> Tensor:
     """
-    Note:
-        This API is only supported from ``CUDA 11.3`` .
-
     Applies matrix multiplication of two Dense Tensors.
 
     The supported input/output Tensor layout are as follows:
@@ -168,7 +162,7 @@ def masked_matmul(
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env:GPU)
             >>> import paddle
@@ -178,7 +172,7 @@ def masked_matmul(
             >>> # dense @ dense * csr_mask -> csr
             >>> crows = [0, 2, 3, 5]
             >>> cols = [1, 3, 2, 0, 1]
-            >>> values = [1., 2., 3., 4., 5.]
+            >>> values = [1.0, 2.0, 3.0, 4.0, 5.0]
             >>> dense_shape = [3, 4]
             >>> mask = paddle.sparse.sparse_csr_tensor(crows, cols, values, dense_shape)
             >>> print(mask)
@@ -198,17 +192,14 @@ def masked_matmul(
                    values=[0.98986477, 0.97800624, 1.14591956, 0.68561077, 0.94714981])
 
     """
-    assert (
-        in_dynamic_or_pir_mode()
-    ), "Currently, Sparse API only support dynamic mode or pir mode."
+    assert in_dynamic_or_pir_mode(), (
+        "Currently, Sparse API only support dynamic mode or pir mode."
+    )
     return _C_ops.sparse_masked_matmul(x, y, mask)
 
 
 def mv(x: Tensor, vec: Tensor, name: str | None = None) -> Tensor:
     """
-    Note:
-        This API is only supported from ``CUDA 11.0`` .
-
     Applies matrix-vector product of Sparse Matrix 'x' and Dense vector 'vec' .
 
     The supported input/output Tensor layout are as follows:
@@ -232,7 +223,7 @@ def mv(x: Tensor, vec: Tensor, name: str | None = None) -> Tensor:
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env:GPU)
             >>> import paddle
@@ -242,7 +233,7 @@ def mv(x: Tensor, vec: Tensor, name: str | None = None) -> Tensor:
             >>> # csr @ dense -> dense
             >>> crows = [0, 2, 3, 5]
             >>> cols = [1, 3, 2, 0, 1]
-            >>> values = [1., 2., 3., 4., 5.]
+            >>> values = [1.0, 2.0, 3.0, 4.0, 5.0]
             >>> dense_shape = [3, 4]
             >>> csr = paddle.sparse.sparse_csr_tensor(crows, cols, values, dense_shape)
             >>> print(csr)
@@ -258,9 +249,9 @@ def mv(x: Tensor, vec: Tensor, name: str | None = None) -> Tensor:
                    [-3.85499096, -2.42975140, -1.75087738])
 
     """
-    assert (
-        in_dynamic_or_pir_mode()
-    ), "Currently, Sparse API only support dynamic mode or pir mode."
+    assert in_dynamic_or_pir_mode(), (
+        "Currently, Sparse API only support dynamic mode or pir mode."
+    )
     return _C_ops.sparse_mv(x, vec)
 
 
@@ -283,22 +274,22 @@ def add(x: Tensor, y: Tensor, name: str | None = None) -> Tensor:
 
     Examples:
 
-    ..  code-block:: python
+        .. code-block:: pycon
 
-        >>> import paddle
+            >>> import paddle
 
-        >>> paddle.device.set_device("cpu")
+            >>> paddle.device.set_device("cpu")
 
-        >>> x = paddle.to_tensor([[0, -1, 0, 2], [0, 0, -3, 0], [4, 5, 0, 0]], 'float32')
-        >>> y = paddle.to_tensor([[0, 0, 0, -2], [0, 2, -3, 0], [2, 3, 4, 8]], 'float32')
-        >>> sparse_x = x.to_sparse_csr()
-        >>> sparse_y = y.to_sparse_csr()
-        >>> sparse_z = paddle.sparse.add(sparse_x, sparse_y)
-        >>> print(sparse_z.to_dense())
-        Tensor(shape=[3, 4], dtype=float32, place=Place(cpu), stop_gradient=True,
-               [[ 0., -1.,  0.,  0.],
-                [ 0.,  2., -6.,  0.],
-                [ 6.,  8.,  4.,  8.]])
+            >>> x = paddle.to_tensor([[0, -1, 0, 2], [0, 0, -3, 0], [4, 5, 0, 0]], 'float32')
+            >>> y = paddle.to_tensor([[0, 0, 0, -2], [0, 2, -3, 0], [2, 3, 4, 8]], 'float32')
+            >>> sparse_x = x.to_sparse_csr()
+            >>> sparse_y = y.to_sparse_csr()
+            >>> sparse_z = paddle.sparse.add(sparse_x, sparse_y)
+            >>> print(sparse_z.to_dense())
+            Tensor(shape=[3, 4], dtype=float32, place=Place(cpu), stop_gradient=True,
+                   [[ 0., -1.,  0.,  0.],
+                    [ 0.,  2., -6.,  0.],
+                    [ 6.,  8.,  4.,  8.]])
 
     """
 
@@ -334,7 +325,7 @@ def subtract(x: Tensor, y: Tensor, name: str | None = None) -> Tensor:
 
     Examples:
 
-        ..  code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -382,7 +373,7 @@ def multiply(x: Tensor, y: Tensor, name: str | None = None) -> Tensor:
 
     Examples:
 
-        ..  code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -433,7 +424,7 @@ def divide(x: Tensor, y: Tensor, name: str | None = None) -> Tensor:
 
     Examples:
 
-        ..  code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -479,7 +470,7 @@ def is_same_shape(x: Tensor, y: Tensor) -> bool:
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -494,9 +485,9 @@ def is_same_shape(x: Tensor, y: Tensor) -> bool:
             False
 
     """
-    assert (
-        in_dynamic_or_pir_mode()
-    ), "Currently, Sparse API only support dynamic mode or pir mode."
+    assert in_dynamic_or_pir_mode(), (
+        "Currently, Sparse API only support dynamic mode or pir mode."
+    )
     return x.is_same_shape(y)
 
 
@@ -519,7 +510,7 @@ def mask_as(x: Tensor, mask: Tensor, name: str | None = None) -> Tensor:
         Tensor: A sparse tensor.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> paddle.set_device('cpu')
@@ -527,7 +518,7 @@ def mask_as(x: Tensor, mask: Tensor, name: str | None = None) -> Tensor:
             >>> # csr sparse tensor
             >>> crows = [0, 2, 3, 5]
             >>> cols = [1, 3, 2, 0, 1]
-            >>> values = [1., 2., 3., 4., 5.]
+            >>> values = [1.0, 2.0, 3.0, 4.0, 5.0]
             >>> dense_shape = [3, 4]
             >>> csr = paddle.sparse.sparse_csr_tensor(crows, cols, values, dense_shape)
             >>> paddle.seed(2024)

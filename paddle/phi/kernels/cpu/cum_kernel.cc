@@ -57,11 +57,15 @@ void ScanKernel(const Context& dev_ctx,
                 bool reverse,
                 Reducer reducer,
                 DenseTensor* out) {
+  if (out && out->numel() == 0) {
+    dev_ctx.template Alloc<T>(out);
+    return;
+  }
   dev_ctx.template Alloc<T>(out);
 
   if (x.numel() == 1) {
     auto raw_dims = out->dims();
-    phi::Copy<Context>(dev_ctx, x, dev_ctx.GetPlace(), false, out);
+    Copy<Context>(dev_ctx, x, dev_ctx.GetPlace(), false, out);
     out->Resize(raw_dims);
     return;
   }
@@ -80,25 +84,24 @@ void ScanKernel(const Context& dev_ctx,
     axis += out_dims.size();
   }
 
-  int pre = 1;
-  int post = 1;
-  int mid = static_cast<int>(out_dims[axis]);
+  int64_t pre = 1;
+  int64_t post = 1;
+  int64_t mid = out_dims[axis];
   for (int i = 0; i < axis; ++i) {
-    pre *= static_cast<int>(out_dims[i]);
+    pre *= out_dims[i];
   }
   for (int i = axis + 1; i < out_dims.size(); ++i) {
-    post *= static_cast<int>(out_dims[i]);
+    post *= out_dims[i];
   }
 
   auto x0 = EigenVector<T>::Flatten(x);
   auto out0 = EigenVector<T>::Flatten(*out);
   auto& place = *dev_ctx.eigen_device();
 
-  using IndexT = Eigen::DenseIndex;
   if (pre == 1) {
     if (post == 1) {
       ComputeImp(place,
-                 Eigen::DSizes<IndexT, 1>(mid),
+                 Eigen::DSizes<int64_t, 1>(mid),
                  x0,
                  out0,
                  /* axis= */ 0,
@@ -107,7 +110,7 @@ void ScanKernel(const Context& dev_ctx,
                  reducer);
     } else {
       ComputeImp(place,
-                 Eigen::DSizes<IndexT, 2>(mid, post),
+                 Eigen::DSizes<int64_t, 2>(mid, post),
                  x0,
                  out0,
                  /* axis= */ 0,
@@ -118,7 +121,7 @@ void ScanKernel(const Context& dev_ctx,
   } else {
     if (post == 1) {
       ComputeImp(place,
-                 Eigen::DSizes<IndexT, 2>(pre, mid),
+                 Eigen::DSizes<int64_t, 2>(pre, mid),
                  x0,
                  out0,
                  /* axis= */ 1,
@@ -127,7 +130,7 @@ void ScanKernel(const Context& dev_ctx,
                  reducer);
     } else {
       ComputeImp(place,
-                 Eigen::DSizes<IndexT, 3>(pre, mid, post),
+                 Eigen::DSizes<int64_t, 3>(pre, mid, post),
                  x0,
                  out0,
                  /* axis= */ 1,
@@ -269,9 +272,13 @@ PD_REGISTER_KERNEL(cumsum,
                    phi::CumsumKernel,
                    float,
                    double,
+                   uint8_t,
+                   int8_t,
                    int16_t,
                    int,
-                   int64_t) {}
+                   int64_t,
+                   phi::complex64,
+                   phi::complex128) {}
 
 PD_REGISTER_KERNEL(
     logcumsumexp, CPU, ALL_LAYOUT, phi::LogcumsumexpKernel, float, double) {}

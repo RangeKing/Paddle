@@ -144,18 +144,18 @@ class FileReader:
         self._checkArgsKey("minTimeStamp", int)
 
     def getFileListByGroup(self, groupId):
-        lIndext = 0
-        rIndext = 0
+        lIndex = 0
+        rIndex = 0
 
         if self._organizeForm == FILEORGANIZEFORM_BYTRAINER:
-            lIndext = groupId * self._groupSize
-            rIndext = (groupId + 1) * self._groupSize
+            lIndex = groupId * self._groupSize
+            rIndex = (groupId + 1) * self._groupSize
         elif self._organizeForm == FILEORGANIZEFORM_BYRANK:
-            lIndext = groupId * self._groupSize * self._gpuPerTrainer
-            rIndext = (groupId + 1) * self._groupSize * self._gpuPerTrainer
+            lIndex = groupId * self._groupSize * self._gpuPerTrainer
+            rIndex = (groupId + 1) * self._groupSize * self._gpuPerTrainer
 
         try:
-            return self._fileList[lIndext:rIndext]
+            return self._fileList[lIndex:rIndex]
         except IndexError:
             raise IndexError("invalid index of file list")
 
@@ -180,7 +180,7 @@ class FileReader:
                 newFileList.append(file)
             else:
                 raise NotImplementedError(
-                    f"[{file}] is repeated by id, we don not how to process it!"
+                    f"[{file}] is repeated by id, we do not know how to process it!"
                 )
 
         if not self._fileList:
@@ -211,7 +211,7 @@ class FileReader:
     def _getId(self, fileName, organizeForm, sed="."):
         if self._organizeForm != organizeForm:
             raise TypeError(
-                f"Can not get rank id when organizer form is not {organizeForm}!"
+                f"Can not get rank id when organize form is not {organizeForm}!"
             )
 
         if not os.path.isfile(fileName):
@@ -275,7 +275,7 @@ class FileReader:
         return self.getFileName("opinfo", groupId, gpuId, tmpPath)
 
     def getPipeLineInfoFileName(self, groupId, gpuId, tmpPath="./tmp"):
-        return self.getFileName("pipilineinfo", groupId, gpuId, tmpPath)
+        return self.getFileName("pipelineinfo", groupId, gpuId, tmpPath)
 
     def getDCGMInfoFileName(self, groupId, gpuId, tmpPath="./tmp"):
         return self.getFileName("dcgm", groupId, gpuId, tmpPath)

@@ -35,7 +35,7 @@ template <typename InT, typename OutT>
 __global__ void InputTypeConvert(const InT* in_ids,
                                  const int64_t K,
                                  OutT* out_ids) {
-  for (int i = 0; i < K; i++) {
+  for (int64_t i = 0; i < K; i++) {
     out_ids[i] = static_cast<OutT>(in_ids[i]);
   }
 }
@@ -48,17 +48,19 @@ __global__ void EmbeddingGrad(T* table,
                               const int64_t K,
                               const int64_t D) {
   int idx = threadIdx.x;
-  int idy = blockIdx.x + threadIdx.y * gridDim.x;
+  int64_t idy =
+      static_cast<int64_t>(blockIdx.x) +
+      static_cast<int64_t>(threadIdx.y) * static_cast<int64_t>(gridDim.x);
 
   while (idy < K) {
     auto id = static_cast<int64_t>(ids[idy]);
     const T* out = output + idy * D;
     T* tab = table + id * D;
 #ifdef PADDLE_WITH_CUDA
-    phi::VectorizedAtomicAddPerBlock(D, idx, blockDim.x, out, tab);
+    VectorizedAtomicAddPerBlock(D, idx, blockDim.x, out, tab);
 #else
-    for (int i = idx; i < D; i += blockDim.x) {
-      phi::CudaAtomicAdd(&tab[i], out[i]);
+    for (int64_t i = idx; i < D; i += blockDim.x) {
+      CudaAtomicAdd(&tab[i], out[i]);
     }
 #endif
     idy += blockDim.y * gridDim.x;
@@ -105,7 +107,7 @@ struct EmbeddingGradCUDAFunctor {
 #endif
 
       if (FLAGS_embedding_deterministic == 1) {
-        phi::funcs::LaunchEmbeddingGradDeterministicKernel<T, IdT>(
+        funcs::LaunchEmbeddingGradDeterministicKernel<T, IdT>(
             dev_ctx_, ids, d_output, d_table, N, D, K);
       } else {
         const int gridx = 2 * dev_ctx_.GetSMCount();
@@ -123,7 +125,7 @@ struct EmbeddingGradCUDAFunctor {
   }
 
  private:
-  const phi::GPUContext& dev_ctx_;
+  const GPUContext& dev_ctx_;
   const DenseTensor& input_;
   const DenseTensor& weight_;
   const DenseTensor& out_grad_;
@@ -132,20 +134,20 @@ struct EmbeddingGradCUDAFunctor {
 };
 
 template <typename T, typename Context>
-void EmbeddingGradKernel(const Context& ctx,
+void EmbeddingGradKernel(const Context& dev_ctx,
                          const DenseTensor& input,
                          const DenseTensor& weight,
                          const DenseTensor& out_grad,
                          int64_t padding_idx,
                          DenseTensor* weight_grad) {
   EmbeddingGradCUDAFunctor<T, Context> functor(
-      ctx, input, weight, out_grad, padding_idx, weight_grad);
+      dev_ctx, input, weight, out_grad, padding_idx, weight_grad);
 
-  if (input.dtype() == phi::DataType::INT32) {
+  if (input.dtype() == DataType::INT32) {
     functor.template apply<int>();
-  } else if (input.dtype() == phi::DataType::INT64) {
+  } else if (input.dtype() == DataType::INT64) {
     functor.template apply<int64_t>();
-  } else if (input.dtype() == phi::DataType::INT16) {
+  } else if (input.dtype() == DataType::INT16) {
     functor.template apply<int16_t>();
   } else {
     PADDLE_THROW(common::errors::Unimplemented(
@@ -181,11 +183,11 @@ struct EmbeddingSparseGradCUDAFunctor {
     dim3 threads(128, 8);
     dim3 grids(8, 1);
     auto stream = dev_ctx_.stream();
-    phi::Vector<int64_t> new_rows;
+    Vector<int64_t> new_rows;
     new_rows.resize(ids_num);
     auto gpu_place = dev_ctx_.GetPlace();
 
-    phi::MixVector<int64_t> mixv_new_rows(&new_rows);
+    MixVector<int64_t> mixv_new_rows(&new_rows);
     if (!std::is_same<IdT, int64_t>::value) {
       InputTypeConvert<<<grids, threads, 0, stream>>>(
           ids_data, ids_num, mixv_new_rows.MutableData(gpu_place));
@@ -228,7 +230,7 @@ struct EmbeddingSparseGradCUDAFunctor {
   }
 
  private:
-  const phi::GPUContext& dev_ctx_;
+  const GPUContext& dev_ctx_;
   const DenseTensor& input_;
   const DenseTensor& weight_;
   const DenseTensor& out_grad_;
@@ -237,20 +239,20 @@ struct EmbeddingSparseGradCUDAFunctor {
 };
 
 template <typename T, typename Context>
-void EmbeddingSparseGradKernel(const Context& ctx,
+void EmbeddingSparseGradKernel(const Context& dev_ctx,
                                const DenseTensor& input,
                                const DenseTensor& weight,
                                const DenseTensor& out_grad,
                                int64_t padding_idx,
                                SelectedRows* weight_grad) {
   EmbeddingSparseGradCUDAFunctor<T, Context> functor(
-      ctx, input, weight, out_grad, padding_idx, weight_grad);
+      dev_ctx, input, weight, out_grad, padding_idx, weight_grad);
 
-  if (input.dtype() == phi::DataType::INT32) {
+  if (input.dtype() == DataType::INT32) {
     functor.template apply<int>();
-  } else if (input.dtype() == phi::DataType::INT64) {
+  } else if (input.dtype() == DataType::INT64) {
     functor.template apply<int64_t>();
-  } else if (input.dtype() == phi::DataType::INT16) {
+  } else if (input.dtype() == DataType::INT16) {
     functor.template apply<int16_t>();
     PADDLE_THROW(common::errors::Unimplemented(
         "embedding input only support int16, int32 and int64"));
@@ -265,10 +267,10 @@ PD_REGISTER_KERNEL(embedding_grad,
                    phi::EmbeddingGradKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::complex64,
+                   phi::complex128) {}
 
 PD_REGISTER_KERNEL(embedding_sparse_grad,
                    GPU,
@@ -276,7 +278,7 @@ PD_REGISTER_KERNEL(embedding_sparse_grad,
                    phi::EmbeddingSparseGradKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::complex64,
+                   phi::complex128) {}

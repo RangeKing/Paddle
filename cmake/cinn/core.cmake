@@ -1,5 +1,14 @@
+include(${PROJECT_SOURCE_DIR}/cmake/architecture.cmake)
+
+paddle_normalize_target_arch(CINN_HOST_ARCH)
+set(CINN_X86_CXX_FLAGS "")
+if(CINN_HOST_ARCH STREQUAL "x86_64")
+  set(CINN_X86_CXX_FLAGS " -mavx -mfma")
+endif()
+
 set(CMAKE_CXX_FLAGS
-    "${CMAKE_CXX_FLAGS} -fPIC -mavx -mfma -Wno-write-strings -Wno-psabi")
+    "${CMAKE_CXX_FLAGS} -fPIC${CINN_X86_CXX_FLAGS} -Wno-write-strings -Wno-psabi"
+)
 
 set(PADDLE_RESOURCE_URL
     "http://paddle-inference-dist.bj.bcebos.com"
@@ -73,8 +82,12 @@ function(cinn_cc_test TARGET_NAME)
     add_executable(${TARGET_NAME} ${cinn_cc_test_SRCS})
     get_property(os_dependency_modules GLOBAL PROPERTY OS_DEPENDENCY_MODULES)
     target_link_libraries(${TARGET_NAME} ${os_dependency_modules}
-                          cinn_gtest_main gtest glog ${cinn_cc_test_DEPS})
-    add_dependencies(${TARGET_NAME} cinn_gtest_main gtest glog
+                          paddle_gtest_main gtest glog ${cinn_cc_test_DEPS})
+    if(WITH_SHARED_PHI)
+      target_link_libraries(${TARGET_NAME} -Wl,--as-needed phi_core phi_gpu
+                            -Wl,--no-as-needed)
+    endif()
+    add_dependencies(${TARGET_NAME} paddle_gtest_main gtest glog
                      ${cinn_cc_test_DEPS})
 
     add_test(
@@ -134,7 +147,7 @@ function(cinn_nv_binary TARGET_NAME)
     set(multiValueArgs SRCS DEPS)
     cmake_parse_arguments(cinn_nv_binary "${options}" "${oneValueArgs}"
                           "${multiValueArgs}" ${ARGN})
-    cuda_add_executable(${TARGET_NAME} ${cinn_nv_binary_SRCS})
+    add_executable(${TARGET_NAME} ${cinn_nv_binary_SRCS})
     if(cinn_nv_binary_DEPS)
       target_link_libraries(${TARGET_NAME} ${cinn_nv_binary_DEPS})
       add_dependencies(${TARGET_NAME} ${cinn_nv_binary_DEPS})
@@ -151,7 +164,7 @@ function(cinn_nv_test TARGET_NAME)
     cmake_parse_arguments(cinn_nv_test "${options}" "${oneValueArgs}"
                           "${multiValueArgs}" ${ARGN})
     # Attention:
-    # 1. cuda_add_executable is deprecated after cmake v3.10, use cuda_add_executable for CUDA please.
+    # 1. cuda_add_executable is deprecated after cmake v3.10, use add_executable for CUDA please.
     # 2. cuda_add_executable does not support ccache.
     # Reference: https://cmake.org/cmake/help/v3.10/module/FindCUDA.html
     add_executable(${TARGET_NAME} ${cinn_nv_test_SRCS})
@@ -159,13 +172,18 @@ function(cinn_nv_test TARGET_NAME)
     target_link_libraries(
       ${TARGET_NAME}
       ${cinn_nv_test_DEPS}
-      cinn_gtest_main
+      paddle_gtest_main
       gtest
       ${os_dependency_modules}
       ${CUDNN_LIBRARY}
       ${CUBLAS_LIBRARIES}
       ${CUDA_LIBRARIES})
-    add_dependencies(${TARGET_NAME} ${cinn_nv_test_DEPS} cinn_gtest_main gtest)
+    if(WITH_SHARED_PHI)
+      target_link_libraries(${TARGET_NAME} -Wl,--as-needed phi_core phi_gpu
+                            -Wl,--no-as-needed)
+    endif()
+    add_dependencies(${TARGET_NAME} ${cinn_nv_test_DEPS} paddle_gtest_main
+                     gtest)
     common_link(${TARGET_NAME})
     add_test(
       NAME ${TARGET_NAME}
@@ -234,7 +252,7 @@ function(cinn_merge_static_libs TARGET_NAME)
 
   if(APPLE) # Use OSX's libtool to merge archives
     # Make the generated dummy source file depended on all static input
-    # libs. If input lib changes,the source file is touched
+    # libs. If input lib changes, the source file is touched
     # which causes the desired effect (relink).
     add_custom_command(
       OUTPUT ${target_SRCS}
@@ -283,7 +301,7 @@ function(cinn_merge_static_libs TARGET_NAME)
     endforeach()
 
     # Make the generated dummy source file depended on all static input
-    # libs. If input lib changes,the source file is touched
+    # libs. If input lib changes, the source file is touched
     # which causes the desired effect (relink).
     add_custom_command(
       OUTPUT ${target_SRCS}
@@ -310,7 +328,7 @@ function(cinn_merge_static_libs TARGET_NAME)
 
     # windows do not support gcc/nvcc combined compiling. Use msvc lib.exe to merge libs.
     # Make the generated dummy source file depended on all static input
-    # libs. If input lib changes,the source file is touched
+    # libs. If input lib changes, the source file is touched
     # which causes the desired effect (relink).
     add_custom_command(
       OUTPUT ${target_SRCS}
@@ -423,9 +441,9 @@ function(download_and_uncompress INSTALL_DIR URL FILENAME)
     ${EXTERNAL_PROJECT_LOG_ARGS}
     PREFIX ${INSTALL_DIR}
     DOWNLOAD_COMMAND
-      wget --no-check-certificate -q -O ${INSTALL_DIR}/${FILENAME}
-      ${URL}/${FILENAME} && ${CMAKE_COMMAND} -E tar xzf
-      ${INSTALL_DIR}/${FILENAME}
+      /bin/sh -c
+      "[ -f '${FILENAME}' ] && echo 'skip download' || wget --no-check-certificate -q -O '${FILENAME}' '${URL}/${FILENAME}'"
+      && ${CMAKE_COMMAND} -E tar xzf ${FILENAME}
     DOWNLOAD_DIR ${INSTALL_DIR}
     DOWNLOAD_NO_PROGRESS 1
     CONFIGURE_COMMAND ""

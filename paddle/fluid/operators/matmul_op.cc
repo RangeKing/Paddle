@@ -15,6 +15,9 @@ limitations under the License. */
 
 #include "paddle/fluid/framework/op_registry.h"
 #include "paddle/fluid/framework/op_version_registry.h"
+#ifdef PADDLE_WITH_DNNL
+#include "paddle/phi/backends/onednn/onednn_context.h"
+#endif
 #include "paddle/phi/kernels/impl/matmul_kernel_impl.h"
 
 namespace paddle {
@@ -61,6 +64,8 @@ phi::DDim GetDimForInput(const framework::InferShapeContext &ctx,
                     common::errors::InvalidArgument(
                         "The Input(%s) has not been initialized properly. The "
                         "shape of Input(%s) = [%s].",
+                        input_name,
+                        input_name,
                         dim));
   return dim;
 }
@@ -82,9 +87,9 @@ class MatMulOp : public framework::OperatorWithKernel {
     // For NHWC execution output shape needs to be
     // computed like instead x*y we are to do y*x
     bool channelwise_onednn =
-        context->IsRunMKLDNNKernel() &&
+        context->IsRunONEDNNKernel() &&
         (phi::OneDNNContext::tls().get_cur_paddle_data_layout() ==
-         phi::DataLayout::kNHWC);
+         phi::DataLayout::NHWC);
     if (channelwise_onednn) {
       std::swap(dim_x, dim_y);
     }
@@ -186,10 +191,10 @@ class MatMulOp : public framework::OperatorWithKernel {
 
   phi::KernelKey GetKernelTypeForVar(
       const std::string &var_name,
-      const phi::DenseTensor &tensor,
+      const DenseTensor &tensor,
       const phi::KernelKey &expected_kernel_type) const override {
     if (framework::IsComplexType(expected_kernel_type.dtype())) {
-      // only promote inputs’s types when contains complex input
+      // only promote inputs's types when contains complex input
       return phi::KernelKey(tensor.place(), tensor.layout(), tensor.dtype());
     } else {
 #ifdef PADDLE_WITH_DNNL
@@ -199,9 +204,9 @@ class MatMulOp : public framework::OperatorWithKernel {
       if ((expected_kernel_type.layout() == phi::DataLayout::ONEDNN) &&
           (tensor.layout() != phi::DataLayout::ONEDNN) &&
           phi::OneDNNContext::tls().get_cur_paddle_data_layout() ==
-              phi::DataLayout::kNHWC) {
+              phi::DataLayout::NHWC) {
         return phi::KernelKey(tensor.place(),
-                              phi::DataLayout::kNHWC,
+                              phi::DataLayout::NHWC,
                               expected_kernel_type.dtype());
       }
 #endif

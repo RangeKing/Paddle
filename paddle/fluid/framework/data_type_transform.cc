@@ -16,10 +16,16 @@ limitations under the License. */
 
 #include "paddle/fluid/framework/convert_utils.h"
 #include "paddle/fluid/framework/selected_rows_utils.h"
+#include "paddle/phi/common/place.h"
 #include "paddle/phi/common/transform.h"
+#include "paddle/phi/kernels/complex_kernel.h"
 
 #if defined(PADDLE_WITH_XPU)
 #include "paddle/phi/core/platform/device/device_wrapper.h"
+#endif
+
+#if defined(PADDLE_WITH_CUSTOM_DEVICE)
+#include "paddle/phi/backends/custom/custom_device_func.h"
 #endif
 
 namespace paddle {
@@ -32,11 +38,83 @@ struct CastDataTypeFunctor {
   }
 };
 
+template <>
+struct CastDataTypeFunctor<::phi::dtype::float8_e5m2,
+                           ::phi::dtype::complex<float>> {
+  HOSTDEVICE ::phi::dtype::complex<float> operator()(
+      ::phi::dtype::float8_e5m2 in) const {
+    return ::phi::dtype::complex<float>(static_cast<float>(in));
+  }
+};
+
+template <>
+struct CastDataTypeFunctor<::phi::dtype::float8_e5m2,
+                           ::phi::dtype::complex<double>> {
+  HOSTDEVICE ::phi::dtype::complex<double> operator()(
+      ::phi::dtype::float8_e5m2 in) const {
+    return ::phi::dtype::complex<double>(static_cast<double>(in));
+  }
+};
+
+template <>
+struct CastDataTypeFunctor<::phi::dtype::float8_e4m3fn,
+                           ::phi::dtype::complex<float>> {
+  HOSTDEVICE ::phi::dtype::complex<float> operator()(
+      ::phi::dtype::float8_e4m3fn in) const {
+    return ::phi::dtype::complex<float>(static_cast<float>(in));
+  }
+};
+
+template <>
+struct CastDataTypeFunctor<::phi::dtype::float8_e4m3fn,
+                           ::phi::dtype::complex<double>> {
+  HOSTDEVICE ::phi::dtype::complex<double> operator()(
+      ::phi::dtype::float8_e4m3fn in) const {
+    return ::phi::dtype::complex<double>(static_cast<double>(in));
+  }
+};
+
+template <>
+struct CastDataTypeFunctor<::phi::dtype::float16,
+                           ::phi::dtype::complex<float>> {
+  HOSTDEVICE ::phi::dtype::complex<float> operator()(
+      ::phi::dtype::float16 in) const {
+    return ::phi::dtype::complex<float>(static_cast<float>(in));
+  }
+};
+
+template <>
+struct CastDataTypeFunctor<::phi::dtype::float16,
+                           ::phi::dtype::complex<double>> {
+  HOSTDEVICE ::phi::dtype::complex<double> operator()(
+      ::phi::dtype::float16 in) const {
+    return ::phi::dtype::complex<double>(static_cast<double>(in));
+  }
+};
+
+template <>
+struct CastDataTypeFunctor<::phi::dtype::bfloat16,
+                           ::phi::dtype::complex<float>> {
+  HOSTDEVICE ::phi::dtype::complex<float> operator()(
+      ::phi::dtype::bfloat16 in) const {
+    return ::phi::dtype::complex<float>(static_cast<float>(in));
+  }
+};
+
+template <>
+struct CastDataTypeFunctor<::phi::dtype::bfloat16,
+                           ::phi::dtype::complex<double>> {
+  HOSTDEVICE ::phi::dtype::complex<double> operator()(
+      ::phi::dtype::bfloat16 in) const {
+    return ::phi::dtype::complex<double>(static_cast<double>(in));
+  }
+};
+
 #if defined(PADDLE_WITH_XPU)
 
 template <typename InType, typename OutType>
-static void XPUCastData(const phi::DenseTensor& in,
-                        phi::DenseTensor* out,
+static void XPUCastData(const DenseTensor& in,
+                        DenseTensor* out,
                         const phi::XPUContext* dev_ctx) {
   using XPUInTDType = typename XPUTypeTrait<InType>::Type;
   using XPUOutTDType = typename XPUTypeTrait<OutType>::Type;
@@ -51,8 +129,8 @@ static void XPUCastData(const phi::DenseTensor& in,
 
 template <typename InType>
 static void XPUTransDataType(
-    const phi::DenseTensor& in,
-    phi::DenseTensor* out,
+    const DenseTensor& in,
+    DenseTensor* out,
     const paddle::framework::proto::VarType::Type& dst_type,
     const phi::DeviceContext* ctx) {
   auto* context = static_cast<const phi::XPUContext*>(ctx);
@@ -64,10 +142,11 @@ static void XPUTransDataType(
     }                                                  \
   } while (0)
 
-  if (dst_type == proto::VarType::FP32 && dst_type == proto::VarType::FP16 &&
-      dst_type == proto::VarType::BOOL && dst_type == proto::VarType::INT16 &&
-      dst_type == proto::VarType::INT32 && dst_type == proto::VarType::INT64) {
-    _ForEachDataType_(XPUCastCallback);
+  if (dst_type == proto::VarType::FP32 || dst_type == proto::VarType::FP16 ||
+      dst_type == proto::VarType::BOOL || dst_type == proto::VarType::INT16 ||
+      dst_type == proto::VarType::INT32 || dst_type == proto::VarType::INT64 ||
+      dst_type == proto::VarType::FP64) {
+    _ForEachDataTypeForXPU_(XPUCastCallback);
   } else {
     PADDLE_THROW(common::errors::Unimplemented(
         "Data type (%s) is not supported in XPU when casting data type.",
@@ -79,12 +158,12 @@ static void XPUTransDataType(
 
 template <typename InType>
 struct CastDataType {
-  CastDataType(const phi::DenseTensor& in,
-               phi::DenseTensor* out,
+  CastDataType(const DenseTensor& in,
+               DenseTensor* out,
                const phi::DeviceContext* ctx)
       : in_(in), out_(out), ctx_(ctx) {}
-  const phi::DenseTensor in_;
-  phi::DenseTensor* out_;
+  const DenseTensor in_;
+  DenseTensor* out_;
   const phi::DeviceContext* ctx_;
 
   template <typename OutType>
@@ -112,6 +191,18 @@ struct CastDataType {
             CastDataTypeFunctor<InType, OutType>());
       context->Wait();
 #endif
+#if defined(PADDLE_WITH_CUSTOM_DEVICE)
+    } else if (phi::is_custom_place(in_.place())) {
+      auto* context = static_cast<const phi::CustomContext*>(ctx_);
+      auto func = phi::CreateCustomDeviceFunc();
+      func->CustomCastDataType(*context,
+                               static_cast<const void*>(in_begin),
+                               static_cast<void*>(out_begin),
+                               in_.numel(),
+                               in_.dtype(),
+                               out_->dtype());
+      context->Wait();
+#endif
 #if defined(PADDLE_WITH_IPU)
     } else if (phi::is_ipu_place(in_.place())) {
       phi::Transform<phi::CPUContext> trans;
@@ -122,17 +213,32 @@ struct CastDataType {
             out_begin,
             CastDataTypeFunctor<InType, OutType>());
 #endif
+#if defined(PADDLE_WITH_XPU)
+    } else if (phi::is_xpu_place(in_.place())) {
+      if (in_.dtype() == DataType::COMPLEX64 &&
+          out_->dtype() == DataType::FLOAT32) {
+        auto* context = static_cast<const phi::XPUContext*>(ctx_);
+        phi::RealKernel<phi::dtype::complex<float>>(*context, in_, out_);
+      } else {
+        PADDLE_THROW(common::errors::Unimplemented(
+            "Place type is not supported when casting data type from %s to %s.",
+            in_.dtype(),
+            out_->dtype()));
+      }
+#endif
     } else {
       PADDLE_THROW(common::errors::Unimplemented(
-          "Place type is not supported when casting data type."));
+          "Place type is not supported when casting data type from %s to %s.",
+          in_.dtype(),
+          out_->dtype()));
     }
   }
 };
 
 void TransDataType(const phi::KernelKey& kernel_type_for_var,
                    const phi::KernelKey& expected_kernel_type,
-                   const phi::DenseTensor& in,
-                   phi::DenseTensor* out) {
+                   const DenseTensor& in,
+                   DenseTensor* out) {
   PADDLE_ENFORCE_EQ(in.dtype(),
                     kernel_type_for_var.dtype(),
                     common::errors::InvalidArgument(
@@ -144,9 +250,9 @@ void TransDataType(const phi::KernelKey& kernel_type_for_var,
   TransDataType(in, dst_type, out);
 }
 
-void TransDataType(const phi::DenseTensor& in,
+void TransDataType(const DenseTensor& in,
                    const paddle::framework::proto::VarType::Type& type,
-                   phi::DenseTensor* out) {
+                   DenseTensor* out) {
   phi::DeviceContextPool& pool = phi::DeviceContextPool::Instance();
 
   out->Resize(in.dims());
@@ -155,33 +261,37 @@ void TransDataType(const phi::DenseTensor& in,
   auto ctx = pool.Get(in.place());
 
 #if defined(PADDLE_WITH_XPU)
-  switch (src_type) {
-    case proto::VarType::FP16:
-      XPUTransDataType<phi::dtype::float16>(in, out, dst_type, ctx);
-      break;
-    case proto::VarType::FP32:
-      XPUTransDataType<float>(in, out, dst_type, ctx);
-      break;
-    case proto::VarType::BOOL:
-      XPUTransDataType<bool>(in, out, dst_type, ctx);
-      break;
-    case proto::VarType::INT16:
-      XPUTransDataType<int16_t>(in, out, dst_type, ctx);
-      break;
-    case proto::VarType::INT32:
-      XPUTransDataType<int>(in, out, dst_type, ctx);
-      break;
-    case proto::VarType::INT64:
-      XPUTransDataType<int64_t>(in, out, dst_type, ctx);
-      break;
-    default:
-      PADDLE_THROW(common::errors::Unimplemented(
-          "Data type (%s) is not supported in XPU when casting data type.",
-          DataTypeToString(src_type)));
+  if (phi::is_xpu_place(in.place())) {
+    switch (src_type) {
+      case proto::VarType::FP16:
+        XPUTransDataType<phi::dtype::float16>(in, out, dst_type, ctx);
+        break;
+      case proto::VarType::FP32:
+        XPUTransDataType<float>(in, out, dst_type, ctx);
+        break;
+      case proto::VarType::FP64:
+        XPUTransDataType<double>(in, out, dst_type, ctx);
+        break;
+      case proto::VarType::BOOL:
+        XPUTransDataType<bool>(in, out, dst_type, ctx);
+        break;
+      case proto::VarType::INT16:
+        XPUTransDataType<int16_t>(in, out, dst_type, ctx);
+        break;
+      case proto::VarType::INT32:
+        XPUTransDataType<int>(in, out, dst_type, ctx);
+        break;
+      case proto::VarType::INT64:
+        XPUTransDataType<int64_t>(in, out, dst_type, ctx);
+        break;
+      default:
+        PADDLE_THROW(common::errors::Unimplemented(
+            "Data type (%s) is not supported in XPU when casting data type.",
+            DataTypeToString(src_type)));
+    }
+    return;
   }
-
-#else
-
+#endif
   switch (src_type) {
     case proto::VarType::FP16:
       framework::VisitDataType(dst_type,
@@ -225,13 +335,12 @@ void TransDataType(const phi::DenseTensor& in,
           "Data type (%s) is not supported when casting data type.",
           DataTypeToString(src_type)));
   }
-#endif
 }
 
 void TransComplexToReal(const proto::VarType::Type& dst_type,
                         const proto::VarType::Type& src_type,
-                        const phi::DenseTensor& in,
-                        phi::DenseTensor* out) {
+                        const DenseTensor& in,
+                        DenseTensor* out) {
   auto& pool = phi::DeviceContextPool::Instance();
   auto* ctx = pool.Get(in.place());
   out->Resize(in.dims());

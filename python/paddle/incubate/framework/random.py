@@ -54,15 +54,19 @@ def get_rng_state(
 def get_rng_state(device=None, use_index=False):
     """
     Get all random states of random generators of specified device.
+
     Args:
         device(str): This parameter determines the specific running device.
             It can be ``cpu``, ``gpu``, ``xpu``, Default is None.
             If None, return the generators of current device (specified by ``set_device``).
         use_index(bool): If use index is True, return the index that saved in the generator
+
     Returns:
         GeneratorState:  object.
+
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
+
             >>> import paddle
             >>> sts = paddle.incubate.get_rng_state()
     """
@@ -154,7 +158,7 @@ def set_rng_state(
         None.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> sts = paddle.incubate.get_rng_state()
@@ -188,15 +192,12 @@ def set_rng_state(
         for i in range(core.get_xpu_device_count()):
             set_state(core.default_xpu_generator(i), state_list[i])
     elif isinstance(place, core.CustomPlace):
-        dev_cnt = sum(
-            [
-                place.get_device_type() == s.split(':')[0]
-                for s in core.get_available_custom_device()
-            ]
-        )
+        dev_types = core.get_all_custom_device_type()
+        dev_type = dev_types[0]
+        dev_cnt = core.get_custom_device_count(dev_type)
         if not len(state_list) == dev_cnt:
             raise ValueError(
-                f"Length of custom device state list should be equal to the {place.get_dtype_type()} device count"
+                f"Length of custom device state list should be equal to the {dev_cnt} device count"
             )
         for i in range(dev_cnt):
             set_state(
@@ -238,7 +239,7 @@ def register_rng_state_as_index(
 
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> old_index = paddle.incubate.get_rng_state(use_index=True)
@@ -284,15 +285,12 @@ def register_rng_state_as_index(
                 )
             )
     elif isinstance(place, core.CustomPlace):
-        dev_cnt = sum(
-            [
-                place.get_device_type() == s.split(':')[0]
-                for s in core.get_available_custom_device()
-            ]
-        )
+        dev_types = core.get_all_custom_device_type()
+        dev_type = dev_types[0]
+        dev_cnt = core.get_custom_device_count(dev_type)
         if not len(state_list) == dev_cnt:
             raise ValueError(
-                f"Length of custom device state list should be equal to the {place.get_dtype_type()} device count"
+                f"Length of custom device state list should be equal to the {dev_cnt} device count"
             )
         for i in range(dev_cnt):
             new_state_index_list.append(

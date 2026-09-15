@@ -11,26 +11,24 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License. */
-#include "paddle/phi/common/bfloat16.h"
-#include "paddle/phi/common/complex.h"
-#include "paddle/phi/common/float16.h"
+#include "paddle/common/macros.h"
 #include "paddle/phi/kernels/funcs/eigen/eigen_function.h"
 
 namespace phi::funcs {
 
 template <typename T, int Rank>
 struct EigenSlice<Eigen::DefaultDevice, T, Rank> {
-  using Array = Eigen::DSizes<Eigen::DenseIndex, Rank>;
-  using Array32Bit = Eigen::DSizes<int, Rank>;
-  using InType = Eigen::TensorMap<
-      Eigen::Tensor<const T, Rank, Eigen::RowMajor, Eigen::DenseIndex>>;
+  using Array = Eigen::DSizes<int64_t, Rank>;
+  using Array32Bit = Eigen::DSizes<int64_t, Rank>;
+  using InType =
+      Eigen::TensorMap<Eigen::Tensor<const T, Rank, Eigen::RowMajor, int64_t>>;
   using InType32BitIndex =
-      Eigen::TensorMap<Eigen::Tensor<const T, Rank, Eigen::RowMajor, int>,
+      Eigen::TensorMap<Eigen::Tensor<const T, Rank, Eigen::RowMajor, int64_t>,
                        Eigen::Aligned>;
-  using OutType = Eigen::TensorMap<
-      Eigen::Tensor<T, Rank, Eigen::RowMajor, Eigen::DenseIndex>>;
+  using OutType =
+      Eigen::TensorMap<Eigen::Tensor<T, Rank, Eigen::RowMajor, int64_t>>;
   using OutType32BitIndex =
-      Eigen::TensorMap<Eigen::Tensor<T, Rank, Eigen::RowMajor, int>,
+      Eigen::TensorMap<Eigen::Tensor<T, Rank, Eigen::RowMajor, int64_t>,
                        Eigen::Aligned>;
 
   static void Eval(const Eigen::DefaultDevice& dev,
@@ -50,16 +48,16 @@ struct EigenSlice<Eigen::DefaultDevice, T, Rank> {
   }
 };
 
-#define INSTANTIATION(FUNCTOR, TYPE)                      \
-  template struct FUNCTOR<Eigen::DefaultDevice, TYPE, 1>; \
-  template struct FUNCTOR<Eigen::DefaultDevice, TYPE, 2>; \
-  template struct FUNCTOR<Eigen::DefaultDevice, TYPE, 3>; \
-  template struct FUNCTOR<Eigen::DefaultDevice, TYPE, 4>; \
-  template struct FUNCTOR<Eigen::DefaultDevice, TYPE, 5>; \
-  template struct FUNCTOR<Eigen::DefaultDevice, TYPE, 6>; \
-  template struct FUNCTOR<Eigen::DefaultDevice, TYPE, 7>; \
-  template struct FUNCTOR<Eigen::DefaultDevice, TYPE, 8>; \
-  template struct FUNCTOR<Eigen::DefaultDevice, TYPE, 9>
+#define INSTANTIATION(FUNCTOR, TYPE)                                 \
+  template struct PADDLE_API FUNCTOR<Eigen::DefaultDevice, TYPE, 1>; \
+  template struct PADDLE_API FUNCTOR<Eigen::DefaultDevice, TYPE, 2>; \
+  template struct PADDLE_API FUNCTOR<Eigen::DefaultDevice, TYPE, 3>; \
+  template struct PADDLE_API FUNCTOR<Eigen::DefaultDevice, TYPE, 4>; \
+  template struct PADDLE_API FUNCTOR<Eigen::DefaultDevice, TYPE, 5>; \
+  template struct PADDLE_API FUNCTOR<Eigen::DefaultDevice, TYPE, 6>; \
+  template struct PADDLE_API FUNCTOR<Eigen::DefaultDevice, TYPE, 7>; \
+  template struct PADDLE_API FUNCTOR<Eigen::DefaultDevice, TYPE, 8>; \
+  template struct PADDLE_API FUNCTOR<Eigen::DefaultDevice, TYPE, 9>
 INSTANTIATION(EigenSlice, bool);
 INSTANTIATION(EigenSlice, int);
 INSTANTIATION(EigenSlice, int8_t);

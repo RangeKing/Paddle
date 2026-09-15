@@ -33,13 +33,17 @@ from pathlib import Path
 from typing import TypeVar
 
 DEFAULT_ARCH = [50, 70, 75, 80]
-MAX_ARCH = 90
+MAX_ARCH = 100
 ENABLE_MACRO = "PADDLE_WITH_MEMORY_EFFICIENT_ATTENTION"
 
 assert sorted(DEFAULT_ARCH) == DEFAULT_ARCH
 
 
 def find_arch_range(min_arch, max_arch):
+    if (min_arch < DEFAULT_ARCH[0] or min_arch > MAX_ARCH) or (
+        max_arch < DEFAULT_ARCH[0] or max_arch > MAX_ARCH
+    ):
+        return [DEFAULT_ARCH[-1]]
     assert min_arch >= DEFAULT_ARCH[0] and min_arch <= MAX_ARCH
     assert max_arch >= DEFAULT_ARCH[0] and max_arch <= MAX_ARCH
     assert min_arch <= max_arch
@@ -217,7 +221,7 @@ void  {NAME}({CPP_CLASS} default_fmha, Params &params, const phi::GPUContext& ct
   cutlass::Status status;
   size_t workspace_size = fmha.get_workspace_size(args);
   phi::DenseTensor workspace;
-  workspace.Resize(common::make_ddim({{static_cast<int64_t>(workspace_size)}}));
+  workspace.Resize(make_ddim({{static_cast<int64_t>(workspace_size)}}));
   ctx.template Alloc<uint8_t>(&workspace);
   status = fmha.initialize(args, workspace.data<uint8_t>());
   if (status != cutlass::Status::kSuccess) {{
@@ -312,12 +316,10 @@ class FwdKernel:
     def get_all(cls) -> list[FwdKernel]:
         kernels: list[FwdKernel] = []
         for aligned, dtype, (sm, sm_max) in itertools.product(
-            [True, False], DTYPES.keys(), zip(SM, SM[1:] + [args.max_arch])
+            [True, False], DTYPES.keys(), zip(SM, [*SM[1:], args.max_arch])
         ):
             # Remove some kernels we don't use
             if dtype == "bf16" and sm < 80:
-                continue
-            if not aligned and sm >= 80:
                 continue
             for q, k, single_value_iter in [
                 (32, 128, True),

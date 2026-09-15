@@ -190,6 +190,8 @@ class TEST_API Tensor {
   static constexpr const char* SOURCE_OUTPUT_NONE_TENSOR_NAME =
       "__@source_output_none_tensor@__";
 
+  Tensor(const Tensor&) = default;
+
   bool is_none() const {
     return name_ == RESULT_INPUT_NONE_TENSOR_NAME ||
            name_ == RESULT_OUTPUT_NONE_TENSOR_NAME ||
@@ -297,6 +299,8 @@ class TEST_API ResultPattern {
 
   Attribute Float32Attr(float value) const;
 
+  Attribute DoubleAttr(double value) const;
+
   Attribute VectorInt64Attr(const std::vector<int64_t>& value) const;
 
   Attribute VectorInt32Attr(const std::vector<int32_t>& value) const;
@@ -316,14 +320,14 @@ class TEST_API ResultPattern {
   // {"complex64", phi::DataType::COMPLEX64},
   // {"complex128", phi::DataType::COMPLEX128},
   // {"Undefined", phi::DataType::UNDEFINED},
-  // {"psting", phi::DataType::PSTRING},
+  // {"pstring", phi::DataType::PSTRING},
   // {"float16", phi::DataType::FLOAT16},
   // {"bfloat16", phi::DataType::BFLOAT16},
   // {"float64", phi::DataType::FLOAT64}};
   Attribute DataTypeAttr(const std::string& value) const;
 
-  // {"cpu", phi::CPUPlace{}},
-  // {"gpu", phi::GPUPlace{}},
+  // {"cpu", CPUPlace{}},
+  // {"gpu", GPUPlace{}},
   // {"gpu_pinned", phi::GPUPinnedPlace{}},
   // {"xpu", phi::XPUPlace{}},
   // {"ipu", phi::IPUPlace{}},
@@ -331,16 +335,16 @@ class TEST_API ResultPattern {
   // {"undefined", phi::Place{}}};
   Attribute PlaceAttr(const std::string& value) const;
 
-  // {"NHWC", phi::DataLayout::kNHWC},
-  // {"NCHW", phi::DataLayout::kNCHW},
-  // {"Undefined", phi::DataLayout::kAnyLayout},
-  // {"ONEDNN", phi::DataLayout::ONEDNN},
-  // {"SPARSE_COO", phi::DataLayout::SPARSE_COO},
-  // {"SPARSE_CSR", phi::DataLayout::SPARSE_CSR},
-  // {"NDHWC", phi::DataLayout::kNDHWC},
-  // {"NCDHW", phi::DataLayout::kNCDHW},
-  // {"PSTRING_UNION", phi::DataLayout::PSTRING_UNION},
-  // {"STRIDED", phi::DataLayout::STRIDED}};
+  // {"NHWC", DataLayout::NHWC},
+  // {"NCHW", DataLayout::NCHW},
+  // {"Undefined", DataLayout::kAnyLayout},
+  // {"ONEDNN", DataLayout::ONEDNN},
+  // {"SPARSE_COO", DataLayout::SPARSE_COO},
+  // {"SPARSE_CSR", DataLayout::SPARSE_CSR},
+  // {"NDHWC", DataLayout::kNDHWC},
+  // {"NCDHW", DataLayout::kNCDHW},
+  // {"PSTRING_UNION", DataLayout::PSTRING_UNION},
+  // {"STRIDED", DataLayout::STRIDED}};
   Attribute DataLayoutAttr(const std::string& value) const;
 
   Attribute ComputeAttr(const AttrComputeFunc& attr_compute_func) const;

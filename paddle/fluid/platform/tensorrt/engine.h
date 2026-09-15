@@ -145,7 +145,7 @@ class TensorRTEngine {
     dy::initLibNvInferPlugins(&logger_, "");
     static std::once_flag trt_plugin_registered;
     std::call_once(trt_plugin_registered,
-                   []() { TrtPluginRegistry::Global()->RegistToTrt(); });
+                   []() { TrtPluginRegistry::Global()->RegisterToTrt(); });
   }
 
   // Add an input and set its name, data type and dimension.
@@ -244,6 +244,16 @@ class TensorRTEngine {
   Weight GetTrtWeight(const std::string& name,
                       const phi::DenseTensor& weight_tensor);
 
+  bool SetRefitWeights(
+      const std::map<std::string, std::map<std::string, std::string>>
+          refit_param_names2trt_names,
+      const std::string& param_name,
+      const phi::DenseTensor& new_weight_tensor);
+
+  bool FinalizeRefit();
+
+  void InitRefitter();
+
   float GetTensorDynamicRange(nvinfer1::ITensor* tensor) {
     return quant_dynamic_range_[tensor];
   }
@@ -292,7 +302,7 @@ class TensorRTEngine {
     }
   }
 
-  // NOTE: The func bellow was modified to adapt the dynamic shape.
+  // NOTE: The func below was modified to adapt the dynamic shape.
   // Initialize the inference network, so that TensorRT layers can add to this
   // network.
   void InitNetwork();
@@ -436,7 +446,10 @@ class TensorRTEngine {
   }
 
   bool use_varseqlen() { return params_.use_varseqlen; }
+
+  const std::string& refit_params_path() { return params_.refit_params_path; }
   bool use_dla() { return params_.use_dla; }
+  bool use_cuda_graph() { return params_.use_cuda_graph; }
   bool with_interleaved() { return params_.with_interleaved; }
   const std::string& tensorrt_transformer_posid() {
     return params_.tensorrt_transformer_posid;
@@ -510,6 +523,7 @@ class TensorRTEngine {
   infer_ptr<nvinfer1::ICudaEngine> infer_engine_;
   std::unordered_map<PredictorID, infer_ptr<nvinfer1::IExecutionContext>>
       infer_context_;
+  infer_ptr<nvinfer1::IRefitter> infer_refitter_;
   infer_ptr<nvinfer1::IHostMemory> ihost_memory_;
   std::unordered_map<nvinfer1::ITensor*, float> quant_dynamic_range_;
 
@@ -524,11 +538,9 @@ class TensorRTEngine {
   // specify run on float to avoid overflow
   std::unordered_set<std::string> trt_ops_run_float_;
 
-#if IS_TRT_VERSION_GE(6000)
   int binding_num_;
   infer_ptr<nvinfer1::IBuilderConfig> infer_builder_config_;
   std::vector<nvinfer1::IOptimizationProfile*> optim_profiles_;
-#endif
   std::mutex mutex_;
 
  public:
@@ -628,19 +640,19 @@ class TRTEngineManager {
                          const phi::Stream& stream) {
     std::lock_guard<std::mutex> lock(mutex_);
     static auto alignment = GetAlignmentSize(place);
-    if (context_memorys_.count(predictor_id) == 0) {
+    if (context_memories_.count(predictor_id) == 0) {
       auto context_memory =
           memory::Alloc(place, max_ctx_mem_size_ + alignment, stream);
-      context_memorys_[predictor_id] = std::move(context_memory);
+      context_memories_[predictor_id] = std::move(context_memory);
     }
-    return GetAlignedMemory(context_memorys_[predictor_id]->ptr(), alignment);
+    return GetAlignedMemory(context_memories_[predictor_id]->ptr(), alignment);
   }
 
   void ReleaseContextMemory(PredictorID predictor_id) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (context_memorys_.count(predictor_id)) {
-      context_memorys_[predictor_id].reset(nullptr);
-      context_memorys_.erase(predictor_id);
+    if (context_memories_.count(predictor_id)) {
+      context_memories_[predictor_id].reset(nullptr);
+      context_memories_.erase(predictor_id);
     }
   }
 
@@ -656,7 +668,7 @@ class TRTEngineManager {
 
   mutable std::mutex mutex_;
   size_t max_ctx_mem_size_{0};
-  std::unordered_map<PredictorID, AllocationPtr> context_memorys_;
+  std::unordered_map<PredictorID, AllocationPtr> context_memories_;
   std::unordered_map<std::string, std::unique_ptr<TensorRTEngine>> engines_;
   infer_ptr<nvinfer1::IBuilder> holder_;
 };

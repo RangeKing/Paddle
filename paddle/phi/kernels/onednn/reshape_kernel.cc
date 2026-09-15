@@ -17,12 +17,12 @@ namespace phi {
 static DDim ValidateShape(const std::vector<int64_t>& shape,
                           const DDim& in_dims) {
   const int64_t in_size = product(in_dims);
-  auto in_dims_vec = common::vectorize(in_dims);
+  auto in_dims_vec = vectorize(in_dims);
   bool all_positive = std::all_of(in_dims_vec.cbegin(),
                                   in_dims_vec.cend(),
                                   [](int64_t i) { return i > 0; });
   // only one dimension can be set to -1, whose size will be automatically
-  // infered
+  // inferred
   const int64_t unk_dim_val = -1;
   const int64_t copy_dim_val = 0;
 
@@ -37,7 +37,7 @@ static DDim ValidateShape(const std::vector<int64_t>& shape,
           errors::InvalidArgument(
               "Only one dimension value of 'shape' in ReshapeOp can "
               "be -1. But received shape = [%s], shape[%d] is also -1.",
-              common::make_ddim(shape),
+              make_ddim(shape),
               i));
       unk_dim_idx = static_cast<int>(i);
     } else if (shape[i] == copy_dim_val) {
@@ -49,7 +49,7 @@ static DDim ValidateShape(const std::vector<int64_t>& shape,
               "the input tensor X's dimensions. "
               "But received shape = [%s], shape[%d] = 0, X's shape = [%s], "
               "X's dimensions = %d.",
-              common::make_ddim(shape),
+              make_ddim(shape),
               i,
               in_dims,
               in_dims.size()));
@@ -61,7 +61,7 @@ static DDim ValidateShape(const std::vector<int64_t>& shape,
               "Each dimension value of 'shape' in ReshapeOp must not "
               "be negative except one unknown dimension. "
               "But received  shape = [%s], shape[%d] = %d.",
-              common::make_ddim(shape),
+              make_ddim(shape),
               i,
               shape[i]));
     }
@@ -89,7 +89,7 @@ static DDim ValidateShape(const std::vector<int64_t>& shape,
               "'shape' is [%s], known capacity of 'shape' is %d.",
               in_dims,
               in_size,
-              common::make_ddim(shape),
+              make_ddim(shape),
               capacity));
     } else {
       output_shape[unk_dim_idx] = -1;
@@ -107,11 +107,11 @@ static DDim ValidateShape(const std::vector<int64_t>& shape,
               "[%s], the capacity of 'shape' is %d.",
               in_dims,
               in_size,
-              common::make_ddim(shape),
+              make_ddim(shape),
               capacity));
     }
   }
-  return common::make_ddim(output_shape);
+  return make_ddim(output_shape);
 }
 
 template <typename T, typename Context>
@@ -121,7 +121,7 @@ void ExecuteReshape(const Context& dev_ctx,
                     const DDim& x_dims,
                     DenseTensor* out) {
   auto out_dims = ValidateShape(shape.GetData(), x_dims);
-  auto x_vec_dims = x.mem_desc().get_dims();
+  auto x_vec_dims = phi::funcs::GetOneDNNMemDesc(x).get_dims();
 
   funcs::ReorderOneDNNHandler reorder_handler(
       x_vec_dims,
@@ -130,7 +130,7 @@ void ExecuteReshape(const Context& dev_ctx,
       dev_ctx.GetEngine());
 
   auto reorder_src_memory_p = reorder_handler.AcquireSrcMemory(
-      x.mem_desc(), funcs::to_void_cast(x.data<T>()));
+      phi::funcs::GetOneDNNMemDesc(x), funcs::to_void_cast(x.data<T>()));
   out->Resize(x_dims);  // to match x numel, format is changed later
   // reorder is done into a plain tag to allow usage with blocked formats
   auto reorder_dst_memory_p = reorder_handler.AcquireDstMemory(
@@ -144,9 +144,10 @@ void ExecuteReshape(const Context& dev_ctx,
   astream.wait();
 
   out->Resize(out_dims);
-  const auto reshape_dims = out_dims.size() != 0 ? common::vectorize(out_dims)
-                                                 : std::vector<int64_t>{1};
-  out->set_mem_desc(reorder_dst_memory_p->get_desc().reshape(reshape_dims));
+  const auto reshape_dims =
+      out_dims.size() != 0 ? vectorize(out_dims) : std::vector<int64_t>{1};
+  phi::funcs::SetOneDNNMemDesc(
+      out, reorder_dst_memory_p->get_desc().reshape(reshape_dims));
 }
 
 template <typename T, typename Context>
@@ -154,6 +155,9 @@ void ReshapeKernel(const Context& dev_ctx,
                    const DenseTensor& x,
                    const IntArray& shape,
                    DenseTensor* out) {
+  if (x.numel() == 0) {
+    dev_ctx.Alloc(out, x.dtype());
+  }
   auto x_dims = x.dims();
   ExecuteReshape<T, Context>(dev_ctx, x, shape, x_dims, out);
 }
@@ -171,11 +175,11 @@ void ReshapeWithXShapeKernel(const Context& dev_ctx,
 }  // namespace phi
 
 PD_REGISTER_KERNEL(
-    reshape, OneDNN, ONEDNN, phi::ReshapeKernel, float, phi::dtype::bfloat16) {}
+    reshape, OneDNN, ONEDNN, phi::ReshapeKernel, float, phi::bfloat16) {}
 
 PD_REGISTER_KERNEL(reshape_with_xshape,
                    OneDNN,
                    ONEDNN,
                    phi::ReshapeWithXShapeKernel,
                    float,
-                   phi::dtype::bfloat16) {}
+                   phi::bfloat16) {}

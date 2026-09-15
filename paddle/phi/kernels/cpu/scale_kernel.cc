@@ -20,8 +20,6 @@ limitations under the License. */
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/funcs/eigen/common.h"
 
-// See Note [ Why still include the fluid headers? ]
-#include "paddle/phi/common/bfloat16.h"
 #include "paddle/phi/kernels/funcs/eigen/eigen_function.h"
 namespace phi {
 
@@ -34,8 +32,8 @@ void ScaleKernel(const Context& dev_ctx,
                  DenseTensor* out) {
   // calc
   dev_ctx.template Alloc<T>(out);
-  auto eigen_out = phi::EigenVector<T>::Flatten(*out);
-  auto eigen_x = phi::EigenVector<T>::Flatten(x);
+  auto eigen_out = EigenVector<T>::Flatten(*out);
+  auto eigen_x = EigenVector<T>::Flatten(x);
   auto& dev = *dev_ctx.eigen_device();
   // TODO(chenweihang): now the eigen function here need the dtype of scale,
   // eigen_x, bias should be same, so here need cast for two scalar arg,
@@ -43,10 +41,39 @@ void ScaleKernel(const Context& dev_ctx,
   if (x.numel() <= 0 || (!x.IsInitialized())) {
     return;
   }
-  phi::funcs::EigenScale<std::decay_t<decltype(dev)>, T>::Eval(
+  funcs::EigenScale<std::decay_t<decltype(dev)>, T>::Eval(
       dev, eigen_out, eigen_x, scale.to<T>(), bias.to<T>(), bias_after_scale);
 }
 
+template <typename T, typename Context>
+void DivScaleKernel(const Context& dev_ctx,
+                    const DenseTensor& x,
+                    const Scalar& scale,
+                    DenseTensor* out) {
+  dev_ctx.template Alloc<T>(out);
+  auto eigen_out = EigenVector<T>::Flatten(*out);
+  auto eigen_x = EigenVector<T>::Flatten(x);
+  auto& dev = *dev_ctx.eigen_device();
+  if (x.numel() <= 0 || (!x.IsInitialized())) {
+    return;
+  }
+  funcs::EigenDiv<std::decay_t<decltype(dev)>, T>::Eval(
+      dev, eigen_out, eigen_x, scale.to<T>());
+}
+
+#ifdef _WIN32
+INSTANCE_SCALAR_KERNEL(int, CPUContext)
+INSTANCE_SCALAR_KERNEL(int64_t, CPUContext)
+INSTANCE_SCALAR_KERNEL(float, CPUContext)
+INSTANCE_SCALAR_KERNEL(double, CPUContext)
+INSTANCE_SCALAR_KERNEL(bfloat16, CPUContext)
+INSTANCE_SCALAR_KERNEL(float16, CPUContext)
+INSTANCE_SCALAR_KERNEL(uint8_t, CPUContext)
+INSTANCE_SCALAR_KERNEL(int8_t, CPUContext)
+INSTANCE_SCALAR_KERNEL(int16_t, CPUContext)
+INSTANCE_SCALAR_KERNEL(complex64, CPUContext)
+INSTANCE_SCALAR_KERNEL(complex128, CPUContext)
+#endif
 }  // namespace phi
 
 PD_REGISTER_KERNEL(scale,
@@ -56,12 +83,29 @@ PD_REGISTER_KERNEL(scale,
                    bool,
                    float,
                    double,
-                   phi::dtype::bfloat16,
-                   phi::dtype::float16,
+                   phi::bfloat16,
+                   phi::float16,
                    uint8_t,
                    int8_t,
                    int16_t,
                    int,
                    int64_t,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::complex64,
+                   phi::complex128) {}
+
+PD_REGISTER_KERNEL(div_scale,
+                   CPU,
+                   ALL_LAYOUT,
+                   phi::DivScaleKernel,
+                   bool,
+                   float,
+                   double,
+                   phi::bfloat16,
+                   phi::float16,
+                   uint8_t,
+                   int8_t,
+                   int16_t,
+                   int,
+                   int64_t,
+                   phi::complex64,
+                   phi::complex128) {}

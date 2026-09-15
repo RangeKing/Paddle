@@ -64,7 +64,7 @@ void UniformRawKernel(const Context& dev_ctx,
                       int diag_step,
                       float diag_val,
                       DenseTensor* out) {
-  out->Resize(common::make_ddim(shape.GetData()));
+  out->Resize(shape.GetData());
   dev_ctx.template Alloc<T>(out);
   if (seed == 0) {
     // Use global Generator seed
@@ -92,5 +92,5 @@ PD_REGISTER_KERNEL(uniform_raw,
                    phi::UniformRawKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}

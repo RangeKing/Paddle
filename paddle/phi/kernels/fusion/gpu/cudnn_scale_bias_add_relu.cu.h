@@ -20,20 +20,19 @@
 namespace phi {
 namespace fusion {
 template <typename T>
-using CudnnDataType = phi::backends::gpu::CudnnDataType<T>;
+using CudnnDataType = backends::gpu::CudnnDataType<T>;
 namespace dynload = phi::dynload;
 template <typename T>
 using BatchNormParamType =
-    typename phi::backends::gpu::CudnnDataType<T>::BatchNormParamType;
+    typename backends::gpu::CudnnDataType<T>::BatchNormParamType;
 
 #if CUDNN_VERSION >= 8000
 
 template <typename T>
 struct ScaleBiasAddReluArgs {
   ScaleBiasAddReluArgs() {
-    dtype = phi::backends::gpu::CudnnDataType<T>::type;
-    param_dtype =
-        phi::backends::gpu::CudnnDataType<BatchNormParamType<T>>::type;
+    dtype = backends::gpu::CudnnDataType<T>::type;
+    param_dtype = backends::gpu::CudnnDataType<BatchNormParamType<T>>::type;
     format = CUDNN_TENSOR_NHWC;
   }
 
@@ -48,7 +47,7 @@ struct ScaleBiasAddReluArgs {
             "The size of data_shape is expected to 4. But received "
             "data_shape's size is %d, data_shape is [%s].",
             data_shape.size(),
-            common::make_ddim(data_shape)));
+            make_ddim(data_shape)));
     PADDLE_ENFORCE_EQ(
         param_shape.size(),
         4U,
@@ -56,7 +55,7 @@ struct ScaleBiasAddReluArgs {
             "The size of param_shape is expected to 4. But received "
             "param_shape's size is %d, param_shape is [%s].",
             param_shape.size(),
-            common::make_ddim(param_shape)));
+            make_ddim(param_shape)));
     PADDLE_ENFORCE_EQ(
         bitmask_shape.size(),
         3U,
@@ -64,7 +63,7 @@ struct ScaleBiasAddReluArgs {
             "The size of bitmask_shape is expected to 3. But received "
             "bitmask_shape's size is %d, bitmask_shape is [%s].",
             bitmask_shape.size(),
-            common::make_ddim(bitmask_shape)));
+            make_ddim(bitmask_shape)));
 
     in_desc.set(data_shape, format, dtype);
     out_desc.set(data_shape, format, dtype);
@@ -89,18 +88,18 @@ struct ScaleBiasAddReluArgs {
   cudnnDataType_t param_dtype;
   cudnnTensorFormat_t format;
 
-  phi::backends::gpu::TensorDescriptor in_desc;
-  phi::backends::gpu::TensorDescriptor out_desc;
-  phi::backends::gpu::TensorDescriptor equiv_scale_bias_desc;
-  phi::backends::gpu::TensorDescriptor scale_bias_mean_var_desc;
-  phi::backends::gpu::TensorDescriptor bitmask_desc;
-  phi::backends::gpu::ActivationDescriptor activation_desc;
+  backends::gpu::TensorDescriptor in_desc;
+  backends::gpu::TensorDescriptor out_desc;
+  backends::gpu::TensorDescriptor equiv_scale_bias_desc;
+  backends::gpu::TensorDescriptor scale_bias_mean_var_desc;
+  backends::gpu::TensorDescriptor bitmask_desc;
+  backends::gpu::ActivationDescriptor activation_desc;
 };
 
 template <typename T>
 class CudnnScaleBiasAddRelu {
  public:
-  CudnnScaleBiasAddRelu(const phi::GPUContext &ctx,
+  CudnnScaleBiasAddRelu(const GPUContext &dev_ctx,
                         const std::string &act_type,
                         bool fuse_add,
                         bool has_shortcut,
@@ -116,18 +115,18 @@ class CudnnScaleBiasAddRelu {
 
   ~CudnnScaleBiasAddRelu() {}
 
-  void Forward(const phi::GPUContext &ctx,
-               const phi::DenseTensor &x,
-               const phi::DenseTensor &x_scale,
-               const phi::DenseTensor &x_bias,
-               const phi::DenseTensor *z,
-               const phi::DenseTensor *z_scale,
-               const phi::DenseTensor *z_bias,
-               phi::DenseTensor *out,
-               phi::DenseTensor *bitmask) {
-    ForwardInit(ctx);
-    auto handle = ctx.cudnn_handle();
-    auto workspace_handle = ctx.cudnn_workspace_handle();
+  void Forward(const GPUContext &dev_ctx,
+               const DenseTensor &x,
+               const DenseTensor &x_scale,
+               const DenseTensor &x_bias,
+               const DenseTensor *z,
+               const DenseTensor *z_scale,
+               const DenseTensor *z_bias,
+               DenseTensor *out,
+               DenseTensor *bitmask) {
+    ForwardInit(dev_ctx);
+    auto handle = dev_ctx.cudnn_handle();
+    auto workspace_handle = dev_ctx.cudnn_workspace_handle();
     fwd_workspace_byte_ = fwd_op_.GetWorkspaceSizeInBytes(handle);
     // Set variant_param
     // input ptr
@@ -155,8 +154,8 @@ class CudnnScaleBiasAddRelu {
         CUDNN_SCALAR_SIZE_T_WORKSPACE_SIZE_IN_BYTES, &fwd_workspace_byte_);
 
     // output ptr
-    T *out_ptr = ctx.template Alloc<T>(out, out->numel() * sizeof(T));
-    int32_t *bitmask_ptr = ctx.template Alloc<int32_t>(
+    T *out_ptr = dev_ctx.template Alloc<T>(out, out->numel() * sizeof(T));
+    int32_t *bitmask_ptr = dev_ctx.template Alloc<int32_t>(
         bitmask, bitmask->numel() * sizeof(int32_t));
     fwd_op_.SetOpVariantParamAttrPtr(CUDNN_PTR_YDATA, out_ptr);
     fwd_op_.SetOpVariantParamAttrPtr(CUDNN_PTR_ACTIVATION_BITMASK, bitmask_ptr);
@@ -171,22 +170,22 @@ class CudnnScaleBiasAddRelu {
         fwd_workspace_byte_);
   }
 
-  void Backward(const phi::GPUContext &ctx,
-                const phi::DenseTensor &dy,
-                const phi::DenseTensor &x,
-                const phi::DenseTensor &scale,
-                const phi::DenseTensor &bias,
-                const phi::DenseTensor &saved_mean,
-                const phi::DenseTensor &saved_invstd,
-                const phi::DenseTensor *bitmask,
-                phi::DenseTensor *dx,
-                phi::DenseTensor *dz,
-                phi::DenseTensor *dscale,
-                phi::DenseTensor *dbias,
+  void Backward(const GPUContext &dev_ctx,
+                const DenseTensor &dy,
+                const DenseTensor &x,
+                const DenseTensor &scale,
+                const DenseTensor &bias,
+                const DenseTensor &saved_mean,
+                const DenseTensor &saved_invstd,
+                const DenseTensor *bitmask,
+                DenseTensor *dx,
+                DenseTensor *dz,
+                DenseTensor *dscale,
+                DenseTensor *dbias,
                 double eps) {
-    BackwardInit(ctx);
-    auto handle = ctx.cudnn_handle();
-    auto workspace_handle = ctx.cudnn_workspace_handle();
+    BackwardInit(dev_ctx);
+    auto handle = dev_ctx.cudnn_handle();
+    auto workspace_handle = dev_ctx.cudnn_workspace_handle();
     bwd_workspace_byte_ = bwd_op_.GetWorkspaceSizeInBytes(handle);
     // Set variant_param
     // input ptr
@@ -198,15 +197,15 @@ class CudnnScaleBiasAddRelu {
     float *saved_invstd_ptr = const_cast<float *>(saved_invstd.data<float>());
     int32_t *bitmask_ptr =
         bitmask ? const_cast<int32_t *>(bitmask->data<int32_t>()) : nullptr;
-    T *dx_ptr = ctx.template Alloc<T>(dx, dx->numel() * sizeof(T));
+    T *dx_ptr = dev_ctx.template Alloc<T>(dx, dx->numel() * sizeof(T));
     T *dz_ptr =
-        dz ? ctx.template Alloc<T>(dz, dz->numel() * sizeof(T)) : nullptr;
-    float *dscale_ptr = dscale ? ctx.template Alloc<float>(
+        dz ? dev_ctx.template Alloc<T>(dz, dz->numel() * sizeof(T)) : nullptr;
+    float *dscale_ptr = dscale ? dev_ctx.template Alloc<float>(
                                      dscale, dscale->numel() * sizeof(float))
                                : nullptr;
-    float *dbias_ptr =
-        dbias ? ctx.template Alloc<float>(dbias, dbias->numel() * sizeof(float))
-              : nullptr;
+    float *dbias_ptr = dbias ? dev_ctx.template Alloc<float>(
+                                   dbias, dbias->numel() * sizeof(float))
+                             : nullptr;
 
     bwd_op_.SetOpVariantParamAttrPtr(CUDNN_PTR_XDATA, x_ptr);
     bwd_op_.SetOpVariantParamAttrPtr(CUDNN_PTR_DYDATA, dy_ptr);
@@ -241,7 +240,7 @@ class CudnnScaleBiasAddRelu {
   }
 
  private:
-  void ForwardInit(const phi::GPUContext &ctx) {
+  void ForwardInit(const GPUContext &dev_ctx) {
     // Set constant_param
     fwd_op_.SetOpConstParamAttr({CUDNN_PARAM_XDATA_PLACEHOLDER,
                                  CUDNN_PARAM_BN_EQSCALE_PLACEHOLDER,
@@ -289,7 +288,7 @@ class CudnnScaleBiasAddRelu {
                                 CUDNN_BATCHNORM_SPATIAL_PERSISTENT);
   }
 
-  void BackwardInit(const phi::GPUContext &ctx) {
+  void BackwardInit(const GPUContext &dev_ctx) {
     // Set constant_param
     bwd_op_.SetOpConstParamAttr({CUDNN_PARAM_XDATA_PLACEHOLDER,
                                  CUDNN_PARAM_DYDATA_PLACEHOLDER,

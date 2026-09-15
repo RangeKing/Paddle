@@ -42,8 +42,9 @@ class RmsNormFusePattern : public paddle::drr::DrrPatternBase {
   void operator()(paddle::drr::DrrPatternContext *ctx) const override {
     paddle::drr::SourcePattern pat = ctx->SourcePattern();
     const auto &pow = pat.Op(paddle::dialect::PowOp::name());
-    const auto &mean =
-        pat.Op(paddle::dialect::MeanOp::name(), {{"axis", pat.Attr("axis")}});
+    const auto &full_int_array = pat.Op(paddle::dialect::FullIntArrayOp::name(),
+                                        {{"value", pat.Attr("value")}});
+    const auto &mean = pat.Op(paddle::dialect::MeanOp::name());
     const auto &full = pat.Op(paddle::dialect::FullOp::name());
     const auto &scale =
         pat.Op(paddle::dialect::ScaleOp::name(), {{"bias", pat.Attr("bias")}});
@@ -55,7 +56,9 @@ class RmsNormFusePattern : public paddle::drr::DrrPatternBase {
                                  {{"dtype", pat.Attr("cast_type_1")}});
       pat.Tensor("cast_1_out") = cast1(pat.Tensor("x"));
       pat.Tensor("pow_out") = pow(pat.Tensor("cast_1_out"));
-      pat.Tensor("mean_out") = mean(pat.Tensor("pow_out"));
+      pat.Tensor("full_int_array_out") = full_int_array();
+      pat.Tensor("mean_out") =
+          mean(pat.Tensor("pow_out"), pat.Tensor("full_int_array_out"));
       pat.Tensor("scale_out") = scale(pat.Tensor("mean_out"), full());
       pat.Tensor("rsqrt_out") = rsqrt(pat.Tensor("scale_out"));
       pat.Tensor("multiply_out1") =
@@ -67,7 +70,9 @@ class RmsNormFusePattern : public paddle::drr::DrrPatternBase {
           multiply2(pat.Tensor("cast_2_out"), pat.Tensor("w"));
     } else {
       pat.Tensor("pow_out") = pow(pat.Tensor("x"));
-      pat.Tensor("mean_out") = mean(pat.Tensor("pow_out"));
+      pat.Tensor("full_int_array_out") = full_int_array();
+      pat.Tensor("mean_out") =
+          mean(pat.Tensor("pow_out"), pat.Tensor("full_int_array_out"));
       pat.Tensor("scale_out") = scale(pat.Tensor("mean_out"), full());
       pat.Tensor("rsqrt_out") = rsqrt(pat.Tensor("scale_out"));
       pat.Tensor("multiply_out1") =
@@ -76,7 +81,7 @@ class RmsNormFusePattern : public paddle::drr::DrrPatternBase {
           multiply2(pat.Tensor("multiply_out1"), pat.Tensor("w"));
     }
     pat.AddConstraint([this](const paddle::drr::MatchContext &match_ctx) {
-      auto axis = match_ctx.Attr<std::vector<int64_t>>("axis");
+      auto axis = match_ctx.Attr<std::vector<int64_t>>("value");
       if (axis.size() > 1) {
         return false;
       }
@@ -107,24 +112,25 @@ class RmsNormFusePattern : public paddle::drr::DrrPatternBase {
     paddle::drr::ResultPattern res = pat.ResultPattern();
     const auto &begin_norm_axis =
         res.ComputeAttr([](const paddle::drr::MatchContext &match_ctx) -> int {
-          const auto &axis = match_ctx.Attr<std::vector<int64_t>>("axis");
+          const auto &axis = match_ctx.Attr<std::vector<int64_t>>("value");
           auto pow_out_shape =
               pir::GetShapeFromValue(match_ctx.Tensor("pow_out"));
           return axis[0] == -1 ? static_cast<int>(pow_out_shape.size()) - 1
                                : axis[0];
         });
 
-    const auto &rms_norm = res.Op(paddle::dialect::RmsNormOp::name(),
-                                  {{
-                                      {"epsilon", pat.Attr("bias")},
-                                      {"begin_norm_axis", begin_norm_axis},
-                                      {"quant_scale", res.Float32Attr(-1.0)},
-                                      {"quant_round_type", res.Int32Attr(0)},
-                                      {"quant_max_bound", res.Float32Attr(0.0)},
-                                      {"quant_min_bound", res.Float32Attr(0.0)},
-                                  }});
+    const auto &fused_rms_norm_quant =
+        res.Op(paddle::dialect::FusedRmsNormQuantOp::name(),
+               {{
+                   {"epsilon", pat.Attr("bias")},
+                   {"begin_norm_axis", begin_norm_axis},
+                   {"quant_scale", res.Float32Attr(-1.0)},
+                   {"quant_round_type", res.Int32Attr(0)},
+                   {"quant_max_bound", res.Float32Attr(0.0)},
+                   {"quant_min_bound", res.Float32Attr(0.0)},
+               }});
 
-    rms_norm(
+    fused_rms_norm_quant(
         {
             &res.Tensor("x"),
             &res.InputNoneTensor(),
@@ -155,7 +161,7 @@ class AddRmsNormFusePattern : public paddle::drr::DrrPatternBase {
     paddle::drr::SourcePattern pat = ctx->SourcePattern();
     const auto &add = pat.Op(paddle::dialect::AddOp::name());
     const auto &pat_rms_norm =
-        pat.Op(paddle::dialect::RmsNormOp::name(),
+        pat.Op(paddle::dialect::FusedRmsNormQuantOp::name(),
                {
                    {"epsilon", pat.Attr("epsilon")},
                    {"begin_norm_axis", pat.Attr("begin_norm_axis")},
@@ -184,7 +190,7 @@ class AddRmsNormFusePattern : public paddle::drr::DrrPatternBase {
     }
     paddle::drr::ResultPattern res = pat.ResultPattern();
     const auto &res_rms_norm =
-        res.Op(paddle::dialect::RmsNormOp::name(),
+        res.Op(paddle::dialect::FusedRmsNormQuantOp::name(),
                {
                    {"epsilon", pat.Attr("epsilon")},
                    {"begin_norm_axis", pat.Attr("begin_norm_axis")},
@@ -244,8 +250,9 @@ class AddLayerNormFusePattern : public paddle::drr::DrrPatternBase {
     pat.AddConstraint([](const paddle::drr::MatchContext &match_ctx) {
       auto x_shape = pir::GetShapeFromValue(match_ctx.Tensor("x"));
       auto r_shape = pir::GetShapeFromValue(match_ctx.Tensor("residual"));
-      if (x_shape[0] != r_shape[0]) {
-        return false;
+      if (x_shape.size() != r_shape.size()) return false;
+      for (size_t i = 0; i < x_shape.size(); i++) {
+        if (x_shape[i] != r_shape[i]) return false;
       }
       return true;
     });
@@ -256,9 +263,13 @@ class AddLayerNormFusePattern : public paddle::drr::DrrPatternBase {
         });
     const auto cast_1_op =
         res.Op(paddle::dialect::CastOp::name(), {{"dtype", cast_op_dtype}});
+    const auto &fused_epsilon = res.ComputeAttr(
+        [](const paddle::drr::MatchContext &match_ctx) -> float {
+          return static_cast<float>(match_ctx.Attr<double>("epsilon"));
+        });
     const auto &fuse_layer_norm =
         res.Op(paddle::dialect::FusedBiasResidualLayernormOp::name(),
-               {{"epsilon", pat.Attr("epsilon")},
+               {{"epsilon", fused_epsilon},
                 {"residual_alpha", res.Float32Attr(1.0)},
                 {"begin_norm_axis", pat.Attr("begin_norm_axis")},
                 {"quant_scale", res.Float32Attr(-1.0)},
@@ -422,14 +433,14 @@ class AddNormFusePass : public pir::PatternRewritePass {
     // x-pow-mean-scale->rsqrt-
     //                          mul--
     // x-----------------------
-    //                                mul --->rms_norm
+    //                                mul --->fused_rms_norm_quant
     // w-----------------------------
     bool is_half_weight = true;
     bool extra_add = true;
     ps.Add(paddle::drr::Create<RmsNormFusePattern>(context, !is_half_weight));
     ps.Add(paddle::drr::Create<RmsNormFusePattern>(context, is_half_weight));
     // x--------
-    //           add-rms_norm ---> rms_norm
+    //           add-fused_rms_norm_quant ---> fused_rms_norm_quant
     // residual-
     ps.Add(
         paddle::drr::Create<AddRmsNormFusePattern>(context, !extra_add, false));

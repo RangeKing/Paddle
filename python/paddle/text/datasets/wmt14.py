@@ -28,8 +28,7 @@ if TYPE_CHECKING:
 __all__ = []
 
 URL_DEV_TEST = (
-    'http://www-lium.univ-lemans.fr/~schwenk/'
-    'cslm_joint_paper/data/dev+test.tgz'
+    'http://www-lium.univ-lemans.fr/~schwenk/cslm_joint_paper/data/dev+test.tgz'
 )
 MD5_DEV_TEST = '7d7897317ddd8ba0ae5c5fa7248d3ff5'
 # this is a small set of data for test. The original data is too large and
@@ -65,7 +64,7 @@ class WMT14(Dataset):
             - trg_ids_next (np.array) - The next sequence of token ids of target language.
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.text.datasets import WMT14
@@ -126,9 +125,9 @@ class WMT14(Dataset):
 
         self.data_file = data_file
         if self.data_file is None:
-            assert (
-                download
-            ), "data_file is not set and downloading automatically is disabled"
+            assert download, (
+                "data_file is not set and downloading automatically is disabled"
+            )
             self.data_file = _check_exists_and_download(
                 data_file, URL_TRAIN, MD5_TRAIN, 'wmt14', download
             )
@@ -200,7 +199,9 @@ class WMT14(Dataset):
                     self.trg_ids.append(trg_ids)
                     self.trg_ids_next.append(trg_ids_next)
 
-    def __getitem__(self, idx: int) -> tuple[
+    def __getitem__(
+        self, idx: int
+    ) -> tuple[
         npt.NDArray[np.int_],
         npt.NDArray[np.int_],
         npt.NDArray[np.int_],
@@ -237,7 +238,7 @@ class WMT14(Dataset):
         Get the source and target dictionary.
 
         Args:
-            reverse (bool): wether to reverse key and value in dictionary,
+            reverse (bool): whether to reverse key and value in dictionary,
                 i.e. key: value to value: key.
 
         Returns:
@@ -245,7 +246,7 @@ class WMT14(Dataset):
 
         Examples:
 
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> from paddle.text.datasets import WMT14
                 >>> wmt14 = WMT14(mode='train', dict_size=50)

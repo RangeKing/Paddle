@@ -15,18 +15,22 @@
 #include "paddle/phi/kernels/logsumexp_kernel.h"
 #include "paddle/phi/kernels/gpu/logsumexp_function.cu.h"
 
-#include "paddle/phi/common/bfloat16.h"
-#include "paddle/phi/common/float16.h"
+#include "paddle/common/flags.h"
+#include "paddle/phi/common/amp_type_traits.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/activation_kernel.h"
 #include "paddle/phi/kernels/elementwise_add_kernel.h"
 #include "paddle/phi/kernels/elementwise_subtract_kernel.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/activation_functor.h"
 #include "paddle/phi/kernels/funcs/elementwise_base.h"
-#include "paddle/phi/kernels/funcs/transpose_function.cu.h"
+#include "paddle/phi/kernels/funcs/transpose_function.cuh"
 #include "paddle/phi/kernels/gpu/reduce.h"
 #include "paddle/phi/kernels/reduce_max_kernel.h"
+#include "paddle/phi/kernels/reduce_sum_kernel.h"
 #include "paddle/phi/kernels/transpose_kernel.h"
+
+COMMON_DECLARE_bool(use_accuracy_compatible_kernel);
 
 namespace phi {
 
@@ -36,12 +40,12 @@ struct ComputeType {
 };
 
 template <>
-struct ComputeType<phi::dtype::float16> {
+struct ComputeType<float16> {
   using type = float;
 };
 
 template <>
-struct ComputeType<phi::dtype::bfloat16> {
+struct ComputeType<bfloat16> {
   using type = float;
 };
 
@@ -50,15 +54,15 @@ void LogsumexpFallbackKernel(const Context& dev_ctx,
                              const DenseTensor& x,
                              const std::vector<int>& axis_vec,
                              const std::vector<int64_t>& outdim_vec,
-                             const std::vector<int64_t>& keeped_outdim_vec,
+                             const std::vector<int64_t>& keep_outdim_vec,
                              bool keepdim,
                              bool reduce_all,
                              DenseTensor* out) {
   auto* in_x = &x;
   auto* out_y = out;
 
-  auto outdim = common::make_ddim(outdim_vec);
-  auto keeped_outdim = common::make_ddim(keeped_outdim_vec);
+  auto outdim = make_ddim(outdim_vec);
+  auto keep_outdim = make_ddim(keep_outdim_vec);
   out->Resize(outdim);
   dev_ctx.template Alloc<T>(out_y);
 
@@ -66,17 +70,70 @@ void LogsumexpFallbackKernel(const Context& dev_ctx,
   max_x.Resize(outdim);
   dev_ctx.template Alloc<T>(&max_x);
 
-  phi::MaxKernel<T, Context>(dev_ctx, *in_x, axis_vec, false, &max_x);
+  MaxKernel<T, Context>(dev_ctx, *in_x, axis_vec, false, &max_x);
 
-  max_x.Resize(keeped_outdim);
+  max_x.Resize(keep_outdim);
   DenseTensor temp_x = Subtract<T, Context>(dev_ctx, *in_x, max_x);
-  phi::funcs::ReduceKernel<T, T, kps::AddFunctor, kps::ExpFunctor<T>>(
+  funcs::ReduceKernel<T, T, kps::AddFunctor, kps::ExpFunctor<T>>(
       dev_ctx, temp_x, out_y, kps::ExpFunctor<T>(), axis_vec);
 
-  phi::LogKernel<T, Context>(dev_ctx, *out_y, &temp_x);
-  temp_x.Resize(outdim);
+  DenseTensor log_out;
+  log_out.Resize(outdim);
+  dev_ctx.template Alloc<T>(&log_out);
+  LogKernel<T, Context>(dev_ctx, *out_y, &log_out);
+  log_out.Resize(outdim);
   out->Resize(outdim);
-  phi::AddKernel<T, Context>(dev_ctx, temp_x, max_x, out);
+  AddKernel<T, Context>(dev_ctx, log_out, max_x, out);
+}
+
+template <typename T>
+struct ZeroInfFunctor {
+  using MT = typename phi::dtype::MPTypeTrait<T>::Type;
+  HOSTDEVICE T operator()(const T x) const {
+    return isinf(static_cast<MT>(x)) ? static_cast<T>(0) : x;
+  }
+};
+
+// Align bit for bit with torch2.12's logsumexp(logsumexp_out_impl).
+// Note that torch's `maxes_squeezed` aliases `maxes` (squeeze returns a view),
+// so its masked_fill_ zeroes the infinite maxes before they are subtracted from
+// x, that is why ZeroInfFunctor is applied to max_x up front.s
+template <typename T, typename Context>
+void LogsumexpAccuracyCompatibleKernel(
+    const Context& dev_ctx,
+    const DenseTensor& x,
+    const std::vector<int>& axis_vec,
+    const std::vector<int64_t>& outdim_vec,
+    const std::vector<int64_t>& keep_outdim_vec,
+    DenseTensor* out) {
+  auto outdim = make_ddim(outdim_vec);
+  auto keep_outdim = make_ddim(keep_outdim_vec);
+
+  DenseTensor max_x;
+  max_x.Resize(keep_outdim);
+  dev_ctx.template Alloc<T>(&max_x);
+  MaxKernel<T, Context>(dev_ctx, x, axis_vec, true, &max_x);
+  std::vector<DenseTensor*> zero_inf_outs = {&max_x};
+  funcs::ElementwiseKernel<T, ZeroInfFunctor<T>>(
+      dev_ctx, {&max_x}, &zero_inf_outs, ZeroInfFunctor<T>());
+
+  DenseTensor temp_x = Subtract<T, Context>(dev_ctx, x, max_x);
+  DenseTensor exp_x;
+  exp_x.Resize(x.dims());
+  dev_ctx.template Alloc<T>(&exp_x);
+  ExpKernel<T, Context>(dev_ctx, temp_x, &exp_x);
+
+  out->Resize(keep_outdim);
+  dev_ctx.template Alloc<T>(out);
+  SumKernel<T, Context>(dev_ctx, exp_x, axis_vec, x.dtype(), true, out);
+
+  DenseTensor log_out;
+  log_out.Resize(keep_outdim);
+  dev_ctx.template Alloc<T>(&log_out);
+  LogKernel<T, Context>(dev_ctx, *out, &log_out);
+
+  AddKernel<T, Context>(dev_ctx, log_out, max_x, out);
+  out->Resize(outdim);
 }
 
 template <typename T, typename Context>
@@ -86,6 +143,10 @@ void LogsumexpKernel(const Context& dev_ctx,
                      bool keepdim,
                      bool reduce_all,
                      DenseTensor* out) {
+  if (x.numel() == 0) {
+    Full<T, Context>(dev_ctx, out->dims(), -INFINITY, out);
+    return;
+  }
   std::vector<int64_t> axis;
   axis.reserve(axis_in.size());
   std::for_each(axis_in.begin(), axis_in.end(), [&axis](const int& t) {
@@ -99,7 +160,7 @@ void LogsumexpKernel(const Context& dev_ctx,
                           "The dims of Input(X) should be greater than 0."));
 
   reduce_all = recompute_reduce_all(x, axis, reduce_all);
-  std::vector<int64_t> outdim_vec, keeped_outdim_vec, transpose_shape;
+  std::vector<int64_t> outdim_vec, keep_outdim_vec, transpose_shape;
   std::vector<int> axis_vec, perm;
   int64_t compute_size = 1, other_size = 1;
   for (auto i : axis) {
@@ -122,18 +183,23 @@ void LogsumexpKernel(const Context& dev_ctx,
     }
     if (flag) {
       compute_size *= xdim[i];
-      keeped_outdim_vec.push_back(1);
+      keep_outdim_vec.push_back(1);
       if (keepdim) outdim_vec.push_back(1);
     } else {
       other_size *= xdim[i];
       transpose_shape.push_back(xdim[i]);
       perm.push_back(i);
       outdim_vec.push_back(xdim[i]);
-      keeped_outdim_vec.push_back(xdim[i]);
+      keep_outdim_vec.push_back(xdim[i]);
     }
   }
 
-  auto outdim = common::make_ddim(outdim_vec);
+  auto outdim = make_ddim(outdim_vec);
+  if (FLAGS_use_accuracy_compatible_kernel) {
+    LogsumexpAccuracyCompatibleKernel<T, Context>(
+        dev_ctx, x, axis_vec, outdim_vec, keep_outdim_vec, out);
+    return;
+  }
   if (compute_size <= 1024) {
     if (perm.size() != xdim.size())
       perm.insert(perm.end(), axis_vec.begin(), axis_vec.end());
@@ -143,9 +209,9 @@ void LogsumexpKernel(const Context& dev_ctx,
         (axis_vec.size() == 1 && axis_vec[0] == xdim.size())) {
       transpose_x = x;
     } else {
-      transpose_x.Resize(common::make_ddim(transpose_shape));
+      transpose_x.Resize(transpose_shape);
       dev_ctx.template Alloc<T>(&transpose_x);
-      phi::funcs::TransposeGPUKernelDriver<T>(dev_ctx, x, perm, &transpose_x);
+      funcs::TransposeGPUKernelDriver<T>(dev_ctx, x, perm, &transpose_x);
     }
     dev_ctx.template Alloc<T>(out);
     using compute_type = typename ComputeType<T>::type;
@@ -158,7 +224,7 @@ void LogsumexpKernel(const Context& dev_ctx,
                                         x,
                                         axis_vec,
                                         outdim_vec,
-                                        keeped_outdim_vec,
+                                        keep_outdim_vec,
                                         keepdim,
                                         reduce_all,
                                         out);
@@ -173,5 +239,5 @@ PD_REGISTER_KERNEL(logsumexp,
                    phi::LogsumexpKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}

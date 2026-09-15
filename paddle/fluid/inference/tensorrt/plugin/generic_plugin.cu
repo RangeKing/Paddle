@@ -504,7 +504,7 @@ int GenericPlugin::initialize() TRT_NOEXCEPT {
                             op_type.c_str()));
 
   phi::DeviceContextPool& pool = phi::DeviceContextPool::Instance();
-  phi::GPUPlace place(platform::GetCurrentDeviceId());
+  GPUPlace place(platform::GetCurrentDeviceId());
   auto* dev_ctx = static_cast<phi::GPUContext*>(pool.Get(place));
 
   std::vector<phi::DataType> precision_types{phi::DataType::FLOAT32,
@@ -595,7 +595,7 @@ int GenericPlugin::enqueue(const nvinfer1::PluginTensorDesc* input_desc,
                            void* const* outputs,
                            void* workspace,
                            cudaStream_t stream) TRT_NOEXCEPT {
-  phi::GPUPlace place(platform::GetCurrentDeviceId());
+  GPUPlace place(platform::GetCurrentDeviceId());
   phi::DeviceContextPool& pool = phi::DeviceContextPool::Instance();
   // TODO(inference): generic plugin do not support INT8 precision now.
   auto nvType2PhiType =
@@ -609,7 +609,7 @@ int GenericPlugin::enqueue(const nvinfer1::PluginTensorDesc* input_desc,
     PADDLE_ENFORCE_EQ(
         _map.count(nv_dtype),
         true,
-        common::errors::InvalidArgument("Sorry, dtyp [ %d ] is not supported.",
+        common::errors::InvalidArgument("Sorry, dtype [ %d ] is not supported.",
                                         static_cast<int>(nv_dtype)));
     return _map.at(nv_dtype);
   };
@@ -691,7 +691,8 @@ int GenericPlugin::enqueue(const nvinfer1::PluginTensorDesc* input_desc,
           "should be equal to getNbInputs()."
           "Received phi_kernel_contexts_[data_type]->InputsSize() "
           "= %d, getNbInputs() = %d.",
-          phi_kernel_contexts_[data_type]->InputsSize()));
+          phi_kernel_contexts_[data_type]->InputsSize(),
+          getNbInputs()));
   PADDLE_ENFORCE_EQ(phi_kernel_contexts_[data_type]->OutputsSize(),
                     getNbOutputs(),
                     common::errors::InvalidArgument(

@@ -18,14 +18,13 @@
 
 #include "paddle/phi/backends/gpu/gpu_info.h"
 #include "paddle/phi/backends/gpu/gpu_launch_config.h"
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/kernels/funcs/aligned_vector.h"
 #include "paddle/phi/kernels/funcs/quant_dequant.h"
 
 namespace phi {
 namespace fusion {
 
-using phi::backends::gpu::GpuLaunchConfig;
+using backends::gpu::GpuLaunchConfig;
 
 constexpr int DequantKernelVecSize = 4;
 
@@ -38,8 +37,7 @@ __forceinline__ __device__ int8_t quant_helper(const T input,
   float quant_value = max_bound * scale * static_cast<float>(input);
 
   if (round_type == 0) {
-    quant_value =
-        static_cast<float>(phi::funcs::roundWithTiesToEven(quant_value));
+    quant_value = static_cast<float>(funcs::roundWithTiesToEven(quant_value));
   } else {
     quant_value = static_cast<float>(round(quant_value));
   }
@@ -57,8 +55,13 @@ __global__ void QuantKernel(const T* input,
                             const int round_type,
                             const float max_bound,
                             const float min_bound) {
-  int n_id = (blockIdx.x * blockDim.x + threadIdx.x) << 2;
-  int m_id = blockIdx.y * blockDim.y + threadIdx.y;
+  int64_t n_id =
+      (static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x) +
+       static_cast<int64_t>(threadIdx.x))
+      << 2;
+  int64_t m_id =
+      static_cast<int64_t>(blockIdx.y) * static_cast<int64_t>(blockDim.y) +
+      static_cast<int64_t>(threadIdx.y);
 
   bool check = ((m_id < m) && (n_id < n));
   if (check) {
@@ -90,7 +93,7 @@ void LaunchQuantKernel(const T* input,
   dim3 grid(((n >> 2) + 63) / 64, (m + 7) / 8);
   dim3 block(64, 8);
 #else
-  dim3 grid((n >> 2 + 31) / 32, (m + 31) / 32);
+  dim3 grid(((n >> 2) + 31) / 32, (m + 31) / 32);
   dim3 block(32, 32);
 #endif
 
@@ -113,16 +116,19 @@ __global__ void DequantKernel(T* output,
                               const float* dequant_out_scale_data) {
   int numel = m * n;
   int stride = blockDim.x * gridDim.x * VecSize;
-  int idx = (blockIdx.x * blockDim.x + threadIdx.x) * VecSize;
+  int64_t idx =
+      (static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x) +
+       static_cast<int64_t>(threadIdx.x)) *
+      VecSize;
   int col_id = idx % n;
 
-  phi::AlignedVector<int32_t, VecSize> in_vec;
-  phi::AlignedVector<float, VecSize> out_scale_vec;
-  phi::AlignedVector<T, VecSize> out_vec;
+  AlignedVector<int32_t, VecSize> in_vec;
+  AlignedVector<float, VecSize> out_scale_vec;
+  AlignedVector<T, VecSize> out_vec;
 
   for (; idx < numel; idx += stride) {
-    phi::Load<int32_t, VecSize>(input + idx, &in_vec);
-    phi::Load<float, VecSize>(dequant_out_scale_data + col_id, &out_scale_vec);
+    Load<int32_t, VecSize>(input + idx, &in_vec);
+    Load<float, VecSize>(dequant_out_scale_data + col_id, &out_scale_vec);
 
 #pragma unroll
     for (int i = 0; i < VecSize; ++i) {
@@ -130,7 +136,7 @@ __global__ void DequantKernel(T* output,
           static_cast<T>(static_cast<float>(in_vec[i]) * out_scale_vec[i]);
     }
 
-    phi::Store<T, VecSize>(out_vec, output + idx);
+    Store<T, VecSize>(out_vec, output + idx);
   }
 }
 

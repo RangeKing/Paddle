@@ -51,7 +51,7 @@ def array_length(array):
         Tensor, 0-D Tensor with shape [], which is the length of array.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -66,9 +66,9 @@ def array_length(array):
             1
     """
     if in_dynamic_mode():
-        assert isinstance(
-            array, list
-        ), "The 'array' in array_write must be a list in dygraph mode"
+        assert isinstance(array, list), (
+            "The 'array' in array_write must be a list in dygraph mode"
+        )
         return len(array)
     elif in_pir_mode():
         if (
@@ -133,7 +133,7 @@ def array_read(array, i):
         Tensor, A Tensor that is read at the specified position of ``array``.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -148,15 +148,15 @@ def array_read(array, i):
             [[5. 5. 5.]]
     """
     if in_dynamic_mode():
-        assert isinstance(
-            array, list
-        ), "The 'array' in array_read must be list in dygraph mode"
-        assert isinstance(
-            i, Variable
-        ), "The index 'i' in array_read must be Variable in dygraph mode"
-        assert i.shape == [
-            1
-        ], "The shape of index 'i' should be [1] in dygraph mode"
+        assert isinstance(array, list), (
+            "The 'array' in array_read must be list in dygraph mode"
+        )
+        assert isinstance(i, Variable), (
+            "The index 'i' in array_read must be Variable in dygraph mode"
+        )
+        assert i.shape == [1], (
+            "The shape of index 'i' should be [1] in dygraph mode"
+        )
         i = i.item(0)
         return array[i]
     elif in_pir_mode():
@@ -225,7 +225,7 @@ def array_write(
         list|Tensor, The input ``array`` after ``x`` is written into.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -240,24 +240,24 @@ def array_write(
             [[5. 5. 5.]]
     """
     if in_dynamic_mode():
-        assert isinstance(
-            x, Variable
-        ), "The input data 'x' in array_write must be Variable in dygraph mode"
-        assert isinstance(
-            i, Variable
-        ), "The index 'i' in array_write must be Variable in dygraph mode"
-        assert i.shape == [
-            1
-        ], "The shape of index 'i' should be [1] in dygraph mode"
+        assert isinstance(x, Variable), (
+            "The input data 'x' in array_write must be Variable in dygraph mode"
+        )
+        assert isinstance(i, Variable), (
+            "The index 'i' in array_write must be Variable in dygraph mode"
+        )
+        assert i.shape == [1], (
+            "The shape of index 'i' should be [1] in dygraph mode"
+        )
         i = i.item(0)
         if array is None:
             array = create_array(x.dtype)
-        assert isinstance(
-            array, list
-        ), "The 'array' in array_write must be a list in dygraph mode"
-        assert i <= len(
-            array
-        ), "The index 'i' should not be greater than the length of 'array' in dygraph mode"
+        assert isinstance(array, list), (
+            "The 'array' in array_write must be a list in dygraph mode"
+        )
+        assert i <= len(array), (
+            "The index 'i' should not be greater than the length of 'array' in dygraph mode"
+        )
         if i < len(array):
             array[i] = x
         else:
@@ -324,7 +324,7 @@ def create_array(
         whose ``VarType`` is ``DENSE_TENSOR_ARRAY``.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -358,7 +358,9 @@ def create_array(
         return array
     elif in_pir_mode():
         if not isinstance(dtype, (core.VarDesc.VarType, core.DataType)):
-            dtype = paddle.base.framework.convert_np_dtype_to_dtype_(dtype)
+            dtype = paddle.base.framework.convert_nptype_to_datatype_or_vartype(
+                dtype
+            )
         out = paddle._pir_ops.create_array(dtype)
         for val in array:
             if dtype != paddle.base.libpaddle.DataType.UNDEFINED:

@@ -25,15 +25,6 @@
 #include "paddle/common/enforce.h"
 #include "paddle/common/flags.h"
 
-#ifdef CINN_WITH_CUDNN
-PD_DEFINE_bool(
-    cinn_cudnn_deterministic,
-    false,
-    "Whether allow using an autotuning algorithm for convolution "
-    "operator. The autotuning algorithm may be non-deterministic. If "
-    "true, the algorithm is deterministic.");
-#endif
-
 using ::paddle::flags::BoolFromEnv;
 using ::paddle::flags::DoubleFromEnv;
 using ::paddle::flags::Int32FromEnv;
@@ -80,9 +71,17 @@ PD_DEFINE_bool(cinn_enable_tile_broadcast,
                BoolFromEnv("FLAGS_cinn_enable_tile_broadcast", true),
                "Whether to enable the tile broadcast tactic.");
 
+PD_DEFINE_bool(cinn_enable_tile_transpose,
+               BoolFromEnv("FLAGS_cinn_enable_tile_transpose", true),
+               "Whether to enable the tile transpose tactic.");
+
 PD_DEFINE_bool(cinn_enable_rearrange_load,
                BoolFromEnv("FLAGS_cinn_enable_rearrange_load", true),
                "Whether to enable rearranging load instructions.");
+
+PD_DEFINE_bool(cinn_enable_vectorize,
+               BoolFromEnv("FLAGS_cinn_enable_vectorize", false),
+               "Whether to enable the grid reduce method.");
 
 PD_DEFINE_bool(cinn_use_op_fusion,
                BoolFromEnv("FLAGS_cinn_use_op_fusion", true),
@@ -166,7 +165,7 @@ PD_DEFINE_bool(cinn_compile_with_nvrtc,
 
 PD_DEFINE_bool(
     cinn_nvrtc_cubin_with_fmad,
-    BoolFromEnv("FLAGS_cinn_nvrtc_cubin_with_fmad", true),
+    BoolFromEnv("FLAGS_cinn_nvrtc_cubin_with_fmad", false),
     "Whether nvrtc enables fmad when compile to cubin. This flag only works "
     "when FLAGS_nvrtc_compile_to_cubin=true. Fmad is the cuda speed up "
     "technique which contract fp multiplication and addition/subtraction into "
@@ -245,21 +244,16 @@ PD_DEFINE_bool(enable_auto_tuner,
                BoolFromEnv("FLAGS_enable_auto_tuner", false),
                "Whether enable auto tuner.");
 
-PD_DEFINE_bool(auto_schedule_use_cost_model,
-               BoolFromEnv("FLAGS_auto_schedule_use_cost_model", true),
-               "Whether to use cost model in auto schedule, this is an "
-               "on-developing flag and it will be removed when "
-               "cost model is stable.");
-
 PD_DEFINE_bool(
     enhance_vertical_fusion_with_recompute,
     BoolFromEnv("FLAGS_enhance_vertical_fusion_with_recompute", true),
     "Whether to enhance check logic on vertical fusion with recompute");
 
-PD_DEFINE_bool(verbose_function_register,
-               BoolFromEnv("FLAGS_verbose_function_register", false),
-               "Whether to verbose function regist log. This will only work if "
-               "CINN build with flag -DWITH_DEBUG=ON.");
+PD_DEFINE_bool(
+    verbose_function_register,
+    BoolFromEnv("FLAGS_verbose_function_register", false),
+    "Whether to verbose function register log. This will only work if "
+    "CINN build with flag -DWITH_DEBUG=ON.");
 
 PD_DEFINE_int32(
     cinn_profiler_state,
@@ -300,6 +294,10 @@ PD_DEFINE_bool(cinn_longlong2int,
                BoolFromEnv("FLAGS_cinn_longlong2int", true),
                "Whether to cast long long to int for integer.");
 
+PD_DEFINE_bool(cinn_check_jit_instruction_shape,
+               BoolFromEnv("FLAGS_cinn_check_jit_instruction_shape", false),
+               "Whether to check shape in jit instruction.");
+
 namespace cinn {
 namespace runtime {
 
@@ -317,24 +315,6 @@ bool CheckStringFlagFalse(const std::string& flag) {
   static const std::unordered_set<std::string> kFalse = {
       "0", "f", "false", "n", "no", "F", "False", "FALSE", "N", "No", "NO"};
   return flag.empty() || kFalse.count(flag);
-}
-
-void SetCinnCudnnDeterministic(bool state) {
-#ifdef CINN_WITH_CUDNN
-  FLAGS_cinn_cudnn_deterministic = state;
-#else
-  LOG(WARNING) << "CINN is compiled without cuDNN, this api is invalid!";
-#endif
-}
-
-bool GetCinnCudnnDeterministic() {
-#ifdef CINN_WITH_CUDNN
-  return FLAGS_cinn_cudnn_deterministic;
-#else
-  PADDLE_THROW(::common::errors::Fatal(
-      "CINN is compiled without cuDNN, this api is invalid!"));
-  return false;
-#endif
 }
 
 uint64_t RandomSeed::seed_ = 0ULL;
@@ -395,6 +375,16 @@ void CheckCompileOptionImpl(cinn::common::NVGPUArch) {
   PADDLE_THROW(::common::errors::Fatal(
       "Current CINN version does not support NVGPU, please try to "
       "recompile with -DWITH_CUDA."));
+#endif
+}
+
+void CheckCompileOptionImpl(cinn::common::CustomDeviceArch) {
+#if CINN_WITH_CUSTOM_DEVICE
+  // Do nothing;
+#else
+  PADDLE_THROW(::common::errors::Fatal(
+      "Current CINN version does not support CustomDevice, please try to "
+      "recompile with -DWITH_CUSTOM_DEVICE."));
 #endif
 }
 

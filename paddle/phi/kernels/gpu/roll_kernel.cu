@@ -15,9 +15,6 @@
 #include "paddle/phi/kernels/roll_kernel.h"
 
 #include "paddle/common/array.h"
-#include "paddle/phi/common/bfloat16.h"
-#include "paddle/phi/common/complex.h"
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/gpu/roll_kernel_impl.h"
 
@@ -29,6 +26,10 @@ void RollKernel(const Context& dev_ctx,
                 const IntArray& shifts,
                 const std::vector<int64_t>& axis,
                 DenseTensor* out) {
+  if (x.numel() == 0) {
+    dev_ctx.template Alloc<T>(out);
+    return;
+  }
   auto* in_data = x.data<T>();
   T* out_data = dev_ctx.template Alloc<T>(out);
 
@@ -67,11 +68,12 @@ PD_REGISTER_KERNEL(roll,
                    GPU,
                    ALL_LAYOUT,
                    phi::RollKernel,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
+                   phi::float16,
+                   phi::bfloat16,
+                   bool,
                    float,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::complex64,
+                   phi::complex128) {}

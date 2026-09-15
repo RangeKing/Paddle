@@ -19,7 +19,6 @@ limitations under the License. */
 
 #include "paddle/fluid/framework/data_feed.h"
 
-#include "paddle/fluid/framework/fleet/ps_gpu_wrapper.h"
 #ifdef _LINUX
 #include <stdio_ext.h>
 #include <sys/mman.h>
@@ -200,7 +199,7 @@ void DataFeed::AddFeedVar(Variable* var, const std::string& name) {
       if (var == nullptr) {
         feed_vec_[i] = nullptr;
       } else {
-        feed_vec_[i] = var->GetMutable<phi::DenseTensor>();
+        feed_vec_[i] = var->GetMutable<DenseTensor>();
       }
     }
   }
@@ -269,7 +268,7 @@ void DataFeed::CheckStart() {
 void DataFeed::AssignFeedVar(const Scope& scope) {
   CheckInit();
   for (size_t i = 0; i < use_slots_.size(); ++i) {
-    feed_vec_[i] = scope.FindVar(use_slots_[i])->GetMutable<phi::DenseTensor>();
+    feed_vec_[i] = scope.FindVar(use_slots_[i])->GetMutable<DenseTensor>();
   }
 }
 
@@ -1036,7 +1035,7 @@ void MultiSlotDataFeed::PutToFeedVec(
     const auto& offset = ins_vec[i].GetOffset();
     int total_instance = static_cast<int>(offset.back());
     VLOG(4) << "total_instance: " << total_instance;
-    // phi::CPUPlace()
+    // CPUPlace()
     VLOG(4) << "this->place_: " << this->place_;
     if (type[0] == 'f') {  // float
       const auto& feasign = ins_vec[i].GetFloatData();
@@ -1950,8 +1949,7 @@ void PaddleBoxDataFeed::AssignFeedVar(const Scope& scope) {
   // set rank offset memory
   int phase = GetCurrentPhase();  // join: 1, update: 0
   if (enable_pv_merge_ && phase == 1) {
-    rank_offset_ =
-        scope.FindVar(rank_offset_name_)->GetMutable<phi::DenseTensor>();
+    rank_offset_ = scope.FindVar(rank_offset_name_)->GetMutable<DenseTensor>();
   }
 }
 
@@ -2608,12 +2606,12 @@ void SlotRecordInMemoryDataFeed::AssignFeedVar(const Scope& scope) {
   feed_vec.resize(used_slots_info_.size());
   for (int i = 0; i < use_slot_size_; ++i) {
     feed_vec[i] =
-        scope.FindVar(used_slots_info_[i].slot)->GetMutable<phi::DenseTensor>();
+        scope.FindVar(used_slots_info_[i].slot)->GetMutable<DenseTensor>();
   }
 #else
   for (int i = 0; i < use_slot_size_; ++i) {
     feed_vec_[i] =
-        scope.FindVar(used_slots_info_[i].slot)->GetMutable<phi::DenseTensor>();
+        scope.FindVar(used_slots_info_[i].slot)->GetMutable<DenseTensor>();
   }
 #endif
 }
@@ -2963,8 +2961,8 @@ void SlotRecordInMemoryDataFeed::BuildSlotBatchGPU(const int ins_num,
   // alloc gpu memory
   pack->resize_tensor();
 
-  phi::DenseTensor& float_tensor = pack->float_tensor();
-  phi::DenseTensor& uint64_tensor = pack->uint64_tensor();
+  DenseTensor& float_tensor = pack->float_tensor();
+  DenseTensor& uint64_tensor = pack->uint64_tensor();
 
   int64_t float_offset = 0;
   int64_t uint64_offset = 0;
@@ -3007,8 +3005,7 @@ void SlotRecordInMemoryDataFeed::BuildSlotBatchGPU(const int ins_num,
         h_tensor_ptrs[j] = float_tensor.data<float>() + float_offset;
         float_offset += total_instance;
       } else {
-        phi::DenseTensor& f_tensor =
-            pack->float_tensor_vec()[float_zero_slot_index];
+        DenseTensor& f_tensor = pack->float_tensor_vec()[float_zero_slot_index];
         f_tensor.Resize({total_instance, 1});
         dev_ctx->Alloc<float>(&f_tensor);
         h_tensor_ptrs[j] = f_tensor.data<float>();
@@ -3019,7 +3016,7 @@ void SlotRecordInMemoryDataFeed::BuildSlotBatchGPU(const int ins_num,
         h_tensor_ptrs[j] = uint64_tensor.data<int64_t>() + uint64_offset;
         uint64_offset += total_instance;
       } else {
-        phi::DenseTensor& i_tensor =
+        DenseTensor& i_tensor =
             pack->uint64_tensor_vec()[uint64_zero_slot_index];
         i_tensor.Resize({total_instance, 1});
         dev_ctx->Alloc<int64_t>(&i_tensor);
@@ -3060,8 +3057,8 @@ void SlotRecordInMemoryDataFeed::PackToScope(MiniBatchGpuPack* pack,
 
   int offset_cols_size = (pack->ins_num() + 1);
   HostBuffer<size_t>& offsets = pack->offsets();
-  phi::DenseTensor& float_tensor = pack->float_tensor();
-  phi::DenseTensor& uint64_tensor = pack->uint64_tensor();
+  DenseTensor& float_tensor = pack->float_tensor();
+  DenseTensor& uint64_tensor = pack->uint64_tensor();
 
   auto* feed_vec = &feed_vec_;
   if (scope) {
@@ -3121,7 +3118,7 @@ void SlotRecordInMemoryDataFeed::PackToScope(MiniBatchGpuPack* pack,
       lod.resize(1);
       lod[0].resize(offset_cols_size);
       phi::MixVector<size_t> mixv_lod(&lod[0]);
-      memcpy(mixv_lod.MutableData(phi::CPUPlace()),
+      memcpy(mixv_lod.MutableData(CPUPlace()),
              off_start_ptr,
              offset_cols_size * sizeof(size_t));
     }
@@ -3151,7 +3148,7 @@ MiniBatchGpuPack* SlotRecordInMemoryDataFeed::get_pack(
   }
 }
 
-MiniBatchGpuPack::MiniBatchGpuPack(const phi::Place& place,
+MiniBatchGpuPack::MiniBatchGpuPack(const Place& place,
                                    const std::vector<UsedSlotInfo>& infos,
                                    phi::StreamId stream_id) {
   place_ = place;
@@ -3188,7 +3185,7 @@ MiniBatchGpuPack::MiniBatchGpuPack(const phi::Place& place,
 
 MiniBatchGpuPack::~MiniBatchGpuPack() {}
 
-void MiniBatchGpuPack::reset(const phi::Place& place) {
+void MiniBatchGpuPack::reset(const Place& place) {
   place_ = place;
   stream_holder_.reset(new phi::CUDAStream(place));
   stream_ = stream_holder_->raw_stream();

@@ -25,7 +25,7 @@
 namespace phi {
 
 template <typename T, typename Context, size_t D>
-void SliceCompute(const Context& ctx,
+void SliceCompute(const Context& dev_ctx,
                   const DenseTensor& input,
                   const std::vector<int64_t>& axes,
                   const std::vector<int64_t>& starts_t,
@@ -59,8 +59,8 @@ void SliceCompute(const Context& ctx,
   out_dims = funcs::GetDecreasedDims<int64_t>(slice_dims, decrease_axis);
 
   // 2.2 Get output
-  auto offsets = Eigen::DSizes<Eigen::DenseIndex, D>();
-  auto extents = Eigen::DSizes<Eigen::DenseIndex, D>();
+  auto offsets = Eigen::DSizes<int64_t, D>();
+  auto extents = Eigen::DSizes<int64_t, D>();
 
   for (size_t i = 0; i < D; ++i) {
     offsets[i] = 0;
@@ -71,36 +71,20 @@ void SliceCompute(const Context& ctx,
   }
 
   out->Resize(slice_dims);
-  ctx.template Alloc<T>(out);
+  dev_ctx.template Alloc<T>(out);
 
   auto in_t = EigenTensor<T, D>::From(*in, in_dims);
   auto out_t = EigenTensor<T, D>::From(*out, slice_dims);
-  auto& eigen_place = *ctx.eigen_device();
+  auto& eigen_place = *dev_ctx.eigen_device();
 
-  if (in->numel() <= Eigen::NumTraits<int>::highest()) {
-    // similar to tf.slice:
-    // if element number less than INT_MAX, change the type of index to int
-    Eigen::DSizes<int, D> offsets_32bit, extents_32bit;
-    for (size_t i = 0; i < D; i++) {
-      offsets_32bit[i] = offsets[i];
-      extents_32bit[i] = extents[i];
-    }
-    funcs::EigenSlice<std::decay_t<decltype(eigen_place)>, T, D>::Eval(
-        eigen_place,
-        To32BitIndex(out_t),
-        To32BitIndex(in_t),
-        offsets_32bit,
-        extents_32bit);
-  } else {
-    funcs::EigenSlice<std::decay_t<decltype(eigen_place)>, T, D>::Eval(
-        eigen_place, out_t, in_t, offsets, extents);
-  }
+  funcs::EigenSlice<std::decay_t<decltype(eigen_place)>, T, D>::Eval(
+      eigen_place, out_t, in_t, offsets, extents);
 
   out->Resize(out_dims);
 }
 
 template <typename T, typename Context>
-void SliceKernel(const Context& ctx,
+void SliceKernel(const Context& dev_ctx,
                  const DenseTensor& input,
                  const std::vector<int64_t>& axes,
                  const IntArray& starts_arr,
@@ -116,27 +100,27 @@ void SliceKernel(const Context& ctx,
   switch (rank) {
     case 1:
       SliceCompute<T, Context, 1>(
-          ctx, input, axes, starts, ends, infer_flags, decrease_axis, out);
+          dev_ctx, input, axes, starts, ends, infer_flags, decrease_axis, out);
       break;
     case 2:
       SliceCompute<T, Context, 2>(
-          ctx, input, axes, starts, ends, infer_flags, decrease_axis, out);
+          dev_ctx, input, axes, starts, ends, infer_flags, decrease_axis, out);
       break;
     case 3:
       SliceCompute<T, Context, 3>(
-          ctx, input, axes, starts, ends, infer_flags, decrease_axis, out);
+          dev_ctx, input, axes, starts, ends, infer_flags, decrease_axis, out);
       break;
     case 4:
       SliceCompute<T, Context, 4>(
-          ctx, input, axes, starts, ends, infer_flags, decrease_axis, out);
+          dev_ctx, input, axes, starts, ends, infer_flags, decrease_axis, out);
       break;
     case 5:
       SliceCompute<T, Context, 5>(
-          ctx, input, axes, starts, ends, infer_flags, decrease_axis, out);
+          dev_ctx, input, axes, starts, ends, infer_flags, decrease_axis, out);
       break;
     case 6:
       SliceCompute<T, Context, 6>(
-          ctx, input, axes, starts, ends, infer_flags, decrease_axis, out);
+          dev_ctx, input, axes, starts, ends, infer_flags, decrease_axis, out);
       break;
     default:
       PADDLE_THROW(common::errors::InvalidArgument(
@@ -177,8 +161,7 @@ void SliceArrayKernel(const Context& dev_ctx,
     const auto& in_tensor = input.at(i + start);
     out_tensor->set_lod(in_tensor.lod());
     if (in_tensor.memory_size() > 0) {
-      phi::Copy<Context>(
-          dev_ctx, in_tensor, dev_ctx.GetPlace(), false, out_tensor);
+      Copy<Context>(dev_ctx, in_tensor, dev_ctx.GetPlace(), false, out_tensor);
     } else {
       VLOG(10) << "WARNING: The input tensor 'x_tensor' holds no memory, so "
                   "nothing has been written to output array["
@@ -196,7 +179,7 @@ void SliceArrayDenseKernel(const Context& dev_ctx,
   int64_t start = starts[0] < 0 ? (starts[0] + in_size) : starts[0];
   start = std::max(start, static_cast<int64_t>(0));
 
-  phi::Copy<Context>(dev_ctx, input[start], dev_ctx.GetPlace(), false, out);
+  Copy<Context>(dev_ctx, input[start], dev_ctx.GetPlace(), false, out);
 }
 
 }  // namespace phi

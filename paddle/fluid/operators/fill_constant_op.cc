@@ -58,7 +58,7 @@ class FillConstantOp : public framework::OperatorWithKernel {
  protected:
   phi::KernelKey GetKernelTypeForVar(
       const std::string &var_name,
-      const phi::DenseTensor &tensor,
+      const DenseTensor &tensor,
       const phi::KernelKey &expected_kernel_type) const override {
     if (var_name == "ShapeTensor" || var_name == "ShapeTensorList") {
       return phi::KernelKey(phi::Backend::ALL_BACKEND,
@@ -78,7 +78,7 @@ class FillConstantOp : public framework::OperatorWithKernel {
     // TODO(zyfncg) The force_cpu and place_type are conflicted, it's an issue
     // left before, and we may merge them in the future.
     // In order to invoke new fill_constant kernel, the place of OpKernelType
-    // will be setted by force_cpu and place_type here.
+    // will be set by force_cpu and place_type here.
     if (ctx.Attr<bool>("force_cpu")) {
       kt.set_backend(phi::Backend::CPU);
     }

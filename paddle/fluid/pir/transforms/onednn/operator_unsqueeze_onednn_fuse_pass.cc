@@ -21,7 +21,7 @@
 #include "paddle/pir/include/pass/pass.h"
 #include "paddle/pir/include/pass/pass_registry.h"
 
-namespace {
+namespace pir {
 class OperatorUnsqueezeFusePattern : public paddle::drr::DrrPatternBase {
  private:
   std::string fusable_ops_;
@@ -58,6 +58,7 @@ class OperatorUnsqueezeFusePattern : public paddle::drr::DrrPatternBase {
       op_attrs.emplace("output_data_type", pat.Attr("output_data_type"));
       op_attrs.emplace("data_format", pat.Attr("data_format"));
       op_attrs.emplace("mkldnn_data_type", pat.Attr("mkldnn_data_type"));
+      op_attrs.emplace("onednn_data_type", pat.Attr("onednn_data_type"));
     } else if (fusable_ops_ == paddle::dialect::TransposeOp::name()) {
       op_attrs.emplace("perm", pat.Attr("perm"));
     } else if (fusable_ops_ ==
@@ -126,6 +127,7 @@ class OperatorUnsqueezeFusePattern : public paddle::drr::DrrPatternBase {
       fused_op_attrs.emplace("output_data_type", pat.Attr("output_data_type"));
       fused_op_attrs.emplace("data_format", pat.Attr("data_format"));
       fused_op_attrs.emplace("mkldnn_data_type", pat.Attr("mkldnn_data_type"));
+      fused_op_attrs.emplace("onednn_data_type", pat.Attr("onednn_data_type"));
 
     } else if (fusable_ops_ == paddle::dialect::TransposeOp::name()) {
       fused_op_attrs.emplace("axis", pat.Attr("perm"));
@@ -137,6 +139,7 @@ class OperatorUnsqueezeFusePattern : public paddle::drr::DrrPatternBase {
       fused_op_attrs.emplace("output_data_type", res.StrAttr("fp32"));
       fused_op_attrs.emplace("data_format", res.StrAttr("AnyLayout"));
       fused_op_attrs.emplace("mkldnn_data_type", res.StrAttr("float32"));
+      fused_op_attrs.emplace("onednn_data_type", res.StrAttr(""));
 
     } else if (fusable_ops_ ==
                paddle::onednn::dialect::FusedElementwiseMulOp::name()) {
@@ -174,13 +177,13 @@ class OperatorUnsqueezeFusePattern : public paddle::drr::DrrPatternBase {
   }
 };
 
-class OperatorUnsqueezeFusePass : public pir::PatternRewritePass {
+class OperatorUnsqueezeFusePass : public PatternRewritePass {
  public:
   OperatorUnsqueezeFusePass()
-      : pir::PatternRewritePass("operator_unsqueeze_onednn_fuse_pass", 2) {}
+      : PatternRewritePass("operator_unsqueeze_onednn_fuse_pass", 2) {}
 
-  pir::RewritePatternSet InitializePatterns(pir::IrContext *context) override {
-    pir::RewritePatternSet ps(context);
+  RewritePatternSet InitializePatterns(IrContext *context) override {
+    RewritePatternSet ps(context);
     const std::vector<std::string> fusable_ops{
         paddle::onednn::dialect::FusedTransposeOp::name(),
         paddle::dialect::TransposeOp::name(),
@@ -206,14 +209,10 @@ class OperatorUnsqueezeFusePass : public pir::PatternRewritePass {
   }
 };
 
-}  // namespace
-
-namespace pir {
-
 std::unique_ptr<Pass> CreateOperatorUnsqueezeFusePass() {
   return std::make_unique<OperatorUnsqueezeFusePass>();
 }
 }  // namespace pir
 
 REGISTER_IR_PASS(operator_unsqueeze_onednn_fuse_pass,
-                 OperatorUnsqueezeFusePass);
+                 pir::OperatorUnsqueezeFusePass);

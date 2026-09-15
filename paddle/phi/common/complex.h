@@ -28,7 +28,11 @@
 
 #ifdef PADDLE_WITH_HIP
 #include <hip/hip_complex.h>
+// Include thrust complex only in HIP compilation mode.
+// Avoid pulling rocThrust/rocprim headers in non-hipcc host compilation.
+#if defined(__HIPCC__)
 #include <thrust/complex.h>  // NOLINT
+#endif
 #endif
 
 #ifndef PADDLE_WITH_HIP
@@ -64,9 +68,11 @@ struct PADDLE_ALIGN(sizeof(T) * 2) complex {
   complex& operator=(complex<T>&& o) = default;
   ~complex() = default;
 
-  HOSTDEVICE complex(T real, T imag) : real(real), imag(imag) {}
+  HOSTDEVICE constexpr complex(T real, T imag) : real(real), imag(imag) {}
 
-#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
+// thrust::complex interop: CUDA always, HIP only with hipcc
+#if defined(PADDLE_WITH_CUDA) || \
+    (defined(PADDLE_WITH_HIP) && defined(__HIPCC__))
 
   template <typename T1>
   HOSTDEVICE inline explicit complex(const thrust::complex<T1>& c) {
@@ -86,6 +92,9 @@ struct PADDLE_ALIGN(sizeof(T) * 2) complex {
   HOSTDEVICE inline explicit operator thrust::complex<T1>() const {
     return thrust::complex<T1>(real, imag);
   }
+#endif
+
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
 
 #ifdef PADDLE_WITH_HIP
   HOSTDEVICE inline explicit operator hipFloatComplex() const {
@@ -221,8 +230,17 @@ template <typename T>
 HOSTDEVICE inline complex<T> operator*(const complex<T>& a,
                                        const complex<T>& b) {
 #if defined(PADDLE_WITH_CUDA_OR_HIP_COMPLEX) && \
-    (defined(__CUDA_ARCH__) || defined(__HIPCC__))
-  return complex<T>(thrust::complex<T>(a) * thrust::complex<T>(b));
+    (defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__))
+  if constexpr (std::is_same<T, double>::value) {
+    // Match PyTorch's GPU rounding (verified bit-exact):
+    //   real: fuse a.real*b.real, round a.imag*b.imag
+    //   imag: fuse a.imag*b.real, round a.real*b.imag
+    return complex<T>(__fma_rn(a.real, b.real, -__dmul_rn(a.imag, b.imag)),
+                      __fma_rn(a.imag, b.real, __dmul_rn(a.real, b.imag)));
+  } else {
+    return complex<T>(__fmaf_rn(a.real, b.real, -__fmul_rn(a.imag, b.imag)),
+                      __fmaf_rn(a.imag, b.real, __fmul_rn(a.real, b.imag)));
+  }
 #else
   return complex<T>(a.real * b.real - a.imag * b.imag,
                     a.imag * b.real + b.imag * a.real);
@@ -230,16 +248,62 @@ HOSTDEVICE inline complex<T> operator*(const complex<T>& a,
 }
 
 template <typename T>
-HOSTDEVICE inline complex<T> operator/(const complex<T>& a,
-                                       const complex<T>& b) {
-#if defined(PADDLE_WITH_CUDA_OR_HIP_COMPLEX) && \
-    (defined(__CUDA_ARCH__) || defined(__HIPCC__))
-  return complex<T>(thrust::complex<T>(a) / thrust::complex<T>(b));
+HOSTDEVICE inline complex<T> operator/(const complex<T>& x,
+                                       const complex<T>& y) {
+  T a = x.real;
+  T b = x.imag;
+  T c = y.real;
+  T d = y.imag;
+
+  // (a + bi) / (c + di) = (ac + bd)/(c^2 + d^2) + (bc - ad)/(c^2 + d^2) i
+  // the calculation below follows numpy's complex division
+#if defined(__GNUC__) && !defined(__clang__)
+  // std::abs is already constexpr by gcc
+  auto abs_c = std::abs(c);
+  auto abs_d = std::abs(d);
 #else
-  T denominator = b.real * b.real + b.imag * b.imag;
-  return complex<T>((a.real * b.real + a.imag * b.imag) / denominator,
-                    (a.imag * b.real - a.real * b.imag) / denominator);
+  auto abs_c = c < 0 ? -c : c;
+  auto abs_d = d < 0 ? -d : d;
 #endif
+  T real_, imag_;
+
+  auto rat = (abs_c >= abs_d) ? (d / c) : (c / d);
+  auto scl =
+      (abs_c >= abs_d) ? (T(1.0) / (c + d * rat)) : (T(1.0) / (d + c * rat));
+  if (abs_c >= abs_d) {
+#if __cplusplus >= 201703L
+    if constexpr (std::is_same_v<T, float>) {
+      real_ = std::fmaf(b, rat, a) * scl;
+      imag_ = std::fmaf(-a, rat, b) * scl;
+    } else if constexpr (std::is_same_v<T, double>) {
+      real_ = std::fma(b, rat, a) * scl;
+      imag_ = std::fma(-a, rat, b) * scl;
+    } else {
+      real_ = (a + b * rat) * scl;
+      imag_ = (b - a * rat) * scl;
+    }
+#else
+    real_ = (a + b * rat) * scl;
+    imag_ = (b - a * rat) * scl;
+#endif
+  } else {
+#if __cplusplus >= 201703L
+    if constexpr (std::is_same_v<T, float>) {
+      real_ = std::fmaf(a, rat, b) * scl;
+      imag_ = std::fmaf(b, rat, -a) * scl;
+    } else if constexpr (std::is_same_v<T, double>) {
+      real_ = std::fma(a, rat, b) * scl;
+      imag_ = std::fma(b, rat, -a) * scl;
+    } else {
+      real_ = (a * rat + b) * scl;
+      imag_ = (b * rat - a) * scl;
+    }
+#else
+    real_ = (a * rat + b) * scl;
+    imag_ = (b * rat - a) * scl;
+#endif
+  }
+  return complex<T>(real_, imag_);
 }
 
 template <typename T>
@@ -288,34 +352,68 @@ HOSTDEVICE inline complex<T>& operator-=(complex<T>& a,  // NOLINT
 template <typename T>
 HOSTDEVICE inline complex<T>& operator*=(complex<T>& a,  // NOLINT
                                          const complex<T>& b) {
-#if defined(PADDLE_WITH_CUDA_OR_HIP_COMPLEX) && \
-    (defined(__CUDA_ARCH__) || defined(__HIPCC__))
-  a = complex<T>(thrust::complex<T>(a.real, a.imag) *=
-                 thrust::complex<T>(b.real, b.imag));
+  a = a * b;
   return a;
-#else
-  T r = a.real * b.real - a.imag * b.imag;
-  T i = a.imag * b.real + b.imag * a.real;
-  a.real = r;
-  a.imag = i;
-  return a;
-#endif
 }
 
 template <typename T>
-HOSTDEVICE inline complex<T>& operator/=(complex<T>& a,  // NOLINT
-                                         const complex<T>& b) {
-#if defined(PADDLE_WITH_CUDA_OR_HIP_COMPLEX) && \
-    (defined(__CUDA_ARCH__) || defined(__HIPCC__))
-  a = complex<T>(thrust::complex<T>(a.real, a.imag) /=
-                 thrust::complex<T>(b.real, b.imag));
-  return a;
+HOSTDEVICE inline complex<T>& operator/=(complex<T>& x,  // NOLINT
+                                         const complex<T>& y) {
+  T a = x.real;
+  T b = x.imag;
+  T c = y.real;
+  T d = y.imag;
+
+  // (a + bi) / (c + di) = (ac + bd)/(c^2 + d^2) + (bc - ad)/(c^2 + d^2) i
+  // the calculation below follows numpy's complex division
+#if defined(__GNUC__) && !defined(__clang__)
+  // std::abs is already constexpr by gcc
+  auto abs_c = std::abs(c);
+  auto abs_d = std::abs(d);
 #else
-  T denominator = b.real * b.real + b.imag * b.imag;
-  a.real = (a.real * b.real + a.imag * b.imag) / denominator;
-  a.imag = (a.imag * b.real - a.real * b.imag) / denominator;
-  return a;
+  auto abs_c = c < 0 ? -c : c;
+  auto abs_d = d < 0 ? -d : d;
 #endif
+  T real_, imag_;
+
+  auto rat = (abs_c >= abs_d) ? (d / c) : (c / d);
+  auto scl =
+      (abs_c >= abs_d) ? (T(1.0) / (c + d * rat)) : (T(1.0) / (d + c * rat));
+  if (abs_c >= abs_d) {
+#if __cplusplus >= 201703L
+    if constexpr (std::is_same_v<T, float>) {
+      real_ = std::fmaf(b, rat, a) * scl;
+      imag_ = std::fmaf(-a, rat, b) * scl;
+    } else if constexpr (std::is_same_v<T, double>) {
+      real_ = std::fma(b, rat, a) * scl;
+      imag_ = std::fma(-a, rat, b) * scl;
+    } else {
+      real_ = (a + b * rat) * scl;
+      imag_ = (b - a * rat) * scl;
+    }
+#else
+    real_ = (a + b * rat) * scl;
+    imag_ = (b - a * rat) * scl;
+#endif
+  } else {
+#if __cplusplus >= 201703L
+    if constexpr (std::is_same_v<T, float>) {
+      real_ = std::fmaf(a, rat, b) * scl;
+      imag_ = std::fmaf(b, rat, -a) * scl;
+    } else if constexpr (std::is_same_v<T, double>) {
+      real_ = std::fma(a, rat, b) * scl;
+      imag_ = std::fma(b, rat, -a) * scl;
+    } else {
+      real_ = (a * rat + b) * scl;
+      imag_ = (b * rat - a) * scl;
+    }
+#else
+    real_ = (a * rat + b) * scl;
+    imag_ = (b * rat - a) * scl;
+#endif
+  }
+  x = complex<T>(real_, imag_);
+  return x;
 }
 
 template <typename T>

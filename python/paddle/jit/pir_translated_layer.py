@@ -39,7 +39,7 @@ from .translated_layer import (
 def _load_pir_program(model_file_path):
     program = paddle.static.Program()
     trainable = paddle.base.core.deserialize_pir_program(
-        model_file_path, program, 1
+        model_file_path, program
     )
 
     return program, trainable
@@ -279,7 +279,7 @@ def _construct_program_holders(model_path, model_filename=None):
                     else:
                         method_name.replace('model', '')
                     program, trainable = _load_pir_program(model_file_path)
-                    program_holder_dict[func_name] = _PirProgramHolder(
+                    program_holder_dict[method_name] = _PirProgramHolder(
                         program, trainable
                     )
 
@@ -321,7 +321,7 @@ def _construct_params_and_buffers(model_path, programs, params_filename=None):
         return var_dict
 
 
-def _run_dygraph(instance, input, program_holder):
+def _run_dygraph(instance, input, program_holder, method_name):
     # 1. prepare inputs, outputs, attrs
     input_tensors = []
     input_tensor_names = []
@@ -348,35 +348,37 @@ def _run_dygraph(instance, input, program_holder):
         input_tensor_names.append(tensor.name)
         input_tensors.append(tensor)
 
-    persistable_tensors = []
-    origin_persistable_var_name = [
-        program_holder._suffix_varname_dict[var_name]
-        for var_name in program_holder.persistable_names
-    ]
-    for var_name in origin_persistable_var_name:
-        dy_var_name = instance._persistable_var_name_dict[var_name]
-        if dy_var_name in instance._parameters:
-            persistable_tensors.append(instance._parameters[dy_var_name])
-        elif dy_var_name in instance._buffers:
-            persistable_tensors.append(instance._buffers[dy_var_name])
-        else:
-            raise ValueError(
-                f"The persistable variable {var_name} does not exist in current PirTranslatedLayer."
-            )
+    if instance._get_partial_program_layer(method_name) is None:
+        persistable_tensors = []
+        origin_persistable_var_name = [
+            program_holder._suffix_varname_dict[var_name]
+            for var_name in program_holder.persistable_names
+        ]
+        for var_name in origin_persistable_var_name:
+            dy_var_name = instance._persistable_var_name_dict[var_name]
+            if dy_var_name in instance._parameters:
+                persistable_tensors.append(instance._parameters[dy_var_name])
+            elif dy_var_name in instance._buffers:
+                persistable_tensors.append(instance._buffers[dy_var_name])
+            else:
+                raise ValueError(
+                    f"The persistable variable {var_name} does not exist in current PirTranslatedLayer."
+                )
 
-    from paddle.jit.dy2static.pir_partial_program import PartialProgramLayer
+        from paddle.jit.dy2static.pir_partial_program import PartialProgramLayer
 
-    inputs = program_holder.input_vars
-    outputs = program_holder.output_vars
-    parameters = (persistable_tensors, program_holder.persistable_vars)
+        inputs = program_holder.input_vars
+        outputs = program_holder.output_vars
+        parameters = (persistable_tensors, program_holder.persistable_vars)
 
-    layer = PartialProgramLayer(
-        program_holder.infer_program,
-        inputs,
-        outputs,
-        parameters,
-    )
-    instance.layer = layer
+        layer = PartialProgramLayer(
+            program_holder.infer_program,
+            inputs,
+            outputs,
+            parameters,
+        )
+        instance._set_partial_program_layer(method_name, layer)
+    layer = instance._get_partial_program_layer(method_name)
     if instance._is_test:
         layer.training = False
     else:
@@ -387,7 +389,7 @@ def _run_dygraph(instance, input, program_holder):
         else:
             layer.training = True
 
-    return instance.layer(input_tensors)
+    return layer(input_tensors)
 
 
 def _run_static_graph(inputs, program_holder, src_program):
@@ -460,7 +462,7 @@ class PirTranslatedLayer(layers.Layer):
         The PirTranslatedLayer objects should not be created by constructor, it only can be loaded and constructed by :ref:`api_paddle_jit_load` .
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +SKIP('`paddle.jit.to_static` can not run in xdoctest')
             >>> import numpy as np
@@ -476,18 +478,17 @@ class PirTranslatedLayer(layers.Layer):
             >>> CLASS_NUM = 10
 
             >>> # define a random dataset
-            >>> class RandomDataset(paddle.io.Dataset): # type: ignore[type-arg]
+            >>> class RandomDataset(paddle.io.Dataset):  # type: ignore[type-arg]
             ...     def __init__(self, num_samples):
             ...         self.num_samples = num_samples
             ...
             ...     def __getitem__(self, idx):
             ...         image = np.random.random([IMAGE_SIZE]).astype('float32')
-            ...         label = np.random.randint(0, CLASS_NUM - 1, (1, )).astype('int64')
+            ...         label = np.random.randint(0, CLASS_NUM - 1, (1,)).astype('int64')
             ...         return image, label
             ...
             ...     def __len__(self):
             ...         return self.num_samples
-            ...
             >>> class LinearNet(nn.Layer):
             ...     def __init__(self):
             ...         super().__init__()
@@ -496,7 +497,6 @@ class PirTranslatedLayer(layers.Layer):
             ...     @paddle.jit.to_static
             ...     def forward(self, x):
             ...         return self._linear(x)
-            ...
             >>> def train(layer, loader, loss_fn, opt):
             ...     for epoch_id in range(EPOCH_NUM):
             ...         for batch_id, (image, label) in enumerate(loader()):
@@ -505,9 +505,7 @@ class PirTranslatedLayer(layers.Layer):
             ...             loss.backward()
             ...             opt.step()
             ...             opt.clear_grad()
-            ...             print("Epoch {} batch {}: loss = {}".format(
-            ...                 epoch_id, batch_id, np.mean(loss.numpy())))
-            ...
+            ...             print("Epoch {} batch {}: loss = {}".format(epoch_id, batch_id, np.mean(loss.numpy())))
             >>> # 1. train & save model.
             >>> # create network
             >>> layer = LinearNet()
@@ -516,11 +514,12 @@ class PirTranslatedLayer(layers.Layer):
 
             >>> # create data loader
             >>> dataset = RandomDataset(BATCH_NUM * BATCH_SIZE)
-            >>> loader = paddle.io.DataLoader(dataset,
+            >>> loader = paddle.io.DataLoader(
+            ...     dataset,
             ...     batch_size=BATCH_SIZE,
             ...     shuffle=True,
             ...     drop_last=True,
-            ...     num_workers=2
+            ...     num_workers=2,
             ... )
             >>> # train
             >>> train(layer, loader, loss_fn, adam)
@@ -589,6 +588,7 @@ class PirTranslatedLayer(layers.Layer):
 
         self._is_test = True
         self._input_args_names = None
+        self._partial_program_layers = {}
 
     @staticmethod
     @framework.dygraph_only
@@ -640,7 +640,7 @@ class PirTranslatedLayer(layers.Layer):
             # When using jit.save, it runs in static graph mode.
             # Run in dynamic graph mode when the model is inferring.
             if in_dynamic_mode():
-                return _run_dygraph(self, input, program_holder)
+                return _run_dygraph(self, input, program_holder, method_name)
             else:
                 return _run_static_graph(
                     input, program_holder, program_holder.infer_program
@@ -669,7 +669,7 @@ class PirTranslatedLayer(layers.Layer):
             Program
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> # doctest: +SKIP('`paddle.jit.to_static` can not run in xdoctest')
                 >>> import numpy as np
@@ -685,18 +685,17 @@ class PirTranslatedLayer(layers.Layer):
                 >>> CLASS_NUM = 10
 
                 >>> # define a random dataset
-                >>> class RandomDataset(paddle.io.Dataset): # type: ignore[type-arg]
+                >>> class RandomDataset(paddle.io.Dataset):  # type: ignore[type-arg]
                 ...     def __init__(self, num_samples):
                 ...         self.num_samples = num_samples
                 ...
                 ...     def __getitem__(self, idx):
                 ...         image = np.random.random([IMAGE_SIZE]).astype('float32')
-                ...         label = np.random.randint(0, CLASS_NUM - 1, (1, )).astype('int64')
+                ...         label = np.random.randint(0, CLASS_NUM - 1, (1,)).astype('int64')
                 ...         return image, label
                 ...
                 ...     def __len__(self):
                 ...         return self.num_samples
-                ...
                 >>> class LinearNet(nn.Layer):
                 ...     def __init__(self):
                 ...         super().__init__()
@@ -705,7 +704,6 @@ class PirTranslatedLayer(layers.Layer):
                 ...     @paddle.jit.to_static
                 ...     def forward(self, x):
                 ...         return self._linear(x)
-                ...
                 >>> def train(layer, loader, loss_fn, opt):
                 ...     for epoch_id in range(EPOCH_NUM):
                 ...         for batch_id, (image, label) in enumerate(loader()):
@@ -714,20 +712,19 @@ class PirTranslatedLayer(layers.Layer):
                 ...             loss.backward()
                 ...             opt.step()
                 ...             opt.clear_grad()
-                ...             print("Epoch {} batch {}: loss = {}".format(
-                ...                 epoch_id, batch_id, np.mean(loss.numpy())))
-                ...
+                ...             print("Epoch {} batch {}: loss = {}".format(epoch_id, batch_id, np.mean(loss.numpy())))
                 >>> # create network
                 >>> layer = LinearNet()
                 >>> loss_fn = nn.CrossEntropyLoss()
                 >>> adam = opt.Adam(learning_rate=0.001, parameters=layer.parameters())
                 >>> # create data loader
                 >>> dataset = RandomDataset(BATCH_NUM * BATCH_SIZE)
-                >>> loader = paddle.io.DataLoader(dataset,
+                >>> loader = paddle.io.DataLoader(
+                ...     dataset,
                 ...     batch_size=BATCH_SIZE,
                 ...     shuffle=True,
                 ...     drop_last=True,
-                ...     num_workers=2
+                ...     num_workers=2,
                 ... )
                 >>> # train
                 >>> train(layer, loader, loss_fn, adam)
@@ -792,3 +789,9 @@ class PirTranslatedLayer(layers.Layer):
             output_spec.append(spec)
 
         return output_spec
+
+    def _get_partial_program_layer(self, method_name):
+        return self._partial_program_layers.get(method_name, None)
+
+    def _set_partial_program_layer(self, method_name, layer):
+        self._partial_program_layers[method_name] = layer

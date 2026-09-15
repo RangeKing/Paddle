@@ -58,7 +58,7 @@ class PTQ(Quantization):
         Return: The prepared model for post-training quantization.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> from paddle.quantization import PTQ, QuantConfig
                 >>> from paddle.quantization.observers import AbsmaxObserver
@@ -83,7 +83,7 @@ class PTQ(Quantization):
                     )
                     (2): ObserveWrapper(
                       (_observer): AbsmaxObserverLayer()
-                      (_observed): MaxPool2D(kernel_size=2, stride=2, padding=0)
+                      (_observed): MaxPool2D(kernel_size=2, stride=2, padding=0, dilation=1)
                     )
                     (3): QuantedConv2D(
                       (weight_quanter): AbsmaxObserverLayer()
@@ -95,7 +95,7 @@ class PTQ(Quantization):
                     )
                     (5): ObserveWrapper(
                       (_observer): AbsmaxObserverLayer()
-                      (_observed): MaxPool2D(kernel_size=2, stride=2, padding=0)
+                      (_observed): MaxPool2D(kernel_size=2, stride=2, padding=0, dilation=1)
                     )
                   )
                   (fc): Sequential(
@@ -116,14 +116,14 @@ class PTQ(Quantization):
         """
         _model = model
         if not inplace:
-            assert (
-                not self._is_parallel_training()
-            ), "'inplace' is not compatible with parallel training."
+            assert not self._is_parallel_training(), (
+                "'inplace' is not compatible with parallel training."
+            )
             _model = copy.deepcopy(model)
             _model.eval()
-        assert (
-            not model.training
-        ), "Post-Training Quantization should not work on training models. Please set evaluation mode by model.eval()."
+        assert not model.training, (
+            "Post-Training Quantization should not work on training models. Please set evaluation mode by model.eval()."
+        )
         self._config._specify(_model)
         self._convert_to_quant_layers(_model, self._config)
         self._insert_activation_observers(_model, self._config)

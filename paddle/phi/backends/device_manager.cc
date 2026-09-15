@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "paddle/phi/backends/device_manager.h"
+#include "paddle/phi/backends/custom/cuda_graph.h"
 #include "paddle/phi/common/complex.h"
 #include "paddle/phi/core/distributed/xccl_comm_context.h"
 
@@ -50,17 +51,17 @@ void Device::CreateStream(stream::Stream* stream,
   impl_->CreateStream(dev_id_, stream, priority, flag);
 }
 
-void Device::DestroyStream(stream::Stream* stream) {
+void Device::DestroyStream(stream::stream_t stream) {
   CheckInitialized();
   impl_->DestroyStream(dev_id_, stream);
 }
 
-void Device::SynchronizeStream(const stream::Stream* stream) {
+void Device::SynchronizeStream(stream::stream_t stream) {
   CheckInitialized();
   impl_->SynchronizeStream(dev_id_, stream);
 }
 
-bool Device::QueryStream(const stream::Stream* stream) {
+bool Device::QueryStream(stream::stream_t stream) {
   CheckInitialized();
   return impl_->QueryStream(dev_id_, stream);
 }
@@ -172,7 +173,7 @@ void Device::MemorySet(void* ptr, uint8_t value, size_t size) {
 }
 
 template <typename T>
-void Device::BlasAXPBY(const stream::Stream& stream,
+void Device::BlasAXPBY(const stream::stream_t& stream,
                        size_t numel,
                        float alpha,
                        const T* x,
@@ -189,57 +190,57 @@ void Device::BlasAXPBY(const stream::Stream& stream,
                    reinterpret_cast<void*>(y));
 }
 
-template void Device::BlasAXPBY<paddle::float16>(const stream::Stream& stream,
+template void Device::BlasAXPBY<paddle::float16>(const stream::stream_t& stream,
                                                  size_t numel,
                                                  float alpha,
                                                  const paddle::float16* x,
                                                  float beta,
                                                  paddle::float16* y);
-template void Device::BlasAXPBY<float>(const stream::Stream& stream,
+template void Device::BlasAXPBY<float>(const stream::stream_t& stream,
                                        size_t numel,
                                        float alpha,
                                        const float* x,
                                        float beta,
                                        float* y);
-template void Device::BlasAXPBY<double>(const stream::Stream& stream,
+template void Device::BlasAXPBY<double>(const stream::stream_t& stream,
                                         size_t numel,
                                         float alpha,
                                         const double* x,
                                         float beta,
                                         double* y);
-template void Device::BlasAXPBY<int8_t>(const stream::Stream& stream,
+template void Device::BlasAXPBY<int8_t>(const stream::stream_t& stream,
                                         size_t numel,
                                         float alpha,
                                         const int8_t* x,
                                         float beta,
                                         int8_t* y);
-template void Device::BlasAXPBY<int16_t>(const stream::Stream& stream,
+template void Device::BlasAXPBY<int16_t>(const stream::stream_t& stream,
                                          size_t numel,
                                          float alpha,
                                          const int16_t* x,
                                          float beta,
                                          int16_t* y);
-template void Device::BlasAXPBY<int32_t>(const stream::Stream& stream,
+template void Device::BlasAXPBY<int32_t>(const stream::stream_t& stream,
                                          size_t numel,
                                          float alpha,
                                          const int32_t* x,
                                          float beta,
                                          int32_t* y);
-template void Device::BlasAXPBY<int64_t>(const stream::Stream& stream,
+template void Device::BlasAXPBY<int64_t>(const stream::stream_t& stream,
                                          size_t numel,
                                          float alpha,
                                          const int64_t* x,
                                          float beta,
                                          int64_t* y);
 template void Device::BlasAXPBY<phi::dtype::complex<float>>(
-    const stream::Stream& stream,
+    const stream::stream_t& stream,
     size_t numel,
     float alpha,
     const phi::dtype::complex<float>* x,
     float beta,
     phi::dtype::complex<float>* y);
 template void Device::BlasAXPBY<phi::dtype::complex<double>>(
-    const stream::Stream& stream,
+    const stream::stream_t& stream,
     size_t numel,
     float alpha,
     const phi::dtype::complex<double>* x,
@@ -299,7 +300,6 @@ DeviceInterface* DeviceManager::GetDeviceInterfaceWithType(
 
 Device* DeviceManager::GetDeviceWithPlace(const Place& place) {
   phi::AutoRDLock lock(&_global_device_manager_rw_lock);
-
   auto& dev_map = Instance().device_map_;
   auto dev_type = place.GetDeviceType();
   auto dev_id = place.GetDeviceId();
@@ -467,6 +467,141 @@ size_t DeviceManager::GetExtraPaddingSize(const Place& place) {
   return dev_impl->GetExtraPaddingSize(device_id);
 }
 
+size_t DeviceManager::GetComputeCapability(const Place& place) {
+  auto device_type = place.GetDeviceType();
+  auto device_id = place.GetDeviceId();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  return dev_impl->GetComputeCapability(device_id);
+}
+
+phi::DeviceProp& DeviceManager::GetDeviceProperties(
+    const std::string& device_type, size_t device_id) {
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  return dev_impl->GetDeviceProperties(device_id);
+}
+
+size_t DeviceManager::GetRuntimeVersion(const Place& place) {
+  auto device_type = place.GetDeviceType();
+  auto device_id = place.GetDeviceId();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  return dev_impl->GetRuntimeVersion(device_id);
+}
+
+size_t DeviceManager::GetDriverVersion(const Place& place) {
+  auto device_type = place.GetDeviceType();
+  auto device_id = place.GetDeviceId();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  return dev_impl->GetDriverVersion(device_id);
+}
+
+size_t DeviceManager::GetMultiProcessors(const Place& place) {
+  auto device_type = place.GetDeviceType();
+  auto device_id = place.GetDeviceId();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  return dev_impl->GetMultiProcessors(device_id);
+}
+
+size_t DeviceManager::GetMaxThreadsPerMultiProcessor(const Place& place) {
+  auto device_type = place.GetDeviceType();
+  auto device_id = place.GetDeviceId();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  return dev_impl->GetMaxThreadsPerMultiProcessor(device_id);
+}
+
+size_t DeviceManager::GetMaxThreadsPerBlock(const Place& place) {
+  auto device_type = place.GetDeviceType();
+  auto device_id = place.GetDeviceId();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  return dev_impl->GetMaxThreadsPerBlock(device_id);
+}
+
+size_t DeviceManager::GetMaxSharedMemPerBlock(const Place& place) {
+  auto device_type = place.GetDeviceType();
+  auto device_id = place.GetDeviceId();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  return dev_impl->GetMaxSharedMemPerBlock(device_id);
+}
+
+size_t DeviceManager::GetMaxBlocksPerMultiProcessor(const Place& place) {
+  auto device_type = place.GetDeviceType();
+  auto device_id = place.GetDeviceId();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  return dev_impl->GetMaxBlocksPerMultiProcessor(device_id);
+}
+
+size_t DeviceManager::GetWarpSize(const Place& place) {
+  auto device_type = place.GetDeviceType();
+  auto device_id = place.GetDeviceId();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  return dev_impl->GetWarpSize(device_id);
+}
+
+size_t DeviceManager::GetMaxRegistersPerMultiProcessor(const Place& place) {
+  auto device_type = place.GetDeviceType();
+  auto device_id = place.GetDeviceId();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  return dev_impl->GetMaxRegistersPerMultiProcessor(device_id);
+}
+
+size_t DeviceManager::GetPreferredVectorWidth(const Place& place) {
+  auto device_type = place.GetDeviceType();
+  auto device_id = place.GetDeviceId();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  return dev_impl->GetPreferredVectorWidth(device_id);
+}
+
+std::array<unsigned int, 3> DeviceManager::GetMaxGridDimSize(
+    const Place& place) {
+  auto device_type = place.GetDeviceType();
+  auto device_id = place.GetDeviceId();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  return dev_impl->GetMaxGridDimSize(device_id);
+}
+
+std::array<unsigned int, 3> DeviceManager::GetMaxBlockDimSize(
+    const Place& place) {
+  auto device_type = place.GetDeviceType();
+  auto device_id = place.GetDeviceId();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  return dev_impl->GetMaxBlockDimSize(device_id);
+}
+
+bool DeviceManager::IsFloat16Supported(const Place& place) {
+  auto device_type = place.GetDeviceType();
+  auto device_id = place.GetDeviceId();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  return dev_impl->IsFloat16Supported(device_id);
+}
+
+bool DeviceManager::IsBFloat16Supported(const Place& place) {
+  auto device_type = place.GetDeviceType();
+  auto device_id = place.GetDeviceId();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  return dev_impl->IsBFloat16Supported(device_id);
+}
+
+bool DeviceManager::IsDnnAvailable(const Place& place) {
+  auto device_type = place.GetDeviceType();
+  auto device_id = place.GetDeviceId();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  return dev_impl->IsDnnAvailable(device_id);
+}
+
+void* DeviceManager::InitEigenDevice(const Place& place,
+                                     stream::stream_t stream,
+                                     phi::Allocator* allocator) {
+  auto device_type = place.GetDeviceType();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  return dev_impl->InitEigenDevice(place, stream, allocator);
+}
+
+void DeviceManager::DestroyEigenDevice(const Place& place, void* eigen_device) {
+  auto device_type = place.GetDeviceType();
+  auto device_id = place.GetDeviceId();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  return dev_impl->DestroyEigenDevice(device_id, eigen_device);
+}
+
 void DeviceManager::MemoryStats(const Place& place,
                                 size_t* total,
                                 size_t* free) {
@@ -540,10 +675,10 @@ void DeviceManager::CCLGetUniqueId(const std::string& device_type,
 void DeviceManager::CCLBroadcast(const std::string& device_type,
                                  void* data,
                                  size_t num,
-                                 phi::DataType data_type,
+                                 DataType data_type,
                                  size_t root_id,
                                  const ccl::CCLComm& ccl_comm,
-                                 const stream::Stream& stream) {
+                                 const stream::stream_t& stream) {
   auto dev_impl = GetDeviceInterfaceWithType(device_type);
   dev_impl->CCLBroadcast(data, num, data_type, root_id, ccl_comm, stream);
 }
@@ -552,10 +687,10 @@ void DeviceManager::CCLAllReduce(const std::string& device_type,
                                  void* in_data,
                                  void* out_data,
                                  size_t num,
-                                 phi::DataType data_type,
+                                 DataType data_type,
                                  ccl::CCLReduceOp reduce_op,
                                  const ccl::CCLComm& ccl_comm,
-                                 const stream::Stream& stream) {
+                                 const stream::stream_t& stream) {
   auto dev_impl = GetDeviceInterfaceWithType(device_type);
   dev_impl->CCLAllReduce(
       in_data, out_data, num, data_type, reduce_op, ccl_comm, stream);
@@ -565,11 +700,11 @@ void DeviceManager::CCLReduce(const std::string& device_type,
                               void* in_data,
                               void* out_data,
                               size_t num,
-                              phi::DataType data_type,
+                              DataType data_type,
                               ccl::CCLReduceOp reduce_op,
                               size_t root_id,
                               const ccl::CCLComm& ccl_comm,
-                              const stream::Stream& stream) {
+                              const stream::stream_t& stream) {
   auto dev_impl = GetDeviceInterfaceWithType(device_type);
   dev_impl->CCLReduce(
       in_data, out_data, num, data_type, reduce_op, root_id, ccl_comm, stream);
@@ -579,9 +714,9 @@ void DeviceManager::CCLAllGather(const std::string& device_type,
                                  void* in_data,
                                  void* out_data,
                                  size_t num,
-                                 phi::DataType data_type,
+                                 DataType data_type,
                                  const ccl::CCLComm& ccl_comm,
-                                 const stream::Stream& stream) {
+                                 const stream::stream_t& stream) {
   auto dev_impl = GetDeviceInterfaceWithType(device_type);
   dev_impl->CCLAllGather(in_data, out_data, num, data_type, ccl_comm, stream);
 }
@@ -590,10 +725,10 @@ void DeviceManager::CCLReduceScatter(const std::string& device_type,
                                      void* in_data,
                                      void* out_data,
                                      size_t num,
-                                     phi::DataType data_type,
+                                     DataType data_type,
                                      ccl::CCLReduceOp op,
                                      const ccl::CCLComm& ccl_comm,
-                                     const stream::Stream& stream) {
+                                     const stream::stream_t& stream) {
   auto dev_impl = GetDeviceInterfaceWithType(device_type);
   dev_impl->CCLReduceScatter(
       in_data, out_data, num, data_type, op, ccl_comm, stream);
@@ -612,10 +747,10 @@ void DeviceManager::CCLGroupEnd(const std::string& device_type) {
 void DeviceManager::CCLSend(const std::string& device_type,
                             void* sendbuf,
                             size_t num,
-                            phi::DataType data_type,
+                            DataType data_type,
                             size_t dst_rank,
                             const ccl::CCLComm& ccl_comm,
-                            const stream::Stream& stream) {
+                            const stream::stream_t& stream) {
   auto dev_impl = GetDeviceInterfaceWithType(device_type);
   dev_impl->CCLSend(sendbuf, num, data_type, dst_rank, ccl_comm, stream);
 }
@@ -623,10 +758,10 @@ void DeviceManager::CCLSend(const std::string& device_type,
 void DeviceManager::CCLRecv(const std::string& device_type,
                             void* recvbuf,
                             size_t num,
-                            phi::DataType data_type,
+                            DataType data_type,
                             size_t src_rank,
                             const ccl::CCLComm& ccl_comm,
-                            const stream::Stream& stream) {
+                            const stream::stream_t& stream) {
   auto dev_impl = GetDeviceInterfaceWithType(device_type);
   dev_impl->CCLRecv(recvbuf, num, data_type, src_rank, ccl_comm, stream);
 }
@@ -634,14 +769,14 @@ void DeviceManager::CCLRecv(const std::string& device_type,
 void DeviceManager::CCLAllToAll(const std::string& device_type,
                                 const void** send_buf,
                                 const size_t* send_count,
-                                const phi::DataType* send_dtype,
+                                const DataType* send_dtype,
                                 void** recv_buf,
                                 const size_t* recv_count,
-                                const phi::DataType* recv_dtype,
+                                const DataType* recv_dtype,
                                 size_t rank,
                                 size_t nranks,
                                 const ccl::CCLComm& comm,
-                                const stream::Stream& stream) {
+                                const stream::stream_t& stream) {
   auto dev_impl = GetDeviceInterfaceWithType(device_type);
   dev_impl->CCLAllToAll(send_buf,
                         send_count,
@@ -653,6 +788,116 @@ void DeviceManager::CCLAllToAll(const std::string& device_type,
                         nranks,
                         comm,
                         stream);
+}
+
+// CudaGraph
+void DeviceManager::CUDAStreamBeginCapture(const Place& place,
+                                           stream::stream_t stream,
+                                           graph::streamCaptureMode mode) {
+  auto device_type = place.GetDeviceType();
+  auto device_id = place.GetDeviceId();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  dev_impl->CUDAStreamBeginCapture(device_id, stream, mode);
+}
+
+void DeviceManager::CudaStreamEndCapture(const Place& place,
+                                         stream::stream_t stream,
+                                         graph::CUDAGraph_t* pGraph) {
+  auto device_type = place.GetDeviceType();
+  auto device_id = place.GetDeviceId();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  dev_impl->CudaStreamEndCapture(device_id, stream, pGraph);
+}
+
+void DeviceManager::CudaGraphLaunch(const Place& place,
+                                    graph::CUDAGraphExec_t exec,
+                                    stream::stream_t stream) {
+  auto device_type = place.GetDeviceType();
+  auto device_id = place.GetDeviceId();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  dev_impl->CudaGraphLaunch(device_id, exec, stream);
+}
+
+void DeviceManager::CudaGraphDestroy(const Place& place,
+                                     graph::CUDAGraph_t Graph) {
+  auto device_type = place.GetDeviceType();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  dev_impl->CudaGraphDestroy(Graph);
+}
+
+void DeviceManager::CudaGraphExecDestroy(const Place& place,
+                                         graph::CUDAGraphExec_t GraphExec) {
+  auto device_type = place.GetDeviceType();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  dev_impl->CudaGraphExecDestroy(GraphExec);
+}
+
+void DeviceManager::CudaGraphInstantiate(const Place& place,
+                                         graph::CUDAGraphExec_t* pGraphExec,
+                                         graph::CUDAGraph_t* pGraph,
+                                         void** pErrorNode,
+                                         char* pLogBuffer,
+                                         size_t bufferSize) {
+  auto device_type = place.GetDeviceType();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  dev_impl->CudaGraphInstantiate(
+      pGraphExec, pGraph, pErrorNode, pLogBuffer, bufferSize);
+}
+
+void DeviceManager::CudaGraphGetNodes(const Place& place,
+                                      graph::CUDAGraph_t Graph,
+                                      graph::CUDAGraphNode_t* pNodes,
+                                      size_t* numNodes) {
+  auto device_type = place.GetDeviceType();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  dev_impl->CudaGraphGetNodes(Graph, pNodes, numNodes);
+}
+
+void DeviceManager::CudaStreamGetCaptureInfo(
+    const Place& place,
+    stream::stream_t stream,
+    graph::streamCaptureStatus* captureStatus_out,
+    unsigned long long* id_out,  // NOLINT
+    graph::CUDAGraph_t* graph_out,
+    graph::CUDAGraphNode_t* dependencies_out,
+    void** edgeData_out,
+    size_t* numDependencies_out) {
+  auto device_type = place.GetDeviceType();
+  auto device_id = place.GetDeviceId();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  dev_impl->CudaStreamGetCaptureInfo(device_id,
+                                     stream,
+                                     captureStatus_out,
+                                     id_out,
+                                     graph_out,
+                                     dependencies_out,
+                                     edgeData_out,
+                                     numDependencies_out);
+}
+
+void DeviceManager::GetParameterSetterForExecGraph(
+    const Place& place,
+    graph::CUDAGraph_t graph,
+    graph::GraphHookManager* hook) {
+  auto device_type = place.GetDeviceType();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  dev_impl->GetParameterSetterForExecGraph(graph, hook);
+}
+
+void DeviceManager::CudaGraphDebugDotPrint(const Place& place,
+                                           graph::CUDAGraph_t Graph,
+                                           const char* path,
+                                           unsigned int flags) {
+  auto device_type = place.GetDeviceType();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  dev_impl->CudaGraphDebugDotPrint(Graph, path, flags);
+}
+
+void DeviceManager::CudaThreadExchangeStreamCaptureMode(
+    const Place& place, graph::streamCaptureMode* mode) {
+  auto device_type = place.GetDeviceType();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  dev_impl->CudaThreadExchangeStreamCaptureMode(mode);
 }
 
 // profiler
@@ -700,6 +945,62 @@ void DeviceManager::ProfilerCollectTraceData(
   dev_impl->ProfilerCollectTraceData(collector, start_ns, context);
 }
 
+void DeviceManager::InitBlasHandle(const Place& place,
+                                   void** blas_handle,
+                                   stream::stream_t stream) {
+  auto device_type = place.GetDeviceType();
+  auto device_id = place.GetDeviceId();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  dev_impl->InitBlasHandle(device_id, blas_handle, stream);
+}
+
+void DeviceManager::BlasSetMathMode(const Place& place,
+                                    void* blas_handle,
+                                    int math_mode) {
+  auto device_type = place.GetDeviceType();
+  auto device_id = place.GetDeviceId();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  dev_impl->BlasSetMathMode(device_id, blas_handle, math_mode);
+}
+
+void DeviceManager::InitBlasLtHandle(const Place& place, void** blaslt_handle) {
+  auto device_type = place.GetDeviceType();
+  auto device_id = place.GetDeviceId();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  dev_impl->InitBlasLtHandle(device_id, blaslt_handle);
+}
+
+void DeviceManager::DestroyBlasHandle(const Place& place, void* blas_handle) {
+  auto device_type = place.GetDeviceType();
+  auto device_id = place.GetDeviceId();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  dev_impl->DestroyBlasHandle(device_id, blas_handle);
+}
+
+void DeviceManager::DestroyBlasLtHandle(const Place& place,
+                                        void* blaslt_handle) {
+  auto device_type = place.GetDeviceType();
+  auto device_id = place.GetDeviceId();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  dev_impl->DestroyBlasLtHandle(device_id, blaslt_handle);
+}
+
+void DeviceManager::InitDnnHandle(const Place& place,
+                                  void** dnn_handle,
+                                  phi::stream::stream_t stream) {
+  auto device_type = place.GetDeviceType();
+  auto device_id = place.GetDeviceId();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  dev_impl->InitDnnHandle(device_id, dnn_handle, stream);
+}
+
+void DeviceManager::DestroyDnnHandle(const Place& place, void* dnn_handle) {
+  auto device_type = place.GetDeviceType();
+  auto device_id = place.GetDeviceId();
+  auto dev_impl = GetDeviceInterfaceWithType(device_type);
+  dev_impl->DestroyDnnHandle(device_id, dnn_handle);
+}
+
 DeviceManager& DeviceManager::Instance() {
   static DeviceManager platform_manager;
   return platform_manager;
@@ -710,6 +1011,7 @@ void DeviceManager::Release() {
   stream::Stream::ReleaseAll();
 #ifdef PADDLE_WITH_CUSTOM_DEVICE
   phi::distributed::XCCLCommContext::ReleaseAll();
+  phi::backends::gpu::CUDAGraph::ReleaseAll();
 #endif
   Instance().device_map_.clear();
   Instance().device_impl_map_.clear();

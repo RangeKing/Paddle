@@ -36,17 +36,16 @@
 #include "paddle/fluid/framework/new_executor/instruction/instruction_util.h"
 #include "paddle/fluid/pir/dialect/operator/ir/control_flow_op.h"
 #include "paddle/fluid/pir/dialect/operator/ir/manual_op.h"
+#include "paddle/fluid/platform/onednn_helper.h"
 #include "paddle/pir/include/dialect/control_flow/ir/cf_op.h"
 
-#ifdef PADDLE_WITH_DNNL
-#include "paddle/fluid/platform/onednn_helper.h"
-#endif
+COMMON_DECLARE_bool(check_cuda_error);
 
 namespace paddle::framework {
 
 WhileInstruction::WhileInstruction(
     size_t id,
-    const phi::Place& place,
+    const Place& place,
     pir::Operation* op,
     ValueExecutionInfo* parent_exe_info,
     interpreter::ExecutionConfig execution_config)
@@ -155,9 +154,9 @@ WhileInstruction::WhileInstruction(
 
 void WhileInstruction::ShareInputsToOutputs() {
   for (size_t i = 0; i < outputs_.size(); ++i) {
-    if (inputs_[i]->IsType<phi::DenseTensor>()) {
-      outputs_[i]->GetMutable<phi::DenseTensor>()->ShareDataWith(
-          inputs_[i]->Get<phi::DenseTensor>());
+    if (inputs_[i]->IsType<DenseTensor>()) {
+      outputs_[i]->GetMutable<DenseTensor>()->ShareDataWith(
+          inputs_[i]->Get<DenseTensor>());
     } else if (inputs_[i]->IsType<phi::TensorArray>()) {
       const auto& input_array = inputs_[i]->Get<phi::TensorArray>();
       auto* output_array = outputs_[i]->GetMutable<phi::TensorArray>();
@@ -175,9 +174,9 @@ void WhileInstruction::ShareOutputsToBlockArgs() {
     auto var_name = body_inter_->GetNameByValue(block_arg);
     auto* inner_var = body_inter_->local_scope()->GetVar(var_name);
 
-    if (outputs_[i]->IsType<phi::DenseTensor>()) {
-      inner_var->GetMutable<phi::DenseTensor>()->ShareDataWith(
-          outputs_[i]->Get<phi::DenseTensor>());
+    if (outputs_[i]->IsType<DenseTensor>()) {
+      inner_var->GetMutable<DenseTensor>()->ShareDataWith(
+          outputs_[i]->Get<DenseTensor>());
     } else if (outputs_[i]->IsType<phi::TensorArray>()) {
       const auto& outer_array = outputs_[i]->Get<phi::TensorArray>();
       auto* inner_array = inner_var->GetMutable<phi::TensorArray>();
@@ -193,8 +192,8 @@ void WhileInstruction::ShareOutputsToBlockArgs() {
 
 void WhileInstruction::ShareConditionData() {
   auto inner_cond_var = body_inter_->local_scope()->GetVar(inner_cond_);
-  cond_var_->GetMutable<phi::DenseTensor>()->ShareDataWith(
-      inner_cond_var->Get<phi::DenseTensor>());
+  cond_var_->GetMutable<DenseTensor>()->ShareDataWith(
+      inner_cond_var->Get<DenseTensor>());
 }
 
 void WhileInstruction::SetOutputHooks(
@@ -212,11 +211,15 @@ void WhileInstruction::CheckGCEarly(const CheckGCEarlyHook& check_gc_early) {
 }
 
 void WhileInstruction::Run() {
+  if (FLAGS_check_cuda_error) [[unlikely]] {
+    CUDAErrorCheck("WhileInstruction begin");
+  }
+
 #ifdef PADDLE_WITH_DNNL
   // Executor on being destroyed clears oneDNN cache and resets
   // registered model data layout. This is unwanted for nested
   // Executors (executors declared inside control ops)
-  paddle::platform::DontClearMKLDNNCache(body_inter_->GetPlace());
+  paddle::platform::DontClearONEDNNCache(body_inter_->GetPlace());
 #endif
   ShareInputsToOutputs();
 
@@ -225,7 +228,7 @@ void WhileInstruction::Run() {
   }
 
   VLOG(6) << "while instruction start loop ...";
-  while (GetCondData(cond_var_->Get<phi::DenseTensor>())) {
+  while (GetCondData(cond_var_->Get<DenseTensor>())) {
     VLOG(6) << "while instruction pass args to body block";
     ShareOutputsToBlockArgs();
     VLOG(6) << "while instruction interpretercore run";
@@ -234,6 +237,10 @@ void WhileInstruction::Run() {
     ShareConditionData();
   }
   VLOG(6) << "while instruction run done";
+
+  if (FLAGS_check_cuda_error) [[unlikely]] {
+    CUDAErrorCheck("WhileInstruction finish");
+  }
 }
 
 }  // namespace paddle::framework

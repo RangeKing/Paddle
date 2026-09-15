@@ -23,7 +23,7 @@ namespace paddle::framework::ir {
 namespace {
 
 template <typename T_out>
-void QuantizeParams(phi::DenseTensor* param_tensor,
+void QuantizeParams(DenseTensor* param_tensor,
                     const std::vector<float>& scales) {
   std::vector<T_out> tmp_data;
   tmp_data.reserve(param_tensor->numel());
@@ -58,7 +58,7 @@ void QuantizeConvInput(Scope* scope,
                        const std::string& input_name,
                        const std::string& scales_attr_name) {
   auto var = scope->GetVar(input_name);
-  if (var->Get<phi::DenseTensor>().dtype() != phi::DataType::FLOAT32) {
+  if (var->Get<DenseTensor>().dtype() != DataType::FLOAT32) {
     VLOG(0) << "Skipping convolution filter: " << input_name
             << " because it is detected again.";
     conv_op->Op()->SetAttr(scales_attr_name, std::vector<float>(1, 1));
@@ -66,7 +66,7 @@ void QuantizeConvInput(Scope* scope,
     const auto scales =
         conv_op->Op()->GetAttrIfExists<std::vector<float>>(scales_attr_name);
 
-    auto* tensor = scope->GetVar(input_name)->GetMutable<phi::DenseTensor>();
+    auto* tensor = scope->GetVar(input_name)->GetMutable<DenseTensor>();
     QuantizeParams<T>(tensor, scales);
     conv_op->Op()->SetAttr(scales_attr_name, std::vector<float>(1, 1));
   }
@@ -74,7 +74,7 @@ void QuantizeConvInput(Scope* scope,
 
 }  // namespace
 
-ParamsQuantizationMkldnnPass::ParamsQuantizationMkldnnPass() {  // NOLINT
+ParamsQuantizationOnednnPass::ParamsQuantizationOnednnPass() {  // NOLINT
   AddOpCompat(OpCompat("fused_conv2d"))
       .AddInput("Input")
       .IsTensor()
@@ -114,7 +114,7 @@ ParamsQuantizationMkldnnPass::ParamsQuantizationMkldnnPass() {  // NOLINT
       .End();
 }
 
-void ParamsQuantizationMkldnnPass::QuantizeConv(ir::Graph* graph,
+void ParamsQuantizationOnednnPass::QuantizeConv(ir::Graph* graph,
                                                 const std::string& conv_type,
                                                 bool with_residual_data) const {
   GraphPatternDetector gpd;
@@ -164,7 +164,7 @@ void ParamsQuantizationMkldnnPass::QuantizeConv(ir::Graph* graph,
   paddle::string::PrettyLogDetail(msg_ss.str().c_str());
 }
 
-void ParamsQuantizationMkldnnPass::ApplyImpl(ir::Graph* graph) const {
+void ParamsQuantizationOnednnPass::ApplyImpl(ir::Graph* graph) const {
   PADDLE_ENFORCE_NOT_NULL(graph,
                           common::errors::InvalidArgument(
                               "Pointer to graph argument should not be NULL."));
@@ -176,7 +176,7 @@ void ParamsQuantizationMkldnnPass::ApplyImpl(ir::Graph* graph) const {
 }  // namespace paddle::framework::ir
 
 REGISTER_PASS(params_quantization_onednn_pass,
-              paddle::framework::ir::ParamsQuantizationMkldnnPass);
+              paddle::framework::ir::ParamsQuantizationOnednnPass);
 REGISTER_PASS_CAPABILITY(params_quantization_onednn_pass)
     .AddCombination(
         paddle::framework::compatible::OpVersionComparatorCombination().LE(

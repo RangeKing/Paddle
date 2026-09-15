@@ -26,12 +26,12 @@ class OpDesc;
 
 namespace paddle::inference::tensorrt {
 
-template <typename RegistFunc, typename SetDilationFunc>
+template <typename RegisterFunc, typename SetDilationFunc>
 void ConvertConv2d(TensorRTEngine* engine,
                    const framework::proto::OpDesc& op,
                    const framework::Scope& scope,
                    bool test_mode,
-                   RegistFunc fadd_layer,
+                   RegisterFunc fadd_layer,
                    SetDilationFunc fset_dilation,
                    const std::string& name) {
   VLOG(3) << "convert a " << name << " op to tensorrt layer without bias";
@@ -76,10 +76,8 @@ void ConvertConv2d(TensorRTEngine* engine,
   bool enable_int8 = op_desc.HasAttr("enable_int8");
 
   if (enable_int8) {
-#if IS_TRT_VERSION_GE(5000)
     float in_scale = PADDLE_GET_CONST(float, op_desc.GetAttr("Input_scale"));
     engine->SetTensorDynamicRange(X, in_scale);
-#endif
   }
   const int groups = PADDLE_GET_CONST(int, op_desc.GetAttr("groups"));
   const std::vector<int> dilations =

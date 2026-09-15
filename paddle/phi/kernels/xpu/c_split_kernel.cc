@@ -26,6 +26,7 @@ void CSplitKernel(const Context& dev_ctx,
                   int nranks,
                   bool use_model_parallel,
                   DenseTensor* out) {
+#if defined(PADDLE_WITH_XPU_BKCL)
   using XPUType = typename XPUTypeTrait<T>::Type;
 
   PADDLE_ENFORCE_GE(rank,
@@ -54,12 +55,12 @@ void CSplitKernel(const Context& dev_ctx,
   int64_t end_size = dims[dims_size - 1];
 
   // remain dim
-  auto remain_ddim = common::slice_ddim(dims, 0, dims_size - 1);
+  auto remain_ddim = slice_ddim(dims, 0, dims_size - 1);
   int64_t remain_numel = common::product(remain_ddim);
 
   dims[dims_size - 1] /= nranks;
   out->Resize(dims);
-  dev_ctx.template Alloc(out, x.dtype());
+  dev_ctx.Alloc(out, x.dtype());
 
   std::vector<XPUType*> output_list(nranks, nullptr);
   output_list.at(rank) = reinterpret_cast<XPUType*>(out->data<T>());
@@ -73,6 +74,11 @@ void CSplitKernel(const Context& dev_ctx,
                         split_list,
                         axis);
   PADDLE_ENFORCE_XDNN_SUCCESS(ret, "split");
+#else
+  PADDLE_THROW(common::errors::PreconditionNotMet(
+      "PaddlePaddle is not compiled with DWITH_XPU_BKCL, please recompile with "
+      "DWITH_XPU_BKCL for using c_split_kernel."));
+#endif
 }
 }  // namespace phi
 
@@ -82,5 +88,5 @@ PD_REGISTER_KERNEL(c_split,
                    phi::CSplitKernel,
                    float,
                    int,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}

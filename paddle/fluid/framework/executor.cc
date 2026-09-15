@@ -16,22 +16,21 @@ limitations under the License. */
 
 #include <memory>
 
+#include "paddle/common/flags.h"
+#include "paddle/fluid/framework/executor_gc_helper.h"
 #include "paddle/fluid/framework/feed_fetch_method.h"
 #include "paddle/fluid/framework/trainer_factory.h"
 #include "paddle/fluid/operators/controlflow/conditional_block_op_helper.h"
 #include "paddle/fluid/operators/controlflow/while_op_helper.h"
+#include "paddle/fluid/platform/onednn_helper.h"
 #include "paddle/phi/common/place.h"
 #include "paddle/phi/core/framework/trainer_desc.pb.h"
 #include "paddle/phi/core/platform/profiler.h"
 #include "paddle/phi/core/platform/profiler/event_tracing.h"
-#ifdef PADDLE_WITH_DNNL
-#include "paddle/fluid/platform/onednn_helper.h"
-#endif
-#include "paddle/common/flags.h"
-#include "paddle/fluid/framework/executor_gc_helper.h"
 
 COMMON_DECLARE_bool(benchmark);
 COMMON_DECLARE_bool(use_mkldnn);
+COMMON_DECLARE_bool(use_onednn);
 
 namespace paddle::framework {
 namespace {
@@ -66,13 +65,13 @@ ExecutorPrepareContext::~ExecutorPrepareContext() {
   VLOG(5) << "destroy ExecutorPrepareContext";
 }
 
-Executor::Executor(const phi::Place& place) : place_(place) {}
+Executor::Executor(const Place& place) : place_(place) {}
 
 Executor::~Executor() {
 #ifdef PADDLE_WITH_DNNL
-  // Clear mkl-dnn cache,
-  // this is needed to have mkl-dnn unit tests working
-  platform::ClearMKLDNNCache(place_, this);
+  // Clear one-dnn cache,
+  // this is needed to have one-dnn unit tests working
+  platform::ClearONEDNNCache(place_, this);
 #endif
 }
 
@@ -184,10 +183,10 @@ void Executor::Run(const ProgramDesc& pdesc,
   phi::RecordEvent record_run(
       "Executor::Run", phi::TracerEventType::UserDefined, 1);
   platform::RecordBlock b(block_id);
-  if (FLAGS_use_mkldnn) EnableMKLDNN(pdesc);
+  if (FLAGS_use_mkldnn || FLAGS_use_onednn) EnableONEDNN(pdesc);
   auto ctx = Prepare(pdesc, block_id, skip_ref_cnt_vars, force_disable_gc);
 #ifdef PADDLE_WITH_DNNL
-  platform::AttachPointerHashToMKLDNNKey(this, place_);
+  platform::AttachPointerHashToONEDNNKey(this, place_);
   platform::RegisterModelLayout(ctx->ops_, place_);
 #endif
   RunPreparedContext(
@@ -202,7 +201,7 @@ void Executor::Run(const ProgramDesc& pdesc,
 // Return true if the block has feed operators and holder of matching info.
 static bool has_feed_operators(
     const BlockDesc& block,
-    const std::map<std::string, const phi::DenseTensor*>& feed_targets,
+    const std::map<std::string, const DenseTensor*>& feed_targets,
     const std::string& feed_holder_name) {
   size_t feed_count = 0;
   for (auto* op : block.AllOps()) {
@@ -321,7 +320,7 @@ static bool has_fetch_operators(
 
 void Executor::Run(const ProgramDesc& program,
                    Scope* scope,
-                   std::map<std::string, const phi::DenseTensor*>* feed_targets,
+                   std::map<std::string, const DenseTensor*>* feed_targets,
                    std::map<std::string, FetchType*>* fetch_targets,
                    bool create_local_scope,
                    bool create_vars,
@@ -330,9 +329,9 @@ void Executor::Run(const ProgramDesc& program,
   phi::RecordEvent record_run(
       "Executor::Run", phi::TracerEventType::UserDefined, 1);
   platform::RecordBlock b(kProgramId);
-  if (FLAGS_use_mkldnn) EnableMKLDNN(program);
+  if (FLAGS_use_mkldnn || FLAGS_use_onednn) EnableONEDNN(program);
 #ifdef PADDLE_WITH_DNNL
-  platform::AttachPointerHashToMKLDNNKey(this, place_);
+  platform::AttachPointerHashToONEDNNKey(this, place_);
 #endif
   bool has_feed_ops =
       has_feed_operators(program.Block(0), *feed_targets, feed_holder_name);
@@ -550,7 +549,7 @@ void Executor::RunPreparedContext(ExecutorPrepareContext* ctx,
 void Executor::RunPreparedContext(
     ExecutorPrepareContext* ctx,
     Scope* scope,
-    std::map<std::string, const phi::DenseTensor*>* feed_targets,
+    std::map<std::string, const DenseTensor*>* feed_targets,
     std::map<std::string, FetchType*>* fetch_targets,
     bool create_local_scope,
     bool create_vars,
@@ -592,19 +591,21 @@ void Executor::RunPreparedContext(
   }
 }
 
-void Executor::EnableMKLDNN(const ProgramDesc& program) {
+void Executor::EnableONEDNN(const ProgramDesc& program) {
 #ifdef PADDLE_WITH_DNNL
   VLOG(3) << "use_mkldnn=True";
   for (size_t bid = 0; bid < program.Size(); ++bid) {
     auto* block = const_cast<ProgramDesc&>(program).MutableBlock(bid);
     for (auto* op : block->AllOps()) {
-      if (FoundOneDNNKernel(op) || FoundPhiOneDNNKernel(op))
+      if (FoundOneDNNKernel(op) || FoundPhiOneDNNKernel(op)) {
         op->SetAttr("use_mkldnn", true);
+        op->SetAttr("use_onednn", true);
+      }
     }
   }
 #else
   LOG(WARNING)
-      << "'MKLDNN' is not supported, Please re-compile with WITH_ONEDNN option";
+      << "'ONEDNN' is not supported, Please re-compile with WITH_ONEDNN option";
 #endif
 }
 }  // namespace paddle::framework

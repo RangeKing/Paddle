@@ -11,36 +11,20 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 import unittest
 
 import numpy as np
+from op_test import get_device_place, is_custom_device
 
 import paddle
 from paddle import base
 from paddle.base import core
 
 
-class TestTF32Switch(unittest.TestCase):
-    def test_on_off(self):
-        if core.is_compiled_with_cuda():
-            place = base.CUDAPlace(0)
-            self.assertTrue(core.get_cublas_switch())  # default
-            core.set_cublas_switch(False)
-            self.assertFalse(core.get_cublas_switch())  # turn off
-            core.set_cublas_switch(True)
-            self.assertTrue(core.get_cublas_switch())  # turn on
-
-            core.set_cublas_switch(True)  # restore the switch
-        else:
-            pass
-
-
 class TestTF32OnMatmul(unittest.TestCase):
     def test_dygraph_without_out(self):
-        if core.is_compiled_with_cuda():
-            place = base.CUDAPlace(0)
-            core.set_cublas_switch(False)  # turn off
+        if core.is_compiled_with_cuda() or is_custom_device():
+            place = get_device_place()
             with base.dygraph.guard(place):
                 input_array1 = np.random.rand(4, 12, 64, 88).astype("float32")
                 input_array2 = np.random.rand(4, 12, 88, 512).astype("float32")
@@ -49,7 +33,6 @@ class TestTF32OnMatmul(unittest.TestCase):
                 out = paddle.matmul(data1, data2)
                 expected_result = np.matmul(input_array1, input_array2)
             np.testing.assert_allclose(expected_result, out.numpy(), rtol=0.001)
-            core.set_cublas_switch(True)  # restore the switch
         else:
             pass
 

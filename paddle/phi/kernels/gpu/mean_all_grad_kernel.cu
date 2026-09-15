@@ -19,11 +19,11 @@
 namespace phi {
 
 template <typename T>
-__global__ void MeanRunKernel(const T* in_data, T* out_data, int N) {
-  using MT = typename dtype::MPTypeTrait<T>::Type;
-  int idx = blockDim.x * blockIdx.x + threadIdx.x;
+__global__ void MeanRunKernel(const T* in_data, T* out_data, int64_t N) {
+  using MT = typename MPTypeTrait<T>::Type;
+  int64_t idx = static_cast<int64_t>(blockDim.x) * blockIdx.x + threadIdx.x;
   auto data = static_cast<MT>(in_data[0]);
-  for (; idx < N; idx += blockDim.x * gridDim.x) {
+  for (; idx < N; idx += static_cast<int64_t>(blockDim.x) * gridDim.x) {
     out_data[idx] = static_cast<T>(data / (static_cast<MT>(N)));
   }
 }
@@ -33,11 +33,16 @@ void MeanAllGradKernel(const Context& dev_ctx,
                        const DenseTensor& x,
                        const DenseTensor& out_grad,
                        DenseTensor* x_grad) {
+  if (x_grad && x_grad->numel() == 0) {
+    dev_ctx.template Alloc<T>(x_grad);
+    return;
+  }
+
   PADDLE_ENFORCE_EQ(out_grad.numel(),
                     1,
                     common::errors::InvalidArgument(
                         "Mean Gradient Input Tensor len should be 1. But "
-                        "received Out@Grad's elements num is %d.",
+                        "received Out@GRAD's elements num is %d.",
                         out_grad.numel()));
   dev_ctx.template Alloc<T>(x_grad);
 
@@ -45,7 +50,9 @@ void MeanAllGradKernel(const Context& dev_ctx,
   auto size_prob = x_grad->numel();
   auto out_data = x_grad->data<T>();
   int threads = 512;
-  int grid = (size_prob + threads - 1) / threads;
+  int64_t grid_64 = (size_prob + threads - 1) / threads;
+  PADDLE_ENFORCE_LE_UINT32_MAX(grid_64, "grid");
+  uint32_t grid = static_cast<uint32_t>(grid_64);
   auto stream = dev_ctx.stream();
   MeanRunKernel<T><<<grid, threads, 0, stream>>>(in_data, out_data, size_prob);
 }
@@ -58,6 +65,6 @@ PD_REGISTER_KERNEL(mean_all_grad,
                    phi::MeanAllGradKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::float16,
+                   phi::complex64,
+                   phi::complex128) {}

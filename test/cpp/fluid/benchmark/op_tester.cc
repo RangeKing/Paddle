@@ -221,7 +221,7 @@ void OpTester::CreateOpDesc() {
         attr_types.find(name),
         attr_types.end(),
         common::errors::NotFound(
-            "Operator %s does not have attribute %d.", type_, name));
+            "Operator %s does not have attribute %s.", type_, name));
 
     const std::string &value_str = item.second;
     const framework::proto::AttrType &type = attr_types[name];
@@ -253,7 +253,7 @@ void OpTester::CreateOpDesc() {
       case framework::proto::AttrType::LONGS:
       default:
         PADDLE_THROW(common::errors::Unimplemented(
-            "Unsupport attr type %d in OpTester.", type));
+            "Unsupported attr type %d in OpTester.", type));
     }
   }
 }
@@ -496,7 +496,7 @@ std::string OpTester::DebugString() {
       } break;
       default:
         PADDLE_THROW(common::errors::Unimplemented(
-            "Unsupport attr type %d in OpTester.", attr_type));
+            "Unsupported attr type %d in OpTester.", attr_type));
     }
     ss << GenSpaces(--count) << "}\n";
   }

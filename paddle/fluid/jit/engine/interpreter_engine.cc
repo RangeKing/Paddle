@@ -53,7 +53,7 @@ void InterpreterEngine::CreateInterpreterCore() {
 #ifdef PADDLE_WITH_DNNL
   auto onednn_pass =
       framework::ir::PassRegistry::Instance().Get("onednn_placement_pass");
-  onednn_pass->Set("mkldnn_enabled_op_types",
+  onednn_pass->Set("onednn_enabled_op_types",
                    new std::unordered_set<std::string>({}));
   onednn_pass->Apply(&graph);
 #endif
@@ -85,7 +85,7 @@ std::vector<DenseTensor> InterpreterEngine::operator()(
 
   // the latter can be moved to python side.
   auto &feed_names = info_->InputArgNames();
-  paddle::framework::FetchList outs = inner_interpreter_->Run(feed_names);
+  phi::FetchList outs = inner_interpreter_->Run(feed_names);
 
   std::vector<DenseTensor> outputs;
   utils::FetchOuts(info_->OutputArgNames(), scope_, &outputs);

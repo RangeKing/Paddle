@@ -35,18 +35,45 @@
 #include "paddle/fluid/framework/new_executor/pir_adaptor/pir_adaptor_util.h"
 #include "paddle/phi/core/dense_tensor.h"
 #include "paddle/pir/include/core/block_argument.h"
-#if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL)
+#if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL) || \
+    defined(PADDLE_WITH_XPU_BKCL) || defined(PADDLE_WITH_CUSTOM_DEVICE)
 #include "paddle/common/flags.h"
 #include "paddle/fluid/distributed/collective/process_group.h"
-#include "paddle/fluid/distributed/collective/process_group_nccl.h"
 #include "paddle/phi/core/distributed/comm_context_manager.h"
+#if defined(PADDLE_WITH_CUSTOM_DEVICE)
+#include "paddle/fluid/distributed/collective/process_group_custom.h"
+#include "paddle/phi/backends/custom/custom_context.h"
+#include "paddle/phi/core/distributed/xccl_comm_context.h"
+#elif defined(PADDLE_WITH_XPU_BKCL)
+#include "paddle/fluid/distributed/collective/process_group_bkcl.h"
+#include "paddle/phi/core/distributed/bkcl_comm_context.h"
+#else
+#include "paddle/fluid/distributed/collective/process_group_nccl.h"
 #include "paddle/phi/core/distributed/nccl_comm_context.h"
+#endif
 #include "paddle/phi/core/platform/collective_helper.h"
-COMMON_DECLARE_bool(dynamic_static_unified_comm);
+#endif
+
+#if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL)
+#define COMM_CONTEXT phi::distributed::NCCLCommContext
+#define DEVICE_CONTEXT phi::GPUContext
+#define CREATE_COMM_CONTEXT \
+  phi::distributed::CommContextManager::CreateNCCLCommContext
+#define PROCESS_GROUP paddle::distributed::ProcessGroupNCCL
+#elif (defined(PADDLE_WITH_XPU) && defined(PADDLE_WITH_XPU_BKCL))
+#define COMM_CONTEXT phi::distributed::BKCLCommContext
+#define DEVICE_CONTEXT phi::XPUContext
+#define CREATE_COMM_CONTEXT \
+  phi::distributed::CommContextManager::CreateBKCLCommContext
+#define PROCESS_GROUP paddle::distributed::ProcessGroupBKCL
+#elif defined(PADDLE_WITH_CUSTOM_DEVICE)
+#define COMM_CONTEXT phi::distributed::XCCLCommContext
+#define CREATE_COMM_CONTEXT \
+  phi::distributed::CommContextManager::CreateXCCLCommContext
+#define PROCESS_GROUP paddle::distributed::ProcessGroupCustom
 #endif
 
 namespace paddle::framework {
-
 std::vector<int> GetValueIds(pir::Value value,
                              const ValueExecutionInfo& value_exec_info) {
   std::vector<int> ids;
@@ -65,7 +92,7 @@ std::vector<int> GetValueIds(pir::Value value,
 
 phi::DeviceContext* ParseDeviceContext(pir::Operation* op,
                                        phi::DeviceContext* origin_dev_ctx,
-                                       const phi::Place& place,
+                                       const Place& place,
                                        const std::string& execution_stream,
                                        const int stream_priority) {
   auto& op_attributes = op->attributes();
@@ -78,7 +105,8 @@ phi::DeviceContext* ParseDeviceContext(pir::Operation* op,
 
   // only gpu need update. xpu not need, because xpu memcpy op kernel is
   // synchronous.
-  if (phi::is_gpu_place(place) || phi::is_custom_place(place)) {
+  if (phi::is_gpu_place(place) || phi::is_custom_place(place) ||
+      phi::is_xpu_place(place)) {
     VLOG(6) << "Parse DeviceContext for " << op_name
             << ", execution stream = " << execution_stream;
     if (execution_stream != kDefaultStream) {
@@ -106,7 +134,8 @@ phi::DeviceContext* ParseDeviceContext(pir::Operation* op,
       return dev_ctx;
     }
 
-#if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL)
+#if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL) || \
+    defined(PADDLE_WITH_CUSTOM_DEVICE) || defined(PADDLE_WITH_XPU_BKCL)
     // NOTE(Ruibiao): Here supports multi-stream overlap for c_allreduce_sum
     // with use_cal_stream==false by returning a device context getting from the
     // global NCCLCommContext instance. Because when use_calc_stream==false, in
@@ -122,24 +151,26 @@ phi::DeviceContext* ParseDeviceContext(pir::Operation* op,
                 .data() == false) {
       int ring_id =
           op_attributes.at("ring_id").dyn_cast<pir::Int32Attribute>().data();
-      if (FLAGS_dynamic_static_unified_comm) {
-        const auto& comm_context_manager =
-            phi::distributed::CommContextManager::GetInstance();
-        dev_ctx = static_cast<phi::DeviceContext*>(
-            static_cast<phi::distributed::NCCLCommContext*>(
-                comm_context_manager.Get(std::to_string(ring_id)))
-                ->GetDevContext());
-      } else {
-        dev_ctx = platform::NCCLCommContext::Instance()
-                      .Get(ring_id, place)
-                      ->dev_context();
-      }
+      const auto& comm_context_manager =
+          phi::distributed::CommContextManager::GetInstance();
+      dev_ctx = static_cast<phi::DeviceContext*>(
+          static_cast<COMM_CONTEXT*>(
+              comm_context_manager.Get(std::to_string(ring_id)))
+              ->GetDevContext());
       return dev_ctx;
     }
-
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
+    // If the current OP is inside a CUDAGraphOp,
+    // we must use the same device context as the parent CUDAGraphOp,
+    // mainly to ensure that cuda_graph_allocator_ is not nullptr.
+    // This is necessary for correct CUDA Graph capture and memory allocation.
+    if (op->GetParentOp()->isa<paddle::dialect::CudaGraphOp>()) {
+      VLOG(4) << "CudaGraphOp detected, using original device context";
+      return origin_dev_ctx;
+    }
+#endif
     // handle comm op
-    if (op_attributes.count("ring_id") != 0 &&
-        FLAGS_dynamic_static_unified_comm) {
+    if (op_attributes.count("ring_id") != 0) {
       int ring_id =
           op_attributes.at("ring_id").dyn_cast<pir::Int32Attribute>().data();
       const auto& comm_context_manager =
@@ -150,37 +181,77 @@ phi::DeviceContext* ParseDeviceContext(pir::Operation* op,
         comm_context = comm_context_manager.Get(std::to_string(ring_id));
       } else if (op_name.compare(paddle::dialect::MpAllreduceSum_Op::name()) ==
                      0 ||
+                 op_name.compare(paddle::dialect::MpAllreduceSumOp::name()) ==
+                     0 ||
                  op_name.compare(paddle::dialect::AllReduce_Op::name()) == 0 ||
                  op_name.compare(paddle::dialect::CIdentity_Op::name()) == 0 ||
                  op_name.compare(paddle::dialect::CConcatOp::name()) == 0 ||
                  op_name.compare(paddle::dialect::Broadcast_Op::name()) == 0) {
         auto map = distributed::ProcessGroupMapFromGid::getInstance();
         distributed::ProcessGroup* pg = map->get(ring_id);
-        comm_context = static_cast<paddle::distributed::ProcessGroupNCCL*>(pg)
-                           ->GetOrCreateCommContext(place);
+        comm_context =
+            static_cast<PROCESS_GROUP*>(pg)->GetOrCreateCommContext(place);
       }
 
       if (comm_context) {
         dev_ctx = static_cast<platform::DeviceContext*>(
-            static_cast<phi::distributed::NCCLCommContext*>(comm_context)
-                ->GetDevContext());
+            static_cast<COMM_CONTEXT*>(comm_context)->GetDevContext());
         dev_ctx->SetCommContext(comm_context);
+
         if (op_name.compare(paddle::dialect::ReduceScatterOp::name()) == 0 ||
             op_name.compare(paddle::dialect::AllReduceOp::name()) == 0 ||
             op_name.compare(paddle::dialect::AllReduce_Op::name()) == 0 ||
             op_name.compare(paddle::dialect::Broadcast_Op::name()) == 0 ||
             op_name.compare(paddle::dialect::BroadcastOp::name()) == 0 ||
             op_name.compare(paddle::dialect::AllGatherOp::name()) == 0 ||
+            op_name.compare(paddle::dialect::MpAllreduceSumOp::name()) == 0 ||
             op_name.compare(paddle::dialect::MpAllreduceSum_Op::name()) == 0 ||
             op_name.compare(paddle::dialect::CIdentity_Op::name()) == 0 ||
-            op_name.compare(paddle::dialect::CConcatOp::name()) == 0) {
-          if (phi::is_gpu_place(place) && execution_stream == kDefaultStream) {
+            op_name.compare(paddle::dialect::CConcatOp::name()) == 0 ||
+            op_name.compare(paddle::dialect::AllToAllOp::name()) == 0 ||
+            op_name.compare(
+                paddle::dialect::CSoftmaxWithCrossEntropyOp::name()) == 0) {
+#if defined(PADDLE_WITH_XPU_BKCL)
+          if (phi::is_xpu_place(place) && execution_stream == kDefaultStream) {
+            VLOG(3) << "set stream for " << op_name << "in XPU device";
             if (origin_dev_ctx != nullptr) {
               // set stream
               auto default_stream =
-                  static_cast<phi::GPUContext*>(origin_dev_ctx)->cuda_stream();
-              static_cast<phi::GPUContext*>(dev_ctx)->SetCUDAStream(
+                  static_cast<DEVICE_CONTEXT*>(origin_dev_ctx)->stream();
+              static_cast<DEVICE_CONTEXT*>(dev_ctx)->SetStream(default_stream);
+              // todo set allocator
+            } else {
+              VLOG(3) << "CUSTOM DEVICE op " << op_name << " ring_id "
+                      << ring_id << " origin_dev_ctx is nullptr";
+            }
+          }
+#elif defined(PADDLE_WITH_CUSTOM_DEVICE)
+          if (phi::is_custom_place(place) &&
+              execution_stream == kDefaultStream) {
+            VLOG(3) << "set stream for " << op_name << "in Custom device";
+            if (origin_dev_ctx != nullptr) {
+              // set stream
+              auto default_stream =
+                  static_cast<phi::CustomContext*>(origin_dev_ctx)->GetStream();
+              static_cast<phi::CustomContext*>(dev_ctx)->SetStream(
+                  default_stream);
+              // todo set allocator
+            } else {
+              VLOG(3) << "CUSTOM DEVICE op " << op_name << " ring_id "
+                      << ring_id << " origin_dev_ctx is nullptr";
+            }
+          }
+#else
+          if (phi::is_gpu_place(place) && execution_stream == kDefaultStream) {
+            VLOG(3) << "set stream for " << op_name << "in GPU device";
+            if (origin_dev_ctx != nullptr) {
+#if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL)
+              // set stream
+              auto default_stream =
+                  static_cast<DEVICE_CONTEXT*>(origin_dev_ctx)->cuda_stream();
+              static_cast<DEVICE_CONTEXT*>(dev_ctx)->SetCUDAStream(
                   default_stream, false);
+#endif
               // set allocator
               auto& instance =
                   paddle::memory::allocation::AllocatorFacade::Instance();
@@ -188,13 +259,14 @@ phi::DeviceContext* ParseDeviceContext(pir::Operation* op,
                   instance
                       .GetAllocator(
                           place,
-                          static_cast<phi::GPUContext*>(dev_ctx)->stream())
+                          static_cast<DEVICE_CONTEXT*>(dev_ctx)->stream())
                       .get());
             } else {
               VLOG(3) << "op " << op_name << " ring_id " << ring_id
                       << " origin_dev_ctx is nullptr";
             }
           }
+#endif
           return dev_ctx;
         }
       } else {
@@ -210,7 +282,7 @@ phi::DeviceContext* ParseDeviceContext(pir::Operation* op,
   }
   return origin_dev_ctx;
 }
-OpFuncType AnalyseOpFuncType(pir::Operation* op, const phi::Place& place) {
+OpFuncType AnalyseOpFuncType(pir::Operation* op, const Place& place) {
   if (phi::is_cpu_place(place)) {
     return OpFuncType::kCpuSync;
   }
@@ -468,16 +540,16 @@ void InsertInplacedExternalInputsToOuts(
   }
 }
 
-bool GetCondData(const phi::DenseTensor& cond) {
+bool GetCondData(const DenseTensor& cond) {
   if (phi::is_cpu_place(cond.place())) {
     return cond.data<bool>()[0];
   }
   // when phi::is_gpu_place(cond.place()) or
   // phi::is_xpu_place(cond.place()) is true
-  std::unique_ptr<phi::DenseTensor> cpu_cond{new phi::DenseTensor()};
+  std::unique_ptr<DenseTensor> cpu_cond{new DenseTensor()};
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP) || \
     defined(PADDLE_WITH_XPU) || defined(PADDLE_WITH_CUSTOM_DEVICE)
-  paddle::framework::TensorCopySync(cond, phi::CPUPlace(), cpu_cond.get());
+  paddle::framework::TensorCopySync(cond, CPUPlace(), cpu_cond.get());
 #else
   PADDLE_THROW(common::errors::PreconditionNotMet(
       "This version of PaddlePaddle does NOT support GPU/XPU but got "
@@ -561,9 +633,9 @@ void HandleForInplaceOp(pir::Operation* op,
 }
 
 void ShareVarBuffer(const Variable* src_var, Variable* dst_var) {
-  if (src_var->IsType<phi::DenseTensor>()) {
-    auto& src_tensor = src_var->Get<phi::DenseTensor>();
-    auto* tmp_dst_tensor = dst_var->GetMutable<phi::DenseTensor>();
+  if (src_var->IsType<DenseTensor>()) {
+    auto& src_tensor = src_var->Get<DenseTensor>();
+    auto* tmp_dst_tensor = dst_var->GetMutable<DenseTensor>();
     tmp_dst_tensor->ShareBufferWith(src_tensor);
     return;
   } else if (src_var->IsType<phi::SelectedRows>()) {

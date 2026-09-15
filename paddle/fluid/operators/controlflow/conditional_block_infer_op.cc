@@ -12,14 +12,12 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License. */
 
-#include "paddle/fluid/operators/controlflow/conditional_block_op.h"
-
-#ifdef PADDLE_WITH_DNNL
-#include "paddle/fluid/platform/onednn_helper.h"
-#endif
 #include "paddle/common/flags.h"
+#include "paddle/fluid/operators/controlflow/conditional_block_op.h"
+#include "paddle/fluid/platform/onednn_helper.h"
 
 COMMON_DECLARE_bool(use_mkldnn);
+COMMON_DECLARE_bool(use_onednn);
 namespace paddle {
 namespace framework {
 class OpDesc;
@@ -62,10 +60,9 @@ class ConditionalBlockInferOp : public ConditionalOp {
       // vector or tensor, whether need to execute the operators in sub-block
       // depends on the input variables (Input).
       auto xs = InputTensors(scope, "Input");
-      need_run =
-          std::all_of(xs.begin(), xs.end(), [](const phi::DenseTensor *t) {
-            return t->numel() != 0;
-          });
+      need_run = std::all_of(xs.begin(), xs.end(), [](const DenseTensor *t) {
+        return t->numel() != 0;
+      });
     }
 
     if (need_run) {
@@ -87,13 +84,13 @@ class ConditionalBlockInferOp : public ConditionalOp {
         auto &pdesc = *block->Program();
         exec_.reset(new framework::Executor(dev_place));
 #ifdef PADDLE_WITH_DNNL
-        if (FLAGS_use_mkldnn) exec_->EnableMKLDNN(pdesc);
+        if (FLAGS_use_mkldnn || FLAGS_use_onednn) exec_->EnableONEDNN(pdesc);
 #endif
         ctx_ = exec_->Prepare(
             pdesc, block->ID(), std::vector<std::string>(), false);
 #ifdef PADDLE_WITH_DNNL
-        if (FLAGS_use_mkldnn) {
-          platform::AttachPointerHashToMKLDNNKey(exec_.get(), dev_place);
+        if (FLAGS_use_mkldnn || FLAGS_use_onednn) {
+          platform::AttachPointerHashToONEDNNKey(exec_.get(), dev_place);
           platform::RegisterModelLayout(ctx_->ops_, dev_place);
         }
 #endif

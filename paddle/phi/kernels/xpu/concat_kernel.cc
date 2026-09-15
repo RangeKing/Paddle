@@ -27,13 +27,19 @@ void ConcatKernel(const Context& dev_ctx,
                   const std::vector<const DenseTensor*>& x,
                   const Scalar& axis_scalar,
                   DenseTensor* out) {
-  using XPUType = typename XPUTypeTrait<T>::Type;
+  // handle complex64 by treating data as raw 64-bit units
+  using Complex64 = phi::complex64;
+  using DefaultXPUType = typename XPUTypeTrait<T>::Type;
+  using XPUType = typename std::conditional<std::is_same<T, Complex64>::value,
+                                            int64_t,
+                                            DefaultXPUType>::type;
+
   int64_t axis = axis_scalar.to<int64_t>();
   PADDLE_ENFORCE_NE(
       x[0],
       nullptr,
       common::errors::InvalidArgument("The input should not be null."));
-  axis = phi::funcs::ComputeAxis(axis, x[0]->dims().size());
+  axis = funcs::ComputeAxis(axis, x[0]->dims().size());
   PADDLE_ENFORCE_GE(
       axis,
       0,
@@ -49,14 +55,17 @@ void ConcatKernel(const Context& dev_ctx,
                         axis,
                         x[0]->dims().size()));
 
-  std::vector<phi::DDim> x_dims;
+  std::vector<DDim> x_dims;
   for (size_t i = 0; i < x.size(); ++i) {
     x_dims.push_back(x[i]->dims());
   }
 
-  phi::DDim out_dims = phi::funcs::ComputeAndCheckShape(true, x_dims, axis);
+  DDim out_dims = funcs::ComputeAndCheckShape(true, x_dims, axis);
   out->Resize(out_dims);
   dev_ctx.template Alloc<T>(out);
+  if (out->numel() == 0) {
+    return;
+  }
 
   // If axis is 0, the lod of the output is not the same as inputs.
 
@@ -90,13 +99,13 @@ void ConcatKernel(const Context& dev_ctx,
     }
   }
 
-  std::vector<std::vector<int>> xdims_list;
+  std::vector<std::vector<int64_t>> xdims_list;
   std::vector<const XPUType*> ptrs;
   for (unsigned int i = 0; i < x.size(); ++i) {
     if (x[i] && x[i]->numel() > 0) {
       ptrs.push_back(reinterpret_cast<const XPUType*>(x[i]->data<T>()));
       int size = x[i]->dims().size();
-      std::vector<int> tmp_dims(size);
+      std::vector<int64_t> tmp_dims(size);
       for (int j = 0; j < size; ++j) {
         tmp_dims[j] = x[i]->dims()[j];
       }
@@ -123,12 +132,13 @@ PD_REGISTER_KERNEL(concat,
                    ALL_LAYOUT,
                    phi::ConcatKernel,
                    float,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
+                   phi::float16,
+                   phi::bfloat16,
                    double,
                    bool,
                    uint8_t,
                    int8_t,
                    int16_t,
                    int32_t,
-                   int64_t) {}
+                   int64_t,
+                   phi::complex64) {}

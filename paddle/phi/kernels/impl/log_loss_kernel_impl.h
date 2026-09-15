@@ -26,6 +26,7 @@ void LogLossKernel(const Context& dev_ctx,
                    float epsilon,
                    DenseTensor* out) {
   dev_ctx.template Alloc<T>(out);
+  if (out && out->numel() == 0) return;
 
   auto prediction = EigenVector<T>::Flatten(input);
   auto label_out = EigenVector<T>::Flatten(label);
@@ -33,7 +34,7 @@ void LogLossKernel(const Context& dev_ctx,
   auto loss = EigenVector<T>::Flatten(*out);
   auto& place = *dev_ctx.eigen_device();
 
-  phi::funcs::EigenLogLoss<std::decay_t<decltype(place)>, T>::Eval(
+  funcs::EigenLogLoss<std::decay_t<decltype(place)>, T>::Eval(
       place, loss, prediction, label_out, epsilon);
 }
 

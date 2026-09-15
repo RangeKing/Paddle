@@ -14,13 +14,14 @@
 
 #pragma once
 
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/common_shape.h"
 #include "paddle/phi/kernels/funcs/eigen/common.h"
 
 namespace phi {
 
 template <typename Context, typename T, size_t D>
-static void LerpGradFunction(const Context& ctx,
+static void LerpGradFunction(const Context& dev_ctx,
                              const DenseTensor& x UNUSED,
                              const DenseTensor& y UNUSED,
                              const DenseTensor& weight,
@@ -28,6 +29,16 @@ static void LerpGradFunction(const Context& ctx,
                              const DenseTensor& out_grad,
                              DenseTensor* x_grad,
                              DenseTensor* y_grad) {
+  if (out_grad.numel() == 0) {
+    if (x_grad) {
+      Full<T, Context>(dev_ctx, x_grad->dims(), 0, x_grad);
+    }
+    if (y_grad) {
+      Full<T, Context>(dev_ctx, y_grad->dims(), 0, y_grad);
+    }
+    return;
+  }
+
   auto& w = weight;
   auto& dout = out_grad;
   auto* dx = x_grad;
@@ -37,26 +48,26 @@ static void LerpGradFunction(const Context& ctx,
   DDim dx_dims;
   DDim dy_dims;
 
-  auto w_dims = phi::funcs::ExtendDims2Rank(w.dims(), D);
-  auto g_dims = phi::funcs::ExtendDims2Rank(out_grad.dims(), D);
+  auto w_dims = funcs::ExtendDims2Rank(w.dims(), D);
+  auto g_dims = funcs::ExtendDims2Rank(out_grad.dims(), D);
   Eigen::DSizes<int, D> dx_bcast_dims;
   Eigen::DSizes<int, D> dy_bcast_dims;
   Eigen::DSizes<int, D> w_bcast_dims;
   Eigen::DSizes<int, D> g_bcast_dims;
 
   if (dx) {
-    dx_dims = phi::funcs::ExtendDims2Rank(dx->dims(), D);
-    phi::funcs::GetBroadcastDims<D>(dx_dims, out_dims, &dx_bcast_dims);
+    dx_dims = funcs::ExtendDims2Rank(dx->dims(), D);
+    funcs::GetBroadcastDims<D>(dx_dims, out_dims, &dx_bcast_dims);
   }
   if (dy) {
-    dy_dims = phi::funcs::ExtendDims2Rank(dy->dims(), D);
-    phi::funcs::GetBroadcastDims<D>(dy_dims, out_dims, &dy_bcast_dims);
+    dy_dims = funcs::ExtendDims2Rank(dy->dims(), D);
+    funcs::GetBroadcastDims<D>(dy_dims, out_dims, &dy_bcast_dims);
   }
-  phi::funcs::GetBroadcastDims<D>(w_dims, out_dims, &w_bcast_dims);
-  phi::funcs::GetBroadcastDims<D>(g_dims, out_dims, &g_bcast_dims);
+  funcs::GetBroadcastDims<D>(w_dims, out_dims, &w_bcast_dims);
+  funcs::GetBroadcastDims<D>(g_dims, out_dims, &g_bcast_dims);
 
-  auto eigen_w = phi::EigenTensor<T, D>::From(w, w_dims);
-  auto eigen_dout = phi::EigenTensor<T, D>::From(dout, g_dims);
+  auto eigen_w = EigenTensor<T, D>::From(w, w_dims);
+  auto eigen_dout = EigenTensor<T, D>::From(dout, g_dims);
 
   Eigen::DSizes<int, D * 2> dx_reshape_dims;
   Eigen::DSizes<int, D * 2> dy_reshape_dims;
@@ -74,11 +85,11 @@ static void LerpGradFunction(const Context& ctx,
     reduce_dims[i] = 2 * i;
   }
 
-  auto& place = *ctx.eigen_device();
+  auto& place = *dev_ctx.eigen_device();
 
   if (dx) {
-    ctx.template Alloc<T>(dx);
-    auto eigen_dx = phi::EigenTensor<T, D>::From(*dx, dx_dims);
+    dev_ctx.template Alloc<T>(dx);
+    auto eigen_dx = EigenTensor<T, D>::From(*dx, dx_dims);
     auto eigen_expr = (1 - eigen_w.broadcast(w_bcast_dims)) *
                       eigen_dout.broadcast(g_bcast_dims);
     eigen_dx.device(place) = eigen_expr.reshape(dx_reshape_dims)
@@ -86,8 +97,8 @@ static void LerpGradFunction(const Context& ctx,
                                  .reshape(eigen_dx.dimensions());
   }
   if (dy) {
-    ctx.template Alloc<T>(dy);
-    auto eigen_dy = phi::EigenTensor<T, D>::From(*dy, dy_dims);
+    dev_ctx.template Alloc<T>(dy);
+    auto eigen_dy = EigenTensor<T, D>::From(*dy, dy_dims);
     auto eigen_expr =
         eigen_w.broadcast(w_bcast_dims) * eigen_dout.broadcast(g_bcast_dims);
     eigen_dy.device(place) = eigen_expr.reshape(dy_reshape_dims)
@@ -97,7 +108,7 @@ static void LerpGradFunction(const Context& ctx,
 }
 
 template <typename Context, typename T>
-static void LerpGradFunctionZero(const Context& ctx,
+static void LerpGradFunctionZero(const Context& dev_ctx,
                                  const DenseTensor& x UNUSED,
                                  const DenseTensor& y UNUSED,
                                  const DenseTensor& weight,
@@ -105,25 +116,25 @@ static void LerpGradFunctionZero(const Context& ctx,
                                  const DenseTensor& out_grad,
                                  DenseTensor* x_grad,
                                  DenseTensor* y_grad) {
-  auto dim = common::make_ddim(std::vector<int64_t>(1, 1));
-  auto eigen_w = phi::EigenTensor<T, 1>::From(weight, dim);
-  auto eigen_dout = phi::EigenTensor<T, 1>::From(out_grad, dim);
+  auto dim = make_ddim(std::vector<int64_t>(1, 1));
+  auto eigen_w = EigenTensor<T, 1>::From(weight, dim);
+  auto eigen_dout = EigenTensor<T, 1>::From(out_grad, dim);
 
-  auto& place = *ctx.eigen_device();
+  auto& place = *dev_ctx.eigen_device();
   if (x_grad) {
-    ctx.template Alloc<T>(x_grad);
-    auto eigen_dx = phi::EigenTensor<T, 1>::From(*x_grad, dim);
+    dev_ctx.template Alloc<T>(x_grad);
+    auto eigen_dx = EigenTensor<T, 1>::From(*x_grad, dim);
     eigen_dx.device(place) = (1 - eigen_w) * eigen_dout;
   }
   if (y_grad) {
-    ctx.template Alloc<T>(y_grad);
-    auto eigen_dy = phi::EigenTensor<T, 1>::From(*y_grad, dim);
+    dev_ctx.template Alloc<T>(y_grad);
+    auto eigen_dy = EigenTensor<T, 1>::From(*y_grad, dim);
     eigen_dy.device(place) = eigen_w * eigen_dout;
   }
 }
 
 template <typename T, typename Context>
-void LerpGradKernel(const Context& ctx,
+void LerpGradKernel(const Context& dev_ctx,
                     const DenseTensor& x,
                     const DenseTensor& y,
                     const DenseTensor& weight,
@@ -149,31 +160,31 @@ void LerpGradKernel(const Context& ctx,
   switch (rank) {
     case 0:
       LerpGradFunctionZero<Context, T>(
-          ctx, x, y, weight, out, out_grad, x_grad, y_grad);
+          dev_ctx, x, y, weight, out, out_grad, x_grad, y_grad);
       break;
     case 1:
       LerpGradFunction<Context, T, 1>(
-          ctx, x, y, weight, out, out_grad, x_grad, y_grad);
+          dev_ctx, x, y, weight, out, out_grad, x_grad, y_grad);
       break;
     case 2:
       LerpGradFunction<Context, T, 2>(
-          ctx, x, y, weight, out, out_grad, x_grad, y_grad);
+          dev_ctx, x, y, weight, out, out_grad, x_grad, y_grad);
       break;
     case 3:
       LerpGradFunction<Context, T, 3>(
-          ctx, x, y, weight, out, out_grad, x_grad, y_grad);
+          dev_ctx, x, y, weight, out, out_grad, x_grad, y_grad);
       break;
     case 4:
       LerpGradFunction<Context, T, 4>(
-          ctx, x, y, weight, out, out_grad, x_grad, y_grad);
+          dev_ctx, x, y, weight, out, out_grad, x_grad, y_grad);
       break;
     case 5:
       LerpGradFunction<Context, T, 5>(
-          ctx, x, y, weight, out, out_grad, x_grad, y_grad);
+          dev_ctx, x, y, weight, out, out_grad, x_grad, y_grad);
       break;
     case 6:
       LerpGradFunction<Context, T, 6>(
-          ctx, x, y, weight, out, out_grad, x_grad, y_grad);
+          dev_ctx, x, y, weight, out, out_grad, x_grad, y_grad);
       break;
   }
 }

@@ -22,7 +22,7 @@ namespace phi {
 namespace funcs {
 
 template <typename DeviceContext, typename T>
-void FCFunctor<DeviceContext, T>::operator()(const DeviceContext& context,
+void FCFunctor<DeviceContext, T>::operator()(const DeviceContext& dev_ctx,
                                              const int M,
                                              const int N,
                                              const int K,
@@ -32,19 +32,19 @@ void FCFunctor<DeviceContext, T>::operator()(const DeviceContext& context,
                                              const T* B,
                                              bool relu,
                                              bool padding_weights) {
-  auto blas = GetBlas<DeviceContext, T>(context);
-  phi::DenseTensor Y1;
+  auto blas = GetBlas<DeviceContext, T>(dev_ctx);
+  DenseTensor Y1;
   T* Y1_data = nullptr;
   if (padding_weights) {
     const int NN = N + 4;
     const int KK = K + 4;
-    phi::DenseTensor X1;
+    DenseTensor X1;
     X1.Resize({M * KK});
-    T* X1_data = context.template HostAlloc<T>(&X1);
+    T* X1_data = dev_ctx.template HostAlloc<T>(&X1);
 
     Y1.Resize({M * (N + 4)});
-    Y1_data = context.template HostAlloc<T>(&Y1);
-#ifdef PADDLE_WITH_MKLML
+    Y1_data = dev_ctx.template HostAlloc<T>(&Y1);
+#if defined(PADDLE_WITH_MKLML) || defined(PADDLE_WITH_HML)
 #pragma omp parallel for
 #endif
     for (int i = 0; i < M; i++) {
@@ -68,7 +68,7 @@ void FCFunctor<DeviceContext, T>::operator()(const DeviceContext& context,
   }
   if (B == nullptr) {
     if (padding_weights) {
-#ifdef PADDLE_WITH_MKLML
+#if defined(PADDLE_WITH_MKLML) || defined(PADDLE_WITH_HML)
 #pragma omp parallel for
 #endif
       for (int i = 0; i < M; i++) {
@@ -81,13 +81,13 @@ void FCFunctor<DeviceContext, T>::operator()(const DeviceContext& context,
         errors::PermissionDenied("When bias is NULL, relu can not be true."));
     return;
   }
-  auto compute = relu ? phi::jit::KernelFuncs<phi::jit::VAddReluTuple<T>,
-                                              phi::CPUPlace>::Cache()
-                            .At(N)
-                      : phi::jit::KernelFuncs<phi::jit::VAddTuple<T>,
-                                              phi::CPUPlace>::Cache()
-                            .At(N);
-#ifdef PADDLE_WITH_MKLML
+  auto compute =
+      relu
+          ? phi::jit::KernelFuncs<phi::jit::VAddReluTuple<T>, CPUPlace>::Cache()
+                .At(N)
+          : phi::jit::KernelFuncs<phi::jit::VAddTuple<T>, CPUPlace>::Cache().At(
+                N);
+#if defined(PADDLE_WITH_MKLML) || defined(PADDLE_WITH_HML)
 #pragma omp parallel for
 #endif
   for (int i = 0; i < M; i++) {

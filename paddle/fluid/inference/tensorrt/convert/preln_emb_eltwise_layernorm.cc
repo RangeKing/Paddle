@@ -21,9 +21,8 @@ class PrelnEmbEltwiseLayerNormOpConverter : public OpConverter {
   void operator()(const framework::proto::OpDesc& op,
                   const framework::Scope& scope,
                   bool test_mode) override {
-#if IS_TRT_VERSION_GE(7000)
     VLOG(4) << "convert PrelnEmbEltwiseLayerNorm op to tensorrt layer";
-    // get the presistable var's data
+    // get the persistable var's data
     auto GetWeight = [&](const std::string& var_name,
                          phi::DDim* dim) -> TensorRTEngine::Weight {
       auto* temp_var = scope.FindVar(var_name);
@@ -145,9 +144,9 @@ class PrelnEmbEltwiseLayerNormOpConverter : public OpConverter {
         output_fp16,
         1,
         common::errors::InvalidArgument(
-            "Only Precision::KHalf(fp16) is supported when infering "
+            "Only Precision::KHalf(fp16) is supported when inferring "
             "ernie(bert) model with config.EnableVarseqlen(). "
-            "But Precision::KFloat32 is setted."));
+            "But Precision::KFloat32 is set."));
 
     std::vector<nvinfer1::PluginField> fields;
     std::vector<std::string> temp_fields_keys;
@@ -225,12 +224,6 @@ class PrelnEmbEltwiseLayerNormOpConverter : public OpConverter {
         ("shuffler_after_ManyEmbLayerNormPluginDynamic_V3(Output_1: " +
          op_desc.Output("Out_1")[0] + ")")
             .c_str());
-
-#else
-    PADDLE_THROW(common::errors::Fatal(
-        "PreInErnie want to use oss, must be with interleaved, "
-        "your TRT version is no less than 7.0"));
-#endif
   }
 };
 

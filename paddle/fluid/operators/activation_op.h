@@ -36,8 +36,6 @@ limitations under the License. */
 namespace paddle {
 namespace operators {
 
-using phi::To32BitIndex;
-
 using ActBwdOpFwdDeps = phi::funcs::ActBwdOpFwdDeps;
 
 template <typename T>
@@ -61,45 +59,5 @@ struct BaseActivationFunctor {
 
 USE_PHI_FUNCTOR(Mish)
 
-template <typename T>
-struct SoftReluFunctor : public BaseActivationFunctor<T> {
-  float threshold;
-  typename BaseActivationFunctor<T>::AttrPair GetAttrs() {
-    return {{"threshold", &threshold}};
-  }
-
-  template <typename Device, typename X, typename Out>
-  void operator()(Device d, X x, Out out) const {
-    auto tmp = static_cast<T>(threshold);
-    auto temp = x.cwiseMax(-tmp).cwiseMin(tmp);
-    out.device(d) = (static_cast<T>(1) + temp.exp()).log();
-  }
-};
-
-template <typename T>
-struct SoftReluGradFunctor : public BaseActivationFunctor<T> {
-  float threshold;
-  typename BaseActivationFunctor<T>::AttrPair GetAttrs() {
-    return {{"threshold", &threshold}};
-  }
-  template <typename Device,
-            typename X,
-            typename Out,
-            typename dOut,
-            typename dX>
-  void operator()(Device d, X x UNUSED, Out out, dOut dout, dX dx) const {
-    auto tmp = static_cast<T>(threshold);
-    auto temp = ((out > -tmp) * (out < tmp)).template cast<T>();
-    dx.device(d) = dout * (static_cast<T>(1) - (-out).exp()) * temp;
-  }
-
-  static constexpr ActBwdOpFwdDeps FwdDeps() {
-    return ActBwdOpFwdDeps::kDepOut;
-  }
-};
-
 }  // namespace operators
 }  // namespace paddle
-
-#define FOR_EACH_ACTIVATION_OP(__macro) \
-  __macro(soft_relu, SoftRelu, SoftReluFunctor, SoftReluGradFunctor);

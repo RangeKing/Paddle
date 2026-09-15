@@ -14,6 +14,10 @@ limitations under the License. */
 #include "paddle/fluid/framework/data_layout_transform.h"
 #include "paddle/fluid/framework/feed_fetch_type.h"
 #include "paddle/fluid/framework/op_registry.h"
+#ifdef PADDLE_WITH_DNNL
+#include "paddle/phi/backends/onednn/onednn_context.h"
+#include "paddle/phi/kernels/funcs/data_layout_transform.h"
+#endif
 #include "paddle/phi/core/platform/device_context.h"
 
 namespace paddle {
@@ -31,14 +35,14 @@ class OpBase;
 namespace paddle {
 namespace operators {
 
-static void DeepCopy(const phi::DenseTensor &src_item,
+static void DeepCopy(const DenseTensor &src_item,
                      const std::string &fetch_var_name,
-                     phi::DenseTensor *dst_item) {
+                     DenseTensor *dst_item) {
   if (src_item.IsInitialized()) {
 #ifdef PADDLE_WITH_DNNL
     // Conversion from MKL-DNN to Paddle
     if (src_item.layout() == phi::DataLayout::ONEDNN) {
-      phi::DenseTensor out;
+      DenseTensor out;
       // Convert to desired Paddle layout, apart from grads of filter
       // as params are not a subject to paddle's data_format
       phi::funcs::TransDataLayoutFromOneDNN(
@@ -71,7 +75,7 @@ class FetchV2Op : public framework::OperatorWithKernel {
  protected:
   phi::KernelKey GetKernelTypeForVar(
       const std::string &var_name,
-      const phi::DenseTensor &tensor,
+      const DenseTensor &tensor,
       const phi::KernelKey &expected_kernel_type) const override {
     if (!tensor.IsInitialized()) {
       return phi::KernelKey(phi::Backend::ALL_BACKEND,
@@ -89,14 +93,14 @@ class FetchV2Op : public framework::OperatorWithKernel {
       return phi::KernelKey(framework::proto::VarType::FP32, phi::CPUPlace());
     }
 
-    if (fetch_var->IsType<phi::DenseTensor>()) {
-      auto &src_item = fetch_var->Get<phi::DenseTensor>();
+    if (fetch_var->IsType<DenseTensor>()) {
+      auto &src_item = fetch_var->Get<DenseTensor>();
       if (!src_item.IsInitialized()) {
         return phi::KernelKey(framework::proto::VarType::FP32, phi::CPUPlace());
       }
     } else if (fetch_var->IsType<phi::SparseCooTensor>()) {
       auto &src_item = fetch_var->Get<phi::SparseCooTensor>();
-      if (!src_item.initialized()) {
+      if (!src_item.has_allocation()) {
         return phi::KernelKey(framework::proto::VarType::FP32, phi::CPUPlace());
       }
     } else {
@@ -146,8 +150,8 @@ class FetchV2Kernel {
 
     bool deepcopy = ctx.Attr<bool>("deepcopy");
 
-    if (fetch_var->IsType<phi::DenseTensor>()) {
-      auto &src_item = fetch_var->Get<phi::DenseTensor>();
+    if (fetch_var->IsType<DenseTensor>()) {
+      auto &src_item = fetch_var->Get<DenseTensor>();
       if (!src_item.IsInitialized()) {
         return;
       }
@@ -169,7 +173,7 @@ class FetchV2Kernel {
       }
     } else if (fetch_var->IsType<phi::SparseCooTensor>()) {
       auto &src_item = fetch_var->Get<phi::SparseCooTensor>();
-      if (!src_item.initialized()) {
+      if (!src_item.has_allocation()) {
         return;
       }
       fetch_list->at(col) = src_item;
@@ -199,11 +203,11 @@ class FetchV2OpProtoMaker : public framework::OpProtoAndCheckerMaker {
  public:
   void Make() override {
     AddInput("X",
-             "(phi::DenseTensor) The resulted phi::DenseTensor which is "
+             "(phi::DenseTensor) The resulted DenseTensor which is "
              "expected to return "
              "to users.");
     AddOutput("Out",
-              "(vector<phi::DenseTensor>) A fetching list of phi::DenseTensor "
+              "(vector<DenseTensor>) A fetching list of DenseTensor "
               "which may have "
               "different dimension, shape and data type.");
     AddAttr<int>("col", "(int) The column index of fetching object.");

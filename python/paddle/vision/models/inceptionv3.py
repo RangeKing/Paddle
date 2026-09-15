@@ -517,7 +517,7 @@ class InceptionV3(nn.Layer):
         :ref:`api_paddle_nn_Layer`. An instance of Inception v3 model.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.vision.models import InceptionV3
@@ -528,7 +528,7 @@ class InceptionV3(nn.Layer):
             >>> out = inception_v3(x)
 
             >>> print(out.shape)
-            [1, 1000]
+            paddle.Size([1, 1000])
     """
 
     num_classes: int
@@ -622,7 +622,7 @@ def inception_v3(
         :ref:`api_paddle_nn_Layer`. An instance of Inception v3 model.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.vision.models import inception_v3
@@ -637,14 +637,14 @@ def inception_v3(
             >>> out = model(x)
 
             >>> print(out.shape)
-            [1, 1000]
+            paddle.Size([1, 1000])
     """
     model = InceptionV3(**kwargs)
     arch = "inception_v3"
     if pretrained:
-        assert (
-            arch in model_urls
-        ), f"{arch} model do not have a pretrained model now, you should set pretrained=False"
+        assert arch in model_urls, (
+            f"{arch} model do not have a pretrained model now, you should set pretrained=False"
+        )
         weight_path = get_weights_path_from_url(
             model_urls[arch][0], model_urls[arch][1]
         )

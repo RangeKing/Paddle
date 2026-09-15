@@ -21,26 +21,26 @@
 #include "paddle/phi/core/utils/data_type.h"
 namespace phi {
 template <typename T, typename Context, typename IndexT = int>
-void IndexSampleGradInner(const Context& context,
+void IndexSampleGradInner(const Context& dev_ctx,
                           const DenseTensor& out_grad,
                           const DenseTensor& index,
                           DenseTensor* x_grad) {
   std::vector<T> out_grad_vec;
   std::vector<IndexT> index_vec;
-  phi::TensorToVector(out_grad, context, &out_grad_vec);
-  phi::TensorToVector(index, context, &index_vec);
+  TensorToVector(out_grad, dev_ctx, &out_grad_vec);
+  TensorToVector(index, dev_ctx, &index_vec);
 
   auto index_dims = index.dims();
   auto x_grad_dims = x_grad->dims();
 
   auto value_length = x_grad_dims[1];
   auto index_length = index_dims[1];
-  int index_ids_num = static_cast<int>(index.numel());
+  int64_t index_ids_num = index.numel();
 
   std::vector<T> x_grad_vec(x_grad->numel(), 0);
 
-  for (int i = 0; i < index_ids_num; i++) {
-    int b = floor(i / index_length);
+  for (int64_t i = 0; i < index_ids_num; i++) {
+    int64_t b = floor(i / index_length);
     PADDLE_ENFORCE_GE(
         index_vec[i],
         0,
@@ -59,16 +59,16 @@ void IndexSampleGradInner(const Context& context,
             "value.",
             value_length,
             index_vec[i]));
-    int v_i = b * value_length + static_cast<int>(index_vec[i]);
+    int64_t v_i = b * value_length + static_cast<int64_t>(index_vec[i]);
     x_grad_vec[v_i] += out_grad_vec[i];
   }
-  context.template Alloc<T>(x_grad);
-  phi::TensorFromVector(x_grad_vec, context, x_grad);
+  dev_ctx.template Alloc<T>(x_grad);
+  TensorFromVector(x_grad_vec, dev_ctx, x_grad);
   x_grad->Resize(x_grad_dims);
 }
 
 template <typename T, typename Context>
-void IndexSampleGradKernel(const Context& ctx,
+void IndexSampleGradKernel(const Context& dev_ctx,
                            const DenseTensor& x UNUSED,
                            const DenseTensor& index,
                            const DenseTensor& out_grad,
@@ -85,9 +85,9 @@ void IndexSampleGradKernel(const Context& ctx,
                         DataTypeToString(DataType::INT32),
                         DataTypeToString(DataType::INT64)));
   if (index_type == DataType::INT32) {
-    IndexSampleGradInner<T, Context, int>(ctx, out_grad, index, x_grad);
+    IndexSampleGradInner<T, Context, int>(dev_ctx, out_grad, index, x_grad);
   } else if (index_type == DataType::INT64) {
-    IndexSampleGradInner<T, Context, int64_t>(ctx, out_grad, index, x_grad);
+    IndexSampleGradInner<T, Context, int64_t>(dev_ctx, out_grad, index, x_grad);
   }
 }
 
@@ -101,5 +101,5 @@ PD_REGISTER_KERNEL(index_sample_grad,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::complex64,
+                   phi::complex128) {}

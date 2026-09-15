@@ -17,6 +17,7 @@
 #include "paddle/phi/backends/cpu/cpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/empty_kernel.h"
+#include "paddle/phi/kernels/full_kernel.h"
 
 namespace phi {
 
@@ -179,7 +180,7 @@ template <typename T, typename Context>
 void RoiAlignKernel(const Context& dev_ctx,
                     const DenseTensor& x,
                     const DenseTensor& boxes,
-                    const paddle::optional<DenseTensor>& boxes_num,
+                    const optional<DenseTensor>& boxes_num,
                     int pooled_height,
                     int pooled_width,
                     float spatial_scale,
@@ -193,8 +194,8 @@ void RoiAlignKernel(const Context& dev_ctx,
   int width = static_cast<int>(in_dims[3]);
   int rois_num = static_cast<int>(boxes.dims()[0]);
 
-  if (rois_num == 0) {
-    dev_ctx.template Alloc<T>(out);
+  if (x.numel() == 0 || boxes.numel() == 0) {
+    Full<T, Context>(dev_ctx, out->dims(), 0, out);
     return;
   }
 
@@ -217,7 +218,7 @@ void RoiAlignKernel(const Context& dev_ctx,
             "and the batch size of images is %d",
             boxes_batch_size,
             batch_size));
-    if (boxes_num->dtype() == phi::DataType::INT64) {
+    if (boxes_num->dtype() == DataType::INT64) {
       auto* boxes_num_data = boxes_num->data<int64_t>();
       int64_t start = 0;
       for (int64_t n = 0; n < boxes_batch_size; ++n) {
@@ -226,7 +227,7 @@ void RoiAlignKernel(const Context& dev_ctx,
         }
         start += boxes_num_data[n];
       }
-    } else if (boxes_num->dtype() == phi::DataType::INT32) {
+    } else if (boxes_num->dtype() == DataType::INT32) {
       auto* boxes_num_data = boxes_num->data<int>();
       int start = 0;
       for (int n = 0; n < boxes_batch_size; ++n) {

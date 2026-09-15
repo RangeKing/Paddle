@@ -21,18 +21,20 @@
 namespace phi {
 
 template <typename T, typename Context>
-void GatherNdGradKernel(const Context &ctx,
+void GatherNdGradKernel(const Context &dev_ctx,
                         const DenseTensor &x,
                         const DenseTensor &index,
                         const DenseTensor &out_grad,
                         DenseTensor *x_grad) {
   using XPUType = typename XPUTypeTrait<T>::Type;
-  ctx.template Alloc<T>(x_grad);
-
-  int r = XPU_SUCCESS;
+  dev_ctx.template Alloc<T>(x_grad);
+  if (x_grad->numel() == 0) {
+    return;
+  }
+  int r = 0;
   XPUType *dx_data = reinterpret_cast<XPUType *>(x_grad->data<T>());
   r = xpu::constant<XPUType>(
-      ctx.x_context(), dx_data, x_grad->numel(), static_cast<XPUType>(0));
+      dev_ctx.x_context(), dx_data, x_grad->numel(), static_cast<XPUType>(0));
   PADDLE_ENFORCE_XDNN_SUCCESS(r, "constant");
 
   if (out_grad.numel() == 0) {
@@ -49,7 +51,7 @@ void GatherNdGradKernel(const Context &ctx,
         0,
         common::errors::InvalidArgument("end_size[%d] should be 0", end_size));
     // remain dim
-    auto remain_ddim = common::slice_ddim(index_dims, 0, index_dims_size - 1);
+    auto remain_ddim = slice_ddim(index_dims, 0, index_dims_size - 1);
     int64_t remain_numel = common::product(remain_ddim);
 
     int64_t x_numel = x.numel();
@@ -63,44 +65,44 @@ void GatherNdGradKernel(const Context &ctx,
             remain_numel,
             out_grad_numel));
 
-    // int reduce_sum(Context* ctx, const T* x, T* y, const std::vector<int>&
-    // xshape, const std::vector<int>& rdims)
+    // int reduce_sum(Context* xpu_ctx, const T* x, T* y, const
+    // std::vector<int>& xshape, const std::vector<int>& rdims)
     int r =
-        xpu::reduce_sum(ctx.x_context(),
+        xpu::reduce_sum(dev_ctx.x_context(),
                         reinterpret_cast<const XPUType *>(out_grad.data<T>()),
                         reinterpret_cast<XPUType *>(x_grad->data<T>()),
-                        {remain_numel, x_numel},
-                        {0});
+                        {(int64_t)remain_numel, (int64_t)x_numel},
+                        {0LL});
     PADDLE_ENFORCE_XDNN_SUCCESS(r, "reduce_sum");
     return;
   }
 
   auto index_type = index.dtype();
   bool index_type_match =
-      index_type == phi::DataType::INT32 || index_type == phi::DataType::INT64;
+      index_type == DataType::INT32 || index_type == DataType::INT64;
   PADDLE_ENFORCE_EQ(index_type_match,
                     true,
                     common::errors::InvalidArgument(
                         "Index holds the wrong type, it holds [%s],"
                         "but desires to be [%s] or [%s]",
                         index_type,
-                        phi::DataType::INT32,
-                        phi::DataType::INT64));
+                        DataType::INT32,
+                        DataType::INT64));
 
-  auto x_shape = common::vectorize<int64_t>(x_grad->dims());
-  auto index_shape = common::vectorize<int64_t>(index.dims());
+  auto x_shape = vectorize<int64_t>(x_grad->dims());
+  auto index_shape = vectorize<int64_t>(index.dims());
   if (index_shape.size() == 1) {
     index_shape.insert(index_shape.begin(), 1);
   }
   xpu::VectorParam<int64_t> x_vec = {
-      x_shape.data(), static_cast<int>(x_shape.size()), nullptr};
+      x_shape.data(), static_cast<int64_t>(x_shape.size()), nullptr};
 
-  int index_size = static_cast<int>(index.numel());
-  if (index_type == phi::DataType::INT32) {
+  int64_t index_size = index.numel();
+  if (index_type == DataType::INT32) {
     auto index_data = const_cast<int *>(index.data<int>());
     xpu::VectorParam<int> index_vec{nullptr, index_size, index_data};
     r = xpu::scatter_nd<XPUType, int>(
-        ctx.x_context(),
+        dev_ctx.x_context(),
         nullptr,
         reinterpret_cast<const XPUType *>(out_grad.data<T>()),
         dx_data,
@@ -112,7 +114,7 @@ void GatherNdGradKernel(const Context &ctx,
     auto index_data = const_cast<int64_t *>(index.data<int64_t>());
     xpu::VectorParam<int64_t> index_vec{nullptr, index_size, index_data};
     r = xpu::scatter_nd<XPUType, int64_t>(
-        ctx.x_context(),
+        dev_ctx.x_context(),
         nullptr,
         reinterpret_cast<const XPUType *>(out_grad.data<T>()),
         dx_data,
@@ -132,6 +134,6 @@ PD_REGISTER_KERNEL(gather_nd_grad,
                    phi::GatherNdGradKernel,
                    float,
                    int,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
+                   phi::float16,
+                   phi::bfloat16,
                    int64_t) {}

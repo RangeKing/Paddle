@@ -74,15 +74,9 @@ PoolPlugin *PoolPlugin::clone() const TRT_NOEXCEPT {
 
 int PoolPlugin::enqueue(int batchSize,
                         const void *const *inputs,
-#if IS_TRT_VERSION_LT(8000)
-                        void **outputs,
-                        void *workspace,
-                        cudaStream_t stream) TRT_NOEXCEPT {
-#else
                         void *const *outputs,
                         void *workspace,
                         cudaStream_t stream) TRT_NOEXCEPT {
-#endif
   auto const &input_dims = this->getInputDims(0);
   int input_size = 0;
   float const *idata = reinterpret_cast<float const *>(inputs[0]);
@@ -127,9 +121,6 @@ int PoolPlugin::enqueue(int batchSize,
 
   return cudaGetLastError() != cudaSuccess;
 }
-
-// Dynamic Plugin below.
-#if IS_TRT_VERSION_GE(6000)
 
 PoolPluginDynamic::PoolPluginDynamic(void const *serialData,
                                      size_t serialLength) {
@@ -260,7 +251,7 @@ bool PoolPluginDynamic::supportsFormatCombination(
   PADDLE_ENFORCE_NOT_NULL(
       in_out,
       common::errors::InvalidArgument(
-          "The input of swish plugin shoule not be nullptr."));
+          "The input of swish plugin should not be nullptr."));
 
   PADDLE_ENFORCE_LT(
       pos,
@@ -366,7 +357,6 @@ int PoolPluginDynamic::enqueue(const nvinfer1::PluginTensorDesc *input_desc,
 
   return cudaGetLastError() != cudaSuccess;
 }
-#endif
 
 }  // namespace plugin
 }  // namespace tensorrt

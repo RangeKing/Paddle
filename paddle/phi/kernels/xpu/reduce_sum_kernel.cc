@@ -16,6 +16,7 @@
 
 #include "paddle/phi/backends/xpu/xpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/xpu/reduce.h"
 
 namespace phi {
@@ -31,6 +32,15 @@ void SumRawKernel(const Context& dev_ctx,
   if (out_dtype == DataType::UNDEFINED && out->dtype() != x.dtype()) {
     out_dtype = out->dtype();
   }
+  if (x.numel() == 0) {
+    dev_ctx.template Alloc<T>(out);
+    if (out_dtype == DataType::INT64) {
+      Full<int64_t, Context>(dev_ctx, out->dims(), 0, out);
+    } else {
+      Full<T, Context>(dev_ctx, out->dims(), 0, out);
+    }
+    return;
+  }
   XPUReduce<Context, T, phi::SumFunctor>(
       dev_ctx, x, dims.GetData(), keep_dim, reduce_all, out_dtype, out);
 }
@@ -42,10 +52,11 @@ PD_REGISTER_KERNEL(sum_raw,
                    ALL_LAYOUT,
                    phi::SumRawKernel,
                    float,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
+                   phi::float16,
+                   phi::bfloat16,
                    int8_t,
                    int,
-                   int64_t) {
+                   int64_t,
+                   bool) {
   kernel->OutputAt(0).SetDataType(phi::DataType::UNDEFINED);
 }

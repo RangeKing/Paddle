@@ -23,7 +23,6 @@ from typing import (
     TYPE_CHECKING,
     Any,
     AnyStr,
-    Callable,
     Protocol,
     TypeVar,
     overload,
@@ -38,7 +37,10 @@ from ..base.framework import (
 )
 from ..framework import core, in_dynamic_mode
 from .dataloader import BatchSampler, IterableDataset, Subset
-from .dataloader.batch_sampler import _InfiniteIterableSampler
+from .dataloader.batch_sampler import (
+    DistributedBatchSampler,
+    _InfiniteIterableSampler,
+)
 from .dataloader.dataloader_iter import (
     _DataLoaderIterMultiProcess,
     _DataLoaderIterSingleProcess,
@@ -47,7 +49,7 @@ from .dataloader.dataloader_iter import (
 
 if TYPE_CHECKING:
     import numbers
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
     import numpy.typing as npt
 
@@ -344,6 +346,11 @@ class DataLoader:
             batch data asynchronously, so it would speed up data feeding
             and occupies a little more CPU or GPU memory, i.e., the memory
             of one batch input data. Default True.
+        reader_buffer_size (int, optional): This option takes effect only
+            when use_buffer_reader is set to True. It specifies the number of
+            batches the buffer reader prefetches in advance. Note that
+            Increasing this value will result in a linear increase in CPU or GPU memory usage.
+            Default 2.
         prefetch_factor (int, optional): Number of batch data the DataLoader would prefetch
             if use_buffer_reader=True. Default 2.
         use_shared_memory (bool, optional): whether to use shared memory to speed up
@@ -364,7 +371,7 @@ class DataLoader:
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +SOLO('can not use multiprocessing testing `paddle.io.DataLoader`')
             >>> import numpy as np
@@ -388,12 +395,11 @@ class DataLoader:
             ...
             ...     def __getitem__(self, idx):
             ...         image = np.random.random([IMAGE_SIZE]).astype('float32')
-            ...         label = np.random.randint(0, CLASS_NUM - 1, (1, )).astype('int64')
+            ...         label = np.random.randint(0, CLASS_NUM - 1, (1,)).astype('int64')
             ...         return image, label
             ...
             ...     def __len__(self):
             ...         return self.num_samples
-            ...
             >>> dataset = RandomDataset(BATCH_NUM * BATCH_SIZE)
 
             >>> class SimpleNet(nn.Layer):
@@ -403,17 +409,18 @@ class DataLoader:
             ...
             ...     def forward(self, image, label=None):
             ...         return self.fc(image)
-            ...
             >>> simple_net = SimpleNet()
-            >>> opt = paddle.optimizer.SGD(learning_rate=1e-3,
-            ...                             parameters=simple_net.parameters())
-            ...
-            >>> loader = DataLoader(dataset,
-            ...                     batch_size=BATCH_SIZE,
-            ...                     shuffle=True,
-            ...                     drop_last=True,
-            ...                     num_workers=2)
-            ...
+            >>> opt = paddle.optimizer.SGD(
+            ...     learning_rate=1e-3,
+            ...     parameters=simple_net.parameters(),
+            ... )
+            >>> loader = DataLoader(
+            ...     dataset,
+            ...     batch_size=BATCH_SIZE,
+            ...     shuffle=True,
+            ...     drop_last=True,
+            ...     num_workers=2,
+            ... )
             >>> for e in range(EPOCH_NUM):
             ...     for i, (image, label) in enumerate(loader()):
             ...         out = simple_net(image)
@@ -432,6 +439,7 @@ class DataLoader:
     return_list: bool
     collate_fn: _CollateFn | None
     use_buffer_reader: bool
+    reader_buffer_size: int
     prefetch_factor: int
     worker_init_fn: Callable[[int], None] | None
     dataset: Dataset[Any]
@@ -458,6 +466,7 @@ class DataLoader:
         collate_fn: _CollateFn | None = None,
         num_workers: int = 0,
         use_buffer_reader: bool = True,
+        reader_buffer_size: int = 2,
         prefetch_factor: int = 2,
         use_shared_memory: bool = True,
         timeout: int = 0,
@@ -467,15 +476,16 @@ class DataLoader:
         self.return_list = return_list
         self.collate_fn = collate_fn
         self.use_buffer_reader = use_buffer_reader
+        self.reader_buffer_size = reader_buffer_size
         self.prefetch_factor = prefetch_factor
         self.worker_init_fn = worker_init_fn
 
         self.dataset = dataset
 
         if not return_list and not in_dynamic_mode():
-            assert (
-                feed_list is not None
-            ), "feed_list should be set when return_list=False"
+            assert feed_list is not None, (
+                "feed_list should be set when return_list=False"
+            )
         self.feed_list = feed_list
 
         if places is None:
@@ -546,6 +556,42 @@ class DataLoader:
                     shuffle=shuffle,
                     drop_last=drop_last,
                 )
+
+        # Note(luchang): In auto DP mode, we use a distributed batch sampler to
+        # ensure that each DP rank receives different data.
+        if paddle.distributed.auto_parallel.auto_dp_utils.in_auto_dp_mode():
+            mesh = paddle.distributed.fleet.auto.get_mesh()
+            if mesh is None:
+                word_size = paddle.distributed.get_world_size()
+                mesh = paddle.distributed.ProcessMesh(
+                    list(range(0, word_size)), dim_names=["dp"]
+                )
+
+            if "dp" not in mesh.dim_names:
+                raise ValueError(
+                    "Auto-DP mode requires the mesh to include a 'dp' dimension."
+                )
+
+            dp_rank = mesh.get_rank_by_dim_and_process_id(
+                "dp", paddle.distributed.get_rank()
+            )
+            dp_world_size = mesh.get_dim_size("dp")
+
+            self.batch_size = int(self.batch_sampler.batch_size / dp_world_size)
+            if isinstance(self.batch_sampler, _InfiniteIterableSampler):
+                shuffle = False
+                drop_last = False
+            else:
+                shuffle = self.batch_sampler.shuffle
+                drop_last = self.batch_sampler.drop_last
+            self.batch_sampler = DistributedBatchSampler(
+                dataset=dataset,
+                batch_size=self.batch_size,
+                num_replicas=dp_world_size,
+                rank=dp_rank,
+                shuffle=shuffle,
+                drop_last=drop_last,
+            )
 
         self.drop_last = drop_last
         self.auto_collate_batch = self.batch_sampler is not None

@@ -46,7 +46,7 @@ class ExprMutator : public IRMutator<T> {
     if (expr->is_index()) return;
     IRMutator<T>::Visit(expr, op);
   }
-  void Visit(const IndexExpr *expr, IndexExpr *op) override { return; }
+  void Visit(const IndexExpr *expr, T op) override { return; }
 };
 
 template <typename T>
@@ -312,6 +312,10 @@ void IRMutator<T>::Visit(const IntrinsicOp *expr, T op) {
       for (auto &expr : n->args) {
         Visit(&expr, &expr);
       }
+    } break;
+    case ir::IntrinsicKind::kGetAddr: {
+      auto *n = llvm::dyn_cast<intrinsics::GetAddr>(node);
+      Visit(&n->data, &n->data);
     } break;
   }
 }

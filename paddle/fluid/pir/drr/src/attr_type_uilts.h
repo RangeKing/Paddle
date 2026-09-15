@@ -45,7 +45,7 @@ PD_SPECIALIZE_CppTypeToIrAttribute(std::vector<float>, pir::ArrayAttribute);
 PD_SPECIALIZE_CppTypeToIrAttribute(phi::DataType,
                                    paddle::dialect::DataTypeAttribute);
 PD_SPECIALIZE_CppTypeToIrAttribute(phi::Place, paddle::dialect::PlaceAttribute);
-PD_SPECIALIZE_CppTypeToIrAttribute(phi::DataLayout,
+PD_SPECIALIZE_CppTypeToIrAttribute(DataLayout,
                                    paddle::dialect::DataLayoutAttribute);
 PD_SPECIALIZE_CppTypeToIrAttribute(phi::IntArray,
                                    paddle::dialect::IntArrayAttribute);
@@ -53,7 +53,7 @@ PD_SPECIALIZE_CppTypeToIrAttribute(phi::IntArray,
 template <typename T>
 struct IrAttributeCreator {
   typename CppTypeToIrAttribute<T>::type operator()(T obj) const {
-    return CppTypeToIrAttribute<T>::type::template get(
+    return CppTypeToIrAttribute<T>::type::template get<T>(
         pir::IrContext::Instance(), obj);
   }
 };

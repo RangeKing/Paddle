@@ -22,30 +22,30 @@
 namespace phi {
 
 template <typename Context, typename T, size_t D>
-static void LerpFunction(const Context& ctx,
+static void LerpFunction(const Context& dev_ctx,
                          const DenseTensor& x,
                          const DenseTensor& y,
                          const DenseTensor& weight,
                          DenseTensor* out) {
-  ctx.template Alloc<T>(out);
+  dev_ctx.template Alloc<T>(out);
   const auto& out_dims = out->dims();
-  auto x_dims = phi::funcs::ExtendDims2Rank(x.dims(), D);
-  auto y_dims = phi::funcs::ExtendDims2Rank(y.dims(), D);
-  auto w_dims = phi::funcs::ExtendDims2Rank(weight.dims(), D);
+  auto x_dims = funcs::ExtendDims2Rank(x.dims(), D);
+  auto y_dims = funcs::ExtendDims2Rank(y.dims(), D);
+  auto w_dims = funcs::ExtendDims2Rank(weight.dims(), D);
   Eigen::DSizes<int, D> x_bcast_dims;
   Eigen::DSizes<int, D> y_bcast_dims;
   Eigen::DSizes<int, D> w_bcast_dims;
-  phi::funcs::GetBroadcastDims<D>(x_dims, out_dims, &x_bcast_dims);
-  phi::funcs::GetBroadcastDims<D>(y_dims, out_dims, &y_bcast_dims);
-  phi::funcs::GetBroadcastDims<D>(w_dims, out_dims, &w_bcast_dims);
+  funcs::GetBroadcastDims<D>(x_dims, out_dims, &x_bcast_dims);
+  funcs::GetBroadcastDims<D>(y_dims, out_dims, &y_bcast_dims);
+  funcs::GetBroadcastDims<D>(w_dims, out_dims, &w_bcast_dims);
 
-  auto eigen_x = phi::EigenTensor<T, D>::From(x, x_dims);
-  auto eigen_y = phi::EigenTensor<T, D>::From(y, y_dims);
-  auto eigen_w = phi::EigenTensor<T, D>::From(weight, w_dims);
-  auto eigen_out = phi::EigenTensor<T, D>::From(*out);
+  auto eigen_x = EigenTensor<T, D>::From(x, x_dims);
+  auto eigen_y = EigenTensor<T, D>::From(y, y_dims);
+  auto eigen_w = EigenTensor<T, D>::From(weight, w_dims);
+  auto eigen_out = EigenTensor<T, D>::From(*out);
 
-  using MPType = typename phi::dtype::MPTypeTrait<T>::Type;
-  auto& place = *ctx.eigen_device();
+  using MPType = typename MPTypeTrait<T>::Type;
+  auto& place = *dev_ctx.eigen_device();
   eigen_out.device(place) =
       (eigen_x.broadcast(x_bcast_dims).template cast<MPType>() +
        eigen_w.broadcast(w_bcast_dims).template cast<MPType>() *
@@ -55,21 +55,21 @@ static void LerpFunction(const Context& ctx,
 }
 
 template <typename Context, typename T>
-static void LerpFunctionZero(const Context& ctx,
+static void LerpFunctionZero(const Context& dev_ctx,
                              const DenseTensor& x,
                              const DenseTensor& y,
                              const DenseTensor& weight,
                              DenseTensor* out) {
-  ctx.template Alloc<T>(out);
+  dev_ctx.template Alloc<T>(out);
 
-  auto dim = common::make_ddim(std::vector<int64_t>(1, 1));
-  auto eigen_x = phi::EigenTensor<T, 1>::From(x, dim);
-  auto eigen_y = phi::EigenTensor<T, 1>::From(y, dim);
-  auto eigen_w = phi::EigenTensor<T, 1>::From(weight, dim);
-  auto eigen_out = phi::EigenTensor<T, 1>::From(*out, dim);
+  auto dim = make_ddim(std::vector<int64_t>(1, 1));
+  auto eigen_x = EigenTensor<T, 1>::From(x, dim);
+  auto eigen_y = EigenTensor<T, 1>::From(y, dim);
+  auto eigen_w = EigenTensor<T, 1>::From(weight, dim);
+  auto eigen_out = EigenTensor<T, 1>::From(*out, dim);
 
-  using MPType = typename phi::dtype::MPTypeTrait<T>::Type;
-  auto& place = *ctx.eigen_device();
+  using MPType = typename MPTypeTrait<T>::Type;
+  auto& place = *dev_ctx.eigen_device();
   eigen_out.device(place) =
       (eigen_x.template cast<MPType>() +
        eigen_w.template cast<MPType>() *
@@ -78,21 +78,15 @@ static void LerpFunctionZero(const Context& ctx,
 }
 
 template <typename T, typename Context>
-void LerpKernel(const Context& ctx,
+void LerpKernel(const Context& dev_ctx,
                 const DenseTensor& x,
                 const DenseTensor& y,
                 const DenseTensor& weight,
                 DenseTensor* out) {
-  PADDLE_ENFORCE_GT(
-      x.numel(),
-      0,
-      common::errors::InvalidArgument("LerpKernel's input x must not empty."));
-
-  PADDLE_ENFORCE_GT(
-      y.numel(),
-      0,
-      common::errors::InvalidArgument("LerpKernel's input y must not empty."));
-
+  if (out && out->numel() == 0) {
+    dev_ctx.template Alloc<T>(out);
+    return;
+  }
   int rank = out->dims().size();
   PADDLE_ENFORCE_GE(
       rank,
@@ -110,25 +104,25 @@ void LerpKernel(const Context& ctx,
           rank));
   switch (rank) {
     case 0:
-      LerpFunctionZero<Context, T>(ctx, x, y, weight, out);
+      LerpFunctionZero<Context, T>(dev_ctx, x, y, weight, out);
       break;
     case 1:
-      LerpFunction<Context, T, 1>(ctx, x, y, weight, out);
+      LerpFunction<Context, T, 1>(dev_ctx, x, y, weight, out);
       break;
     case 2:
-      LerpFunction<Context, T, 2>(ctx, x, y, weight, out);
+      LerpFunction<Context, T, 2>(dev_ctx, x, y, weight, out);
       break;
     case 3:
-      LerpFunction<Context, T, 3>(ctx, x, y, weight, out);
+      LerpFunction<Context, T, 3>(dev_ctx, x, y, weight, out);
       break;
     case 4:
-      LerpFunction<Context, T, 4>(ctx, x, y, weight, out);
+      LerpFunction<Context, T, 4>(dev_ctx, x, y, weight, out);
       break;
     case 5:
-      LerpFunction<Context, T, 5>(ctx, x, y, weight, out);
+      LerpFunction<Context, T, 5>(dev_ctx, x, y, weight, out);
       break;
     case 6:
-      LerpFunction<Context, T, 6>(ctx, x, y, weight, out);
+      LerpFunction<Context, T, 6>(dev_ctx, x, y, weight, out);
       break;
   }
 }

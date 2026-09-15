@@ -26,7 +26,7 @@ TensorDistAttribute DistDenseTensorType::tensor_dist_attr() const {
   return storage()->tensor_dist_attr;
 }
 
-const common::DDim& DistDenseTensorType::local_ddim() const {
+const DDim& DistDenseTensorType::local_ddim() const {
   return storage()->local_ddim;
 }
 
@@ -34,12 +34,11 @@ DistDenseTensorType DistDenseTensorType::get(
     pir::IrContext* ctx,
     pir::DenseTensorType dense_tensor_type,
     TensorDistAttribute tensor_dist_attr,
-    const common::DDim& local_ddim) {
+    const DDim& local_ddim) {
   return Base::get(ctx, dense_tensor_type, tensor_dist_attr, local_ddim);
 }
 
-common::DDim InferLocalDDim(const common::DDim& global_ddim,
-                            TensorDistAttribute dist_attr) {
+DDim InferLocalDDim(const DDim& global_ddim, TensorDistAttribute dist_attr) {
   if (global_ddim.size() == -1 || global_ddim.size() == 0) {
     return global_ddim;
   }
@@ -53,14 +52,74 @@ common::DDim InferLocalDDim(const common::DDim& global_ddim,
                         "size, but bot %d vs %d",
                         global_ddim.size(),
                         dim_mapping.size()));
-  common::DDim local_ddim(global_ddim);
-  for (size_t i = 0; i < dim_mapping.size(); ++i) {
-    if (dim_mapping[i] != -1) {
-      auto dim_size = mesh_dim.at(dim_mapping[i]);
-      local_ddim[i] = (global_ddim[i] + dim_size - 1) / dim_size;
+
+  DDim local_ddim(global_ddim);
+  if (dist_attr.placements_attr().has_value()) {
+    PlacementsAttribute placements_attr = dist_attr.placements_attr().value();
+    const phi::distributed::Placements& placements =
+        placements_attr.placements();
+    for (size_t i = 0; i < placements.size(); i++) {
+      if (placements[i]->is_shard()) {
+        int tensor_dim =
+            dynamic_cast<const phi::distributed::Shard&>(*placements[i])
+                .get_dim();
+        if (local_ddim[tensor_dim] == -1) continue;
+        auto dim_size = mesh_dim.at(i);
+        local_ddim[tensor_dim] =
+            (local_ddim[tensor_dim] + dim_size - 1) / dim_size;
+      }
+    }
+  } else {
+    for (size_t i = 0; i < dim_mapping.size(); ++i) {
+      if (local_ddim[i] == -1) continue;
+      if (dim_mapping[i] != -1) {
+        auto dim_size = mesh_dim.at(dim_mapping[i]);
+        local_ddim[i] = (global_ddim[i] + dim_size - 1) / dim_size;
+      }
     }
   }
   return local_ddim;
+}
+
+DDim InferGlobalDDim(const DDim& local_ddim, TensorDistAttribute dist_attr) {
+  if (local_ddim.size() == -1 || local_ddim.size() == 0) {
+    return local_ddim;
+  }
+  const ProcessMeshAttribute& mesh_attr = dist_attr.process_mesh_attr();
+  auto& mesh_dim = mesh_attr.shape();
+  auto& dim_mapping = dist_attr.dims_mapping();
+  PADDLE_ENFORCE_EQ(local_ddim.size(),
+                    dim_mapping.size(),
+                    ::common::errors::PreconditionNotMet(
+                        "The local ddim size must equal to dim_mapping's "
+                        "size, but bot %d vs %d",
+                        local_ddim.size(),
+                        dim_mapping.size()));
+  DDim global_ddim(local_ddim);
+  if (dist_attr.placements_attr().has_value()) {
+    PlacementsAttribute placements_attr = dist_attr.placements_attr().value();
+    const phi::distributed::Placements& placements =
+        placements_attr.placements();
+    for (size_t i = 0; i < placements.size(); i++) {
+      if (placements[i]->is_shard()) {
+        int tensor_dim =
+            dynamic_cast<const phi::distributed::Shard&>(*placements[i])
+                .get_dim();
+        if (global_ddim[tensor_dim] == -1) continue;
+        auto dim_size = mesh_dim.at(i);
+        global_ddim[tensor_dim] = local_ddim[tensor_dim] * dim_size;
+      }
+    }
+  } else {
+    for (size_t i = 0; i < dim_mapping.size(); ++i) {
+      if (global_ddim[i] == -1) continue;
+      if (dim_mapping[i] != -1) {
+        global_ddim[i] = local_ddim[i] * mesh_dim.at(dim_mapping[i]);
+      }
+    }
+  }
+
+  return global_ddim;
 }
 
 pir::DenseTensorType DistDenseTensorType::local_type() const {

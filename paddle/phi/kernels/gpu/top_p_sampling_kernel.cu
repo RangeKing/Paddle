@@ -18,14 +18,12 @@
 #include <hip/hip_fp16.h>
 #include <hip/hip_runtime.h>
 #include <hiprand_kernel.h>
-#include <hipcub/hipcub.hpp>
-namespace cub = hipcub;
 #else
 #include <cuda_fp16.h>
 #include <curand_kernel.h>
-#include <cub/cub.cuh>
 #endif
 
+#include "paddle/phi/kernels/funcs/cub.h"
 #if defined(__CUDACC__) && CUDA_VERSION >= 11060
 #define CUDA_BFLOAT16_AVAILABLE
 #include <cuda_bf16.h>
@@ -56,13 +54,13 @@ struct DataTypeTraits {
 };
 
 template <>
-struct DataTypeTraits<phi::dtype::float16> {
+struct DataTypeTraits<phi::float16> {
   using DataType = half;
 };
 
 #ifdef CUDA_BFLOAT16_AVAILABLE
 template <>
-struct DataTypeTraits<phi::dtype::bfloat16> {
+struct DataTypeTraits<phi::bfloat16> {
   using DataType = __nv_bfloat16;
 };
 #endif
@@ -98,7 +96,11 @@ struct SegmentOffsetIter {
   explicit SegmentOffsetIter(int num_cols) : num_cols_(num_cols) {}
 
   __host__ __device__ __forceinline__ int operator()(int idx) const {
-    return idx * num_cols_;
+#if !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__)
+    PADDLE_ENFORCE_LE_INT_MAX(static_cast<int64_t>(idx) * num_cols_,
+                              "idx * num_cols_");
+#endif
+    return static_cast<int>(static_cast<int64_t>(idx) * num_cols_);
   }
 
   int num_cols_;
@@ -156,7 +158,7 @@ int GetBlockSize(int vocab_size) {
   }
 }
 
-inline int div_up(int a, int n) { return (a + n - 1) / n; }
+inline int64_t div_up(int64_t a, int64_t n) { return (a + n - 1) / n; }
 
 template <typename T>
 __device__ __forceinline__ void AddTo(Pair<T> topk[],
@@ -242,9 +244,9 @@ template <typename T>
 __forceinline__ __device__ Pair<T> WarpReduce(Pair<T> input) {
 #pragma unroll
   for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
-    T tmp_val = phi::backends::gpu::CudaShuffleDownSync(
+    T tmp_val = backends::gpu::CudaShuffleDownSync(
         FINAL_MASK, input.v, offset, WARP_SIZE);
-    int tmp_id = phi::backends::gpu::CudaShuffleDownSync(
+    int tmp_id = backends::gpu::CudaShuffleDownSync(
         FINAL_MASK, input.id, offset, WARP_SIZE);
     if (static_cast<float>(input.v) < static_cast<float>(tmp_val)) {
       input.v = tmp_val;
@@ -361,12 +363,12 @@ __global__ void KeMatrixTopPBeamTopK(const T* src,
 
   int top_num = TopPBeamTopK;
   float top_p_num = static_cast<float>(top_ps[bid]);
-  const int offset = bid * vocab_size;
+  const int64_t offset = static_cast<int64_t>(bid) * vocab_size;
   int64_t* topk_ids_now = nullptr;
   T* topk_scores_now = nullptr;
   if (k > 0) {
-    topk_ids_now = topk_ids + bid * k;
-    topk_scores_now = topk_scores + bid * k;
+    topk_ids_now = topk_ids + static_cast<int64_t>(bid) * k;
+    topk_scores_now = topk_scores + static_cast<int64_t>(bid) * k;
   }
 
   __shared__ Pair<T> shared_max[BlockSize / WARP_SIZE];
@@ -491,15 +493,16 @@ __global__ void KeMatrixTopPBeamTopKFt(const T* src,
   }
 
   while (top_num) {
-    ThreadGetTopK<T, MaxLength, BlockSize>(topk,
-                                           &beam,
-                                           TopPBeamTopK,
-                                           src + bid * vocab_size,
-                                           &firststep,
-                                           &is_empty,
-                                           &max,
-                                           vocab_size,
-                                           tid);
+    ThreadGetTopK<T, MaxLength, BlockSize>(
+        topk,
+        &beam,
+        TopPBeamTopK,
+        src + static_cast<int64_t>(bid) * vocab_size,
+        &firststep,
+        &is_empty,
+        &max,
+        vocab_size,
+        tid);
     BlockReduce<T, MaxLength, BlockSize>(
         shared_max, topk, beam_max, &beam, &top_num, &count, tid, wid, lane);
   }
@@ -555,7 +558,8 @@ __global__ void SetCountIter(int* count_iter, int num) {
   int tid = threadIdx.x;
   int bid = blockIdx.x;
   int idx = bid * blockDim.x + tid;
-  for (int i = idx; i < num; i += gridDim.x * blockDim.x) {
+  for (int64_t i = idx; i < num; i += static_cast<int64_t>(gridDim.x) *
+                                      static_cast<int64_t>(blockDim.x)) {
     count_iter[i] = i;
   }
 }
@@ -670,8 +674,10 @@ __global__ void topp_sampling(T* sorted_probs,
                               int64_t* out_id,
                               const T* top_ps,
                               const T* threshold,
+                              const int64_t* infer_seed,
                               GPU(randState_t) * states,
                               const int p_num,
+                              const uint64_t seed,
                               const int vocab_size,
                               const bool need_batch_random,
                               int* count_iter,
@@ -685,6 +691,16 @@ __global__ void topp_sampling(T* sorted_probs,
   const float p_t = static_cast<float>(top_ps[bid]);
   const float threshold_now =
       threshold ? static_cast<float>(threshold[bid]) : 0.f;
+  uint64_t seed_now;
+  GPU(randState_t) rand_state;
+  const int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (infer_seed) {
+    seed_now = static_cast<uint64_t>(infer_seed[bid]);
+    GPU(rand_init)(seed_now, tid, 0, &rand_state);
+  } else {
+    seed_now = seed;
+    GPU(rand_init)(seed_now, global_idx, 0, &rand_state);
+  }
   if (tid == 0) {
     stop_shared = 0;
   }
@@ -701,7 +717,7 @@ __global__ void topp_sampling(T* sorted_probs,
   // Initialize running total
   BlockPrefixCallbackOp prefix_op(0);
 
-  int offset = bid * vocab_size;
+  int64_t offset = static_cast<int64_t>(bid) * vocab_size;
 #ifdef DEBUG_TOPP
   if (tid == 0) {
     printf(
@@ -726,7 +742,7 @@ __global__ void topp_sampling(T* sorted_probs,
     if (thread_offset < p_t ||
         (thread_offset >= p_t && thread_offset - thread_count < p_t)) {
       float random_ratio =
-          exponential_transform(GPU(rand_uniform)(states + bid), 1.0f);
+          exponential_transform(GPU(rand_uniform)(&rand_state), 1.0f);
       float tmp_val =
           (thread_count >= threshold_now ? thread_count : 0.f) / random_ratio;
       if (static_cast<float>(max_thread_pair.v) < tmp_val) {
@@ -771,13 +787,6 @@ __global__ void topp_sampling(T* sorted_probs,
     }
   }
   __syncthreads();
-  if (stop_shared == 0) {
-    if (tid == 0) {
-      out_id[bid] = sorted_id[offset];
-      out_val[bid] = sorted_probs[offset];
-    }
-    return;
-  }
 
   Pair<T> max_pair = BlockReduce(temp_storage_reduce)
                          .Reduce(max_thread_pair, MaxOp<Pair<T>>());
@@ -849,7 +858,7 @@ __global__ void topp_sampling_ft(T* sorted_probs,
   }
   __syncthreads();
 
-  int offset = bid * vocab_size;
+  int64_t offset = static_cast<int64_t>(bid) * vocab_size;
 #ifdef DEBUG_TOPP
   if (tid == 0) {
     printf(
@@ -973,10 +982,12 @@ void DispatchTopPSampling(const Context& dev_ctx,
                           int64_t* out_id,
                           const T* top_ps,
                           const T* threshold,
+                          const int64_t* infer_seed,
                           GPU(randState_t) * states,
                           const int p_num,
                           const int vocab_size,
                           const int bs,
+                          const uint64_t seed,
                           const bool need_batch_random,
                           int* count_iter,
                           int* count_iter_begin,
@@ -1011,8 +1022,10 @@ void DispatchTopPSampling(const Context& dev_ctx,
                                                    out_id,
                                                    top_ps,
                                                    threshold,
+                                                   infer_seed,
                                                    states,
                                                    p_num,
+                                                   seed,
                                                    vocab_size,
                                                    need_batch_random,
                                                    count_iter,
@@ -1026,8 +1039,11 @@ void DispatchTopPSampling(const Context& dev_ctx,
 __global__ void setup_kernel(GPU(randState_t) * state,
                              int64_t* seed,
                              const int bs) {
-  int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  for (int i = idx; i < bs; i += gridDim.x * blockDim.x) {
+  int64_t idx =
+      static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x) +
+      static_cast<int64_t>(threadIdx.x);
+  for (int64_t i = idx; i < bs; i += static_cast<int64_t>(gridDim.x) *
+                                     static_cast<int64_t>(blockDim.x)) {
     GPU(rand_init)(static_cast<uint64_t>(seed[i]), 0, 0, &state[i]);
   }
 }
@@ -1037,8 +1053,11 @@ __global__ void setup_kernel(GPU(randState_t) * state,
                              const uint64_t offset,
                              const int bs,
                              const bool need_batch_random) {
-  int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  for (int i = idx; i < bs; i += gridDim.x * blockDim.x) {
+  int64_t idx =
+      static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x) +
+      static_cast<int64_t>(threadIdx.x);
+  for (int64_t i = idx; i < bs; i += static_cast<int64_t>(gridDim.x) *
+                                     static_cast<int64_t>(blockDim.x)) {
     if (need_batch_random) {
       GPU(rand_init)(seed, i, offset, &state[i]);
     } else {
@@ -1058,7 +1077,7 @@ T* SafeGetTensorPtr(const DenseTensor* t) {
 }
 
 template <typename T>
-T* SafeGetTensorPtr(const paddle::optional<DenseTensor>& t) {
+T* SafeGetTensorPtr(const optional<DenseTensor>& t) {
   return t ? SafeGetTensorPtr<T>(t.get()) : nullptr;
 }
 
@@ -1066,9 +1085,9 @@ template <typename T, typename Context>
 void TopPSamplingKernel(const Context& dev_ctx,
                         const DenseTensor& x,
                         const DenseTensor& ps,
-                        const paddle::optional<DenseTensor>& threshold,
-                        const paddle::optional<DenseTensor>& topp_seed,
-                        int seed,
+                        const optional<DenseTensor>& threshold,
+                        const optional<DenseTensor>& topp_seed,
+                        int64_t seed,
                         int k,
                         const std::string& mode,
                         DenseTensor* out,
@@ -1081,9 +1100,19 @@ void TopPSamplingKernel(const Context& dev_ctx,
   const auto* input = &x;
   // get the input dims
   const auto& in_dims = input->dims();
-  int p_num = ps.numel();
-  int bs = in_dims[0];
-  int vocab_size = in_dims[1];
+  int64_t p_num = ps.numel();
+  int64_t bs = in_dims[0];
+  // TODO(large-tensor): downstream functors may still use int
+  PADDLE_ENFORCE_LE_INT_MAX(p_num, "p_num");
+  PADDLE_ENFORCE_LE_INT_MAX(bs + 1, "bs + 1");
+  PADDLE_ENFORCE_LE_INT_MAX(in_dims[1], "vocab_size");
+  int64_t num_items64 = bs * in_dims[1];
+  PADDLE_ENFORCE_LE_INT_MAX(num_items64, "bs * vocab_size");
+  const int p_num_int = static_cast<int>(p_num);
+  const int vocab_size = static_cast<int>(in_dims[1]);
+  const int num_segments = static_cast<int>(bs);
+  const int num_segments_with_end = static_cast<int>(bs + 1);
+  const int num_items = static_cast<int>(num_items64);
   T* out_ptr = dev_ctx.template Alloc<T>(out);
   int64_t* ids_ptr = dev_ctx.template Alloc<int64_t>(ids);
   T* topk_scores_data = nullptr;
@@ -1094,27 +1123,28 @@ void TopPSamplingKernel(const Context& dev_ctx,
   }
 
   DenseTensor ps_now;
-  ps_now.Resize(phi::make_ddim({bs, 1}));
+  ps_now.Resize({bs, 1});
   dev_ctx.template Alloc<T>(&ps_now);
-  phi::Copy(dev_ctx, ps, dev_ctx.GetPlace(), false, &ps_now);
+  Copy(dev_ctx, ps, dev_ctx.GetPlace(), false, &ps_now);
 
   DenseTensor inds_input;
-  inds_input.Resize(phi::make_ddim({bs, vocab_size}));
+  inds_input.Resize({bs, vocab_size});
   dev_ctx.template Alloc<int64_t>(&inds_input);
 
   DenseTensor sorted_out;
-  sorted_out.Resize(phi::make_ddim({bs, vocab_size}));
+  sorted_out.Resize({bs, vocab_size});
   dev_ctx.template Alloc<T>(&sorted_out);
 
   DenseTensor sorted_id;
-  sorted_id.Resize(phi::make_ddim({bs, vocab_size}));
+  sorted_id.Resize({bs, vocab_size});
   dev_ctx.template Alloc<int64_t>(&sorted_id);
 
   int BlockSize = GetBlockSize(vocab_size);
 
   switch (BlockSize) {
-    FIXED_BLOCK_DIM(FillIndex<int64_t><<<bs, kBlockDim, 0, cu_stream>>>(
-        inds_input.data<int64_t>(), bs, vocab_size));
+    FIXED_BLOCK_DIM(FillIndex<int64_t>
+                    <<<num_segments, kBlockDim, 0, cu_stream>>>(
+                        inds_input.data<int64_t>(), bs, vocab_size));
     default:
       PD_THROW("the input data shape has error in the FillIndex kernel.");
   }
@@ -1133,30 +1163,31 @@ void TopPSamplingKernel(const Context& dev_ctx,
   bool need_batch_random = false;
 
   if (infer_seed) {
-    setup_kernel<<<1, 256, 0, cu_stream>>>(states, infer_seed, bs);
+    setup_kernel<<<1, 256, 0, cu_stream>>>(states, infer_seed, num_segments);
   } else {
     if (seed_now == -1) {
       need_batch_random = true;
       auto gen_cuda = dev_ctx.GetGenerator();
-      uint64_t increment = ps.numel() * 4;
+      uint64_t increment = bs * BlockSize;
       auto seed_offset = gen_cuda->IncrementOffset(increment);
       seed_now = seed_offset.first;
       offset = seed_offset.second;
       setup_kernel<<<1, 256, 0, cu_stream>>>(
-          states, seed_now, offset, bs, need_batch_random);
+          states, seed_now, offset, num_segments, need_batch_random);
     } else {
       setup_kernel<<<1, 256, 0, cu_stream>>>(
-          states, seed_now, offset, bs, need_batch_random);
+          states, seed_now, offset, num_segments, need_batch_random);
     }
   }
 
   DenseTensor count_iter;
-  count_iter.Resize(phi::make_ddim({bs + 1}));
+  count_iter.Resize({bs + 1});
   dev_ctx.template Alloc<int>(&count_iter);
   DenseTensor count_iter_begin;
-  count_iter_begin.Resize(phi::make_ddim({bs}));
+  count_iter_begin.Resize({bs});
   dev_ctx.template Alloc<int>(&count_iter_begin);
-  SetCountIter<<<1, 256, 0, cu_stream>>>(count_iter.data<int>(), bs + 1);
+  SetCountIter<<<1, 256, 0, cu_stream>>>(count_iter.data<int>(),
+                                         num_segments_with_end);
 
   T* threshold_data = SafeGetTensorPtr<T>(threshold);
 
@@ -1177,7 +1208,7 @@ void TopPSamplingKernel(const Context& dev_ctx,
       count_iter.data<int>(),
       count_iter_begin.data<int>(),
       k,
-      bs,
+      num_segments,
       need_batch_random,
       mode);
 
@@ -1198,8 +1229,8 @@ void TopPSamplingKernel(const Context& dev_ctx,
       reinterpret_cast<DataType_*>(const_cast<T*>(sorted_out.data<T>())),
       inds_input.data<int64_t>(),
       sorted_id.data<int64_t>(),
-      vocab_size * bs,
-      bs,
+      num_items,
+      num_segments,
       segment_offsets_t_begin,
       segment_offsets_t_end + 1,
       0,
@@ -1209,7 +1240,7 @@ void TopPSamplingKernel(const Context& dev_ctx,
   temp_storage_bytes = div_up(temp_storage_bytes, 256) * 256;
   int64_t temp_size = temp_storage_bytes;
   DenseTensor temp_storage;
-  temp_storage.Resize(phi::make_ddim({temp_size}));
+  temp_storage.Resize({temp_size});
   dev_ctx.template Alloc<uint8_t>(&temp_storage);
 
   cub::DeviceSegmentedRadixSort::SortPairsDescending(
@@ -1219,8 +1250,8 @@ void TopPSamplingKernel(const Context& dev_ctx,
       reinterpret_cast<DataType_*>(const_cast<T*>(sorted_out.data<T>())),
       inds_input.data<int64_t>(),
       sorted_id.data<int64_t>(),
-      vocab_size * bs,
-      bs,
+      num_items,
+      num_segments,
       segment_offsets_t_begin,
       segment_offsets_t_end + 1,
       0,
@@ -1234,16 +1265,17 @@ void TopPSamplingKernel(const Context& dev_ctx,
                           ids_ptr,
                           ps_now.data<T>(),
                           threshold_data,
+                          infer_seed,
                           states,
-                          p_num,
+                          p_num_int,
                           vocab_size,
-                          bs,
+                          num_segments,
+                          seed_now + offset,
                           need_batch_random,
                           count_iter.data<int>(),
                           count_iter_begin.data<int>(),
                           mode);
 }
-
 }  // namespace phi
 
 #ifdef CUDA_BFLOAT16_AVAILABLE
@@ -1255,8 +1287,8 @@ PD_REGISTER_KERNEL(top_p_sampling,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}
 #else
 PD_REGISTER_KERNEL(top_p_sampling,
                    GPU,
@@ -1266,5 +1298,5 @@ PD_REGISTER_KERNEL(top_p_sampling,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::float16) {}
+                   phi::float16) {}
 #endif

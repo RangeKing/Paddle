@@ -17,16 +17,15 @@ from __future__ import annotations
 import copy
 import typing
 from collections import defaultdict
-from collections.abc import Sequence
-from typing import Any, Callable, TypeVar
+from collections.abc import Callable, Sequence
+from typing import Any, TypeGuard, TypeVar
 from uuid import uuid4
 from weakref import WeakKeyDictionary
 
 import numpy as np
-from typing_extensions import TypeGuard
 
 import paddle
-from paddle.pir.core import convert_np_dtype_to_dtype_
+from paddle.pir.core import convert_nptype_to_datatype
 
 from ..base.data_feeder import check_dtype, convert_dtype
 from ..base.framework import (
@@ -72,6 +71,11 @@ def convert_to_list(value, n, name, dtype=int):
     if isinstance(value, dtype):
         return [value] * n
     else:
+        if isinstance(value, (Variable, paddle.pir.Value)):
+            raise NotSupportedTensorArgumentError(
+                f"`{name}` required numerical type with `{dtype}`, but received Tensor.",
+                name,
+            )
         try:
             value_list = list(value)
         except TypeError:
@@ -214,7 +218,12 @@ def _packed_nest_with_indices(structure, flat, index):
             packed.append(_sequence_like(s, child))
             index = new_index
         else:
-            packed.append(flat[index])
+            # Paddle requires python version > 3.7, so dict is always OrderedDict
+            packed.append(
+                flat[index]
+                if not isinstance(flat, dict)
+                else list(flat.values())[index]
+            )
             index += 1
     return index, packed
 
@@ -385,7 +394,7 @@ def get_int_tensor_list(ele_list, default_dtype='int64'):
         else:
             temp_out = paddle.tensor.fill_constant(
                 shape=[],
-                dtype=convert_np_dtype_to_dtype_(np.dtype(default_dtype)),
+                dtype=convert_nptype_to_datatype(np.dtype(default_dtype)),
                 value=ele,
                 force_cpu=True,
             )
@@ -473,7 +482,15 @@ def convert_shape_to_list(shape):
     Convert shape(list, tuple, variable) to list in imperative mode
     """
     if isinstance(shape, (list, tuple)):
-        shape = [x.item(0) if isinstance(x, Variable) else x for x in shape]
+        shape_out = []
+        for x in shape:
+            if isinstance(x, Variable):
+                # skip item if size = 0
+                if x.size > 0:
+                    shape_out.append(x.item(0))
+            else:
+                shape_out.append(x)
+        shape = shape_out
     else:
         if in_dygraph_mode():
             shape = shape.astype(int).tolist()
@@ -540,12 +557,12 @@ def get_inputs_outputs_in_block(block):
     Returns the inputs and outputs variable used in this block but not
     created in this block.
     """
-    assert isinstance(
-        block, Block
-    ), "input non-Block argument for get_inputs_outputs_in_block."
-    assert (
-        block.parent_idx != -1
-    ), "input block should be a sub-block, not main block."
+    assert isinstance(block, Block), (
+        "input non-Block argument for get_inputs_outputs_in_block."
+    )
+    assert block.parent_idx != -1, (
+        "input block should be a sub-block, not main block."
+    )
 
     # Find input/output var names of all ops in block
     inner_inputs = set()

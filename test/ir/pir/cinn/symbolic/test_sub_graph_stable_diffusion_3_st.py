@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# repo: diffusers_sub_grpah
+# repo: diffusers_sub_graph
 # model: stable_diffusion
-# api:paddle.tensor.manipulation.chunk||api:paddle.tensor.math.clip||method:__rmul__||api:paddle.tensor.ops.exp||api:paddle.tensor.ops.exp
+# api:paddle.tensor.manipulation.chunk||api:paddle.tensor.math.clip||method:__rmul__||api:paddle.exp||api:paddle.exp
 import unittest
 
 import numpy as np
@@ -35,8 +35,8 @@ class LayerCase(paddle.nn.Layer):
         var_2 = out[1]
         var_3 = paddle.tensor.math.clip(var_2, -30.0, 20.0)
         var_4 = 0.5 * var_3
-        var_5 = paddle.tensor.ops.exp(var_4)
-        var_6 = paddle.tensor.ops.exp(var_3)
+        var_5 = paddle.exp(var_4)
+        var_6 = paddle.exp(var_3)
         return var_1, var_2, var_3, var_5, var_6
 
 
@@ -52,15 +52,14 @@ class TestLayer(unittest.TestCase):
 
     def train(self, net, to_static, with_prim=False, with_cinn=False):
         if to_static:
-            paddle.set_flags({'FLAGS_prim_all': with_prim})
+            paddle.base.core._set_prim_all_enabled(with_prim)
             if with_cinn:
-                build_strategy = paddle.static.BuildStrategy()
-                build_strategy.build_cinn_pass = True
-                net = paddle.jit.to_static(
-                    net, build_strategy=build_strategy, full_graph=True
+                assert with_prim, (
+                    "with_cinn=True but with_prim=False is unsupported"
                 )
+                net = paddle.jit.to_static(net, backend="CINN", full_graph=True)
             else:
-                net = paddle.jit.to_static(net, full_graph=True)
+                net = paddle.jit.to_static(net, backend=None, full_graph=True)
         paddle.seed(123)
         outs = net(*self.inputs)
         return outs

@@ -28,15 +28,19 @@ void MaxOutGradKernel(const Context& dev_ctx,
                       int groups,
                       int axis,
                       DenseTensor* x_grad) {
+  if (x_grad && x_grad->numel() == 0) {
+    dev_ctx.template Alloc<T>(x_grad);
+    return;
+  }
   if (axis < 0) {
     axis += x.dims().size();
   }
 
-  phi::funcs::SetConstant<Context, T> zero;
+  funcs::SetConstant<Context, T> zero;
   if (x_grad) {
     dev_ctx.template Alloc<T>(x_grad);
     zero(dev_ctx, x_grad, static_cast<T>(0.0));
-    phi::funcs::MaxOutGradFunctor<Context, T> maxout_backward;
+    funcs::MaxOutGradFunctor<Context, T> maxout_backward;
     maxout_backward(dev_ctx, x, x_grad, out, out_grad, groups, axis);
   }
 }

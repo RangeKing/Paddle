@@ -17,30 +17,32 @@
 #include <thrust/device_vector.h>
 #include <thrust/host_vector.h>
 
+#include "paddle/phi/backends/gpu/cuda/cuda_graph_with_memory_pool.h"
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/backends/gpu/gpu_primitives.h"
 #include "paddle/phi/common/memory_utils.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/impl/box_coder.h"
-
 namespace phi {
 
 template <typename T>
 __global__ void EncodeCenterSizeKernel(const T *prior_box_data,
                                        const T *prior_box_var_data,
                                        const T *target_box_data,
-                                       const int row,
-                                       const int col,
-                                       const int len,
+                                       const int64_t row,
+                                       const int64_t col,
+                                       const int64_t len,
                                        const bool normalized,
                                        const T prior_box_var_size,
                                        const float *variance,
-                                       const int var_size,
+                                       const int64_t var_size,
                                        T *output) {
-  const int idx = threadIdx.x + blockIdx.x * blockDim.x;
+  const int64_t idx =
+      threadIdx.x + static_cast<int64_t>(blockIdx.x) * blockDim.x;
   if (idx < row * col) {
-    const int row_idx = idx / col;
-    const int col_idx = idx % col;
+    const int64_t row_idx = idx / col;
+    const int64_t col_idx = idx % col;
     T prior_box_width = prior_box_data[col_idx * len + 2] -
                         prior_box_data[col_idx * len] + (normalized == false);
     T prior_box_height = prior_box_data[col_idx * len + 3] -
@@ -69,7 +71,7 @@ __global__ void EncodeCenterSizeKernel(const T *prior_box_data,
     output[idx * len + 2] = log(fabs(target_box_width / prior_box_width));
     output[idx * len + 3] = log(fabs(target_box_height / prior_box_height));
     if (prior_box_var_data) {
-      int prior_var_offset = col_idx * len;
+      int64_t prior_var_offset = col_idx * len;
       output[idx * len] /= prior_box_var_data[prior_var_offset];
       output[idx * len + 1] /= prior_box_var_data[prior_var_offset + 1];
       output[idx * len + 2] /= prior_box_var_data[prior_var_offset + 2];
@@ -86,20 +88,21 @@ template <typename T>
 __global__ void DecodeCenterSizeKernel(const T *prior_box_data,
                                        const T *prior_box_var_data,
                                        const T *target_box_data,
-                                       const int row,
-                                       const int col,
-                                       const int len,
+                                       const int64_t row,
+                                       const int64_t col,
+                                       const int64_t len,
                                        const bool normalized,
                                        const T prior_box_var_size,
                                        const float *variance,
-                                       const int var_size,
+                                       const int64_t var_size,
                                        const int axis,
                                        T *output) {
-  const int idx = threadIdx.x + blockIdx.x * blockDim.x;
-  int prior_box_offset = 0;
+  const int64_t idx =
+      threadIdx.x + static_cast<int64_t>(blockIdx.x) * blockDim.x;
+  int64_t prior_box_offset = 0;
   if (idx < row * col) {
-    const int col_idx = idx % col;
-    const int row_idx = idx / col;
+    const int64_t col_idx = idx % col;
+    const int64_t row_idx = idx / col;
     prior_box_offset = axis == 0 ? col_idx * len : row_idx * len;
     T prior_box_width = prior_box_data[prior_box_offset + 2] -
                         prior_box_data[prior_box_offset] +
@@ -116,7 +119,7 @@ __global__ void DecodeCenterSizeKernel(const T *prior_box_data,
     T box_var_x = T(1), box_var_y = T(1);
     T box_var_w = T(1), box_var_h = T(1);
     if (prior_box_var_data) {
-      int prior_var_offset = axis == 0 ? col_idx * len : row_idx * len;
+      int64_t prior_var_offset = axis == 0 ? col_idx * len : row_idx * len;
       box_var_x = prior_box_var_data[prior_var_offset];
       box_var_y = prior_box_var_data[prior_var_offset + 1];
       box_var_w = prior_box_var_data[prior_var_offset + 2];
@@ -150,13 +153,20 @@ __global__ void DecodeCenterSizeKernel(const T *prior_box_data,
 template <typename T, typename Context>
 void BoxCoderKernel(const Context &dev_ctx,
                     const DenseTensor &prior_box,
-                    const paddle::optional<DenseTensor> &prior_box_var,
+                    const optional<DenseTensor> &prior_box_var,
                     const DenseTensor &target_box,
                     const std::string &code_type_str,
                     bool normalized,
                     int axis,
                     const std::vector<float> &variance,
                     DenseTensor *output_box) {
+  // prior_box and prior_box_var have the same shape, so do not judge
+  // prior_box_var
+  if (prior_box.numel() == 0 || target_box.numel() == 0) {
+    Full<T, Context>(dev_ctx, output_box->dims(), 0, output_box);
+    return;
+  }
+
   const T *prior_box_data = prior_box.template data<T>();
   const T *target_box_data = target_box.template data<T>();
   const T *prior_box_var_data = nullptr;
@@ -188,32 +198,37 @@ void BoxCoderKernel(const Context &dev_ctx,
                           " supports LoD with one level."));
   }
   const int var_size = static_cast<int>(variance.size());
-  auto code_type = phi::funcs::GetBoxCodeType(code_type_str);
-  auto row = target_box.dims()[0];
-  auto col = prior_box.dims()[0];
-  if (code_type == phi::funcs::BoxCodeType::kDecodeCenterSize) {
+  auto code_type = funcs::GetBoxCodeType(code_type_str);
+  int64_t row = target_box.dims()[0];
+  int64_t col = prior_box.dims()[0];
+  if (code_type == funcs::BoxCodeType::kDecodeCenterSize) {
     col = target_box.dims()[1];
   }
-  auto len = prior_box.dims()[1];
+  int64_t len = prior_box.dims()[1];
   int block = 512;
-  int grid = (row * col + block - 1) / block;
+  int64_t grid64 = (row * col + block - 1) / block;
+  PADDLE_ENFORCE_LE_INT_MAX(grid64, "grid");
+  int grid = static_cast<int>(grid64);
 
-  int bytes = var_size * sizeof(float);
-  auto dev_var = phi::memory_utils::Alloc(
-      dev_ctx.GetPlace(),
-      bytes,
-      phi::Stream(reinterpret_cast<phi::StreamId>(dev_ctx.stream())));
+  int64_t bytes = var_size * sizeof(float);
+  auto dev_var =
+      memory_utils::Alloc(dev_ctx.GetPlace(),
+                          bytes,
+                          Stream(reinterpret_cast<StreamId>(dev_ctx.stream())));
   float *dev_var_data = reinterpret_cast<float *>(dev_var->ptr());
-  auto cplace = phi::CPUPlace();
+  auto cplace = CPUPlace();
   const auto gplace = dev_ctx.GetPlace();
+  const float *stable_variance =
+      backends::gpu::RestoreHostMemIfCapturingCUDAGraph(
+          const_cast<float *>(variance.data()), variance.size());
   memory_utils::Copy(
-      gplace, dev_var_data, cplace, &variance[0], bytes, dev_ctx.stream());
+      gplace, dev_var_data, cplace, stable_variance, bytes, dev_ctx.stream());
 
   output_box->Resize({row, col, len});
   dev_ctx.template Alloc<T>(output_box);
   T *output = output_box->data<T>();
 
-  if (code_type == phi::funcs::BoxCodeType::kEncodeCenterSize) {
+  if (code_type == funcs::BoxCodeType::kEncodeCenterSize) {
     EncodeCenterSizeKernel<T>
         <<<grid, block, 0, dev_ctx.stream()>>>(prior_box_data,
                                                prior_box_var_data,
@@ -226,7 +241,7 @@ void BoxCoderKernel(const Context &dev_ctx,
                                                dev_var_data,
                                                var_size,
                                                output);
-  } else if (code_type == phi::funcs::BoxCodeType::kDecodeCenterSize) {
+  } else if (code_type == funcs::BoxCodeType::kDecodeCenterSize) {
     DecodeCenterSizeKernel<T>
         <<<grid, block, 0, dev_ctx.stream()>>>(prior_box_data,
                                                prior_box_var_data,

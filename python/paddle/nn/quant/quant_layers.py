@@ -31,7 +31,9 @@ from paddle.utils import unique_name
 from ..layer.layers import Layer
 
 if TYPE_CHECKING:
-    from typing_extensions import Never, TypeAlias
+    from typing import TypeAlias
+
+    from typing_extensions import Never
 
     from paddle import Tensor
     from paddle._typing import DTypeLike, Size2
@@ -318,9 +320,9 @@ class FakeQuantChannelWiseAbsMax(Layer):
         quant_on_weight: bool = False,
         reduce_type: Literal['max'] | None = None,
     ) -> None:
-        assert (
-            quant_on_weight
-        ), "Channel_wise only can be used on weight quantization."
+        assert quant_on_weight, (
+            "Channel_wise only can be used on weight quantization."
+        )
         super().__init__()
         self._quant_bits = quant_bits
         self._quant_axis = quant_axis
@@ -650,21 +652,23 @@ class QuantizedConv2DTranspose(Layer):
     The only difference is that its inputs are all fake quantized.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> import paddle.nn as nn
-            >>> from paddle.nn.quant.quant_layers import QuantizedConv2DTranspose
+            >>> from paddle.nn.quant.quant_layers import (
+            ...     QuantizedConv2DTranspose,
+            ... )
 
-            >>> x_var = paddle.uniform((2, 4, 8, 8), dtype='float32', min=-1., max=1.)
+            >>> x_var = paddle.uniform((2, 4, 8, 8), dtype='float32', min=-1.0, max=1.0)
             >>> conv = nn.Conv2DTranspose(4, 6, (3, 3))
             >>> conv_quantized = QuantizedConv2DTranspose(conv)
             >>> y_quantized = conv_quantized(x_var)
             >>> y_var = conv(x_var)
             >>> print(y_var.shape)
-            [2, 6, 10, 10]
+            paddle.Size([2, 6, 10, 10])
             >>> print(y_quantized.shape)
-            [2, 6, 10, 10]
+            paddle.Size([2, 6, 10, 10])
 
     """
 
@@ -865,19 +869,19 @@ class QuantizedColumnParallelLinear(Layer):
         activation_quantize_type: _QuantType = 'abs_max',
         weight_pre_layer: Layer | None = None,
         act_pre_layer: Layer | None = None,
-        weight_quant_layer: Literal[None] = None,
-        act_quant_layer: Literal[None] = None,
+        weight_quant_layer: None = None,
+        act_quant_layer: None = None,
     ) -> None:
         super().__init__()
         '''
 
         '''
-        assert (
-            weight_quant_layer is None
-        ), "When quantizing ColumnParallelLinear, weight_quant_layer should be None."
-        assert (
-            act_quant_layer is None
-        ), "When quantizing ColumnParallelLinear, act_quant_layer should be None."
+        assert weight_quant_layer is None, (
+            "When quantizing ColumnParallelLinear, weight_quant_layer should be None."
+        )
+        assert act_quant_layer is None, (
+            "When quantizing ColumnParallelLinear, act_quant_layer should be None."
+        )
 
         self.weight = layer.weight
         self.bias = layer.bias
@@ -968,16 +972,16 @@ class QuantizedRowParallelLinear(Layer):
         activation_quantize_type: _QuantType = 'abs_max',
         weight_pre_layer: Layer | None = None,
         act_pre_layer: Layer | None = None,
-        weight_quant_layer: Literal[None] = None,
-        act_quant_layer: Literal[None] = None,
+        weight_quant_layer: None = None,
+        act_quant_layer: None = None,
     ) -> None:
         super().__init__()
-        assert (
-            weight_quant_layer is None
-        ), "When quantizing RowParallelLinear, weight_quant_layer cannot defined by yourself."
-        assert (
-            act_quant_layer is None
-        ), "When quantizing RowParallelLinear, act_quant_layer cannot defined by yourself."
+        assert weight_quant_layer is None, (
+            "When quantizing RowParallelLinear, weight_quant_layer cannot defined by yourself."
+        )
+        assert act_quant_layer is None, (
+            "When quantizing RowParallelLinear, act_quant_layer cannot defined by yourself."
+        )
 
         # For Linear
         self.weight = layer.weight

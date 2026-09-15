@@ -22,18 +22,18 @@ class DenseTensor;
 namespace phi::funcs {
 
 template <typename T>
-class ScaleDenseTensorFunctor<phi::CPUContext, T> {
+class ScaleDenseTensorFunctor<CPUContext, T> {
  public:
-  void operator()(const phi::CPUContext& context,
+  void operator()(const CPUContext& dev_ctx,
                   const T* scales,
-                  phi::DenseTensor* seq) {
+                  DenseTensor* seq) {
     const size_t level = 0;
     auto lod = seq->lod();
     const size_t num_seq = lod[level].size() - 1;
     size_t seq_width = seq->dims()[1];
-    phi::LegacyLoD abs_offset_lod = phi::ToAbsOffset(lod);
+    LegacyLoD abs_offset_lod = ToAbsOffset(lod);
 
-    T* seq_data = context.template Alloc<T>(seq);
+    T* seq_data = dev_ctx.template Alloc<T>(seq);
     for (size_t i = 0; i < num_seq; ++i) {
       for (size_t j = lod[level][i] * seq_width;
            j < lod[level][i + 1] * seq_width;
@@ -44,7 +44,7 @@ class ScaleDenseTensorFunctor<phi::CPUContext, T> {
   }
 };
 
-template class ScaleDenseTensorFunctor<phi::CPUContext, float>;
-template class ScaleDenseTensorFunctor<phi::CPUContext, double>;
+template class ScaleDenseTensorFunctor<CPUContext, float>;
+template class ScaleDenseTensorFunctor<CPUContext, double>;
 
 }  // namespace phi::funcs

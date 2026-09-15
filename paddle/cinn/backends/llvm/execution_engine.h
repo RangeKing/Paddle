@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <llvm/ADT/SmallString.h>
 #include <llvm/ADT/StringMap.h>
 #include <llvm/ExecutionEngine/ExecutionEngine.h>
 #include <llvm/ExecutionEngine/JITSymbol.h>
@@ -23,7 +24,6 @@
 #include <llvm/ExecutionEngine/Orc/ExecutionUtils.h>
 #include <llvm/ExecutionEngine/Orc/IRCompileLayer.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
-#include <llvm/ExecutionEngine/Orc/LambdaResolver.h>
 #include <llvm/ExecutionEngine/Orc/RTDyldObjectLinkingLayer.h>
 #include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
 #include <llvm/ExecutionEngine/SectionMemoryManager.h>
@@ -32,7 +32,6 @@
 #include <llvm/IR/Module.h>
 #include <llvm/Support/Error.h>
 #include <llvm/Support/MemoryBuffer.h>
-#include <llvm/Support/SmallVectorMemoryBuffer.h>
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Support/raw_ostream.h>
 
@@ -46,6 +45,7 @@
 #include "paddle/cinn/backends/llvm/codegen_x86.h"
 #include "paddle/cinn/backends/llvm/llvm_util.h"
 #include "paddle/cinn/backends/llvm/runtime_symbol_registry.h"
+#include "paddle/cinn/cinn.h"
 #include "paddle/cinn/ir/module.h"
 
 namespace cinn::backends {
@@ -73,19 +73,30 @@ class ExecutionEngine {
   static std::unique_ptr<ExecutionEngine> Create(
       const ExecutionOptions &config);
 
-  void *Lookup(absl::string_view name);
+  void *Lookup(std::string_view name);
 
   template <typename CodeGenT = CodeGenLLVM>
   void Link(const ir::Module &module);
 
   void ExportObject(const std::string &path);
 
-  bool AddModule(std::unique_ptr<llvm::Module> module,
-                 std::unique_ptr<llvm::LLVMContext> context);
+  bool compileLLVMIR(llvm::Module *module, std::string output_path = "");
+
+  bool linkSharedLibrary(
+      const std::string output_path = "",
+      const std::vector<std::string> &cinn_runtime_include_path = {});
+
+  bool AddModule(
+      std::unique_ptr<llvm::Module> module,
+      std::unique_ptr<llvm::LLVMContext> context,
+      const size_t fusionHash = 0,
+      const std::vector<std::string> &cinn_runtime_include_path = {});
 
   void RegisterModuleRuntimeSymbols(RuntimeSymbols &&module_symbols);
 
-  bool AddSelfModule();
+  bool AddSelfModule(
+      const size_t fusionHash = 0,
+      const std::vector<std::string> &cinn_runtime_include_path = {});
 
  protected:
   explicit ExecutionEngine(bool enable_object_cache)

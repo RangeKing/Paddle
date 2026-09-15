@@ -17,8 +17,6 @@ import unittest
 
 import numpy as np
 from op_test import OpTest
-
-sys.path.append("../deprecated/legacy_test")
 from test_softmax_op import stable_softmax
 
 import paddle
@@ -375,7 +373,7 @@ class TestWarpCTCOpWithPadding(OpTest):
         cur = 0
         for batch_id in range(self.batch_size):
             for i in range(self.labels_length[batch_id]):
-                new_labels[batch_id, i] = labels[cur + i]
+                new_labels[batch_id, i] = labels[cur + i].item()
             cur = cur + self.labels_length[batch_id]
 
         self.gradient = np.zeros(
@@ -499,7 +497,7 @@ class TestWarpCTCOpFp64(OpTest):
         cur = 0
         for batch_id in range(self.batch_size):
             for i in range(self.labels_length[batch_id]):
-                new_labels[batch_id, i] = labels[cur + i]
+                new_labels[batch_id, i] = labels[cur + i].item()
             cur = cur + self.labels_length[batch_id]
 
         self.gradient = np.zeros(
@@ -528,7 +526,6 @@ class TestWarpCTCOpFp64(OpTest):
 
 
 class TestWarpCTCOpError(unittest.TestCase):
-
     def test_errors(self):
         paddle.enable_static()
         main_program = paddle.static.Program()
@@ -613,8 +610,87 @@ class TestWarpCTCOpError(unittest.TestCase):
                 reduction='none',
             )
 
+        def test_dygraph_zero_size():
+            logits = np.random.uniform(0.1, 1.0, [0, 15]).astype("float32")
+            # labels should not be blank
+            labels = np.random.randint(0, 15 - 1, [15, 1], dtype="int32")
+            softmax = paddle.to_tensor(logits)
+            labels = paddle.to_tensor(labels)
+
+            paddle.nn.functional.ctc_loss(
+                log_probs=softmax,
+                labels=labels,
+                input_lengths=None,
+                label_lengths=None,
+                reduction='none',
+            )
+
         paddle.disable_static()
         self.assertRaises(ValueError, test_dygraph_with_lod)
+        self.assertRaises(ValueError, test_dygraph_zero_size)
+        paddle.enable_static()
+
+    def test_dygraph_zero_size_with_padding(self):
+        """Test zero size inputs when using LogitsLength and LabelLength."""
+        paddle.disable_static()
+
+        batch_size = 4
+        num_classes = 8
+        max_sequence_length = 5
+        logits = paddle.uniform(
+            [max_sequence_length, batch_size, num_classes],
+            min=0.1,
+            max=1.0,
+        )
+        labels = paddle.randint(
+            0, num_classes - 1, [batch_size, num_classes], dtype="int32"
+        )
+        labels_length = paddle.to_tensor([2, 1, 3, 2])
+        logits_length = paddle.to_tensor([5, 4, 3, 2])
+
+        def test_zero_labels_batch_size():
+            labels = paddle.zeros([0, 3], dtype="int32")
+            paddle.nn.functional.ctc_loss(
+                log_probs=logits,
+                labels=labels,
+                input_lengths=logits_length,
+                label_lengths=labels_length,
+            )
+
+        def test_zero_logits_length_batch_size():
+            logits_length = paddle.zeros([0], dtype="int32")
+            paddle.nn.functional.ctc_loss(
+                log_probs=logits,
+                labels=labels,
+                input_lengths=logits_length,
+                label_lengths=labels_length,
+            )
+
+        def test_zero_labels_length_batch_size():
+            labels_length = paddle.zeros([0], dtype="int32")
+            paddle.nn.functional.ctc_loss(
+                log_probs=logits,
+                labels=labels,
+                input_lengths=logits_length,
+                label_lengths=labels_length,
+            )
+
+        self.assertRaisesRegex(
+            ValueError,
+            f"Expected label to have size {batch_size} at dimension 0, but got size 0",
+            test_zero_labels_batch_size,
+        )
+        self.assertRaisesRegex(
+            ValueError,
+            f"Expected logits_length to have size {batch_size} at dimension 0, but got size 0",
+            test_zero_logits_length_batch_size,
+        )
+        self.assertRaisesRegex(
+            ValueError,
+            f"Expected labels_length to have size {batch_size} at dimension 0, but got size 0",
+            test_zero_labels_length_batch_size,
+        )
+
         paddle.enable_static()
 
 
@@ -668,7 +744,7 @@ class TestCTCLossAPICase(unittest.TestCase):
 
         np.testing.assert_allclose(loss_pd, loss_np, rtol=1e-05, atol=1)
 
-    def test_eager_ctcloss(self):
+    def test_eager_ctc_loss(self):
         def test_functional_api():
             self.batch_size = 4
             self.num_classes = CUDA_BLOCK_SIZE + 2
@@ -740,6 +816,94 @@ class TestCTCLossAPICase(unittest.TestCase):
             )
 
         test_functional_api()
+
+    def test_ctc_loss_zero_infinity(self):
+        max_time = 1
+        batch = 1
+        n_class = 8
+        logits_np = np.random.randn(max_time, batch, n_class).astype("float32")
+        labels_np = np.random.randint(0, n_class - 1, (batch, 3)).astype(
+            "int32"
+        )
+        input_len_np = np.array([1], dtype=np.int64)
+        label_len_np = np.array([3], dtype=np.int64)
+
+        paddle.enable_static()
+        main_program = paddle.static.Program()
+        startup_program = paddle.static.Program()
+
+        with paddle.static.program_guard(main_program, startup_program):
+            logits = paddle.static.data(
+                name="logits_il",
+                shape=[max_time, batch, n_class],
+                dtype="float32",
+            )
+            labels = paddle.static.data(
+                name="labels_il", shape=[batch, 3], dtype="int32"
+            )
+            input_len = paddle.static.data(
+                name="input_len_il", shape=[batch], dtype="int64"
+            )
+            label_len = paddle.static.data(
+                name="label_len_il", shape=[batch], dtype="int64"
+            )
+
+            loss = paddle.nn.functional.ctc_loss(
+                log_probs=logits,
+                labels=labels,
+                input_lengths=input_len,
+                label_lengths=label_len,
+                reduction="none",
+                zero_infinity=True,
+                blank=n_class - 1,
+            )
+
+            exe = paddle.static.Executor()
+            loss_val = exe.run(
+                main_program,
+                feed={
+                    "logits_il": logits_np,
+                    "labels_il": labels_np,
+                    "input_len_il": input_len_np,
+                    "label_len_il": label_len_np,
+                },
+                fetch_list=[loss],
+            )[0]
+
+            # illegal sample -> 0
+            np.testing.assert_allclose(loss_val, [0.0], atol=1e-6)
+
+        paddle.disable_static()
+
+    def test_ctc_loss_zero_infinity_dygraph(self):
+        max_time = 1
+        batch = 1
+        n_class = 8
+
+        logits_np = np.random.randn(max_time, batch, n_class).astype("float32")
+        labels_np = np.random.randint(0, n_class - 1, (batch, 3)).astype(
+            "int32"
+        )
+        input_len_np = np.array([1], dtype=np.int64)
+        label_len_np = np.array([3], dtype=np.int64)
+
+        paddle.disable_static()
+        logits = paddle.to_tensor(logits_np)
+        labels = paddle.to_tensor(labels_np)
+        input_len = paddle.to_tensor(input_len_np)
+        label_len = paddle.to_tensor(label_len_np)
+
+        loss = paddle.nn.functional.ctc_loss(
+            log_probs=logits,
+            labels=labels,
+            input_lengths=input_len,
+            label_lengths=label_len,
+            reduction="none",
+            zero_infinity=True,
+            blank=n_class - 1,
+        )
+
+        np.testing.assert_allclose(loss.numpy(), [0.0], rtol=1e-6)
 
 
 if __name__ == "__main__":

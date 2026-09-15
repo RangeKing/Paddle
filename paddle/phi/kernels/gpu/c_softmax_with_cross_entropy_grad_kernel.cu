@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "paddle/phi/kernels/c_softmax_with_cross_entropy_grad_kernel.h"
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/funcs/axis_utils.h"
@@ -35,15 +36,15 @@ static inline int64_t NumBlocks(const int64_t N) {
 }
 
 template <typename T, typename IndexT>
-__global__ void CaculateSoftLogitsGrad(T* logits_grad,
-                                       IndexT* is_ignore,
-                                       const IndexT* labels,
-                                       const IndexT ignore_index,
-                                       const int64_t start_index,
-                                       const int64_t end_index,
-                                       const int64_t N,
-                                       const int64_t D,
-                                       const int64_t C) {
+__global__ void CalculateSoftLogitsGrad(T* logits_grad,
+                                        IndexT* is_ignore,
+                                        const IndexT* labels,
+                                        const IndexT ignore_index,
+                                        const int64_t start_index,
+                                        const int64_t end_index,
+                                        const int64_t N,
+                                        const int64_t D,
+                                        const int64_t C) {
   const T prob = static_cast<T>(1.0 / C);
   CUDA_KERNEL_LOOP_TYPE(i, N, int64_t) {
     is_ignore[i] = labels[i * C];
@@ -113,23 +114,23 @@ void CSoftmaxWithCrossEntropyGradKernel(const Context& dev_ctx,
                                         int rank,
                                         int nranks,
                                         DenseTensor* logits_grad) {
-  const phi::DenseTensor* labels = &label_in;
-  const phi::DenseTensor* loss_grad = &loss_grad_in;
-  const phi::DenseTensor* softmax = &softmax_in;
-  phi::DenseTensor* logit_grad = logits_grad;
+  const DenseTensor* labels = &label_in;
+  const DenseTensor* loss_grad = &loss_grad_in;
+  const DenseTensor* softmax = &softmax_in;
+  DenseTensor* logit_grad = logits_grad;
 
   if (logit_grad != softmax) {
-    phi::Copy(dev_ctx, *softmax, dev_ctx.GetPlace(), false, logit_grad);
+    Copy(dev_ctx, *softmax, dev_ctx.GetPlace(), false, logit_grad);
   }
-  const auto sofrmax_dims = softmax->dims();
-  const int axis = sofrmax_dims.size() - 1;
-  const int64_t N = phi::funcs::SizeToAxis<int64_t>(axis, sofrmax_dims);
-  const int64_t D = phi::funcs::SizeFromAxis<int64_t>(axis, sofrmax_dims);
+  const auto softmax_dims = softmax->dims();
+  const int axis = softmax_dims.size() - 1;
+  const int64_t N = funcs::SizeToAxis<int64_t>(axis, softmax_dims);
+  const int64_t D = funcs::SizeFromAxis<int64_t>(axis, softmax_dims);
 
   const auto label_dims = labels->dims();
   const int64_t C = label_dims[axis];
 
-  phi::DenseTensor logit_grad_2d;
+  DenseTensor logit_grad_2d;
   logit_grad_2d.ShareDataWith(*logit_grad).Resize({N, D});
 
   int64_t blocks = NumBlocks(N * D);
@@ -139,13 +140,13 @@ void CSoftmaxWithCrossEntropyGradKernel(const Context& dev_ctx,
   const int64_t start_index = rank * D;
   const int64_t end_index = start_index + D;
 
-  if (label_type == phi::DataType::INT32) {
+  if (label_type == DataType::INT32) {
     if (C > 1) {
-      phi::DenseTensor is_ignore;
+      DenseTensor is_ignore;
       is_ignore.Resize({N, 1});
       dev_ctx.template Alloc<int32_t>(&is_ignore);
 
-      CaculateSoftLogitsGrad<T, int32_t>
+      CalculateSoftLogitsGrad<T, int32_t>
           <<<blocks_cal, threads, 0, dev_ctx.stream()>>>(
               logit_grad_2d.data<T>(),
               is_ignore.data<int32_t>(),
@@ -177,13 +178,13 @@ void CSoftmaxWithCrossEntropyGradKernel(const Context& dev_ctx,
                                                      D,
                                                      ignore_index);
     }
-  } else if (label_type == phi::DataType::INT64) {
+  } else if (label_type == DataType::INT64) {
     if (C > 1) {
-      phi::DenseTensor is_ignore;
+      DenseTensor is_ignore;
       is_ignore.Resize({N, 1});
       dev_ctx.template Alloc<int32_t>(&is_ignore);
 
-      CaculateSoftLogitsGrad<T, int64_t>
+      CalculateSoftLogitsGrad<T, int64_t>
           <<<blocks_cal, threads, 0, dev_ctx.stream()>>>(
               logit_grad_2d.data<T>(),
               is_ignore.data<int64_t>(),
@@ -225,4 +226,4 @@ PD_REGISTER_KERNEL(c_softmax_with_cross_entropy_grad,
                    phi::CSoftmaxWithCrossEntropyGradKernel,
                    float,
                    double,
-                   phi::dtype::float16) {}
+                   phi::float16) {}

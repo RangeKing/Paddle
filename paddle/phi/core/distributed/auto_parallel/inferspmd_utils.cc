@@ -17,8 +17,8 @@ limitations under the License. */
 namespace phi::distributed {
 
 InferSpmdContext::InferSpmdContext(
-    paddle::small_vector<DistMetaTensor, phi::kInputSmallVectorSize> inputs,
-    paddle::small_vector<Attribute, phi::kAttrSmallVectorSize> attrs) {
+    paddle::small_vector<DistMetaTensor, kInputSmallVectorSize> inputs,
+    paddle::small_vector<Attribute, kAttrSmallVectorSize> attrs) {
   for (size_t i = 0; i < inputs.size(); i++) {
     EmplaceBackInput(inputs[i]);
   }
@@ -34,7 +34,7 @@ void InferSpmdContext::EmplaceBackInput(DistMetaTensor input) {
 }
 
 void InferSpmdContext::EmplaceBackInputs(
-    paddle::small_vector<DistMetaTensor, phi::kInputSmallVectorSize> inputs) {
+    paddle::small_vector<DistMetaTensor, kInputSmallVectorSize> inputs) {
   int index = static_cast<int>(inputs_.size());
   input_range_.emplace_back(std::pair<int, int>(index, index + inputs.size()));
   inputs_.insert(inputs_.end(),
@@ -66,6 +66,7 @@ AttrType InferSpmdContext::AttrAt(size_t idx) const {
 template float InferSpmdContext::AttrAt(size_t idx) const;
 template int InferSpmdContext::AttrAt(size_t idx) const;
 template int64_t InferSpmdContext::AttrAt(size_t idx) const;
+template DataType InferSpmdContext::AttrAt(size_t idx) const;
 
 template <>
 bool InferSpmdContext::AttrAt(size_t idx) const {
@@ -85,12 +86,32 @@ bool InferSpmdContext::AttrAt(size_t idx) const {
 }
 
 template <>
+double InferSpmdContext::AttrAt(size_t idx) const {
+  try {
+    auto attr = attrs_.at(idx);
+    if (attr.type() == typeid(float)) {
+      return static_cast<double>(paddle::get<float>(attr));
+    } else {
+      return paddle::get<double>(attr);
+    }
+  } catch (paddle::bad_variant_access const& e) {
+    PADDLE_THROW(common::errors::InvalidArgument(
+        "Attribute cast error in InferSpmd Context, the input attr type is "
+        "`%s`, but the expected attribute type is `double`.",
+        attrs_.at(idx).type().name()));
+  }
+}
+
+template <>
 std::vector<int> InferSpmdContext::AttrAt(size_t idx) const {
   try {
     auto attr = attrs_.at(idx);
     if (attr.type() == typeid(std::vector<bool>)) {
       std::vector<bool> val = PADDLE_GET_CONST(std::vector<bool>, attr);
       return std::vector<int>(val.begin(), val.end());
+    } else if (attr.type() == typeid(std::vector<int64_t>) &&
+               paddle::get<std::vector<int64_t>>(attr).empty()) {
+      return std::vector<int>();
     } else {
       return paddle::get<std::vector<int>>(attr);
     }
@@ -119,6 +140,19 @@ std::vector<int64_t> InferSpmdContext::AttrAt(size_t idx) const {
     PADDLE_THROW(common::errors::InvalidArgument(
         "Attribute cast error in InferSpmd Context, the input attr type is "
         "`%s`, but the expected attribute type is `std::vector<int64_t>`.",
+        attrs_.at(idx).type().name()));
+  }
+}
+
+template <>
+std::string InferSpmdContext::AttrAt(size_t idx) const {
+  try {
+    auto attr = attrs_.at(idx);
+    return PADDLE_GET_CONST(std::string, attr);
+  } catch (paddle::bad_variant_access const& e) {
+    PADDLE_THROW(common::errors::InvalidArgument(
+        "Attribute cast error in InferSpmd Context, the input attr type is "
+        "`%s`, but the expected attribute type is `std::string`.",
         attrs_.at(idx).type().name()));
   }
 }

@@ -37,8 +37,8 @@ void CScatterOpCPUKernel(const Context &dev_ctx,
   auto in = &x;
   auto root_id = root;
 
-  auto comm_ctx = static_cast<phi::distributed::GlooCommContext *>(
-      dev_ctx.GetCommContext());
+  auto comm_ctx =
+      static_cast<distributed::GlooCommContext *>(dev_ctx.GetCommContext());
   PADDLE_ENFORCE_NE(comm_ctx,
                     nullptr,
                     ::common::errors::Unavailable(
@@ -60,4 +60,4 @@ PD_REGISTER_KERNEL(c_scatter,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::float16) {}
+                   phi::float16) {}

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Definition of Role Makers."""
+
 from __future__ import annotations
 
 import os
@@ -550,7 +551,7 @@ class PaddleCloudRoleMaker(RoleMakerBase):
     PaddleCloudRoleMaker is an interface for distributed configuration initialization based on obtaining distributed related information from environment variables.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import os
             >>> import paddle.distributed.fleet as fleet
@@ -763,9 +764,9 @@ class PaddleCloudRoleMaker(RoleMakerBase):
     def _get_trainer_endpoint(self) -> str:
         if not self._role_is_generated:
             self._generate_role()
-        assert (
-            self._role == Role.WORKER
-        ), "get_trainer_endpoint should be called by trainer"
+        assert self._role == Role.WORKER, (
+            "get_trainer_endpoint should be called by trainer"
+        )
         return self._cur_endpoint
 
     def _get_heter_worker_endpoints(self) -> list[str]:
@@ -775,9 +776,9 @@ class PaddleCloudRoleMaker(RoleMakerBase):
         """
         if not self._role_is_generated:
             self._generate_role()
-        assert (
-            self._heter_trainer_endpoints != []
-        ), "Heter Worker Endpoints Not initialized"
+        assert self._heter_trainer_endpoints != [], (
+            "Heter Worker Endpoints Not initialized"
+        )
         return self._heter_trainer_endpoints
 
     def _get_heter_worker_endpoint(self) -> str:
@@ -787,9 +788,9 @@ class PaddleCloudRoleMaker(RoleMakerBase):
         """
         if not self._role_is_generated:
             self._generate_role()
-        assert (
-            self._role == Role.HETER_WORKER
-        ), "_get_heter_worker_endpoint should be invoked by heter worker"
+        assert self._role == Role.HETER_WORKER, (
+            "_get_heter_worker_endpoint should be invoked by heter worker"
+        )
         return self._cur_endpoint
 
     def _get_pserver_endpoints(self) -> list[str]:
@@ -1215,7 +1216,7 @@ class UserDefinedRoleMaker(PaddleCloudRoleMaker):
     UserDefinedRoleMaker is an interface for distributed configuration initialization based on obtaining distributed related information from user-defined parameters.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle.distributed.fleet as fleet
             >>> from paddle.distributed.fleet.base.role_maker import Role
@@ -1224,7 +1225,8 @@ class UserDefinedRoleMaker(PaddleCloudRoleMaker):
             ...     current_id=0,
             ...     role=Role.SERVER,
             ...     worker_num=2,
-            ...     server_endpoints=["127.0.0.1:36011", "127.0.0.1:36012"])
+            ...     server_endpoints=["127.0.0.1:36011", "127.0.0.1:36012"],
+            ... )
     """
 
     def __init__(

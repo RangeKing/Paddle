@@ -32,11 +32,10 @@ namespace {
 
 using VarType = AutoMixedPrecisionPass::VarType;
 
-bool PhiKernelSupportPrecision(
-    const std::string& op_type,
-    phi::Backend backend,
-    phi::DataType data_type,
-    phi::DataLayout layout = phi::DataLayout::ALL_LAYOUT) {
+bool PhiKernelSupportPrecision(const std::string& op_type,
+                               phi::Backend backend,
+                               DataType data_type,
+                               DataLayout layout = DataLayout::ALL_LAYOUT) {
   const auto& kernels = phi::KernelFactory::Instance().kernels();
   if (kernels.count(op_type) == 0) {
     return false;
@@ -45,13 +44,13 @@ bool PhiKernelSupportPrecision(
   return phi::KernelFactory::Instance().HasKernel(op_type, kernel_key);
 }
 
-static phi::Backend ConvertPlaceToBackend(const phi::Place& place) {
+static phi::Backend ConvertPlaceToBackend(const Place& place) {
   switch (place.GetType()) {
-    case phi::AllocationType::CPU:
+    case AllocationType::CPU:
       return phi::Backend::CPU;
-    case phi::AllocationType::GPU:
+    case AllocationType::GPU:
       return phi::Backend::GPU;
-    case phi::AllocationType::XPU:
+    case AllocationType::XPU:
       return phi::Backend::XPU;
     default:
       PADDLE_THROW(common::errors::InvalidArgument(
@@ -60,11 +59,10 @@ static phi::Backend ConvertPlaceToBackend(const phi::Place& place) {
   return phi::Backend::UNDEFINED;
 }
 
-bool KernelSupportPrecision(
-    const std::string& op_type,
-    phi::Backend backend,
-    phi::DataType precision,
-    phi::DataLayout layout = phi::DataLayout::ALL_LAYOUT) {
+bool KernelSupportPrecision(const std::string& op_type,
+                            phi::Backend backend,
+                            DataType precision,
+                            DataLayout layout = DataLayout::ALL_LAYOUT) {
   auto phi_op_type = phi::TransToPhiKernelName(op_type);
 
   bool support =
@@ -137,7 +135,7 @@ void DoInsertCastOp(Graph* graph,
       desc.SetAttr("in_dtype", in_dtype);
       desc.SetAttr("out_dtype", out_dtype);
     }
-    desc.SetAttr("use_mkldnn", false);
+    desc.SetAttr("use_onednn", false);
     desc.SetAttr("with_quant_attr", false);
     desc.Flush();
   };
@@ -176,7 +174,7 @@ void DoInsertCastOp(Graph* graph,
 
 bool OpSupportPrecision(const std::string& op_type,
                         phi::Backend backend,
-                        phi::DataType precision,
+                        DataType precision,
                         const std::unordered_set<std::string>& black_list,
                         const std::unordered_set<std::string>& white_list) {
   if (white_list.count(op_type)) return true;
@@ -200,6 +198,7 @@ void AutoMixedPrecisionPass::SetDefaultBlacklist() const {
       "softmax_with_cross_entropy",
       "sigmoid_cross_entropy_with_logits",
       "c_softmax_with_cross_entropy",
+      "c_softmax_with_multi_label_cross_entropy",
       "cross_entropy",
       "cross_entropy2",
 #ifndef PADDLE_WITH_XPU
@@ -234,12 +233,11 @@ void AutoMixedPrecisionPass::Init(Graph* graph) const {
   }
 
   if (Has("mixed_precision_mode")) {
-    low_precision_ =
-        static_cast<phi::DataType>(Get<int>("mixed_precision_mode"));
+    low_precision_ = static_cast<DataType>(Get<int>("mixed_precision_mode"));
   }
 
   skip_pass_ = (backend_ == phi::Backend::UNDEFINED) ||
-               (low_precision_ == phi::DataType::UNDEFINED);
+               (low_precision_ == DataType::UNDEFINED);
 
   if (skip_pass_) return;
 
@@ -261,15 +259,15 @@ void AutoMixedPrecisionPass::Init(Graph* graph) const {
 
   auto graph_size = graph->SubGraphsSize();
   VLOG(4) << "graph size: " << graph_size;
-  subgraphes_.resize(graph_size);
+  subgraphs_.resize(graph_size);
   all_op_nodes_.resize(graph_size);
 
   for (size_t i = 0; i < graph_size; i++) {
-    subgraphes_[i] = graph->GetSubGraph(i);
-    all_op_nodes_[i] = TopologySortOperations(*subgraphes_[i]);
+    subgraphs_[i] = graph->GetSubGraph(i);
+    all_op_nodes_[i] = TopologySortOperations(*subgraphs_[i]);
     VLOG(4) << "subgraph " << i << " has " << all_op_nodes_[i].size()
             << " op nodes";
-    for (auto* var_node : subgraphes_[i]->Nodes()) {
+    for (auto* var_node : subgraphs_[i]->Nodes()) {
       if (!var_node->IsVar()) continue;
 
       auto var_name = var_node->Var()->Name();
@@ -451,17 +449,16 @@ void AutoMixedPrecisionPass::GetOpPrecision() const {
         if (GetOpOriginalType(op_node->Op()->Type()) == "scale") {
           auto scale = op_node->Op()->GetAttrIfExists<float>("scale");
           auto bias = op_node->Op()->GetAttrIfExists<float>("bias");
-          if (low_precision_ == phi::DataType::FLOAT16) {
+          if (low_precision_ == DataType::FLOAT16) {
             support_low_precision =
                 support_low_precision &&
-                phi::dtype::isfinite(static_cast<phi::dtype::float16>(scale)) &&
-                phi::dtype::isfinite(static_cast<phi::dtype::float16>(bias));
-          } else if (low_precision_ == phi::DataType::BFLOAT16) {
+                phi::dtype::isfinite(static_cast<phi::float16>(scale)) &&
+                phi::dtype::isfinite(static_cast<phi::float16>(bias));
+          } else if (low_precision_ == DataType::BFLOAT16) {
             support_low_precision =
                 support_low_precision &&
-                phi::dtype::isfinite(
-                    static_cast<phi::dtype::bfloat16>(scale)) &&
-                phi::dtype::isfinite(static_cast<phi::dtype::bfloat16>(bias));
+                phi::dtype::isfinite(static_cast<phi::bfloat16>(scale)) &&
+                phi::dtype::isfinite(static_cast<phi::bfloat16>(bias));
           }
         }
 
@@ -565,13 +562,13 @@ void AutoMixedPrecisionPass::UpdateOpPrecision() const {
             vars_should_not_low_precision.insert(in_var_node->Var()->Name());
           }
         }
-        // when op_1 only support cpu kernel. if op_2's intput var is op_1's
+        // when op_1 only support cpu kernel. if op_2's input var is op_1's
         // output var, then op_2 should not run at low precision.
         if (GetOpOriginalType(op_type) != "feed" &&
             GetOpOriginalType(op_type) != "tensorrt_engine" &&
             white_list_.count(GetOpOriginalType(op_type)) == 0 &&
             !KernelSupportPrecision(
-                GetOpOriginalType(op_type), backend_, phi::DataType::FLOAT32)) {
+                GetOpOriginalType(op_type), backend_, DataType::FLOAT32)) {
           for (auto* out_var_node : op_node->outputs) {
             PADDLE_ENFORCE_EQ(
                 out_var_node->IsVar(),
@@ -843,8 +840,8 @@ void AutoMixedPrecisionPass::SetVarPrecision() const {
           // Judge the real tensor is same to variable, Paddle-Slim weight use
           // fp32 variable to save int8 tensor.
           if (real_in_var_node->Var()->Persistable()) {
-            auto* tensor = scope->Var(real_in_var_node->Name())
-                               ->GetMutable<phi::DenseTensor>();
+            auto* tensor =
+                scope->Var(real_in_var_node->Name())->GetMutable<DenseTensor>();
             if (framework::TransToProtoVarType(tensor->type()) !=
                 real_in_var_node->Var()->GetDataType()) {
               VLOG(3) << "[AutoMixedPrecisionPass] variable "
@@ -901,9 +898,9 @@ void AutoMixedPrecisionPass::SetVarPrecision() const {
     }
   }
 
-  // This code used to precess vars with the same name. Vars with the same
+  // This code used to process vars with the same name. Vars with the same
   // name should have the same data type.
-  for (auto* subgraph : subgraphes_) {
+  for (auto* subgraph : subgraphs_) {
     for (auto* var_node : subgraph->Nodes()) {
       if (!var_node->IsVar() || !var_node->Var()->Persistable()) continue;
       if (!VarNodeHasDtype(var_node)) continue;
@@ -933,52 +930,46 @@ void AutoMixedPrecisionPass::ConvertWeightsData() const {
 
       auto* var = scope->FindLocalVar(var_name);
       PADDLE_ENFORCE_EQ(
-          var->IsType<phi::DenseTensor>(),
+          var->IsType<DenseTensor>(),
           true,
           common::errors::InvalidArgument(
-              "var->IsType<phi::DenseTensor>() is False, which means the "
-              "variable has invalid type instead of <phi::DenseTensor>."));
+              "var->IsType<DenseTensor>() is False, which means the "
+              "variable has invalid type instead of <DenseTensor>."));
 
-      auto* origin_tensor = var->GetMutable<phi::DenseTensor>();
+      auto* origin_tensor = var->GetMutable<DenseTensor>();
 
-      phi::DenseTensor low_precision_tensor;
+      DenseTensor low_precision_tensor;
       low_precision_tensor.Resize(origin_tensor->dims());
       low_precision_tensor.set_type(low_precision_);
 
-      if (low_precision_ == phi::DataType::FLOAT16) {
+      if (low_precision_ == DataType::FLOAT16) {
         auto* low_precision_data =
-            low_precision_tensor.mutable_data<phi::dtype::float16>(
-                phi::CPUPlace{});
+            low_precision_tensor.mutable_data<phi::float16>(CPUPlace{});
         for (int64_t i = 0; i < origin_tensor->numel(); i++) {
-          if (origin_tensor->dtype() == phi::DataType::FLOAT64) {
+          if (origin_tensor->dtype() == DataType::FLOAT64) {
             auto* origin_data = origin_tensor->data<double>();
-            low_precision_data[i] =
-                static_cast<phi::dtype::float16>(origin_data[i]);
-          } else if (origin_tensor->dtype() == phi::DataType::FLOAT32) {
+            low_precision_data[i] = static_cast<phi::float16>(origin_data[i]);
+          } else if (origin_tensor->dtype() == DataType::FLOAT32) {
             auto* origin_data = origin_tensor->data<float>();
-            low_precision_data[i] =
-                static_cast<phi::dtype::float16>(origin_data[i]);
+            low_precision_data[i] = static_cast<phi::float16>(origin_data[i]);
           }
         }
-      } else if (low_precision_ == phi::DataType::BFLOAT16) {
+      } else if (low_precision_ == DataType::BFLOAT16) {
         auto* low_precision_data =
-            low_precision_tensor.mutable_data<phi::dtype::bfloat16>(
-                phi::CPUPlace{});
+            low_precision_tensor.mutable_data<phi::bfloat16>(CPUPlace{});
         for (int64_t i = 0; i < origin_tensor->numel(); i++) {
-          if (origin_tensor->dtype() == phi::DataType::FLOAT64) {
+          if (origin_tensor->dtype() == DataType::FLOAT64) {
             auto* origin_data = origin_tensor->data<double>();
-            low_precision_data[i] =
-                static_cast<phi::dtype::bfloat16>(origin_data[i]);
-          } else if (origin_tensor->dtype() == phi::DataType::FLOAT32) {
+            low_precision_data[i] = static_cast<phi::bfloat16>(origin_data[i]);
+          } else if (origin_tensor->dtype() == DataType::FLOAT32) {
             auto* origin_data = origin_tensor->data<float>();
-            low_precision_data[i] =
-                static_cast<phi::dtype::bfloat16>(origin_data[i]);
+            low_precision_data[i] = static_cast<phi::bfloat16>(origin_data[i]);
           }
         }
       }
       origin_tensor->clear();
       paddle::framework::TensorCopySync(
-          low_precision_tensor, phi::CPUPlace{}, origin_tensor);
+          low_precision_tensor, CPUPlace{}, origin_tensor);
     }
   }
 }
@@ -1027,7 +1018,7 @@ void AutoMixedPrecisionPass::InsertCastOp() const {
             prev_op->Op()->SetAttr("out_dtype", static_cast<int>(to_type));
             prev_op->Op()->Flush();
           } else {
-            DoInsertCastOp(subgraphes_[i],
+            DoInsertCastOp(subgraphs_[i],
                            in_var_node,
                            op_node,
                            in_var_type,
@@ -1046,7 +1037,7 @@ void AutoMixedPrecisionPass::InsertCastOp() const {
             prev_op->Op()->SetAttr("out_dtype", static_cast<int>(to_type));
             prev_op->Op()->Flush();
           } else {
-            DoInsertCastOp(subgraphes_[i],
+            DoInsertCastOp(subgraphs_[i],
                            in_var_node,
                            op_node,
                            in_var_type,
@@ -1069,7 +1060,7 @@ void AutoMixedPrecisionPass::InsertCastOp() const {
             cache_kv_outputs.size(),
             common::errors::InvalidArgument(
                 "Cache inputs should be the same size with cache outputs, but "
-                "recieved %d as inputs and %d as outputs.",
+                "received %d as inputs and %d as outputs.",
                 cache_kv_inputs.size(),
                 cache_kv_outputs.size()));
         for (size_t i = 0; i < cache_kv_inputs.size(); ++i) {

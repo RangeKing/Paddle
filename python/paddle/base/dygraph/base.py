@@ -14,32 +14,37 @@
 
 from __future__ import annotations
 
+import functools
 import inspect
 import sys
 import warnings
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
     TypeVar,
     overload,
 )
 
-import decorator
 from typing_extensions import ParamSpec
 
 import paddle
 from paddle.base import core, framework
 from paddle.base.framework import global_var
 from paddle.base.multiprocess_utils import CleanupFuncRegistrar
+from paddle.utils.decorator_utils import param_one_alias
+from paddle.utils.download import check_and_create_dir
 
 from ..framework import _get_paddle_place
-from ..wrapped_decorator import signature_safe_contextmanager, wrap_decorator
+from ..wrapped_decorator import (
+    copy_signature,
+    signature_safe_contextmanager,
+    wrap_decorator,
+)
 from .tracer import Tracer
 
 if TYPE_CHECKING:
     from collections import OrderedDict
-    from collections.abc import Generator, Sequence
+    from collections.abc import Callable, Generator, Sequence
     from contextlib import AbstractContextManager
     from types import TracebackType
 
@@ -66,17 +71,24 @@ def in_to_static_mode() -> bool:
 
 def in_sot_simulation_mode() -> bool:
     """
-    Return a bool value that indicates whether running code under SOT simulation context.
+    Returns whether the code is running under the SOT simulation context.
 
+    NOTE: Always returns False because if this function is called directly from native Python,
+    it is not within the SOT simulation process. In that case, returning False is correct.
+    If the code is running within the SOT simulation process, the function will be represented
+    by UserDefinedFunctionVariable, which is specially handled in its `call_function` method
+    to return True when this function is called.
+
+    This design avoids introducing `global_var` into the guard logic.
     """
-    return global_var._in_sot_simulation_mode_
+    return False
 
 
 # TODO(Aurelius84): Need to remove this alias after clean usage in PaddleX
 in_declarative_mode = in_to_static_mode
 
 
-def to_static_unsupport_argument_warning(
+def to_static_unsupported_argument_warning(
     func_name, input_names, inputs, support_values
 ):
     """
@@ -94,7 +106,7 @@ def to_static_unsupport_argument_warning(
 
 
 def _switch_to_static_graph_(
-    func: Callable[_InputT, _RetT]
+    func: Callable[_InputT, _RetT],
 ) -> Callable[_InputT, _RetT]:
     def __impl__(*args: _InputT.args, **kwargs: _InputT.kwargs) -> _RetT:
         with framework._dygraph_guard(None):
@@ -120,21 +132,8 @@ def to_static_mode_guard(
 
 
 @signature_safe_contextmanager
-def sot_simulation_mode_guard(
-    is_sot_simulation: bool = True,
-) -> Generator[None, None, None]:
-    global global_var
-    original_val = global_var._in_sot_simulation_mode_
-    global_var._in_sot_simulation_mode_ = is_sot_simulation
-    try:
-        yield
-    finally:
-        global_var._in_sot_simulation_mode_ = original_val
-
-
-@signature_safe_contextmanager
 def param_guard(
-    parameters: OrderedDict[str, Tensor]
+    parameters: OrderedDict[str, Tensor],
 ) -> Generator[None, None, None]:
     # Note: parameters is a reference of self._parameters or self._buffers
     if in_to_static_mode() and not paddle.in_dynamic_mode() and parameters:
@@ -214,7 +213,7 @@ def enabled() -> bool:
         bool: Whether the program is running in dynamic graph mode.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle.base as base
 
@@ -246,7 +245,7 @@ def enable_dygraph(place: PlaceLike | None = None) -> None:
         None
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> print(paddle.in_dynamic_mode())
@@ -284,7 +283,7 @@ def disable_dygraph() -> None:
         None
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> print(paddle.in_dynamic_mode())
@@ -325,6 +324,7 @@ def no_grad(func: None = ...) -> AbstractContextManager: ...
 def no_grad(func: Callable[_InputT, _RetT]) -> Callable[_InputT, _RetT]: ...
 
 
+@param_one_alias(["func", "orig_func"])
 def no_grad(func=None):
     """
     :api_attr: imperative
@@ -334,9 +334,12 @@ def no_grad(func=None):
 
     Also functions as a decorator. (Make sure to instantiate without parenthesis.)
 
+    .. note::
+        Alias Support: The parameter name ``orig_func`` can be used as an alias for ``func``.
+
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import numpy as np
             >>> import paddle.base as base
@@ -350,12 +353,12 @@ def no_grad(func=None):
             ...     with base.dygraph.no_grad():
             ...         # l1.weight.stop_gradient is False
             ...         tmp = l1.weight * 2  # tmp.stop_gradient is True
-            ...     x = base.dygraph.to_variable(data)
+            ...     x = paddle.to_tensor(data)
             ...     y = l0(x) + tmp
             ...     o = l1(y)
             ...     o.backward()
-            ...     print(tmp.gradient() is None)
-            ...     print(l0.weight.gradient() is None)
+            ...     print(tmp.grad is None)
+            ...     print(l0.weight.grad is None)
             True
             False
 
@@ -363,12 +366,11 @@ def no_grad(func=None):
             >>> def test_layer():
             ...     with base.dygraph.guard():
             ...         inp = np.ones([3, 1024], dtype='float32')
-            ...         t = base.dygraph.base.to_variable(inp)
+            ...         t = paddle.to_tensor(inp)
             ...         linear1 = paddle.nn.Linear(1024, 4, bias_attr=False)
             ...         linear2 = paddle.nn.Linear(4, 4)
             ...         ret = linear1(t)
             ...         dy_ret = linear2(ret)
-            ...
             >>> test_layer()
 
     """
@@ -376,39 +378,50 @@ def no_grad(func=None):
         return _switch_tracer_mode_guard_(is_train=False)
     else:
 
-        @decorator.decorator
+        @functools.wraps(func)
         def __impl__(
-            func: Callable[_InputT, _RetT],
             *args: _InputT.args,
             **kwargs: _InputT.kwargs,
         ) -> _RetT:
             with _switch_tracer_mode_guard_(is_train=False):
                 return func(*args, **kwargs)
 
-        return __impl__(func)
+        copy_signature(func, __impl__)
+        return __impl__
 
 
 class _DecoratorContextManager:
     """Allow a context manager to be used as a decorator"""
 
+    DECORATED_BY_MARKER_ATTR = "__decorated_by__"
+
     def __call__(
         self, func: Callable[_InputT, _RetT]
     ) -> Callable[_InputT, _RetT]:
-        @decorator.decorator
-        def _decorate_function(func, *args, **kwargs):
+        @functools.wraps(func)
+        def _decorate_function(*args, **kwargs):
             with self:
                 return func(*args, **kwargs)
 
-        @decorator.decorator
-        def _decorate_generator(func, *args, **kwargs):
+        @functools.wraps(func)
+        def _decorate_generator(*args, **kwargs):
             gen = func(*args, **kwargs)
             with self:
                 yield from gen
 
         if inspect.isgeneratorfunction(func):
-            return _decorate_generator(func)
+            decorated_fn = _decorate_generator
         else:
-            return _decorate_function(func)
+            decorated_fn = _decorate_function
+
+        copy_signature(func, decorated_fn)
+
+        setattr(
+            decorated_fn,
+            _DecoratorContextManager.DECORATED_BY_MARKER_ATTR,
+            self,
+        )
+        return decorated_fn
 
     def __enter__(self) -> Any:
         raise NotImplementedError
@@ -428,17 +441,17 @@ class _DecoratorContextManager:
 
 def is_grad_enabled() -> bool:
     """
-    Returns whether current dygraph gradient calculation mode is enabled.
+    Returns whether current gradient calculation mode is enabled.
 
     Returns:
-        bool: True if current dygraph gradient calculation mode is enabled, otherwise false.
+        bool: True if current gradient calculation mode is enabled, otherwise false.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
-            >>> # Dygraph gradient calculation mode is enabled by default.
+            >>> # Gradient calculation mode is enabled by default.
             >>> paddle.is_grad_enabled()
             True
 
@@ -448,7 +461,7 @@ def is_grad_enabled() -> bool:
 
             >>> paddle.enable_static()
             >>> paddle.is_grad_enabled()
-            False
+            True
     """
     return core._has_grad()
 
@@ -468,10 +481,10 @@ class set_grad_enabled(_DecoratorContextManager):
         None.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
-            >>> x = paddle.to_tensor([1.], stop_gradient=False)
+            >>> x = paddle.to_tensor([1.0], stop_gradient=False)
             >>> is_train = False
             >>> with paddle.set_grad_enabled(is_train):
             ...     y = x * 2
@@ -491,10 +504,17 @@ class set_grad_enabled(_DecoratorContextManager):
 
     def __init__(self, mode) -> None:
         self.prev = is_grad_enabled()
-        _set_grad_enabled(mode)
         self.mode = mode
+        _set_grad_enabled(mode)
 
-    def __enter__(self) -> None: ...
+    def __call__(
+        self, func: Callable[_InputT, _RetT]
+    ) -> Callable[_InputT, _RetT]:
+        _set_grad_enabled(self.prev)
+        return super().__call__(func)
+
+    def __enter__(self) -> None:
+        _set_grad_enabled(self.mode)
 
     def __exit__(self, *args: object) -> None:
         _set_grad_enabled(self.prev)
@@ -515,7 +535,7 @@ class no_grad_(_DecoratorContextManager):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import numpy as np
             >>> import paddle
@@ -532,9 +552,9 @@ class no_grad_(_DecoratorContextManager):
             >>> y = l0(x) + tmp
             >>> o = l1(y)
             >>> o.backward()
-            >>> print(tmp.gradient() is None)
+            >>> print(tmp.grad is None)
             True
-            >>> print(l0.weight.gradient() is None)
+            >>> print(l0.weight.grad is None)
             False
 
             >>> # use as decorator
@@ -547,7 +567,6 @@ class no_grad_(_DecoratorContextManager):
             ...     linear2 = paddle.nn.Linear(4, 4)
             ...     ret = linear1(t)
             ...     dy_ret = linear2(ret)
-            ...
             >>> test_layer()
     """
 
@@ -573,30 +592,28 @@ class enable_grad(_DecoratorContextManager):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
             >>> # use as generator
 
-            >>> x = paddle.to_tensor([1.], stop_gradient=False)
+            >>> x = paddle.to_tensor([1.0], stop_gradient=False)
             >>> with paddle.no_grad():
             ...     with paddle.enable_grad():
             ...         y = x * 2
-            >>> assert(y.stop_gradient == False)
+            >>> assert y.stop_gradient == False
             >>> y.backward()
-            >>> assert(x.grad is not None)
+            >>> assert x.grad is not None
 
             >>> # use as decorator
 
             >>> @paddle.enable_grad()
             >>> def double(x):
             ...     return x * 2
-            ...
             >>> with paddle.no_grad():
             ...     z = double(x)
-            ...
-            >>> assert(z.stop_gradient == False)
+            >>> assert z.stop_gradient == False
     """
 
     def __enter__(self) -> None:
@@ -605,6 +622,35 @@ class enable_grad(_DecoratorContextManager):
 
     def __exit__(self, *args: object) -> None:
         _set_grad_enabled(self.prev)
+
+
+class inference_mode(_DecoratorContextManager):
+    """
+    Context-manager/decorator that enables or disables inference mode.
+
+    In this mode, the result of every computation will have `stop_gradient` set
+    to `True`. When ``mode=False``, gradient calculation is enabled.
+
+    Also functions as a decorator.
+    """
+
+    def __init__(self, mode=True) -> None:
+        self.mode = mode
+
+    def __new__(cls, mode=True):
+        if isinstance(mode, bool):
+            return super().__new__(cls)
+        return cls()(mode)
+
+    def __enter__(self) -> None:
+        self._inference_mode_context = set_grad_enabled(not self.mode)
+        self._inference_mode_context.__enter__()
+
+    def __exit__(self, *args: object) -> None:
+        self._inference_mode_context.__exit__(*args)
+
+    def clone(self) -> Self:
+        return self.__class__(self.mode)
 
 
 @signature_safe_contextmanager
@@ -625,19 +671,18 @@ def guard(place: PlaceLike | None = None) -> Generator[None, None, None]:
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import numpy as np
             >>> import paddle.base as base
 
             >>> with base.dygraph.guard():
             ...     inp = np.ones([3, 1024], dtype='float32')
-            ...     t = base.dygraph.base.to_variable(inp)
+            ...     t = paddle.to_tensor(inp)
             ...     linear1 = paddle.nn.Linear(1024, 4, bias_attr=False)
             ...     linear2 = paddle.nn.Linear(4, 4)
             ...     ret = linear1(t)
             ...     dy_ret = linear2(ret)
-            ...
     """
     train = framework.Program()
     startup = framework.Program()
@@ -648,11 +693,13 @@ def guard(place: PlaceLike | None = None) -> Generator[None, None, None]:
     else:
         expected_place = framework._current_expected_place_()
 
-    with framework.program_guard(train, startup):
-        with framework.unique_name.guard():
-            with framework._dygraph_guard(tracer):
-                with framework._dygraph_place_guard(expected_place):
-                    yield
+    with (
+        framework.program_guard(train, startup),
+        framework.unique_name.guard(),
+        framework._dygraph_guard(tracer),
+        framework._dygraph_place_guard(expected_place),
+    ):
+        yield
 
 
 @framework.non_static_only
@@ -665,6 +712,8 @@ def grad(
     only_inputs: bool = True,
     allow_unused: bool = False,
     no_grad_vars: Tensor | Sequence[Tensor] | set[Tensor] | None = None,
+    *,
+    dump_backward_graph_path: str | None = None,
 ) -> list[Tensor]:
     '''
     .. note::
@@ -708,14 +757,16 @@ def grad(
             their gradients if allow_unused=True. Default False.
         no_grad_vars (Tensor|list[Tensor]|tuple[Tensor]|set[Tensor], optional):
             the Tensors whose gradients are not needed to compute. Default None.
-
+        dump_backward_graph_path (str, optional): specifies the directory path for storing the debug file.
+            If this parameter is specified, the backward-related graph (in dot format)
+            and the debugging call stack information will be generated in this directory.
     Returns:
         list: a list of Tensors, whose length is the same as the Tensor number
         inside `inputs`, and the i-th returned Tensor is the sum of gradients of
         `outputs` with respect to the i-th `inputs`.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
             :name: code-example-1
 
             >>> import paddle
@@ -730,7 +781,7 @@ def grad(
             ...         outputs=[y],
             ...         inputs=[x],
             ...         create_graph=create_graph,
-            ...         retain_graph=True
+            ...         retain_graph=True,
             ...     )[0]
             ...
             ...     z = y + dx
@@ -745,14 +796,15 @@ def grad(
             ...     # x.gradient() = 2 * x + 2 = 4.0
             ...
             ...     z.backward()
-            ...     return x.gradient()
-            ...
+            ...     return x.grad
             >>> print(test_dygraph_grad(create_graph=False))
-            [2.]
+            Tensor(shape=[1], dtype=float32, place=Place(cpu), stop_gradient=False,
+             [2.])
             >>> print(test_dygraph_grad(create_graph=True))
-            [4.]
+            Tensor(shape=[1], dtype=float32, place=Place(cpu), stop_gradient=False,
+             [4.])
 
-        .. code-block:: python
+        .. code-block:: pycon
             :name: code-example-2
 
             >>> import paddle
@@ -777,36 +829,36 @@ def grad(
             ...     dx = paddle.grad(
             ...         outputs=[y1, y2],
             ...         inputs=[x],
-            ...         grad_outputs=grad_outputs)[0]
+            ...         grad_outputs=grad_outputs,
+            ...     )[0]
             ...
             ...     return dx.numpy()
-            ...
             >>> grad_value = paddle.to_tensor(4.0)
             >>> # dy1 = [1], dy2 = [1]
             >>> print(test_dygraph_grad(None))
-            7.
+            7.0
 
             >>> # dy1 = [1], dy2 = [4]
             >>> print(test_dygraph_grad([None, grad_value]))
-            16.
+            16.0
 
             >>> # dy1 = [4], dy2 = [1]
             >>> print(test_dygraph_grad([grad_value, None]))
-            19.
+            19.0
 
             >>> # dy1 = [3], dy2 = [4]
             >>> grad_y1 = paddle.to_tensor(3.0)
             >>> print(test_dygraph_grad([grad_y1, grad_value]))
-            24.
+            24.0
     '''
     if in_to_static_mode():
         # In dy2static context, we call static interface `gradients`
         # to calculate grads.
         from paddle.static import gradients
 
-        to_static_unsupport_argument_warning(
+        to_static_unsupported_argument_warning(
             "paddle.grad",
-            ["retain_graph", "create_grad", "only_inputs", "allow_unused"],
+            ["retain_graph", "create_graph", "only_inputs", "allow_unused"],
             [retain_graph, create_graph, only_inputs, allow_unused],
             [None, False, True, False],
         )
@@ -818,14 +870,14 @@ def grad(
         if isinstance(in_out_list, (list, tuple)):
             assert len(in_out_list) > 0, f"{name} cannot be empty"
             for each_var in in_out_list:
-                assert isinstance(
-                    each_var, core.eager.Tensor
-                ), f"Elements of {name} must be Tensor"
+                assert isinstance(each_var, core.eager.Tensor), (
+                    f"Elements of {name} must be Tensor"
+                )
             return in_out_list
         else:
-            assert isinstance(
-                in_out_list, core.eager.Tensor
-            ), f"{name} must be Tensor or list of Tensor"
+            assert isinstance(in_out_list, core.eager.Tensor), (
+                f"{name} must be Tensor or list of Tensor"
+            )
             return [in_out_list]
 
     outputs = check_in_out(outputs, 'outputs')
@@ -837,16 +889,16 @@ def grad(
 
         for each_var in grad_outputs:
             if each_var is not None:
-                assert isinstance(
-                    each_var, core.eager.Tensor
-                ), "grad_outputs must be None, a Variable or a list containing None or Variables"
+                assert isinstance(each_var, core.eager.Tensor), (
+                    "grad_outputs must be None, a Variable or a list containing None or Variables"
+                )
     else:
         grad_outputs = []
 
     if len(grad_outputs) > 0:
-        assert len(grad_outputs) == len(
-            outputs
-        ), "The length of grad_outputs must be equal to outputs"
+        assert len(grad_outputs) == len(outputs), (
+            "The length of grad_outputs must be equal to outputs"
+        )
 
     if no_grad_vars is None:
         no_grad_vars = []
@@ -855,9 +907,9 @@ def grad(
     elif isinstance(no_grad_vars, (list, tuple, set)):
         no_grad_vars = list(no_grad_vars)
         for var in no_grad_vars:
-            assert isinstance(
-                var, core.eager.Tensor
-            ), "no_grad_vars can only contains Tensor"
+            assert isinstance(var, core.eager.Tensor), (
+                "no_grad_vars can only contains Tensor"
+            )
     else:
         raise AssertionError(
             "no_grad_vars must be None, Tensor or list/tuple/set of Tensors"
@@ -868,15 +920,15 @@ def grad(
     if retain_graph is None:
         retain_graph = create_graph
 
-    assert isinstance(
-        retain_graph, bool
-    ), "retain_graph must be None, True or False"
+    assert isinstance(retain_graph, bool), (
+        "retain_graph must be None, True or False"
+    )
 
     assert isinstance(allow_unused, bool), "allow_unused must be True or False"
 
     assert isinstance(only_inputs, bool), "only_inputs must be True or False"
     assert only_inputs, "only_inputs=False is not supported yet"
-
+    check_and_create_dir(dump_backward_graph_path)
     return core.eager.run_partial_grad(
         outputs,
         inputs,
@@ -886,4 +938,5 @@ def grad(
         only_inputs,
         allow_unused,
         no_grad_vars,
+        dump_backward_graph_path,
     )

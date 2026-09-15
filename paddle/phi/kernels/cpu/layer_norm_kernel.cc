@@ -31,9 +31,9 @@ namespace phi {
 template <typename T, typename Context>
 void LayerNormKernel(const Context& dev_ctx,
                      const DenseTensor& x,
-                     const paddle::optional<DenseTensor>& scale_opt,
-                     const paddle::optional<DenseTensor>& bias_opt,
-                     float epsilon,
+                     const optional<DenseTensor>& scale_opt,
+                     const optional<DenseTensor>& bias_opt,
+                     double epsilon,
                      int begin_norm_axis,
                      DenseTensor* y,
                      DenseTensor* mean,
@@ -45,6 +45,7 @@ void LayerNormKernel(const Context& dev_ctx,
   dev_ctx.template Alloc<T>(y);
   dev_ctx.template Alloc<T>(mean);
   dev_ctx.template Alloc<T>(var);
+  if (x.numel() == 0) return;
 
   auto matrix_dim = common::flatten_to_2d(x_dims, begin_norm_axis);
   int left = static_cast<int>(matrix_dim[0]);
@@ -68,23 +69,23 @@ void LayerNormKernel(const Context& dev_ctx,
 #if defined(PADDLE_WITH_CUDA) || defined(_WIN32) || defined(__APPLE__) || \
     defined(__OSX__)
 
-  funcs::RowwiseMean2D<phi::CPUContext, T> row_mean(left, right, dev_ctx);
+  funcs::RowwiseMean2D<CPUContext, T> row_mean(left, right, dev_ctx);
 
   // get mean
   row_mean(dev_ctx, x_tmp, &mean_tmp);
 
   // get variance
 
-  phi::funcs::ElementwiseCompute<funcs::SubAndSquareFunctor<T>, T>(
+  funcs::ElementwiseCompute<funcs::SubAndSquareFunctor<T>, T>(
       dev_ctx, x_tmp, mean_tmp, funcs::SubAndSquareFunctor<T>(), &out, 0);
 
   row_mean(dev_ctx, out, &var_tmp);
 
   // get x_norm
-  phi::funcs::ElementwiseCompute<funcs::SubtractFunctor<T>, T>(
+  funcs::ElementwiseCompute<funcs::SubtractFunctor<T>, T>(
       dev_ctx, x_tmp, mean_tmp, funcs::SubtractFunctor<T>(), &out, 0);
 
-  phi::funcs::ElementwiseCompute<funcs::DivAndSqrtFunctor<T>, T>(
+  funcs::ElementwiseCompute<funcs::DivAndSqrtFunctor<T>, T>(
       dev_ctx,
       out,
       var_tmp,
@@ -93,11 +94,11 @@ void LayerNormKernel(const Context& dev_ctx,
       0);
 
   if (scale) {
-    phi::funcs::ElementwiseCompute<funcs::MultiplyFunctor<T>, T>(
+    funcs::ElementwiseCompute<funcs::MultiplyFunctor<T>, T>(
         dev_ctx, out, *scale, funcs::MultiplyFunctor<T>(), &out, 1);
   }
   if (bias) {
-    phi::funcs::ElementwiseCompute<funcs::AddFunctor<T>, T>(
+    funcs::ElementwiseCompute<funcs::AddFunctor<T>, T>(
         dev_ctx, out, *bias, funcs::AddFunctor<T>(), &out, 1);
   }
 #else
@@ -132,8 +133,7 @@ void LayerNormKernel(const Context& dev_ctx,
   }
 
   auto ker =
-      phi::jit::KernelFuncs<phi::jit::LayerNormTuple<T>, phi::CPUPlace>::Cache()
-          .At(right);
+      jit::KernelFuncs<jit::LayerNormTuple<T>, CPUPlace>::Cache().At(right);
   ker(x_tmp.data<T>(),
       out.data<T>(),
       mean_tmp.data<T>(),
@@ -141,7 +141,7 @@ void LayerNormKernel(const Context& dev_ctx,
       scale ? scale->data<T>() : nullptr,
       bias ? bias->data<T>() : nullptr,
       static_cast<int>(left),
-      static_cast<float>(epsilon),
+      static_cast<double>(epsilon),
       right);
 #endif
 }

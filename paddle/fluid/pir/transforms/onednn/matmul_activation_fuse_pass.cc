@@ -60,7 +60,9 @@ std::unordered_map<std::string, std::string> activation_type = {
     {paddle::dialect::SwishOp::name(), "swish"},
     {paddle::dialect::TanhOp::name(), "tanh"},
     {paddle::dialect::Tanh_Op::name(), "tanh"}};
+}  // namespace
 
+namespace pir {
 class MatmulActivationFusePattern : public paddle::drr::DrrPatternBase {
  private:
   std::string matmul_name_;
@@ -127,6 +129,7 @@ class MatmulActivationFusePattern : public paddle::drr::DrrPatternBase {
         {"fused_reshape_out", res.VectorInt32Attr({})},
         {"fused_transpose_out", res.VectorInt32Attr({})},
         {"mkldnn_data_type", res.StrAttr("float32")},
+        {"onednn_data_type", res.StrAttr("")},
         {"scale_x", res.Float32Attr(1.0f)},
         {"scale_y", res.Float32Attr(1.0f)},
         {"scale_in_eltwise", res.Float32Attr(0.0f)},
@@ -141,7 +144,11 @@ class MatmulActivationFusePattern : public paddle::drr::DrrPatternBase {
       fused_attrs.emplace("fuse_beta", pat.Attr("fuse_beta"));
     } else if (act_type_ == paddle::dialect::LeakyRelu_Op::name() ||
                act_type_ == paddle::dialect::LeakyReluOp::name()) {
-      fused_attrs.emplace("fuse_alpha", pat.Attr("fuse_alpha"));
+      const auto &fuse_alpha = res.ComputeAttr(
+          [](const paddle::drr::MatchContext &match_ctx) -> float {
+            return static_cast<float>(match_ctx.Attr<double>("fuse_alpha"));
+          });
+      fused_attrs["fuse_alpha"] = fuse_alpha;
     } else if (act_type_ == paddle::dialect::SwishOp::name()) {
       fused_attrs.emplace("fuse_alpha", res.Float32Attr(1.0f));
     } else if (act_type_ == paddle::dialect::Relu6Op::name()) {
@@ -214,6 +221,7 @@ class MatmulGeluTanhFusePattern : public paddle::drr::DrrPatternBase {
         {"fused_reshape_out", res.VectorInt32Attr({})},
         {"fused_transpose_out", res.VectorInt32Attr({})},
         {"mkldnn_data_type", res.StrAttr("float32")},
+        {"onednn_data_type", res.StrAttr("")},
         {"scale_x", res.Float32Attr(1.0f)},
         {"scale_y", res.Float32Attr(1.0f)},
         {"scale_in_eltwise", res.Float32Attr(0.0f)},
@@ -297,6 +305,7 @@ class MatmulClipFusePattern : public paddle::drr::DrrPatternBase {
         {"fused_reshape_out", res.VectorInt32Attr({})},
         {"fused_transpose_out", res.VectorInt32Attr({})},
         {"mkldnn_data_type", res.StrAttr("float32")},
+        {"onednn_data_type", res.StrAttr("")},
         {"scale_x", res.Float32Attr(1.0f)},
         {"scale_y", res.Float32Attr(1.0f)},
         {"scale_in_eltwise", res.Float32Attr(0.0f)},
@@ -350,6 +359,7 @@ class FusedMatmulActivationFusePattern : public paddle::drr::DrrPatternBase {
                 {"fused_reshape_out", pat.Attr("fused_reshape_out")},
                 {"fused_transpose_out", pat.Attr("fused_transpose_out")},
                 {"mkldnn_data_type", pat.Attr("mkldnn_data_type")},
+                {"onednn_data_type", pat.Attr("onednn_data_type")},
                 {"scale_x", pat.Attr("scale_x")},
                 {"scale_y", pat.Attr("scale_y")},
                 {"scale_in_eltwise", pat.Attr("scale_in_eltwise")},
@@ -401,6 +411,7 @@ class FusedMatmulActivationFusePattern : public paddle::drr::DrrPatternBase {
         {"fused_reshape_out", pat.Attr("fused_reshape_out")},
         {"fused_transpose_out", pat.Attr("fused_transpose_out")},
         {"mkldnn_data_type", pat.Attr("mkldnn_data_type")},
+        {"onednn_data_type", pat.Attr("onednn_data_type")},
         {"scale_x", pat.Attr("scale_x")},
         {"scale_y", pat.Attr("scale_y")},
         {"scale_in_eltwise", pat.Attr("scale_in_eltwise")},
@@ -471,6 +482,7 @@ class FusedMatmulGeluTanhFusePattern : public paddle::drr::DrrPatternBase {
                 {"fused_reshape_out", pat.Attr("fused_reshape_out")},
                 {"fused_transpose_out", pat.Attr("fused_transpose_out")},
                 {"mkldnn_data_type", pat.Attr("mkldnn_data_type")},
+                {"onednn_data_type", pat.Attr("onednn_data_type")},
                 {"scale_x", pat.Attr("scale_x")},
                 {"scale_y", pat.Attr("scale_y")},
                 {"scale_in_eltwise", pat.Attr("scale_in_eltwise")},
@@ -513,6 +525,7 @@ class FusedMatmulGeluTanhFusePattern : public paddle::drr::DrrPatternBase {
         {"fused_reshape_out", pat.Attr("fused_reshape_out")},
         {"fused_transpose_out", pat.Attr("fused_transpose_out")},
         {"mkldnn_data_type", pat.Attr("mkldnn_data_type")},
+        {"onednn_data_type", pat.Attr("onednn_data_type")},
         {"scale_x", pat.Attr("scale_x")},
         {"scale_y", pat.Attr("scale_y")},
         {"scale_in_eltwise", pat.Attr("scale_in_eltwise")},
@@ -566,6 +579,7 @@ class FusedMatmulClipFusePattern : public paddle::drr::DrrPatternBase {
                 {"fused_reshape_out", pat.Attr("fused_reshape_out")},
                 {"fused_transpose_out", pat.Attr("fused_transpose_out")},
                 {"mkldnn_data_type", pat.Attr("mkldnn_data_type")},
+                {"onednn_data_type", pat.Attr("onednn_data_type")},
                 {"scale_x", pat.Attr("scale_x")},
                 {"scale_y", pat.Attr("scale_y")},
                 {"scale_in_eltwise", pat.Attr("scale_in_eltwise")},
@@ -621,6 +635,7 @@ class FusedMatmulClipFusePattern : public paddle::drr::DrrPatternBase {
         {"fused_reshape_out", pat.Attr("fused_reshape_out")},
         {"fused_transpose_out", pat.Attr("fused_transpose_out")},
         {"mkldnn_data_type", pat.Attr("mkldnn_data_type")},
+        {"onednn_data_type", pat.Attr("onednn_data_type")},
         {"scale_x", pat.Attr("scale_x")},
         {"scale_y", pat.Attr("scale_y")},
         {"scale_in_eltwise", pat.Attr("scale_in_eltwise")},
@@ -634,13 +649,13 @@ class FusedMatmulClipFusePattern : public paddle::drr::DrrPatternBase {
   }
 };
 
-class MatmulActivationFusePass : public pir::PatternRewritePass {
+class MatmulActivationFusePass : public PatternRewritePass {
  public:
   MatmulActivationFusePass()
-      : pir::PatternRewritePass("matmul_activation_fuse_pass", 2) {}
+      : PatternRewritePass("matmul_activation_fuse_pass", 2) {}
 
-  pir::RewritePatternSet InitializePatterns(pir::IrContext *context) override {
-    pir::RewritePatternSet ps(context);
+  RewritePatternSet InitializePatterns(IrContext *context) override {
+    RewritePatternSet ps(context);
     int benefit_idx = 1;
     for (auto act_op : act_ops) {
       ps.Add(paddle::drr::Create<MatmulActivationFusePattern>(
@@ -698,10 +713,6 @@ class MatmulActivationFusePass : public pir::PatternRewritePass {
   }
 };
 
-}  // namespace
-
-namespace pir {
-
 std::unique_ptr<Pass> CreateMatmulActivationFusePass() {
   // pd_op.matmul + pd_op.relu -> onednn_op.fused_matmul
   // pd_op.matmul + pd_op.add + pd_op.relu(act) ->  onednn_op.fused_matmul +
@@ -710,4 +721,4 @@ std::unique_ptr<Pass> CreateMatmulActivationFusePass() {
 }
 }  // namespace pir
 
-REGISTER_IR_PASS(matmul_activation_fuse_pass, MatmulActivationFusePass);
+REGISTER_IR_PASS(matmul_activation_fuse_pass, pir::MatmulActivationFusePass);

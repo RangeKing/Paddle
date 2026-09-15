@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 import unittest
 
 import numpy as np
+from op_test import get_device_place, get_places
 
 import paddle
 
@@ -69,15 +69,7 @@ class TestUnflattenAPI(unittest.TestCase):
         self.set_api()
         self.set_args()
         self.get_output()
-        self.places = []
-        if (
-            os.environ.get('FLAGS_CI_both_cpu_and_gpu', 'False').lower()
-            in ['1', 'true', 'on']
-            or not paddle.device.is_compiled_with_cuda()
-        ):
-            self.places.append(paddle.CPUPlace())
-        if paddle.device.is_compiled_with_cuda():
-            self.places.append(paddle.CUDAPlace(0))
+        self.places = get_places()
 
     def func_dygraph(self):
         for place in self.places:
@@ -96,16 +88,7 @@ class TestUnflattenAPI(unittest.TestCase):
 
     def test_static(self):
         paddle.enable_static()
-        places = []
-        if (
-            os.environ.get('FLAGS_CI_both_cpu_and_gpu', 'False').lower()
-            in ['1', 'true', 'on']
-            or not paddle.device.is_compiled_with_cuda()
-        ):
-            places.append(paddle.CPUPlace())
-        if paddle.device.is_compiled_with_cuda():
-            places.append(paddle.CUDAPlace(0))
-        for place in places:
+        for place in get_places():
             with paddle.static.program_guard(
                 paddle.static.Program(), paddle.static.Program()
             ):
@@ -132,6 +115,38 @@ class TestUnflattenAPI(unittest.TestCase):
                 )
 
                 np.testing.assert_allclose(fetches[0], self.output, rtol=1e-05)
+
+
+class TestUnflattenInputZeroSize(TestUnflattenAPI):
+    def set_args(self):
+        self.x = np.random.rand(4, 0, 16).astype('int16')
+        self.axis = 0
+        self.shape = (2, 2)
+        self.shape_is_tensor = False
+
+
+class TestUnflattenInputZeroSizeError(unittest.TestCase):
+    def test_errors(self):
+        paddle.disable_static()
+        x = np.random.rand(4, 0, 16).astype('float32')
+        x = paddle.to_tensor(x)
+        with self.assertRaises(Exception) as context:
+            paddle.unflatten(x, axis=0, shape=[-1, 0, 1])
+        self.assertTrue(
+            "Provided sizes don't multiply up" in str(context.exception)
+        )
+
+
+class TestUnflattenInputZeroSizeError2(unittest.TestCase):
+    def test_errors(self):
+        paddle.disable_static()
+        x = np.random.rand(4, 0, 16).astype('float32')
+        x = paddle.to_tensor(x)
+        with self.assertRaises(Exception) as context:
+            paddle.unflatten(x, axis=0, shape=[-1, 3])
+        self.assertTrue(
+            "The 'shape' attribute in ReshapeOp" in str(context.exception)
+        )
 
 
 # check the data type of the input x
@@ -273,27 +288,10 @@ class TestLayer(unittest.TestCase):
 
     def setUp(self):
         self.set_args()
-        self.places = []
-        if (
-            os.environ.get('FLAGS_CI_both_cpu_and_gpu', 'False').lower()
-            in ['1', 'true', 'on']
-            or not paddle.device.is_compiled_with_cuda()
-        ):
-            self.places.append(paddle.CPUPlace())
-        if paddle.device.is_compiled_with_cuda():
-            self.places.append(paddle.CUDAPlace(0))
+        self.places = get_places()
 
     def test_layer(self):
-        places = []
-        if (
-            os.environ.get('FLAGS_CI_both_cpu_and_gpu', 'False').lower()
-            in ['1', 'true', 'on']
-            or not paddle.device.is_compiled_with_cuda()
-        ):
-            places.append(paddle.CPUPlace())
-        if paddle.device.is_compiled_with_cuda():
-            places.append(paddle.CUDAPlace(0))
-        for place in places:
+        for place in get_places():
             paddle.disable_static()
             x = paddle.to_tensor(self.x, dtype='float32', place=place)
             unflatten = paddle.nn.Unflatten(self.axis, self.shape)
@@ -327,7 +325,6 @@ class TestLayer(unittest.TestCase):
 
 
 class TestLayerName(unittest.TestCase):
-
     def test_name(self):
         self.x = np.random.randn(3, 4, 4, 5).astype('float32')
         self.axis = 1
@@ -335,6 +332,80 @@ class TestLayerName(unittest.TestCase):
         self.name = 'unflatten'
         unflatten = paddle.nn.Unflatten(self.axis, self.shape, self.name)
         _name = unflatten.extra_repr()
+
+
+class TestUnflattenAPI_Compatibility(unittest.TestCase):
+    def setUp(self):
+        np.random.seed(2025)
+        self.places = ['cpu', get_device_place()]
+        self.shape = [2, 12, 4]
+        self.dtype = "float32"
+        self.init_data()
+
+    def init_data(self):
+        self.np_x = np.random.rand(*self.shape).astype(self.dtype)
+        self.axis = 1
+        self.shape_dims = [3, 4]  # 12 = 3 * 4
+
+    def test_dygraph_Compatibility(self):
+        paddle.disable_static()
+        x = paddle.to_tensor(self.np_x)
+        paddle_dygraph_out = []
+        # Position args (args)
+        out1 = paddle.unflatten(x, self.axis, self.shape_dims)
+        paddle_dygraph_out.append(out1)
+        # Key words args (kwargs) for paddle
+        out2 = paddle.unflatten(x=x, axis=self.axis, shape=self.shape_dims)
+        paddle_dygraph_out.append(out2)
+        # Key words args for torch compatibility
+        out3 = paddle.unflatten(input=x, dim=self.axis, sizes=self.shape_dims)
+        paddle_dygraph_out.append(out3)
+        # Numpy reference output - reshape along specified axis
+        ref_out = self.np_x.reshape(
+            self.shape[: self.axis]
+            + self.shape_dims
+            + self.shape[self.axis + 1 :]
+        )
+
+        for out in paddle_dygraph_out:
+            np.testing.assert_allclose(
+                ref_out, out.numpy(), rtol=1e-05, atol=1e-08
+            )
+        paddle.enable_static()
+
+    def test_static_Compatibility(self):
+        paddle.enable_static()
+        main = paddle.static.Program()
+        startup = paddle.static.Program()
+        with paddle.base.program_guard(main, startup):
+            x = paddle.static.data(name="x", shape=self.shape, dtype=self.dtype)
+            # Position args (args)
+            out1 = paddle.unflatten(x, self.axis, self.shape_dims)
+            # Key words args (kwargs) for paddle
+            out2 = paddle.unflatten(x=x, axis=self.axis, shape=self.shape_dims)
+            # Key words args for torch compatibility
+            out3 = paddle.unflatten(
+                input=x, dim=self.axis, sizes=self.shape_dims
+            )
+            # Numpy reference output
+            ref_out = self.np_x.reshape(
+                self.shape[: self.axis]
+                + self.shape_dims
+                + self.shape[self.axis + 1 :]
+            )
+
+            fetch_list = [out1, out2, out3]
+            for place in self.places:
+                exe = paddle.base.Executor(place)
+                fetches = exe.run(
+                    main,
+                    feed={"x": self.np_x},
+                    fetch_list=fetch_list,
+                )
+                for out in fetches:
+                    np.testing.assert_allclose(
+                        out, ref_out, rtol=1e-05, atol=1e-08
+                    )
 
 
 if __name__ == '__main__':

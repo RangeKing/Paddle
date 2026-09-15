@@ -16,8 +16,12 @@
 
 #include <vector>
 #include "paddle/common/hostdevice.h"
+#include "paddle/phi/common/memory_utils.h"
 #include "paddle/phi/core/dense_tensor.h"
 #include "paddle/phi/kernels/funcs/for_range.h"
+#if defined(__NVCC__) || defined(__HIPCC__)
+#include "paddle/phi/backends/gpu/cuda/cuda_graph_with_memory_pool.h"
+#endif
 #if defined(__NVCC__) || defined(__HIPCC__)
 #include "thrust/device_vector.h"
 #endif
@@ -79,7 +83,7 @@ HOSTDEVICE inline bool is_conj_part(const int64_t dst_idx,
 
 // FFTFillConjFunctor fill the destination tensor with source tensor and
 // conjugate symmetry element of source tensor .
-// Use framework::ForRange to iterate destination element with
+// Use phi::ForRange to iterate destination element with
 // supporting different device
 template <typename C>
 struct FFTFillConjFunctor {
@@ -137,15 +141,15 @@ struct FFTFillConjFunctor {
 };
 
 template <typename DeviceContext, typename C>
-void FFTFillConj(const DeviceContext& ctx,
+void FFTFillConj(const DeviceContext& dev_ctx,
                  const DenseTensor* src,
                  DenseTensor* dst,
                  const std::vector<int64_t>& axes) {
   std::vector<int64_t> src_strides_v =
-      common::vectorize<int64_t>(common::stride(src->dims()));
+      vectorize<int64_t>(common::stride(src->dims()));
   std::vector<int64_t> dst_strides_v =
-      common::vectorize<int64_t>(common::stride(dst->dims()));
-  std::vector<int64_t> dst_shape_v = common::vectorize<int64_t>(dst->dims());
+      vectorize<int64_t>(common::stride(dst->dims()));
+  std::vector<int64_t> dst_shape_v = vectorize<int64_t>(dst->dims());
   const auto src_data = src->data<C>();
   auto dst_data = dst->data<C>();
   const auto last_axis = axes.back();
@@ -157,22 +161,63 @@ void FFTFillConj(const DeviceContext& ctx,
   }
 
 #if defined(__NVCC__) || defined(__HIPCC__)
-  const thrust::device_vector<int64_t> src_strides_g(src_strides_v);
-  const auto src_strides = thrust::raw_pointer_cast(src_strides_g.data());
-  const thrust::device_vector<int64_t> dst_strides_g(dst_strides_v);
-  const auto dst_strides = thrust::raw_pointer_cast(dst_strides_g.data());
-  const thrust::device_vector<int64_t> dst_shape_g(dst_shape_v);
-  const auto dst_shape = thrust::raw_pointer_cast(dst_shape_g.data());
-  const thrust::device_vector<bool> is_fft_axis_g(_is_fft_axis.get(),
-                                                  _is_fft_axis.get() + rank);
-  const auto p_is_fft_axis = thrust::raw_pointer_cast(is_fft_axis_g.data());
+  DenseTensor src_strides_g;
+  src_strides_g.Resize({(int64_t)src_strides_v.size()});
+  int64_t* src_strides = dev_ctx.template Alloc<int64_t>(&src_strides_g);
+  DenseTensor dst_strides_g;
+  dst_strides_g.Resize({(int64_t)dst_strides_v.size()});
+  int64_t* dst_strides = dev_ctx.template Alloc<int64_t>(&dst_strides_g);
+  DenseTensor dst_shape_g;
+  dst_shape_g.Resize({(int64_t)dst_shape_v.size()});
+  int64_t* dst_shape = dev_ctx.template Alloc<int64_t>(&dst_shape_g);
+  DenseTensor is_fft_axis_g;
+  is_fft_axis_g.Resize({rank});
+  bool* p_is_fft_axis = dev_ctx.template Alloc<bool>(&is_fft_axis_g);
+  auto cplace = CPUPlace();
+  const auto gplace = dev_ctx.GetPlace();
+  const int64_t* stable_src_strides =
+      phi::backends::gpu::RestoreHostMemIfCapturingCUDAGraph(
+          src_strides_v.data(), src_strides_v.size());
+  memory_utils::Copy(gplace,
+                     src_strides,
+                     cplace,
+                     stable_src_strides,
+                     sizeof(int64_t) * src_strides_v.size(),
+                     dev_ctx.stream());
+  const int64_t* stable_dst_strides =
+      phi::backends::gpu::RestoreHostMemIfCapturingCUDAGraph(
+          dst_strides_v.data(), dst_strides_v.size());
+  memory_utils::Copy(gplace,
+                     dst_strides,
+                     cplace,
+                     stable_dst_strides,
+                     sizeof(int64_t) * dst_strides_v.size(),
+                     dev_ctx.stream());
+  const int64_t* stable_dst_shape =
+      phi::backends::gpu::RestoreHostMemIfCapturingCUDAGraph(
+          dst_shape_v.data(), dst_shape_v.size());
+  memory_utils::Copy(gplace,
+                     dst_shape,
+                     cplace,
+                     stable_dst_shape,
+                     sizeof(int64_t) * dst_shape_v.size(),
+                     dev_ctx.stream());
+  const bool* stable_is_fft_axis =
+      phi::backends::gpu::RestoreHostMemIfCapturingCUDAGraph(
+          _is_fft_axis.get(), static_cast<size_t>(rank));
+  memory_utils::Copy(gplace,
+                     p_is_fft_axis,
+                     cplace,
+                     stable_is_fft_axis,
+                     sizeof(bool) * rank,
+                     dev_ctx.stream());
 #else
   const auto src_strides = src_strides_v.data();
   const auto dst_strides = dst_strides_v.data();
   const auto dst_shape = dst_shape_v.data();
   const auto p_is_fft_axis = _is_fft_axis.get();
 #endif
-  ForRange<DeviceContext> for_range(ctx, dst->numel());
+  ForRange<DeviceContext> for_range(dev_ctx, dst->numel());
   FFTFillConjFunctor<C> fill_conj_functor(src_data,
                                           dst_data,
                                           src_strides,

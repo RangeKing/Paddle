@@ -340,7 +340,7 @@ function checkLinuxPython(){
         if [ "$python_path" != "" ];then
           break
         else
-          echo "输入路径有误,未找到pyrhon"
+          echo "输入路径有误,未找到 python"
         fi
     done
   fi
@@ -388,11 +388,11 @@ function checkLinuxPython(){
         echo "Python2版本小于2.7.15,请更新Python2版本或使用Python3"
         exit 0
       fi
-     uncode=`$python_path -c "import pip._internal;print(pip._internal.pep425tags.get_supported())"|grep "cp27mu"`
-     if [[ "$uncode" == "" ]];then
-        uncode=
+     unicode=`$python_path -c "import pip._internal;print(pip._internal.pep425tags.get_supported())"|grep "cp27mu"`
+     if [[ "$unicode" == "" ]];then
+        unicode=
      else
-        uncode=u
+        unicode=u
      fi
   fi
 
@@ -407,10 +407,10 @@ function checkLinuxPython(){
 
 
 function PipLinuxInstall(){
-  wheel_cpu_release="http://paddle-wheel.bj.bcebos.com/${release_version}-${GPU}-${math}/paddlepaddle-${release_version}-cp${python_version}-cp${python_version}m${uncode}-linux_x86_64.whl"
-  wheel_gpu_release="http://paddle-wheel.bj.bcebos.com/${release_version}-gpu-cuda${CUDA}-cudnn${CUDNN}-${math}/paddlepaddle_gpu-${release_version}.post${CUDA}${CUDNN}-cp${python_version}-cp${python_version}m${uncode}-linux_x86_64.whl"
-  wheel_cpu_develop="http://paddle-wheel.bj.bcebos.com/0.0.0-cpu-${math}/paddlepaddle-0.0.0-cp${python_version}-cp${python_version}m${uncode}-linux_x86_64.whl"
-  wheel_gpu_develop="http://paddle-wheel.bj.bcebos.com/0.0.0-gpu-cuda${CUDA}-cudnn${CUDNN}-${math}/paddlepaddle_gpu-0.0.0-cp${python_version}-cp${python_version}m${uncode}-linux_x86_64.whl"
+  wheel_cpu_release="http://paddle-wheel.bj.bcebos.com/${release_version}-${GPU}-${math}/paddlepaddle-${release_version}-cp${python_version}-cp${python_version}m${unicode}-linux_x86_64.whl"
+  wheel_gpu_release="http://paddle-wheel.bj.bcebos.com/${release_version}-gpu-cuda${CUDA}-cudnn${CUDNN}-${math}/paddlepaddle_gpu-${release_version}.post${CUDA}${CUDNN}-cp${python_version}-cp${python_version}m${unicode}-linux_x86_64.whl"
+  wheel_cpu_develop="http://paddle-wheel.bj.bcebos.com/0.0.0-cpu-${math}/paddlepaddle-0.0.0-cp${python_version}-cp${python_version}m${unicode}-linux_x86_64.whl"
+  wheel_gpu_develop="http://paddle-wheel.bj.bcebos.com/0.0.0-gpu-cuda${CUDA}-cudnn${CUDNN}-${math}/paddlepaddle_gpu-0.0.0-cp${python_version}-cp${python_version}m${unicode}-linux_x86_64.whl"
 
 
   if [[ "$paddle_version" == "2" ]];then
@@ -909,11 +909,11 @@ function checkMacPip(){
             return 1
        else
             if [[ $python_brief_version == "27" ]];then
-               uncode=`$python_root -c "import pip._internal;print(pip._internal.pep425tags.get_supported())"|grep "cp27"`
-               if [[ $uncode == "" ]];then
-                  uncode="mu"
+               unicode=`$python_root -c "import pip._internal;print(pip._internal.pep425tags.get_supported())"|grep "cp27"`
+               if [[ $unicode == "" ]];then
+                  unicode="mu"
                else
-                  uncode="m"
+                  unicode="m"
                fi
             fi
             version_list=`echo "${python_list[@]}" | grep "$python_brief_version" `
@@ -1078,18 +1078,18 @@ function main() {
   echo
   SYSTEM=`uname -s`
   if [[ "$SYSTEM" == "Darwin" ]];then
-  	yellow "          您的系统为：MAC OSX"
+    yellow "          您的系统为：MAC OSX"
     echo
-  	macos
+    macos
   else
- 	yellow "          您的系统为：Linux"
-  echo
-	  OS=`cat /etc/issue|awk 'NR==1 {print $1}'`
-	  if [[ $OS == "\S" ]] || [[ "$OS" == "CentOS" ]] || [[ $OS == "Ubuntu" ]];then
-	    linux
-	  else
-	    red "您的系统不在本安装包的支持范围，如您需要在windows环境下安装PaddlePaddle，请您参考PaddlePaddle官网的windows安装文档"
-	  fi
+    yellow "          您的系统为：Linux"
+    echo
+    OS=`cat /etc/issue|awk 'NR==1 {print $1}'`
+    if [[ $OS == "\S" ]] || [[ "$OS" == "CentOS" ]] || [[ $OS == "Ubuntu" ]];then
+        linux
+    else
+        red "您的系统不在本安装包的支持范围，如您需要在windows环境下安装PaddlePaddle，请您参考PaddlePaddle官网的windows安装文档"
+    fi
   fi
 }
 main

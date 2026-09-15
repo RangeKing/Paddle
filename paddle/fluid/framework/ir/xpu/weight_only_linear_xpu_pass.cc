@@ -44,20 +44,20 @@ PermuteINT8WeightOnlyPattern::PermuteINT8WeightOnlyPattern(
     PDPattern* pattern, const std::string& name_scope)
     : PatternBase(pattern, name_scope, name_scope) {
   auto* input = pattern->NewNode(input_repr())
-                    ->assert_is_op_input("weight_only_linear_xpu", "x")
+                    ->assert_is_op_input("weight_only_linear", "x")
                     ->AsInput();
   auto* weight = pattern->NewNode(weight_repr())
-                     ->assert_is_op_input("weight_only_linear_xpu", "weight")
+                     ->assert_is_op_input("weight_only_linear", "weight")
                      ->AsInput();
   auto* weight_scale =
       pattern->NewNode(weight_scale_repr())
-          ->assert_is_op_input("weight_only_linear_xpu", "weight_scale")
+          ->assert_is_op_input("weight_only_linear", "weight_scale")
           ->AsInput();
   auto* out = pattern->NewNode(out_repr())
-                  ->assert_is_op_output("weight_only_linear_xpu", "out")
+                  ->assert_is_op_output("weight_only_linear", "out")
                   ->AsOutput();
   auto* weight_only_linear = pattern->NewNode(weight_only_linear_repr())
-                                 ->assert_is_op("weight_only_linear_xpu");
+                                 ->assert_is_op("weight_only_linear");
 
   std::vector<PDNode*> input_vars{input, weight, weight_scale};
   std::vector<PDNode*> output_vars{out};
@@ -98,7 +98,7 @@ void PermuteINT8WeightOnlyPass::ApplyPermuteINT8WeightOnly(
     auto* block = weight_only_linear->Op()->Block();
     auto* scope = param_scope();
     auto* cpu_ctx = static_cast<phi::CPUContext*>(
-        phi::DeviceContextPool::Instance().Get(phi::CPUPlace()));
+        phi::DeviceContextPool::Instance().Get(CPUPlace()));
 
     auto permute_weight = [&](const std::string& input_name,
                               const std::string& scale_name,
@@ -115,20 +115,20 @@ void PermuteINT8WeightOnlyPass::ApplyPermuteINT8WeightOnly(
       auto scale_names = weight_only_linear->Op()->Input(scale_name);
       int id = 0;
       for (auto name : input_names) {
-        phi::DenseTensor* scale_tensor =
-            scope->Var(scale_names[id])->GetMutable<phi::DenseTensor>();
+        DenseTensor* scale_tensor =
+            scope->Var(scale_names[id])->GetMutable<DenseTensor>();
         PADDLE_ENFORCE_NOT_NULL(
             scale_tensor,
             common::errors::Fatal(
                 "weight_scale tensor node should not be nullptr"));
 
-        size_t dst_hash = HashTensor<phi::dtype::float16>(*scale_tensor);
+        size_t dst_hash = HashTensor<phi::float16>(*scale_tensor);
         std::string pre_name = GetPrefixWithoutHash(name);
         std::string dst_name = pre_name + "_#" + std::to_string(dst_hash);
         auto* dst_node = FindNodeWithName(graph, dst_name);
         if (dst_node == nullptr) {
-          phi::DenseTensor* curr_tensor =
-              scope->Var(name)->GetMutable<phi::DenseTensor>();
+          DenseTensor* curr_tensor =
+              scope->Var(name)->GetMutable<DenseTensor>();
           PADDLE_ENFORCE_NOT_NULL(
               curr_tensor,
               common::errors::Fatal("tensor node should not be nullptr"));
@@ -152,27 +152,28 @@ void PermuteINT8WeightOnlyPass::ApplyPermuteINT8WeightOnly(
           old_weight_name->push_back(name);
           auto* dst_var = scope->FindVar(dst_name);
           if (dst_var == nullptr) {
-            phi::DenseTensor tmp_tensor;
-            tmp_tensor.set_type(phi::DataType::INT8);
+            DenseTensor tmp_tensor;
+            tmp_tensor.set_type(DataType::INT8);
             tmp_tensor.Resize(curr_tensor->dims());
             cpu_ctx->Alloc<int8_t>(&tmp_tensor);
 
-            int k = curr_tensor->dims()[1];
-            for (int i = 0; i < curr_tensor->numel(); i += 8 * 16) {
-              int read_j_len = ((curr_tensor->numel() - i + 15) / 16) > 8
-                                   ? 8
-                                   : ((curr_tensor->numel() - i + 15) / 16);
-              for (int j = 0; j < read_j_len; ++j) {
-                int permuted_w_offset = i / (2 * k) * 2 * k +
-                                        ((j > 3) ? k : 0) + (i % (2 * k)) / 2 +
-                                        16 * (j % 4);
-                int w_offset = i + j * 16;
-                int read_l_len = (curr_tensor->numel() - i - j * 16) > 16
-                                     ? 16
-                                     : (curr_tensor->numel() - i - j * 16);
-                for (int l = 0; l < read_l_len; l++) {
+            int64_t k = curr_tensor->dims()[1];
+            for (int64_t i = 0; i < curr_tensor->numel(); i += 8 * 16) {
+              int64_t read_j_len = ((curr_tensor->numel() - i + 15) / 16) > 8
+                                       ? 8
+                                       : ((curr_tensor->numel() - i + 15) / 16);
+              for (int64_t j = 0; j < read_j_len; ++j) {
+                int64_t permuted_w_offset = i / (2 * k) * 2 * k +
+                                            ((j > 3) ? k : 0) +
+                                            (i % (2 * k)) / 2 + 16 * (j % 4);
+                int64_t w_offset = i + j * 16;
+                int64_t read_l_len = (curr_tensor->numel() - i - j * 16) > 16
+                                         ? 16
+                                         : (curr_tensor->numel() - i - j * 16);
+                for (int64_t l = 0; l < read_l_len; l++) {
                   // {0, 2, 4, 6, 8, 10, 12, 14, 1, 3, 5, 7, 9, 11, 13, 15}
-                  int offset_l = (l / 8) % 2 ? (l - 7 + (l % 8)) : l + (l % 8);
+                  int64_t offset_l =
+                      (l / 8) % 2 ? (l - 7 + (l % 8)) : l + (l % 8);
                   tmp_tensor.data<int8_t>()[permuted_w_offset + l] =
                       static_cast<int8_t>(
                           static_cast<int32_t>(reinterpret_cast<uint8_t*>(
@@ -182,8 +183,7 @@ void PermuteINT8WeightOnlyPass::ApplyPermuteINT8WeightOnly(
                 }
               }
             }
-            Assign(tmp_tensor,
-                   scope->Var(dst_name)->GetMutable<phi::DenseTensor>());
+            Assign(tmp_tensor, scope->Var(dst_name)->GetMutable<DenseTensor>());
           }
         }
         id++;
@@ -222,8 +222,10 @@ void PermuteINT8WeightOnlyPass::ApplyImpl(ir::Graph* graph) const {
   PADDLE_ENFORCE_NOT_NULL(
       graph, common::errors::PreconditionNotMet("graph should not be null."));
   Init(name_scope_, graph);
-
-  ApplyPermuteINT8WeightOnly(graph);
+  auto version = phi::backends::xpu::get_xpu_version(-1);
+  if (version == phi::backends::xpu::XPUVersion::XPU2) {
+    ApplyPermuteINT8WeightOnly(graph);
+  }
 }
 
 }  // namespace ir
@@ -236,4 +238,4 @@ REGISTER_PASS(weight_only_linear_xpu_pass,
 REGISTER_PASS_CAPABILITY(weight_only_linear_xpu_pass)
     .AddCombination(
         paddle::framework::compatible::OpVersionComparatorCombination().EQ(
-            "weight_only_linear_xpu", 0));
+            "weight_only_linear", 0));

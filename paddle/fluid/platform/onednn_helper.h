@@ -12,7 +12,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License. */
 #pragma once
-
+#ifdef PADDLE_WITH_DNNL
 #include <algorithm>
 #include <iostream>
 #include <memory>
@@ -28,13 +28,11 @@ limitations under the License. */
 #include "paddle/pir/include/core/builtin_attribute.h"
 #include "paddle/pir/include/core/operation.h"
 namespace paddle {
-#ifdef PADDLE_WITH_DNNL
 using phi::OneDNNContext;
-#endif
 namespace platform {
 
-inline void ClearMKLDNNCache(const phi::Place& place, void* ptr = nullptr) {
-  // Clear mkl-dnn cache,
+inline void ClearONEDNNCache(const phi::Place& place, void* ptr = nullptr) {
+  // Clear one-dnn cache,
   if (phi::is_cpu_place(place)) {
     phi::DeviceContextPool& pool = phi::DeviceContextPool::Instance();
     OneDNNContext* dev_ctx = reinterpret_cast<OneDNNContext*>(pool.Get(place));
@@ -42,8 +40,8 @@ inline void ClearMKLDNNCache(const phi::Place& place, void* ptr = nullptr) {
   }
 }
 
-inline void DontClearMKLDNNCache(const phi::Place& place) {
-  // Clear mkl-dnn cache,
+inline void DontClearONEDNNCache(const phi::Place& place) {
+  // Clear one-dnn cache,
   if (phi::is_cpu_place(place)) {
     phi::DeviceContextPool& pool = phi::DeviceContextPool::Instance();
     OneDNNContext* dev_ctx = reinterpret_cast<OneDNNContext*>(pool.Get(place));
@@ -52,7 +50,7 @@ inline void DontClearMKLDNNCache(const phi::Place& place) {
 }
 
 // If OneDNN build and CPU place then register suffix in DeviceContext
-inline void AttachPointerHashToMKLDNNKey(void* ptr, const phi::Place& place) {
+inline void AttachPointerHashToONEDNNKey(void* ptr, const phi::Place& place) {
   if (phi::is_cpu_place(place)) {
     // Static vars will remember first executor and its thread
     // so both of them need to be processed by the same thread within
@@ -84,17 +82,17 @@ inline void RegisterModelLayout(
     // If there is already registered NHWC then quit this call
     // not to overwrite setting with analysis of internal "while" op block
     if (OneDNNContext::tls().get_cur_paddle_data_layout() ==
-        phi::DataLayout::kNHWC)
+        phi::DataLayout::NHWC)
       return;
 
-    VLOG(4) << "RegisterModelLayout for mkldnn";
+    VLOG(4) << "RegisterModelLayout for onednn";
     auto check_attrib = [](std::unique_ptr<framework::OperatorBase>& op,
                            const std::string& attrib_name) -> bool {
       if (op->HasAttr(attrib_name)) {
         auto data_format = op->Attr<std::string>(attrib_name);
         OneDNNContext::tls().set_cur_paddle_data_layout(
-            data_format.compare("NHWC") == 0 ? phi::DataLayout::kNHWC
-                                             : phi::DataLayout::kNCHW);
+            data_format.compare("NHWC") == 0 ? phi::DataLayout::NHWC
+                                             : phi::DataLayout::NCHW);
         return true;
       } else {
         return false;
@@ -118,10 +116,10 @@ inline void RegisterModelLayout(const ::pir::Block* ir_block,
     // If there is already registered NHWC then quit this call
     // not to overwrite setting with analysis of internal "while" op block
     if (OneDNNContext::tls().get_cur_paddle_data_layout() ==
-        phi::DataLayout::kNHWC)
+        phi::DataLayout::NHWC)
       return;
 
-    VLOG(4) << "RegisterModelLayout for mkldnn";
+    VLOG(4) << "RegisterModelLayout for onednn";
     auto check_attrib = [](const pir::Operation& op,
                            const std::string& attrib_name) -> bool {
       if (op.attributes().count(attrib_name)) {
@@ -130,8 +128,8 @@ inline void RegisterModelLayout(const ::pir::Block* ir_block,
                                .dyn_cast<pir::StrAttribute>()
                                .AsString();
         OneDNNContext::tls().set_cur_paddle_data_layout(
-            data_format.compare("NHWC") == 0 ? phi::DataLayout::kNHWC
-                                             : phi::DataLayout::kNCHW);
+            data_format.compare("NHWC") == 0 ? phi::DataLayout::NHWC
+                                             : phi::DataLayout::NCHW);
         return true;
       } else {
         return false;
@@ -151,11 +149,13 @@ inline void RegisterModelLayout(const ::pir::Block* ir_block,
 
 inline bool HasOpINT8DataType(const paddle::framework::OpDesc* op) {
   return (op->GetAttrIfExists<std::string>("mkldnn_data_type") == "int8" ||
+          op->GetAttrIfExists<std::string>("onednn_data_type") == "int8" ||
           op->GetAttrIfExists<bool>("use_quantizer"));
 }
 
 inline bool HasOpBFLOAT16DataType(const paddle::framework::OpDesc* op) {
-  return op->GetAttrIfExists<std::string>("mkldnn_data_type") == "bfloat16";
+  return op->GetAttrIfExists<std::string>("mkldnn_data_type") == "bfloat16" ||
+         op->GetAttrIfExists<std::string>("onednn_data_type") == "bfloat16";
 }
 
 }  // namespace platform
@@ -206,3 +206,4 @@ inline bool FoundPhiOneDNNKernel(const framework::OpDesc* op) {
 }
 
 }  // namespace paddle
+#endif

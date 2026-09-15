@@ -16,14 +16,14 @@
 #include "paddle/phi/kernels/funcs/common_shape.h"
 namespace phi::funcs {
 
-inline phi::DDim BroadcastTwoDims(const phi::DDim &x_dims,
-                                  const phi::DDim &y_dims,
-                                  int axis = -1) {
+inline DDim BroadcastTwoDims(const DDim &x_dims,
+                             const DDim &y_dims,
+                             int axis = -1) {
   int max_dim = std::max(x_dims.size(), y_dims.size());
   axis = (axis == -1 ? std::abs(x_dims.size() - y_dims.size()) : axis);
-  std::vector<int> x_dims_array(max_dim);
-  std::vector<int> y_dims_array(max_dim);
-  std::vector<int> out_dims_array(max_dim);
+  std::vector<int64_t> x_dims_array(max_dim);
+  std::vector<int64_t> y_dims_array(max_dim);
+  std::vector<int64_t> out_dims_array(max_dim);
   GetBroadcastDimsArrays(x_dims,
                          y_dims,
                          x_dims_array.data(),
@@ -31,7 +31,7 @@ inline phi::DDim BroadcastTwoDims(const phi::DDim &x_dims,
                          out_dims_array.data(),
                          max_dim,
                          axis);
-  return common::make_ddim(out_dims_array);
+  return make_ddim(out_dims_array);
 }
 
 }  // namespace phi::funcs

@@ -38,7 +38,7 @@ class TestAddLayernormXPUFusePass(PassAutoScanTest):
         # Here we will compose a program
         # Still has some risks that the program is invalid or cause bug while running
         # Use function `is_program_valid` to filter the invalid programs before running
-        # Use function `add_skip_pass_case` to ignore the programs even if they cause bug while runing
+        # Use function `add_skip_pass_case` to ignore the programs even if they cause bug while running
         elementwise_op = OpConfig(
             type='elementwise_add',
             inputs={'X': ['eltwise_X'], 'Y': ['eltwise_Y']},
@@ -77,7 +77,7 @@ class TestAddLayernormXPUFusePass(PassAutoScanTest):
         return program_config
 
     def test(self):
-        self.run_and_statis(
+        self.run_and_statistics(
             quant=False,
             max_examples=25,
             passes=["add_layernorm_xpu_fuse_pass"],

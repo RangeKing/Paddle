@@ -112,7 +112,7 @@ class SqueezeNet(nn.Layer):
         :ref:`api_paddle_nn_Layer`. An instance of SqueezeNet model.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.vision.models import SqueezeNet
@@ -127,7 +127,7 @@ class SqueezeNet(nn.Layer):
             >>> out = model(x)
 
             >>> print(out.shape)
-            [1, 1000]
+            paddle.Size([1, 1000])
     """
 
     version: str
@@ -143,9 +143,9 @@ class SqueezeNet(nn.Layer):
         self.with_pool = with_pool
 
         supported_versions = ['1.0', '1.1']
-        assert (
-            version in supported_versions
-        ), f"supported versions are {supported_versions} but input version is {version}"
+        assert version in supported_versions, (
+            f"supported versions are {supported_versions} but input version is {version}"
+        )
 
         if self.version == "1.0":
             self._conv = Conv2D(
@@ -236,9 +236,9 @@ def _squeezenet(
 ) -> SqueezeNet:
     model = SqueezeNet(version, **kwargs)
     if pretrained:
-        assert (
-            arch in model_urls
-        ), f"{arch} model do not have a pretrained model now, you should set pretrained=False"
+        assert arch in model_urls, (
+            f"{arch} model do not have a pretrained model now, you should set pretrained=False"
+        )
         weight_path = get_weights_path_from_url(
             model_urls[arch][0], model_urls[arch][1]
         )
@@ -264,7 +264,7 @@ def squeezenet1_0(
         :ref:`api_paddle_nn_Layer`. An instance of SqueezeNet v1.0 model.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.vision.models import squeezenet1_0
@@ -279,7 +279,7 @@ def squeezenet1_0(
             >>> out = model(x)
 
             >>> print(out.shape)
-            [1, 1000]
+            paddle.Size([1, 1000])
     """
     return _squeezenet('squeezenet1_0', '1.0', pretrained, **kwargs)
 
@@ -300,7 +300,7 @@ def squeezenet1_1(
         :ref:`api_paddle_nn_Layer`. An instance of SqueezeNet v1.1 model.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.vision.models import squeezenet1_1
@@ -315,6 +315,6 @@ def squeezenet1_1(
             >>> out = model(x)
 
             >>> print(out.shape)
-            [1, 1000]
+            paddle.Size([1, 1000])
     """
     return _squeezenet('squeezenet1_1', '1.1', pretrained, **kwargs)

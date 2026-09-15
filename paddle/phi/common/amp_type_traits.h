@@ -15,6 +15,7 @@ limitations under the License. */
 #pragma once
 
 #include "paddle/phi/common/bfloat16.h"
+#include "paddle/phi/common/complex.h"
 #include "paddle/phi/common/float16.h"
 #include "paddle/phi/common/float8_e4m3fn.h"
 #include "paddle/phi/common/float8_e5m2.h"
@@ -52,5 +53,13 @@ class MPTypeTrait<phi::dtype::float8_e5m2> {
   using Type = float;
 };
 
+template <>
+struct MPTypeTrait<phi::dtype::complex<float16>> {
+  using type = phi::dtype::complex<float>;
+};
+
 }  // namespace dtype
+
+template <typename T>
+using MPTypeTrait = dtype::MPTypeTrait<T>;
 }  // namespace phi

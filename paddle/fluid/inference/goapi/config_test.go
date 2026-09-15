@@ -37,37 +37,12 @@ func TestNewConfig(t *testing.T) {
 	t.Logf("use_gpu:%+v, gpu_id:%+v", config.UseGpu(), config.GpuDeviceId())
 	t.Logf("MemoryPoolInitSizeMb:%+v, FractionOfGpuMemoryForPool:%+v", config.MemoryPoolInitSizeMb(), config.FractionOfGpuMemoryForPool())
 
-	config.EnableTensorRtEngine(1024, 16, 3, PrecisionFloat32, false, false)
-	t.Logf("TensorRtEngineEnabled:%+v", config.TensorRtEngineEnabled())
-
-	minInputShape := map[string][]int32{
-		"image": []int32{-1, 3, 100, 100},
-		"shape": []int32{-1, 2},
-	}
-	maxInputShape := map[string][]int32{
-		"image": []int32{-1, 3, 608, 608},
-		"shape": []int32{-1, 2},
-	}
-	optInputShape := map[string][]int32{
-		"image": []int32{-1, 3, 406, 406},
-		"shape": []int32{-1, 2},
-	}
-	config.SetTRTDynamicShapeInfo(minInputShape, maxInputShape, optInputShape, false)
-
-	config.EnableVarseqlen()
-	t.Logf("TensorrtOssEnabled:%+v", config.TensorrtOssEnabled())
-
-	config.EnableTensorRtDLA(0)
-	t.Logf("TensorrtDlaEnabled:%+v", config.TensorrtDlaEnabled())
-
-	config.DisableTensorRtOPs([]string{"mul", "fc"})
-
 	config.EnableGpuMultiStream()
 	t.Logf("ThreadLocalStreamEnabled:%+v", config.ThreadLocalStreamEnabled())
 
 	config.SwitchIrDebug(false)
 
-	config.EnableMKLDNN()
+	config.EnableONEDNN()
 
 	config.EnableMemoryOptim(true)
 	t.Logf("MemoryOptimEnabled:%+v", config.MemoryOptimEnabled())
@@ -89,23 +64,23 @@ func TestNewConfig(t *testing.T) {
 	t.Log(config.Summary())
 }
 
-func TestMkldnn(t *testing.T) {
+func TestOnednn(t *testing.T) {
 	config := NewConfig()
 	config.SetModelDir("modelDir")
 	t.Log(config.ModelDir())
 
-	config.EnableMKLDNN()
-	t.Logf("MkldnnEnabled:%+v", config.MkldnnEnabled())
+	config.EnableONEDNN()
+	t.Logf("OnednnEnabled:%+v", config.OnednnEnabled())
 
-	config.SetMkldnnCacheCapacity(4)
+	config.SetOnednnCacheCapacity(4)
 
 	config.SetCpuMathLibraryNumThreads(4)
 	t.Logf("CpuMathLibraryNumThreads:%+v", config.CpuMathLibraryNumThreads())
 
-	config.SetMKLDNNOp([]string{"fc", "conv"})
+	config.SetONEDNNOp([]string{"fc", "conv"})
 
-	config.EnableMkldnnBfloat16()
-	t.Logf("MkldnnBfloat16Enabled:%+v", config.MkldnnBfloat16Enabled())
+	config.EnableOnednnBfloat16()
+	t.Logf("OnednnBfloat16Enabled:%+v", config.OnednnBfloat16Enabled())
 
 	config.SetBfloat16Op([]string{"fc", "mul"})
 }

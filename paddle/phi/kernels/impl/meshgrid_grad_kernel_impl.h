@@ -16,26 +16,38 @@
 
 #include "paddle/common/macros.h"
 #include "paddle/phi/core/dense_tensor.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/eigen/common.h"
 #include "paddle/phi/kernels/funcs/eigen/eigen_function.h"
 #include "paddle/phi/kernels/meshgrid_grad_kernel.h"
+
 namespace phi {
 
 template <typename T, typename Context, int Rank>
-void MeshgridBackward(const Context& ctx,
+void MeshgridBackward(const Context& dev_ctx,
                       const std::vector<const DenseTensor*>& ins UNUSED,
                       const std::vector<const DenseTensor*>& out_grad,
                       std::vector<DenseTensor*> outs) {
   int n = out_grad.size();
   auto out_dims = out_grad[0]->dims();
+  if (out_grad[0]->numel() == 0) {
+    for (size_t i = 0; i < outs.size(); i++) {
+      auto* out = outs[i];
+      dev_ctx.template Alloc<T>(out);
+      if (out->numel() != 0) {
+        Full<T, Context>(dev_ctx, out->dims(), 0, out);
+      }
+    }
+    return;
+  }
 
   for (int i = 0; i < n; i++) {
-    ctx.template Alloc<T>(outs[i]);
+    dev_ctx.template Alloc<T>(outs[i]);
     auto out_grad_tmp = EigenVector<T>::Flatten(*out_grad[i]);
     auto in_grad = EigenVector<T>::Flatten(*outs[i]);
 
     std::vector<int> reduce_dims_vec;
-    std::vector<int> reshape_dims_vec;
+    std::vector<int64_t> reshape_dims_vec;
     for (int j = 0; j < n; j++) {
       reduce_dims_vec.push_back(reshape_dims_vec.size());
       if (j == i) {
@@ -47,51 +59,56 @@ void MeshgridBackward(const Context& ctx,
       }
     }
 
-    Eigen::DSizes<Eigen::DenseIndex, Rank> reduce_dims;
+    Eigen::DSizes<int64_t, Rank> reduce_dims;
     for (int k = 0; k < n; k++) {
       reduce_dims[k] = reduce_dims_vec[k];
     }
 
-    Eigen::DSizes<Eigen::DenseIndex, Rank * 2> reshape_dims;
+    Eigen::DSizes<int64_t, Rank * 2> reshape_dims;
     for (int k = 0; k < n * 2; k++) {
       reshape_dims[k] = reshape_dims_vec[k];
     }
 
-    auto& place = *ctx.eigen_device();
+    auto& place = *dev_ctx.eigen_device();
     funcs::EigenBroadcastGrad<std::decay_t<decltype(place)>, T, Rank>::Eval(
         place, in_grad, out_grad_tmp, reduce_dims, reshape_dims);
   }
 }
 
 template <typename T, typename Context>
-void MeshgridGradKernel(const Context& ctx,
+void MeshgridGradKernel(const Context& dev_ctx,
                         const std::vector<const DenseTensor*>& inputs,
                         const std::vector<const DenseTensor*>& outputs_grad,
                         std::vector<DenseTensor*> inputs_grad) {
   int n = outputs_grad.size();
   switch (n) {
     case 1:
-      MeshgridBackward<T, Context, 1>(ctx, inputs, outputs_grad, inputs_grad);
+      MeshgridBackward<T, Context, 1>(
+          dev_ctx, inputs, outputs_grad, inputs_grad);
       break;
     case 2:
-      MeshgridBackward<T, Context, 2>(ctx, inputs, outputs_grad, inputs_grad);
+      MeshgridBackward<T, Context, 2>(
+          dev_ctx, inputs, outputs_grad, inputs_grad);
       break;
     case 3:
-      MeshgridBackward<T, Context, 3>(ctx, inputs, outputs_grad, inputs_grad);
+      MeshgridBackward<T, Context, 3>(
+          dev_ctx, inputs, outputs_grad, inputs_grad);
       break;
     case 4:
-      MeshgridBackward<T, Context, 4>(ctx, inputs, outputs_grad, inputs_grad);
+      MeshgridBackward<T, Context, 4>(
+          dev_ctx, inputs, outputs_grad, inputs_grad);
       break;
     case 5:
-      MeshgridBackward<T, Context, 5>(ctx, inputs, outputs_grad, inputs_grad);
+      MeshgridBackward<T, Context, 5>(
+          dev_ctx, inputs, outputs_grad, inputs_grad);
       break;
     case 6:
-      MeshgridBackward<T, Context, 6>(ctx, inputs, outputs_grad, inputs_grad);
+      MeshgridBackward<T, Context, 6>(
+          dev_ctx, inputs, outputs_grad, inputs_grad);
       break;
     default:
       PADDLE_THROW(common::errors::InvalidArgument(
-          "Excepted Tensor numbers between 1 and 6, but only received d% .",
-          n));
+          "Excepted Tensor numbers between 1 and 6, but only received %d.", n));
   }
 }
 

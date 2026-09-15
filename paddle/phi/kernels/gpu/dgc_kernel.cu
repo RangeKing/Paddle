@@ -17,6 +17,7 @@
 #include <glog/logging.h>
 
 #include "dgc/dgc.h"
+#include "paddle/common/enforce.h"
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/common/memory_utils.h"
 #include "paddle/phi/core/kernel_registry.h"
@@ -82,9 +83,9 @@ void DGCKernel(const Context& dev_ctx,
                         "DGC is not useful when num_trainers <= 1. Please "
                         "use multi card or multi machine GPU"));
 
-  auto param_e = phi::EigenVector<T>::Flatten(param);
-  auto grad_e = phi::EigenVector<T>::Flatten(grad);
-  auto grad_out_e = phi::EigenVector<T>::Flatten(*grad_out);
+  auto param_e = EigenVector<T>::Flatten(param);
+  auto grad_e = EigenVector<T>::Flatten(grad);
+  auto grad_out_e = EigenVector<T>::Flatten(*grad_out);
 
   auto& eigen_ctx = *dev_ctx.eigen_device();
 
@@ -117,7 +118,7 @@ void DGCKernel(const Context& dev_ctx,
   if (static_cast<int>(*current_step) < static_cast<int>(rampup_begin_step)) {
     VLOG(10) << "current_step:" << *current_step
              << " < rampup_begin_step:" << rampup_begin_step
-             << " so does't use dgc";
+             << " so doesn't use dgc";
     return;
   }
 
@@ -133,7 +134,9 @@ void DGCKernel(const Context& dev_ctx,
       ratio,
       1.0,
       common::errors::InvalidArgument("DGC sparsity ratio must < 1"));
-  int k = static_cast<int>(grad.numel() * ratio);
+  int64_t k_64 = static_cast<int64_t>(grad.numel() * ratio);
+  PADDLE_ENFORCE_LE_INT_MAX(k_64, "dgc k");
+  int k = static_cast<int>(k_64);
 
   VLOG(10) << "m:" << m << ", use_nesterov:" << use_nesterov
            << ", rampup_begin_step:" << rampup_begin_step
@@ -145,8 +148,8 @@ void DGCKernel(const Context& dev_ctx,
   *k_out_data = k;
 
   // FIXME(gongwb): use cublas.
-  auto u_out_e = phi::EigenVector<T>::Flatten(*u_out);
-  auto u_e = phi::EigenVector<T>::Flatten(u);
+  auto u_out_e = EigenVector<T>::Flatten(*u_out);
+  auto u_e = EigenVector<T>::Flatten(u);
 
   // calc local momentum from global momentum
   // NOTE. If grad not multi nranks, need add below code.
@@ -161,51 +164,55 @@ void DGCKernel(const Context& dev_ctx,
 
     // v = u + v + grad
     dev_ctx.template Alloc<T>(v_out);
-    phi::funcs::ElementwiseCompute<phi::funcs::AddFunctor<T>, T>(
-        dev_ctx, u, v, phi::funcs::AddFunctor<T>(), v_out, 0);
+    funcs::ElementwiseCompute<funcs::AddFunctor<T>, T>(
+        dev_ctx, u, v, funcs::AddFunctor<T>(), v_out, 0);
 
-    phi::funcs::ElementwiseCompute<phi::funcs::AddFunctor<T>, T>(
-        dev_ctx, grad, v, phi::funcs::AddFunctor<T>(), v_out, 0);
+    funcs::ElementwiseCompute<funcs::AddFunctor<T>, T>(
+        dev_ctx, grad, v, funcs::AddFunctor<T>(), v_out, 0);
   } else {
     // u = m * u + grad
     u_out_e.device(eigen_ctx) = m * u_e + grad_out_e;
 
     // v = u + v
     dev_ctx.template Alloc<T>(v_out);
-    phi::funcs::ElementwiseCompute<phi::funcs::AddFunctor<T>, T>(
-        dev_ctx, u, v, phi::funcs::AddFunctor<T>(), v_out, 0);
+    funcs::ElementwiseCompute<funcs::AddFunctor<T>, T>(
+        dev_ctx, u, v, funcs::AddFunctor<T>(), v_out, 0);
   }
 
   T* v_out_data = dev_ctx.template Alloc<T>(v_out);
   T* u_out_data = dev_ctx.template Alloc<T>(u_out);
 
-  encode_grad_out->Resize(phi::DDim{2 * k});
+  encode_grad_out->Resize(DDim{2 * k});
   T* encode_grad_out_data = dev_ctx.template Alloc<T>(encode_grad_out);
 
-  gather_buff->Resize(phi::DDim{2 * k * nranks});
+  gather_buff->Resize(DDim{2 * k * nranks});
   dev_ctx.template Alloc<T>(gather_buff);
 
   int buf_size = paddle::communication::dgc::get_buffer_size(k);
-  phi::Allocator::AllocationPtr tmp_ious_data;
+  Allocator::AllocationPtr tmp_ious_data;
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
-  if (dev_ctx.GetPlace().GetType() == phi::AllocationType::GPU) {
-    tmp_ious_data = phi::memory_utils::Alloc(
+  if (dev_ctx.GetPlace().GetType() == AllocationType::GPU ||
+      dev_ctx.GetPlace().GetType() == AllocationType::CUSTOM) {
+    tmp_ious_data = memory_utils::Alloc(
         dev_ctx.GetPlace(),
         buf_size,
-        phi::Stream(reinterpret_cast<phi::StreamId>(dev_ctx.stream())));
+        Stream(reinterpret_cast<StreamId>(dev_ctx.stream())));
   }
 #endif
-  if (dev_ctx.GetPlace().GetType() == phi::AllocationType::CPU) {
-    tmp_ious_data = phi::memory_utils::Alloc(dev_ctx.GetPlace(), buf_size);
+  if (dev_ctx.GetPlace().GetType() == AllocationType::CPU) {
+    tmp_ious_data = memory_utils::Alloc(dev_ctx.GetPlace(), buf_size);
   }
 
   void* buf = reinterpret_cast<void*>(tmp_ious_data->ptr());
 
+  int64_t v_out_numel_64 = v_out->numel();
+  PADDLE_ENFORCE_LE_INT_MAX(v_out_numel_64, "dgc v_out numel");
+  int v_out_numel = static_cast<int>(v_out_numel_64);
   if (!paddle::communication::dgc::k_select(
           static_cast<void*>(encode_grad_out_data),
           k,
           v_out_data,
-          static_cast<int>(v_out->numel()),
+          v_out_numel,
           buf,
           dev_ctx.stream(),
           u_out_data)) {
@@ -214,7 +221,7 @@ void DGCKernel(const Context& dev_ctx,
         "V_out numel error, V_out numel is %d.", v_out->numel()));
   }
 
-  phi::funcs::SetConstant<Context, T> tset;
+  funcs::SetConstant<Context, T> tset;
   tset(dev_ctx, grad_out, static_cast<T>(0));
 }
 

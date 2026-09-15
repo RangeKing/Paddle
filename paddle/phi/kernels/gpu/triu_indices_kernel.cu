@@ -15,7 +15,9 @@
 #include "paddle/phi/kernels/triu_indices_kernel.h"
 
 #include <algorithm>
+
 #include <tuple>
+#include "paddle/common/enforce.h"
 
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/backends/gpu/gpu_launch_config.h"
@@ -67,7 +69,9 @@ __global__ void triu_indices_kernel(T* out_data,
                                     int col,
                                     int rectangle_size,
                                     int triu_size) {
-  int linear_index = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t linear_index =
+      static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x) +
+      static_cast<int64_t>(threadIdx.x);
 
   if (linear_index < triu_size) {
     T r, c;
@@ -97,7 +101,8 @@ void TriuIndicesKernel(const Context& dev_ctx,
                        DenseTensor* out) {
   T* out_data = dev_ctx.template Alloc<T>(out);
   auto out_dims = out->dims();
-  int triu_size = out_dims[1];
+  PADDLE_ENFORCE_LE_INT_MAX(out_dims[1], "triu_size");
+  int triu_size = static_cast<int>(out_dims[1]);
   //  auto tensor = empty_cuda({2, triu_size}, dtype_opt, layout_opt,
   //  device_opt, pin_memory_opt);
 
@@ -114,7 +119,7 @@ void TriuIndicesKernel(const Context& dev_ctx,
     }
 
     //  using gpu_launch_config to get grid_size and block_size
-    auto config = phi::backends::gpu::GetGpuLaunchConfig1D(dev_ctx, triu_size);
+    auto config = backends::gpu::GetGpuLaunchConfig1D(dev_ctx, triu_size);
 
     triu_indices_kernel<T><<<config.block_per_grid.x,
                              config.thread_per_block.x,

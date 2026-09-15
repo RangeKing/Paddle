@@ -16,9 +16,11 @@ from __future__ import annotations
 import abc
 import inspect
 from functools import partial
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from paddle.nn import Layer
 
     from .base_quanter import BaseQuanter
@@ -85,7 +87,7 @@ def quanter(
         class_name (str): The name of factory class to be declared.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # type: ignore
             >>> # doctest: +SKIP('need 2 file to run example')

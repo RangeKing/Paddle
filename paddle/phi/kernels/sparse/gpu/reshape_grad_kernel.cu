@@ -30,7 +30,7 @@ void ReshapeCooGradKernel(const Context& dev_ctx,
                           const SparseCooTensor& dout,
                           SparseCooTensor* dx) {
   EmptyLikeCooKernel<T, Context>(dev_ctx, x, dx);
-  phi::IntArray x_shape(common::vectorize(x.dims()));
+  phi::IntArray x_shape(vectorize(x.dims()));
   ReshapeCooKernel<T, Context>(dev_ctx, dout, x_shape, dx);
 }
 
@@ -41,7 +41,7 @@ void ReshapeCsrGradKernel(const Context& dev_ctx,
                           const SparseCsrTensor& dout,
                           SparseCsrTensor* dx) {
   EmptyLikeCsrKernel<T, Context>(dev_ctx, x, dx);
-  phi::IntArray x_shape(common::vectorize(x.dims()));
+  phi::IntArray x_shape(vectorize(x.dims()));
   ReshapeCsrKernel<T, Context>(dev_ctx, dout, x_shape, dx);
 }
 
@@ -52,7 +52,7 @@ PD_REGISTER_KERNEL(reshape_coo_grad,
                    GPU,
                    ALL_LAYOUT,
                    phi::sparse::ReshapeCooGradKernel,
-                   phi::dtype::float16,
+                   phi::float16,
                    float,
                    double,
                    int8_t,
@@ -66,7 +66,7 @@ PD_REGISTER_KERNEL(reshape_csr_grad,
                    GPU,
                    ALL_LAYOUT,
                    phi::sparse::ReshapeCsrGradKernel,
-                   phi::dtype::float16,
+                   phi::float16,
                    float,
                    double,
                    int8_t,

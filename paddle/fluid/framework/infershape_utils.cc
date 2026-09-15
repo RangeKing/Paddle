@@ -177,7 +177,7 @@ int64_t CompatMetaTensor::numel() const {
   ValidCheck(*this);
   if (is_runtime_) {
     auto* var = PADDLE_GET_CONST(Variable*, var_);
-    return var->Get<phi::DenseTensor>().numel();
+    return var->Get<DenseTensor>().numel();
   } else {
     auto* var = PADDLE_GET_CONST(VarDesc*, var_);
     return static_cast<int64_t>(var->ElementSize());
@@ -197,7 +197,7 @@ bool CompatMetaTensor::is_selected_rows() const {
 bool CompatMetaTensor::is_dense() const {
   if (is_runtime_) {
     auto* var = PADDLE_GET_CONST(Variable*, var_);
-    return var->IsType<phi::DenseTensor>();
+    return var->IsType<DenseTensor>();
   } else {
     auto* var = PADDLE_GET_CONST(VarDesc*, var_);
     return var->GetType() == proto::VarType::DENSE_TENSOR;
@@ -218,8 +218,8 @@ DDim CompatMetaTensor::dims() const {
   ValidCheck(*this);
   if (is_runtime_) {
     auto* var = PADDLE_GET_CONST(Variable*, var_);
-    if (var->IsType<phi::DenseTensor>()) {
-      return var->Get<phi::DenseTensor>().dims();
+    if (var->IsType<DenseTensor>()) {
+      return var->Get<DenseTensor>().dims();
     } else if (var->IsType<phi::SelectedRows>()) {
       return var->Get<phi::SelectedRows>().GetCompleteDims();
     } else if (var->IsType<phi::SparseCooTensor>()) {
@@ -242,12 +242,12 @@ DDim CompatMetaTensor::dims() const {
   }
 }
 
-phi::DataType CompatMetaTensor::dtype() const {
+DataType CompatMetaTensor::dtype() const {
   ValidCheck(*this);
   if (is_runtime_) {
     auto* var = PADDLE_GET_CONST(Variable*, var_);
-    if (var->IsType<phi::DenseTensor>()) {
-      return var->Get<phi::DenseTensor>().dtype();
+    if (var->IsType<DenseTensor>()) {
+      return var->Get<DenseTensor>().dtype();
     } else if (var->IsType<phi::SelectedRows>()) {
       return var->Get<phi::SelectedRows>().dtype();
     } else if (var->IsType<phi::SparseCooTensor>()) {
@@ -255,7 +255,7 @@ phi::DataType CompatMetaTensor::dtype() const {
     } else if (var->IsType<phi::TensorArray>()) {
       // NOTE(chenweihang): do nothing
       // Unsupported get dtype from phi::TensorArray now
-      return phi::DataType::UNDEFINED;
+      return DataType::UNDEFINED;
     } else {
       PADDLE_THROW(common::errors::Unimplemented(
           "Currently, only can get dtype from DenseTensor or SelectedRows."));
@@ -270,8 +270,8 @@ DataLayout CompatMetaTensor::layout() const {
   ValidCheck(*this);
   if (is_runtime_) {
     auto* var = PADDLE_GET_CONST(Variable*, var_);
-    if (var->IsType<phi::DenseTensor>()) {
-      return var->Get<phi::DenseTensor>().layout();
+    if (var->IsType<DenseTensor>()) {
+      return var->Get<DenseTensor>().layout();
     } else if (var->IsType<phi::SelectedRows>()) {
       return var->Get<phi::SelectedRows>().layout();
     } else if (var->IsType<phi::SparseCooTensor>()) {
@@ -297,8 +297,8 @@ void CompatMetaTensor::set_dims(const DDim& dims) {
   if (is_runtime_) {
     auto* var = PADDLE_GET(Variable*, var_);
     if (var == nullptr) return;
-    if (var->IsType<phi::DenseTensor>()) {
-      auto* tensor = var->GetMutable<phi::DenseTensor>();
+    if (var->IsType<DenseTensor>()) {
+      auto* tensor = var->GetMutable<DenseTensor>();
       auto meta = phi::DenseTensorUtils::GetMutableMeta(tensor);
       meta->dims = dims;
       meta->strides = meta->calc_strides(dims);
@@ -330,13 +330,13 @@ void CompatMetaTensor::set_dims(const DDim& dims) {
   }
 }
 
-void CompatMetaTensor::set_dtype(phi::DataType dtype) {
+void CompatMetaTensor::set_dtype(DataType dtype) {
   ValidCheck(*this);
   if (is_runtime_) {
     auto* var = PADDLE_GET(Variable*, var_);
     if (var == nullptr) return;
-    if (var->IsType<phi::DenseTensor>()) {
-      auto* tensor = var->GetMutable<phi::DenseTensor>();
+    if (var->IsType<DenseTensor>()) {
+      auto* tensor = var->GetMutable<DenseTensor>();
       phi::DenseTensorUtils::GetMutableMeta(tensor)->dtype = dtype;
     } else if (var->IsType<phi::SelectedRows>()) {
       auto* tensor = var->GetMutable<phi::SelectedRows>()->mutable_value();
@@ -364,8 +364,8 @@ void CompatMetaTensor::set_layout(DataLayout layout) {
   if (is_runtime_) {
     auto* var = PADDLE_GET(Variable*, var_);
     if (var == nullptr) return;
-    if (var->IsType<phi::DenseTensor>()) {
-      auto* tensor = var->GetMutable<phi::DenseTensor>();
+    if (var->IsType<DenseTensor>()) {
+      auto* tensor = var->GetMutable<DenseTensor>();
       auto meta = phi::DenseTensorUtils::GetMutableMeta(tensor);
       meta->layout = layout;
     } else if (var->IsType<phi::SelectedRows>()) {
@@ -395,13 +395,13 @@ void CompatMetaTensor::share_lod(const MetaTensor& meta_tensor) {
   if (is_runtime_) {
     auto* var = PADDLE_GET(Variable*, var_);
     if (var == nullptr) return;
-    if (var->IsType<phi::DenseTensor>() && meta_tensor.is_dense()) {
-      auto* tensor = var->GetMutable<phi::DenseTensor>();
+    if (var->IsType<DenseTensor>() && meta_tensor.is_dense()) {
+      auto* tensor = var->GetMutable<DenseTensor>();
       phi::DenseTensorUtils::GetMutableMeta(tensor)->legacy_lod =
           static_cast<const CompatMetaTensor&>(meta_tensor).GetRuntimeLoD();
     } else {
       // NOTE(chenweihang): do nothing
-      // only phi::DenseTensor need to share lod
+      // only DenseTensor need to share lod
     }
   } else {
     auto* var = PADDLE_GET(VarDesc*, var_);
@@ -411,7 +411,7 @@ void CompatMetaTensor::share_lod(const MetaTensor& meta_tensor) {
     if ((var && (var->GetType() != proto::VarType::DENSE_TENSOR &&
                  var->GetType() != proto::VarType::DENSE_TENSOR_ARRAY)) ||
         (!meta_tensor.is_dense() && !meta_tensor.is_tensor_array())) {
-      VLOG(3) << "this tensor or input metatensor is not phi::DenseTensor or "
+      VLOG(3) << "this tensor or input metatensor is not DenseTensor or "
                  "DenseTensorArray.";
       return;
     }
@@ -449,7 +449,7 @@ void CompatMetaTensor::share_meta(const MetaTensor& meta_tensor) {
   share_dims(meta_tensor);
   set_dtype(meta_tensor.dtype());
   set_layout(meta_tensor.layout());
-  // special case: share lod of phi::DenseTensor
+  // special case: share lod of DenseTensor
   share_lod(meta_tensor);
 }
 
@@ -556,7 +556,7 @@ CompatInferMetaContext BuildInferMetaContext(InferShapeContext* ctx,
 
   // 2. build infermeta context
   CompatInferMetaContext infer_meta_context(
-      {ctx->IsRuntime(), ctx->IsRunMKLDNNKernel()});
+      {ctx->IsRuntime(), ctx->IsRunONEDNNKernel()});
 
   const auto& input_names = signature.input_names;
   const auto& attr_names = signature.attr_names;
@@ -771,7 +771,7 @@ CompatInferMetaContext BuildInferMetaContext(InferShapeContext* ctx,
               }
               infer_meta_context.EmplaceBackAttr(std::move(scalar_list));
             } break;
-            case proto::AttrType::SCALARS: {
+            case framework::proto::AttrType::SCALARS: {
               const auto& vec = PADDLE_GET_CONST(
                   std::vector<paddle::experimental::Scalar>, attr);
               std::vector<phi::Scalar> scalar_list{vec.begin(), vec.end()};
@@ -795,6 +795,11 @@ CompatInferMetaContext BuildInferMetaContext(InferShapeContext* ctx,
               infer_meta_context.EmplaceBackAttr(PADDLE_GET_CONST(float, attr));
               break;
             case phi::AttributeType::FLOAT64:
+              if (AttrTypeID(attr) == framework::proto::AttrType::FLOAT) {
+                const auto val = PADDLE_GET_CONST(float, attr);
+                infer_meta_context.EmplaceBackAttr(static_cast<double>(val));
+                break;
+              }
               infer_meta_context.EmplaceBackAttr(
                   PADDLE_GET_CONST(double, attr));
               break;
@@ -805,8 +810,21 @@ CompatInferMetaContext BuildInferMetaContext(InferShapeContext* ctx,
               infer_meta_context.EmplaceBackAttr(PADDLE_GET_CONST(bool, attr));
               break;
             case phi::AttributeType::INT64:
-              infer_meta_context.EmplaceBackAttr(
-                  PADDLE_GET_CONST(int64_t, attr));
+              switch (AttrTypeID(attr)) {
+                case framework::proto::AttrType::LONG:
+                  infer_meta_context.EmplaceBackAttr(
+                      PADDLE_GET_CONST(int64_t, attr));
+                  break;
+                case framework::proto::AttrType::INT: {
+                  const auto val = PADDLE_GET_CONST(int, attr);
+                  infer_meta_context.EmplaceBackAttr(static_cast<int64_t>(val));
+                } break;
+                default:
+                  PADDLE_THROW(common::errors::Unimplemented(
+                      "Unsupported cast op attribute `%s` to int64_t when "
+                      "construct InferMetaContext.",
+                      attr_names[i]));
+              }
               break;
             case phi::AttributeType::INT32S:
               infer_meta_context.EmplaceBackAttr(
@@ -856,8 +874,25 @@ CompatInferMetaContext BuildInferMetaContext(InferShapeContext* ctx,
                   PADDLE_GET_CONST(std::vector<bool>, attr));
               break;
             case phi::AttributeType::FLOAT64S:
-              infer_meta_context.EmplaceBackAttr(
-                  PADDLE_GET_CONST(std::vector<double>, attr));
+              switch (AttrTypeID(attr)) {
+                case framework::proto::AttrType::FLOAT64S:
+                  infer_meta_context.EmplaceBackAttr(
+                      PADDLE_GET_CONST(std::vector<double>, attr));
+                  break;
+                case framework::proto::AttrType::FLOATS: {
+                  const auto& vector_float_attr =
+                      PADDLE_GET_CONST(std::vector<float>, attr);
+                  const std::vector<double> vector_double_attr(
+                      vector_float_attr.begin(), vector_float_attr.end());
+                  infer_meta_context.EmplaceBackAttr(vector_double_attr);
+                } break;
+                default:
+                  PADDLE_THROW(common::errors::Unimplemented(
+                      "Unsupported cast op attribute `%s` to vector<double> "
+                      "when "
+                      "construct KernelContext.",
+                      attr_names[i]));
+              }
               break;
             default:
               PADDLE_THROW(common::errors::Unimplemented(

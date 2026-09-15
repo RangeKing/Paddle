@@ -63,9 +63,9 @@ class _Conv3D(Layer):
         backend: Literal['igemm'] | None = None,
     ) -> None:
         super().__init__()
-        assert (
-            weight_attr is not False
-        ), "weight_attr should not be False in Conv."
+        assert weight_attr is not False, (
+            "weight_attr should not be False in Conv."
+        )
         self._param_attr = weight_attr
         self._bias_attr = bias_attr
         self._groups = groups
@@ -76,9 +76,9 @@ class _Conv3D(Layer):
         self._key = key
         self._backend = backend
 
-        assert (
-            padding_mode == 'zeros'
-        ), "Currently, only support padding_mode='zeros'"
+        assert padding_mode == 'zeros', (
+            "Currently, only support padding_mode='zeros'"
+        )
         assert groups == 1, "Currently, only support groups=1"
         assert backend in [
             None,
@@ -195,9 +195,9 @@ class _Conv2D(Layer):
         backend: Literal['igemm'] | None = None,
     ) -> None:
         super().__init__()
-        assert (
-            weight_attr is not False
-        ), "weight_attr should not be False in Conv."
+        assert weight_attr is not False, (
+            "weight_attr should not be False in Conv."
+        )
         self._param_attr = weight_attr
         self._bias_attr = bias_attr
         self._groups = groups
@@ -208,9 +208,9 @@ class _Conv2D(Layer):
         self._key = key
         self._backend = backend
 
-        assert (
-            padding_mode == 'zeros'
-        ), "Currently, only support padding_mode='zeros'"
+        assert padding_mode == 'zeros', (
+            "Currently, only support padding_mode='zeros'"
+        )
         assert groups == 1, "Currently, only support groups=1"
         assert backend in [
             None,
@@ -393,11 +393,16 @@ class Conv3D(_Conv3D):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
-            >>> indices = [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 1, 2], [1, 3, 2, 3]]
+            >>> indices = [
+            ...     [0, 0, 0, 0],
+            ...     [0, 0, 0, 0],
+            ...     [0, 0, 1, 2],
+            ...     [1, 3, 2, 3],
+            ... ]
             >>> values = [[1], [2], [3], [4]]
             >>> indices = paddle.to_tensor(indices, dtype='int32')
             >>> values = paddle.to_tensor(values, dtype='float32')
@@ -406,7 +411,7 @@ class Conv3D(_Conv3D):
             >>> conv = paddle.sparse.nn.Conv3D(1, 1, (1, 3, 3))
             >>> y = conv(sparse_x)
             >>> print(y.shape)
-            [1, 1, 1, 2, 1]
+            paddle.Size([1, 1, 1, 2, 1])
     """
 
     def __init__(
@@ -528,7 +533,7 @@ class Conv2D(_Conv2D):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -541,7 +546,7 @@ class Conv2D(_Conv2D):
             >>> conv = paddle.sparse.nn.Conv2D(1, 1, (3, 3))
             >>> y = conv(sparse_x)
             >>> print(y.shape)
-            [1, 1, 2, 1]
+            paddle.Size([1, 1, 2, 1])
     """
 
     def __init__(
@@ -667,11 +672,16 @@ class SubmConv3D(_Conv3D):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
-            >>> indices = [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 1, 2], [1, 3, 2, 3]]
+            >>> indices = [
+            ...     [0, 0, 0, 0],
+            ...     [0, 0, 0, 0],
+            ...     [0, 0, 1, 2],
+            ...     [1, 3, 2, 3],
+            ... ]
             >>> values = [[1], [2], [3], [4]]
             >>> dense_shape = [1, 1, 3, 4, 1]
             >>> indices = paddle.to_tensor(indices, dtype='int32')
@@ -680,7 +690,7 @@ class SubmConv3D(_Conv3D):
             >>> subm_conv = paddle.sparse.nn.SubmConv3D(1, 1, (1, 3, 3))
             >>> y = subm_conv(sparse_x)
             >>> print(y.shape)
-            [1, 1, 3, 4, 1]
+            paddle.Size([1, 1, 3, 4, 1])
     """
 
     def __init__(
@@ -809,7 +819,7 @@ class SubmConv2D(_Conv2D):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -822,7 +832,7 @@ class SubmConv2D(_Conv2D):
             >>> subm_conv = paddle.sparse.nn.SubmConv2D(1, 1, (3, 3))
             >>> y = subm_conv(sparse_x)
             >>> print(y.shape)
-            [1, 3, 4, 1]
+            paddle.Size([1, 3, 4, 1])
     """
 
     def __init__(

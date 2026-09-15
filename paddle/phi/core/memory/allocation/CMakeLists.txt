@@ -14,6 +14,7 @@ set(ALLOCATOR_SRCS
     memory_block.cc
     memory_block_desc.cc
     meta_cache.cc
+    memory_history_recorder.cc
     buddy_allocator.cc
     system_allocator.cc)
 
@@ -29,14 +30,26 @@ if(WITH_GPU OR WITH_ROCM)
     thread_local_allocator.cc)
 endif()
 
-if(CUDA_VERSION VERSION_GREATER_EQUAL 10.2)
-  list(APPEND ALLOCATOR_SRCS cuda_virtual_mem_allocator.cc)
+if(WITH_GPU AND CUDA_VERSION VERSION_GREATER_EQUAL 10.2)
+  list(
+    APPEND
+    ALLOCATOR_SRCS
+    cuda_virtual_mem_allocator.cc
+    cuda_virtual_mem_allocator_v2.cc
+    vmm_backing_map.cc
+    remap_transaction.cc
+    free_block_remap_compactor.cc
+    vmm_auto_growth_best_fit_allocator_v2.cc
+    vmm_auto_growth_best_fit_multi_pool_allocator_v2.cc)
 endif()
 
 if(NOT WIN32)
   list(APPEND ALLOCATOR_SRCS mmap_allocator.cc)
   if(WITH_GPU)
     list(APPEND ALLOCATOR_SRCS cuda_ipc_allocator.cc)
+  endif()
+  if(WITH_XPU)
+    list(APPEND ALLOCATOR_SRCS xpu_ipc_allocator.cc)
   endif()
 endif()
 
@@ -46,7 +59,8 @@ if(WITH_CUSTOM_DEVICE)
 endif()
 
 if(WITH_XPU)
-  list(APPEND ALLOCATOR_SRCS xpu_allocator.cc stream_safe_xpu_allocator.cc)
+  list(APPEND ALLOCATOR_SRCS xpu_allocator.cc xpu_pinned_allocator.cc
+       stream_safe_xpu_allocator.cc)
 endif()
 
 collect_srcs(core_srcs SRCS ${ALLOCATOR_SRCS})

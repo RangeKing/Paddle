@@ -68,10 +68,10 @@ class HybridParallelInferenceHelper:
             ...         paddle.increment(x=step_idx, value=1.0)
             ...         paddle.tensor.array_write(element_in_arr, i=step_idx, array=arr)
             ...     with paddle.base.device_guard(f'{device}:0'):
-            ...         pass # some code
+            ...         pass  # some code
             ...     with paddle.base.device_guard(f'{device}:1'):
-            ...         pass # some code
-            ...     with paddle.base.device_guard(f'{device}:{num_pp-1}'):
+            ...         pass  # some code
+            ...     with paddle.base.device_guard(f'{device}:{num_pp - 1}'):
             ...         # generate some data in while block and write to global lod_tensor_array
             ...         # that they are read in next while step.
             ...         # we will using send_v2 to send global lod_tensor_array to other pipeline and sync
@@ -88,7 +88,7 @@ class HybridParallelInferenceHelper:
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
             :name: code-example1
 
             >>> # doctest: +REQUIRES(env:DISTRIBUTED, env:GPU)
@@ -112,10 +112,8 @@ class HybridParallelInferenceHelper:
             ...     with paddle.base.device_guard(f'{device}:0'):
             ...         X = paddle.static.data(name='X', shape=[None, 2], dtype='float32')
             ...     with paddle.base.device_guard(f'{device}:all'):
-            ...         max_len = paddle.full(
-            ...             shape=[1], dtype="int64", fill_value=5, name="n")
-            ...         step_idx = paddle.full(
-            ...             shape=[1], dtype="int64", fill_value=0, name="i")
+            ...         max_len = paddle.full(shape=[1], dtype="int64", fill_value=5, name="n")
+            ...         step_idx = paddle.full(shape=[1], dtype="int64", fill_value=0, name="i")
             ...         data = paddle.tensor.array_write(X, step_idx)
             ...         cond_int = paddle.full(shape=[1], dtype="int64", fill_value=0, name="cond_int")
             ...         cond = paddle.less_than(x=step_idx, y=max_len)
@@ -127,13 +125,11 @@ class HybridParallelInferenceHelper:
             ...             paddle.tensor.array_write(input, i=step_idx, array=data)
             ...         with paddle.base.device_guard(f'{device}:0'):
             ...             param_attr = paddle.ParamAttr(initializer=paddle.nn.initializer.Constant(1.0))
-            ...             weight1 = paddle.static.create_parameter(
-            ...                 shape=[2, 5], dtype='float32', attr=param_attr, is_bias=False)
+            ...             weight1 = paddle.static.create_parameter(shape=[2, 5], dtype='float32', attr=param_attr, is_bias=False)
             ...             hidden1 = paddle.matmul(input, weight1)
             ...         with paddle.base.device_guard(f'{device}:1'):
             ...             param_attr = paddle.ParamAttr(initializer=paddle.nn.initializer.Constant(2.0))
-            ...             weight2 = paddle.static.create_parameter(
-            ...                 shape=[5, 2], dtype='float32', attr=param_attr, is_bias=False)
+            ...             weight2 = paddle.static.create_parameter(shape=[5, 2], dtype='float32', attr=param_attr, is_bias=False)
             ...             hidden2 = paddle.matmul(hidden1, weight2)
             ...             paddle.tensor.array_write(hidden2, i=step_idx, array=data)
             ...             # update cond and assign to cond_int, we will sync cond_int
@@ -148,7 +144,13 @@ class HybridParallelInferenceHelper:
             ...     with paddle.base.device_guard(f'{device}:all'):
             ...         # use a empty lod_tensor_array to clear lod_tensor_array
             ...         paddle.assign(paddle.tensor.create_array(data.dtype), data)
-            >>> helper = hybrid_parallel_inference.HybridParallelInferenceHelper(startup_program, main_program, micro_batch_size=2, num_pp=2, init_comm=nranks>1)
+            >>> helper = hybrid_parallel_inference.HybridParallelInferenceHelper(
+            ...     startup_program,
+            ...     main_program,
+            ...     micro_batch_size=2,
+            ...     num_pp=2,
+            ...     init_comm=nranks > 1,
+            ... )
             >>> helper.gen_infer_program(['array_write_0.out'], ['cond_int.tmp_0'])
             >>> exe = paddle.static.Executor(paddle.CUDAPlace(dev_id))
             >>> exe.run(startup_program)
@@ -250,9 +252,9 @@ class HybridParallelInferenceHelper:
                 dev_ids.append(cur_id)
         num_pp = len(dev_ids)
         num_pp = max(1, num_pp)
-        assert (
-            num_pp == self.num_pp
-        ), f'num_pp: {num_pp}, self.num_pp: {self.num_pp}'
+        assert num_pp == self.num_pp, (
+            f'num_pp: {num_pp}, self.num_pp: {self.num_pp}'
+        )
 
         collective_helper = fleet.meta_optimizers.common.CollectiveHelper(
             self.role_maker, wait_port=False
@@ -491,13 +493,13 @@ class HybridParallelInferenceHelper:
 
         pre_stage_id = None
         for op in block.ops:
-            assert op.has_attr(
-                self._op_role_key
-            ), f"{op.type} has no {self._op_role_key} set ."
+            assert op.has_attr(self._op_role_key), (
+                f"{op.type} has no {self._op_role_key} set ."
+            )
             op_role = op.attr(self._op_role_key)
-            assert op_role == int(
-                self._op_role.Forward
-            ), "Only forward is supported for inference."
+            assert op_role == int(self._op_role.Forward), (
+                "Only forward is supported for inference."
+            )
             if not op._has_kernel(op.type):
                 assert op.type in [
                     "while",
@@ -506,9 +508,9 @@ class HybridParallelInferenceHelper:
                 sub_block_id = op.attr('sub_block').id
                 sub_block = block.program.block(sub_block_id)
                 self._check_validation(sub_block)
-            assert op.has_attr(
-                self._op_device_key
-            ), f"{op.type} has no {self._op_device_key} set."
+            assert op.has_attr(self._op_device_key), (
+                f"{op.type} has no {self._op_device_key} set."
+            )
 
             device = op.attr(self._op_device_key)
             assert device, f"{op.type} has no {self._op_device_key} set."
@@ -571,9 +573,9 @@ class HybridParallelInferenceHelper:
                 if (cur_device, prev_device) in input_var_to_device[var_name]:
                     continue
 
-                assert (
-                    self._device == cur_device.split(':')[0]
-                ), "More than one device type found."
+                assert self._device == cur_device.split(':')[0], (
+                    "More than one device type found."
+                )
                 device_type = cur_device.split(':')[0] + ':'
 
                 def _insert_send_recv(cur_id, prev_id):

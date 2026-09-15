@@ -31,6 +31,10 @@ limitations under the License. */
 #include "glog/logging.h"
 #include "paddle/fluid/framework/op_registry.h"
 
+#if !defined(PADDLE_WITH_XPU_KP) || defined(__xpu_on_host__)
+#include "unsupported/Eigen/CXX11/Tensor"
+#endif
+
 namespace paddle::framework {
 
 const uint32_t MAX_FEASIGN_NUM = 1024 * 100 * 100;
@@ -416,7 +420,7 @@ int FleetWrapper::RegisterHeterCallback(HeterCallBackFunc handler) {
   VLOG(3) << "calling FleetWrapper::RegisterHeterCallback";
   VLOG(3) << "pslib_ptr_=" << pslib_ptr_;
   VLOG(3) << "_worker_ptr=" << pslib_ptr_->_worker_ptr;
-  return pslib_ptr_->_worker_ptr->registe_heter_callback(handler);
+  return pslib_ptr_->_worker_ptr->register_heter_callback(handler);
 
 #else
   VLOG(0) << "FleetWrapper::RegisterHeterCallback"
@@ -891,7 +895,7 @@ void FleetWrapper::PushDenseVarsAsync(
   for (auto& t : var_names) {
     Variable* var = scope.FindVar(t);
     phi::DenseTensor* tensor = var->GetMutable<phi::DenseTensor>();
-    int count = tensor->numel();
+    int64_t count = tensor->numel();
     float* g_data = tensor->data<float>();
 
     Variable* pin_var = scope.FindVar(t + "pin");
@@ -912,22 +916,28 @@ void FleetWrapper::PushDenseVarsAsync(
     cudaEventSynchronize(event);
 #endif
 
+    PADDLE_ENFORCE_LT(count,
+                      std::numeric_limits<int32_t>::max(),
+                      ::common::errors::InvalidArgument(
+                          "tensor numel should be less than int32_t"));
+    int t_count = static_cast<int>(count);
+
     float* g = pin_g;
     if (scale_datanorm >= 0) {
       if (t.find(".batch_size@GRAD") != std::string::npos ||
           t.find(".batch_sum@GRAD") != std::string::npos) {
-        Eigen::Map<Eigen::MatrixXf> mat(g, 1, count);
+        Eigen::Map<Eigen::MatrixXf> mat(g, 1, t_count);
         float scale = 1.0 / batch_size;
         mat *= scale;
       } else if (t.find(".batch_square_sum@GRAD") != std::string::npos) {
         VLOG(3) << "epsilon: " << scale_datanorm;
-        for (int i = 0; i < count; ++i) {
+        for (int64_t i = 0; i < count; ++i) {
           g[i] = (g[i] - batch_size * scale_datanorm) / batch_size +
                  batch_size * scale_datanorm;
         }
       }
     }
-    paddle::ps::Region reg(g, count);
+    paddle::ps::Region reg(g, t_count);
     regions.emplace_back(std::move(reg));
   }
 
@@ -953,7 +963,7 @@ void FleetWrapper::PushDenseVarsAsync(
   for (auto& t : var_names) {
     Variable* var = scope.FindVar(t);
     phi::DenseTensor* tensor = var->GetMutable<phi::DenseTensor>();
-    int count = tensor->numel();
+    int64_t count = tensor->numel();
     float* g_data = tensor->data<float>();
 
     Variable* pin_var = scope.FindVar(t + "pin");
@@ -962,22 +972,28 @@ void FleetWrapper::PushDenseVarsAsync(
         pin_tensor->mutable_data<float>(tensor->dims(), phi::CPUPlace());
     memory::Copy(phi::CPUPlace(), pin_g, place, g_data, sizeof(float) * count);
 
+    PADDLE_ENFORCE_LT(count,
+                      std::numeric_limits<int32_t>::max(),
+                      ::common::errors::InvalidArgument(
+                          "tensor numel should be less than int32_t"));
+    int t_count = static_cast<int>(count);
+
     float* g = pin_g;
     if (scale_datanorm >= 0) {
       if (t.find(".batch_size@GRAD") != std::string::npos ||
           t.find(".batch_sum@GRAD") != std::string::npos) {
-        Eigen::Map<Eigen::MatrixXf> mat(g, 1, count);
+        Eigen::Map<Eigen::MatrixXf> mat(g, 1, t_count);
         float scale = 1.0 / batch_size;
         mat *= scale;
       } else if (t.find(".batch_square_sum@GRAD") != std::string::npos) {
         VLOG(3) << "epsilon: " << scale_datanorm;
-        for (int i = 0; i < count; ++i) {
+        for (int64_t i = 0; i < count; ++i) {
           g[i] = (g[i] - batch_size * scale_datanorm) / batch_size +
                  batch_size * scale_datanorm;
         }
       }
     }
-    paddle::ps::Region reg(g, count);
+    paddle::ps::Region reg(g, t_count);
     regions.emplace_back(std::move(reg));
   }
 
@@ -1001,23 +1017,30 @@ void FleetWrapper::PushDenseVarsAsync(
   for (auto& t : var_names) {
     Variable* var = scope.FindVar(t);
     phi::DenseTensor* tensor = var->GetMutable<phi::DenseTensor>();
-    int count = tensor->numel();
+    int64_t count = tensor->numel();
     float* g = tensor->data<float>();
+
+    PADDLE_ENFORCE_LT(count,
+                      std::numeric_limits<int32_t>::max(),
+                      ::common::errors::InvalidArgument(
+                          "tensor numel should be less than int32_t"));
+    int t_count = static_cast<int>(count);
+
     if (scale_datanorm >= 0) {
       if (t.find(".batch_size@GRAD") != std::string::npos ||
           t.find(".batch_sum@GRAD") != std::string::npos) {
-        Eigen::Map<Eigen::MatrixXf> mat(g, 1, count);
+        Eigen::Map<Eigen::MatrixXf> mat(g, 1, t_count);
         float scale = 1.0 / batch_size;
         mat *= scale;
       } else if (t.find(".batch_square_sum@GRAD") != std::string::npos) {
         VLOG(3) << "epsilon: " << scale_datanorm;
-        for (int i = 0; i < count; ++i) {
+        for (int64_t i = 0; i < count; ++i) {
           g[i] = (g[i] - batch_size * scale_datanorm) / batch_size +
                  batch_size * scale_datanorm;
         }
       }
     }
-    paddle::ps::Region reg(g, count);
+    paddle::ps::Region reg(g, t_count);
     regions.emplace_back(std::move(reg));
   }
 
@@ -1850,7 +1873,7 @@ void FleetWrapper::ShrinkDenseTable(int table_id,
   push_status.wait();
   auto status = push_status.get();
   if (status != 0) {
-    // PADDLE_THORW(common::errors::Fatal(
+    // PADDLE_THROW(common::errors::Fatal(
     //    "push shrink dense param failed, status is [%d].", status));
     sleep(sleep_seconds_before_fail_exit_);
     exit(-1);
@@ -1879,8 +1902,8 @@ int FleetWrapper::RegisterClientToClientMsgHandler(int msg_type,
   VLOG(3) << "calling FleetWrapper::RegisterClientToClientMsgHandler";
   VLOG(3) << "pslib_ptr_=" << pslib_ptr_;
   VLOG(3) << "_worker_ptr=" << pslib_ptr_->_worker_ptr;
-  return pslib_ptr_->_worker_ptr->registe_client2client_msg_handler(msg_type,
-                                                                    handler);
+  return pslib_ptr_->_worker_ptr->register_client2client_msg_handler(msg_type,
+                                                                     handler);
 #else
   VLOG(0) << "FleetWrapper::RegisterClientToClientMsgHandler"
           << " does nothing when no pslib";

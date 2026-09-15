@@ -19,6 +19,7 @@
 #include "paddle/common/errors.h"
 #include "paddle/phi/core/dense_tensor.h"
 #include "paddle/phi/core/enforce.h"
+#include "paddle/utils/string/string_helper.h"
 
 #if defined(PADDLE_WITH_RCCL)
 #include <hip/hip_runtime.h>
@@ -43,8 +44,7 @@
 #endif
 
 namespace phi::distributed {
-void NCCLDynamicCheck::CheckDataType(const phi::DenseTensor& tensor,
-                                     int64_t dtype) {
+void NCCLDynamicCheck::CheckDataType(const DenseTensor& tensor, int64_t dtype) {
   PADDLE_ENFORCE_EQ(
       static_cast<int64_t>(tensor.dtype()),
       dtype,
@@ -52,7 +52,7 @@ void NCCLDynamicCheck::CheckDataType(const phi::DenseTensor& tensor,
           "Tensors in communication are expected to have the same data type."));
 }
 
-void NCCLDynamicCheck::CheckDataType(const phi::DenseTensor& tensor,
+void NCCLDynamicCheck::CheckDataType(const DenseTensor& tensor,
                                      int root_rank,
                                      int cur_rank,
                                      ncclComm_t comm) {
@@ -82,8 +82,7 @@ void NCCLDynamicCheck::CheckDataType(const phi::DenseTensor& tensor,
   PADDLE_ENFORCE_GPU_SUCCESS(gpuFree(dtype_device));
 }
 
-void NCCLDynamicCheck::CheckShape(const phi::DenseTensor& tensor,
-                                  int64_t shape) {
+void NCCLDynamicCheck::CheckShape(const DenseTensor& tensor, int64_t shape) {
   PADDLE_ENFORCE_EQ(
       tensor.numel(),
       shape,
@@ -91,7 +90,7 @@ void NCCLDynamicCheck::CheckShape(const phi::DenseTensor& tensor,
           "Tensors in communication are expected to have matching sizes."));
 }
 
-void NCCLDynamicCheck::CheckShape(const phi::DenseTensor& tensor,
+void NCCLDynamicCheck::CheckShape(const DenseTensor& tensor,
                                   int root_rank,
                                   int cur_rank,
                                   ncclComm_t comm) {
@@ -124,8 +123,8 @@ void NCCLDynamicCheck::CheckShape(const phi::DenseTensor& tensor,
   PADDLE_ENFORCE_GPU_SUCCESS(gpuFree(shape_device));
 }
 
-void NCCLDynamicCheck::CheckShape(const phi::DenseTensor& out_tensor,
-                                  const phi::DenseTensor& in_tensor,
+void NCCLDynamicCheck::CheckShape(const DenseTensor& out_tensor,
+                                  const DenseTensor& in_tensor,
                                   const std::vector<int64_t>& in_size_each_rank,
                                   int cur_rank,
                                   int world_size,
@@ -134,7 +133,8 @@ void NCCLDynamicCheck::CheckShape(const phi::DenseTensor& out_tensor,
   CheckDataType(in_tensor, /*root_rank*/ 0, cur_rank, comm);
 
   constexpr int kSize = sizeof(int64_t);
-  int64_t in_row_size = in_tensor.numel() / in_tensor.dims()[0];
+  int64_t in_row_size =
+      in_tensor.dims()[0] == 0 ? 0 : in_tensor.numel() / in_tensor.dims()[0];
 
   for (int rank = 0; rank < world_size; ++rank) {
     int64_t in_shape_host = in_size_each_rank[rank] * in_row_size;
@@ -160,9 +160,52 @@ void NCCLDynamicCheck::CheckShape(const phi::DenseTensor& out_tensor,
   }
 }
 
+void NCCLDynamicCheck::CheckAlltoAllShape(
+    const std::vector<DenseTensor>& out_tensor,
+    const std::vector<DenseTensor>& in_tensor,
+    int cur_rank,
+    int world_size,
+    ncclComm_t comm) {
+  int64_t first_dtype = static_cast<int64_t>(in_tensor[0].dtype());
+  constexpr int kSize = sizeof(int64_t);
+  CheckDataType(in_tensor[0], /*root_rank*/ 0, cur_rank, comm);
+  for (int rank = 0; rank < world_size; ++rank) {
+    CheckDataType(in_tensor[rank], first_dtype);
+    CheckDataType(out_tensor[rank], first_dtype);
+
+    int64_t in_shape_host = in_tensor[rank].numel();
+    int64_t* in_shape_device;
+    PADDLE_ENFORCE_GPU_SUCCESS(gpuMalloc(&in_shape_device, kSize * world_size));
+    PADDLE_ENFORCE_GPU_SUCCESS(gpuMemcpy(in_shape_device + cur_rank,
+                                         &in_shape_host,
+                                         kSize,
+                                         gpuMemcpyHostToDevice));
+    PADDLE_ENFORCE_GPU_SUCCESS(
+        phi::dynload::ncclAllGather(in_shape_device + cur_rank,
+                                    in_shape_device,
+                                    1,
+                                    ncclInt64,
+                                    comm,
+                                    kDefaultStream));
+    if (rank == cur_rank) {
+      std::vector<int64_t> in_shapes_recv_host(world_size);
+      PADDLE_ENFORCE_GPU_SUCCESS(gpuMemcpy(in_shapes_recv_host.data(),
+                                           in_shape_device,
+                                           kSize * world_size,
+                                           gpuMemcpyDeviceToHost));
+      VLOG(3) << "Dynamic check recv metadata, shape: "
+              << paddle::string::join_strings(in_shapes_recv_host, ',');
+      for (int out_rank = 0; out_rank < world_size; ++out_rank) {
+        CheckShape(out_tensor[out_rank], in_shapes_recv_host[out_rank]);
+      }
+    }
+    PADDLE_ENFORCE_GPU_SUCCESS(gpuFree(in_shape_device));
+  }
+}
+
 void NCCLDynamicCheck::CheckGatherShape(
-    const phi::DenseTensor& in_tensor,
-    const std::vector<phi::DenseTensor>& out_tensors,
+    const DenseTensor& in_tensor,
+    const std::vector<DenseTensor>& out_tensors,
     int root_rank,
     int cur_rank,
     int world_size,

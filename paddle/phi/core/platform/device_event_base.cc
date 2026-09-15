@@ -14,6 +14,8 @@
 
 #include "paddle/phi/core/platform/device_event_base.h"
 
+#include "glog/logging.h"
+
 #include "paddle/phi/api/profiler/event.h"
 #include "paddle/phi/core/platform/device_event_cpu.h"
 
@@ -57,7 +59,7 @@ unsigned int GenerateDeviceEventFlag(bool enable_timing,
 }
 
 void DeviceEventCreateCPU(DeviceEvent* event,
-                          const phi::Place& place,
+                          const Place& place,
                           unsigned int flag) {
   event->InitEvent(std::make_shared<CPUDeviceEventWrapper>(place, flag));
 }

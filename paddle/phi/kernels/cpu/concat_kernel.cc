@@ -15,8 +15,6 @@
 #include "paddle/phi/kernels/concat_kernel.h"
 
 #include "paddle/phi/backends/cpu/cpu_context.h"
-#include "paddle/phi/common/bfloat16.h"
-#include "paddle/phi/common/complex.h"
 #include "paddle/phi/common/scalar.h"
 #include "paddle/phi/core/dense_tensor.h"
 #include "paddle/phi/core/kernel_registry.h"
@@ -34,18 +32,20 @@ void ConcatKernel(const Context& dev_ctx,
                   DenseTensor* out) {
   int64_t axis = axis_scalar.to<int64_t>();
 
-  axis = phi::funcs::ComputeAxis(axis, x[0]->dims().size());
+  axis = funcs::ComputeAxis(axis, x[0]->dims().size());
 
-  std::vector<phi::DDim> x_dims;
+  std::vector<DDim> x_dims;
   x_dims.reserve(x.size());
   for (auto item : x) {
     x_dims.push_back(item->dims());
   }
 
-  phi::DDim out_dims = phi::funcs::ComputeAndCheckShape(true, x_dims, axis);
+  DDim out_dims = funcs::ComputeAndCheckShape(true, x_dims, axis);
   out->Resize(out_dims);
   dev_ctx.template Alloc<T>(out);
-
+  if (out->numel() == 0) {
+    return;
+  }
   // If axis is 0, the lod of the output is not the same as inputs.
   if (axis == 0 && !x[0]->lod().empty()) {
     size_t lod_size_0 = x[0]->lod().size();
@@ -71,8 +71,8 @@ void ConcatKernel(const Context& dev_ctx,
     if (lod_size) {
       auto* out_lod = out->mutable_lod();
       for (size_t i = 1; i < x.size(); ++i) {
-        auto in_lod = phi::ConvertToLengthBasedLegacyLoD(x[i]->lod());
-        phi::AppendLegacyLoD(out_lod, in_lod);
+        auto in_lod = ConvertToLengthBasedLegacyLoD(x[i]->lod());
+        AppendLegacyLoD(out_lod, in_lod);
       }
     }
   }
@@ -86,7 +86,7 @@ void ConcatKernel(const Context& dev_ctx,
       }
       auto in_stride = common::stride_numel(in->dims());
       auto out_stride = common::stride_numel(out->dims());
-      phi::funcs::StridedNumelCopyWithAxis<T, Context>(
+      funcs::StridedNumelCopyWithAxis<T, Context>(
           dev_ctx,
           axis,
           out->data<T>() + output_offset,
@@ -98,7 +98,7 @@ void ConcatKernel(const Context& dev_ctx,
     }
   } else {
     // TODO(chenweihang): concat functor support vector<DenseTensor*> input
-    std::vector<phi::DenseTensor> inputs;
+    std::vector<DenseTensor> inputs;
     inputs.reserve(x.size());
     for (auto item : x) {
       if (item->numel() > 0) {
@@ -107,7 +107,7 @@ void ConcatKernel(const Context& dev_ctx,
         continue;
       }
     }
-    phi::funcs::ConcatFunctor<Context, T> functor;
+    funcs::ConcatFunctor<Context, T> functor;
     functor(dev_ctx, inputs, axis, out);
   }
 }
@@ -126,7 +126,9 @@ PD_REGISTER_KERNEL(concat,
                    uint8_t,
                    int8_t,
                    int16_t,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::float8_e4m3fn,
+                   phi::float8_e5m2,
+                   phi::complex64,
+                   phi::complex128) {}

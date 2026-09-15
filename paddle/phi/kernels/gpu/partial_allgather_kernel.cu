@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "paddle/phi/kernels/gpu/partial_allgather_kernel.h"
 #include "glog/logging.h"
 #include "paddle/phi/core/distributed/utils.h"
 #include "paddle/phi/core/kernel_registry.h"
-
 #if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL)
 #include "paddle/phi/core/distributed/nccl_comm_context.h"
 #endif
@@ -31,16 +31,16 @@ void PartialAllGatherOpCUDAKernel(const Context& dev_ctx,
 #if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL)
   auto in = &x_in;
   int64_t numel = in->numel();
-  ncclDataType_t dtype = phi::ToNCCLDataType(in->dtype());
+  ncclDataType_t dtype = ToNCCLDataType(in->dtype());
 
   gpuStream_t stream = nullptr;
-  phi::distributed::NCCLCommContext* comm_ctx = nullptr;
+  distributed::NCCLCommContext* comm_ctx = nullptr;
 
   int real_nranks = 0;
   int real_rank = 0;
 
   comm_ctx =
-      static_cast<phi::distributed::NCCLCommContext*>(dev_ctx.GetCommContext());
+      static_cast<distributed::NCCLCommContext*>(dev_ctx.GetCommContext());
   PADDLE_ENFORCE_NE(comm_ctx,
                     nullptr,
                     common::errors::Unavailable(
@@ -67,12 +67,12 @@ void PartialAllGatherOpCUDAKernel(const Context& dev_ctx,
                         numel,
                         nranks));
 
-  phi::DDim dims = in->dims();
+  DDim dims = in->dims();
   out->Resize(dims);
   dev_ctx.template Alloc<T>(out);
 
   int64_t send_numel = numel / nranks;
-  int offset = send_numel * rank;
+  int64_t offset = send_numel * rank;
 
   auto send_buf = distributed::GetPartialTensor(*in, offset, send_numel);
   comm_ctx->AllGather(out, send_buf, stream);
@@ -92,10 +92,10 @@ PD_REGISTER_KERNEL(partial_allgather,
                    phi::PartialAllGatherOpCUDAKernel,
                    float,
                    double,
-                   phi::dtype::bfloat16,
+                   phi::bfloat16,
                    int,
                    int64_t,
-                   phi::dtype::float16) {}
+                   phi::float16) {}
 #else
 PD_REGISTER_KERNEL(partial_allgather,
                    GPU,
@@ -105,5 +105,5 @@ PD_REGISTER_KERNEL(partial_allgather,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::float16) {}
+                   phi::float16) {}
 #endif

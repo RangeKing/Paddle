@@ -15,7 +15,6 @@ limitations under the License. */
 #include "paddle/phi/kernels/scale_kernel.h"
 
 #include "paddle/phi/backends/gpu/gpu_context.h"
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/funcs/elementwise_base.h"
 
@@ -48,7 +47,7 @@ void ScaleKernel(const Context& dev_ctx,
                  const Scalar& bias,
                  bool bias_after_scale,
                  DenseTensor* out) {
-  using MT = typename phi::dtype::MPTypeTrait<T>::Type;
+  using MT = typename MPTypeTrait<T>::Type;
   std::vector<const DenseTensor*> inputs;
   std::vector<DenseTensor*> outputs;
   inputs.emplace_back(&x);
@@ -57,13 +56,45 @@ void ScaleKernel(const Context& dev_ctx,
   if (x.numel() <= 0 || (!x.IsInitialized())) {
     return;
   }
-  phi::funcs::ElementwiseKernel<T>(
+  funcs::ElementwiseKernel<T>(
       dev_ctx,
       inputs,
       &outputs,
       ScaleFunctor<T, MT>(scale.to<MT>(), bias.to<MT>(), bias_after_scale));
 }
 
+template <typename T, typename Context>
+void DivScaleKernel(const Context& dev_ctx,
+                    const DenseTensor& x,
+                    const Scalar& scale,
+                    DenseTensor* out) {
+  using MT = typename MPTypeTrait<T>::Type;
+  std::vector<const DenseTensor*> inputs;
+  std::vector<DenseTensor*> outputs;
+  inputs.emplace_back(&x);
+  outputs.emplace_back(out);
+  dev_ctx.template Alloc<T>(out);
+  if (x.numel() <= 0 || (!x.IsInitialized())) {
+    return;
+  }
+  funcs::ElementwiseKernel<T>(
+      dev_ctx,
+      inputs,
+      &outputs,
+      ScaleFunctor<T, MT>(
+          static_cast<MT>(1.0) / scale.to<MT>(), static_cast<MT>(0), true));
+}
+
+#ifdef _WIN32
+INSTANCE_SCALAR_KERNEL(int, GPUContext)
+INSTANCE_SCALAR_KERNEL(int64_t, GPUContext)
+INSTANCE_SCALAR_KERNEL(float, GPUContext)
+INSTANCE_SCALAR_KERNEL(double, GPUContext)
+INSTANCE_SCALAR_KERNEL(float16, GPUContext)
+INSTANCE_SCALAR_KERNEL(int16_t, GPUContext)
+INSTANCE_SCALAR_KERNEL(uint8_t, GPUContext)
+INSTANCE_SCALAR_KERNEL(int8_t, GPUContext)
+#endif
 }  // namespace phi
 
 PD_REGISTER_KERNEL(scale,
@@ -73,14 +104,33 @@ PD_REGISTER_KERNEL(scale,
                    bool,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
-                   phi::dtype::float8_e4m3fn,
-                   phi::dtype::float8_e5m2,
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::float8_e4m3fn,
+                   phi::float8_e5m2,
                    uint8_t,
                    int8_t,
                    int16_t,
                    int,
                    int64_t,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::complex64,
+                   phi::complex128) {}
+
+PD_REGISTER_KERNEL(div_scale,
+                   GPU,
+                   ALL_LAYOUT,
+                   phi::DivScaleKernel,
+                   bool,
+                   float,
+                   double,
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::float8_e4m3fn,
+                   phi::float8_e5m2,
+                   uint8_t,
+                   int8_t,
+                   int16_t,
+                   int,
+                   int64_t,
+                   phi::complex64,
+                   phi::complex128) {}

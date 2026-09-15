@@ -20,14 +20,19 @@
 #include "paddle/fluid/framework/new_executor/instruction/instruction_base.h"
 #include "paddle/fluid/framework/new_executor/interpreter/interpreter_util.h"
 #include "paddle/phi/core/platform/device_context.h"
-#if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL)
+#if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL) || \
+    defined(PADDLE_WITH_XPU_BKCL)
 #include "paddle/common/flags.h"
 #include "paddle/phi/core/distributed/comm_context_manager.h"
-#include "paddle/phi/core/distributed/nccl_comm_context.h"
 #include "paddle/phi/core/platform/collective_helper.h"
-COMMON_DECLARE_bool(dynamic_static_unified_comm);
 #endif
 
+#if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL)
+#include "paddle/phi/core/distributed/nccl_comm_context.h"
+#endif
+#if defined(PADDLE_WITH_XPU_BKCL)
+#include "paddle/phi/core/distributed/bkcl_comm_context.h"
+#endif
 namespace paddle::framework::interpreter {
 
 using DeviceContext = phi::DeviceContext;
@@ -99,8 +104,7 @@ void StreamAnalyzer::ConstructEvents(std::vector<Instruction>* instructions) {
               std::make_shared<DeviceEvent>(
                   recorder_instr.DeviceContext().GetPlace(),
                   platform::GenerateDeviceEventFlag());
-          recorder_instr.AddEventToRecord(device_event,
-                                          platform::kCUDA /*unused*/);
+          recorder_instr.AddEventToRecord(device_event, kCUDA /*unused*/);
           // It means the event will be waited for other interpreter that the
           // event name of a operator is not 'default'.
           if (recorder_instr.OpFunc()->force_record_event_ == true &&
@@ -148,12 +152,12 @@ void StreamAnalyzer::ConstructEvents(std::vector<Instruction>* instructions) {
                 "The program_force_events_to_wait_ had the event "
                 "that belongs to the operator : %s before the operator create "
                 "the event, "
-                "This is is werid.",
+                "This is is weird.",
                 instruction.OpBase()->Type().c_str()));
         std::shared_ptr<DeviceEvent> device_event =
             std::make_shared<DeviceEvent>(place,
                                           platform::GenerateDeviceEventFlag());
-        instruction.AddEventToRecord(device_event, platform::kCUDA /*unused*/);
+        instruction.AddEventToRecord(device_event, kCUDA /*unused*/);
         (*program_force_events_to_wait_)[op_func_node->event_to_record_] =
             instruction.EventToRecord();
         VLOG(6) << "Create manual event: " << op_func_node->event_to_record_
@@ -240,18 +244,12 @@ DeviceContext* StreamAnalyzer::ParseDeviceContext(
         op->Attr<bool>("use_calc_stream") == false) {
       int ring_id = op->Attr<int>("ring_id");
 
-      if (FLAGS_dynamic_static_unified_comm) {
-        const auto& comm_context_manager =
-            phi::distributed::CommContextManager::GetInstance();
-        dev_ctx = static_cast<phi::DeviceContext*>(
-            static_cast<phi::distributed::NCCLCommContext*>(
-                comm_context_manager.Get(std::to_string(ring_id)))
-                ->GetDevContext());
-      } else {
-        dev_ctx = platform::NCCLCommContext::Instance()
-                      .Get(ring_id, place_)
-                      ->dev_context();
-      }
+      const auto& comm_context_manager =
+          phi::distributed::CommContextManager::GetInstance();
+      dev_ctx = static_cast<phi::DeviceContext*>(
+          static_cast<phi::distributed::NCCLCommContext*>(
+              comm_context_manager.Get(std::to_string(ring_id)))
+              ->GetDevContext());
       return dev_ctx;
     }
 #endif
@@ -653,14 +651,14 @@ void StreamAnalyzer::ShrinkEventInfo(
 platform::DeviceType StreamAnalyzer::GetWaiterType(
     const Instruction& instr) const {
   if (instr.KernelType() == OpFuncType::kCpuSync) {
-    return platform::kCPU;
+    return kCPU;
   } else {
     if (phi::is_xpu_place(place_)) {
-      return platform::kXPU;
+      return kXPU;
     } else if (phi::is_custom_place(place_)) {
-      return platform::kCUSTOM_DEVICE;
+      return kCUSTOM_DEVICE;
     }
-    return platform::kCUDA;
+    return kCUDA;
   }
 }
 
@@ -741,8 +739,7 @@ void PirStreamAnalyzer::ConstructEvents(
               std::make_shared<DeviceEvent>(
                   recorder_instr->DeviceContext().GetPlace(),
                   platform::GenerateDeviceEventFlag());
-          recorder_instr->AddEventToRecord(device_event,
-                                           platform::kCUDA /*unused*/);
+          recorder_instr->AddEventToRecord(device_event, kCUDA /*unused*/);
           // It means the event will be waited for other interpreter that the
           // event name of a operator is not 'default'.
           if (recorder_instr->IsForceRecordEvent() == true &&
@@ -787,12 +784,12 @@ void PirStreamAnalyzer::ConstructEvents(
                 "The program_force_events_to_wait_ had the event "
                 "that belongs to the operator : %s before the operator create "
                 "the event, "
-                "This is is werid.",
+                "This is is weird.",
                 instr->Name()));
         std::shared_ptr<DeviceEvent> device_event =
             std::make_shared<DeviceEvent>(place,
                                           platform::GenerateDeviceEventFlag());
-        instr->AddEventToRecord(device_event, platform::kCUDA /*unused*/);
+        instr->AddEventToRecord(device_event, kCUDA /*unused*/);
         (*program_force_events_to_wait_)[instr->EventToRecordInfo()] =
             instr->EventToRecord();
         VLOG(6) << "Create manual event: " << instr->EventToRecordInfo()
@@ -848,14 +845,14 @@ void PirStreamAnalyzer::ShrinkEventInfo(
 platform::DeviceType PirStreamAnalyzer::GetWaiterType(
     const paddle::framework::InstructionBase* instr) const {
   if (instr->KernelType() == OpFuncType::kCpuSync) {
-    return platform::kCPU;
+    return kCPU;
   } else {
     if (phi::is_xpu_place(place_)) {
-      return platform::kXPU;
+      return kXPU;
     } else if (phi::is_custom_place(place_)) {
-      return platform::kCUSTOM_DEVICE;
+      return kCUSTOM_DEVICE;
     }
-    return platform::kCUDA;
+    return kCUDA;
   }
 }
 

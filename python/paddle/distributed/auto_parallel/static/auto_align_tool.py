@@ -117,9 +117,9 @@ class AutoAlignTool:
         for block in self._blocks:
             for op in block.ops:
                 if is_loss_op(op):
-                    assert (
-                        len(op.desc.output_arg_names()) == 1
-                    ), "loss op should only output loss var"
+                    assert len(op.desc.output_arg_names()) == 1, (
+                        "loss op should only output loss var"
+                    )
                     loss_ops.append(op)
 
         for block in self._blocks:
@@ -320,7 +320,11 @@ class AutoAlignTool:
             if "vars" in filename:
                 assert filename.endswith("pkl")
                 with open(filepath, "rb") as f:
-                    vars_list.append(pickle.load(f))
+                    from paddle.framework.restricted_unpickler import (
+                        safe_load_pickle,
+                    )
+
+                    vars_list.append(safe_load_pickle(f))
             elif "program" in filename:
                 assert filename.endswith("pdmodel")
                 with open(filepath, "rb") as f:
@@ -329,7 +333,11 @@ class AutoAlignTool:
             elif "dist_attr" in filename:
                 assert filename.endswith("pkl")
                 with open(filepath, "rb") as f:
-                    dist_attr_list.append(pickle.load(f))
+                    from paddle.framework.restricted_unpickler import (
+                        safe_load_pickle,
+                    )
+
+                    dist_attr_list.append(safe_load_pickle(f))
 
         dist_attr_map = {}
         for dist_attrs in dist_attr_list:
@@ -402,7 +410,7 @@ class AutoAlignTool:
         return diff_var_name_list
 
     @staticmethod
-    def diff_informations(right_dir, wrong_dir):
+    def diff_information(right_dir, wrong_dir):
         """
         Find the corresponding operator according to the variable name.
         """
@@ -448,7 +456,7 @@ class AutoAlignTool:
         return diff_ops_varname_dict
 
     @staticmethod
-    def diff_informations_from_dirs(right_dirs, wrong_dirs):
+    def diff_information_from_dirs(right_dirs, wrong_dirs):
         right_vars_list = []
         right_program_list = []
         right_dist_attr_map = {}

@@ -31,17 +31,15 @@ class ElementwiseMulOpMaker : public ElementwiseOpMaker {
   std::string GetEquation() const override { return "Out = X \\\\odot Y"; }
 
   void AddInputX() override {
-    AddInput(
-        "X",
-        "(Variable), Tensor or phi::DenseTensor of any dimensions. Its dtype "
-        "should be int32, int64, float32, float64.");
+    AddInput("X",
+             "(Variable), Tensor or DenseTensor of any dimensions. Its dtype "
+             "should be int32, int64, float32, float64.");
   }
 
   void AddInputY() override {
-    AddInput(
-        "Y",
-        "(Variable), Tensor or phi::DenseTensor of any dimensions. Its dtype "
-        "should be int32, int64, float32, float64.");
+    AddInput("Y",
+             "(Variable), Tensor or DenseTensor of any dimensions. Its dtype "
+             "should be int32, int64, float32, float64.");
   }
 
   std::string GetOpFunctionality() const override {
@@ -86,7 +84,7 @@ class ElementwiseMulCompositeGradOpMaker
         axis,
         -1,
         common::errors::InvalidArgument(
-            "We only support axis = -1 in composite mul_grad but we got: ",
+            "We only support axis = -1 in composite mul_grad but we got: %d.",
             axis));
     prim::multiply_grad<prim::DescTensor>(
         x, y, out_grad, axis, x_grad_p, y_grad_p);
@@ -139,7 +137,7 @@ class ElementwiseMulCompositeDoubleGradOpMaker
                       -1,
                       common::errors::InvalidArgument(
                           "We only support axis = -1 in composite "
-                          "add_doubel_grad but we got: ",
+                          "add_double_grad but we got: %d",
                           axis));
 
     // get output
@@ -152,7 +150,7 @@ class ElementwiseMulCompositeDoubleGradOpMaker
     paddle::Tensor* x_grad = this->GetOutputPtr(&x_grad_t);
     paddle::Tensor* y_grad = this->GetOutputPtr(&y_grad_t);
     paddle::Tensor* grad_out_grad = this->GetOutputPtr(&grad_out_grad_t);
-    // get output orginal name
+    // get output original name
     std::string x_grad_name = this->GetOutputName(x_grad_t);
     std::string y_grad_name = this->GetOutputName(y_grad_t);
     std::string grad_out_grad_name = this->GetOutputName(grad_out_grad_t);

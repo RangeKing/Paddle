@@ -13,7 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal, Tuple
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     import numpy.typing as npt
@@ -38,7 +38,7 @@ from paddle.io import Dataset
 __all__ = []
 
 
-class MNIST(Dataset[Tuple["_ImageDataType", "npt.NDArray[np.int64]"]]):
+class MNIST(Dataset[tuple["_ImageDataType", "npt.NDArray[np.int64]"]]):
     """
     Implementation of `MNIST <http://yann.lecun.com/exdb/mnist/>`_ dataset.
 
@@ -61,9 +61,10 @@ class MNIST(Dataset[Tuple["_ImageDataType", "npt.NDArray[np.int64]"]]):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import itertools
+            >>> import paddle
             >>> import paddle.vision.transforms as T
             >>> from paddle.vision.datasets import MNIST
 
@@ -99,7 +100,8 @@ class MNIST(Dataset[Tuple["_ImageDataType", "npt.NDArray[np.int64]"]]):
 
             >>> for img, label in itertools.islice(iter(mnist_test), 5):  # only show first 5 images
             ...     # do something with img and label
-            ...     print(type(img), img.shape, label)  # type: ignore
+            ...     assert isinstance(img, paddle.Tensor)
+            ...     print(type(img), img.shape, label)
             ...     # <class 'paddle.Tensor'> [1, 28, 28] [7]
     """
 
@@ -148,9 +150,9 @@ class MNIST(Dataset[Tuple["_ImageDataType", "npt.NDArray[np.int64]"]]):
         self.mode = mode.lower()
         self.image_path = image_path
         if self.image_path is None:
-            assert (
-                download
-            ), "image_path is not set and downloading automatically is disabled"
+            assert download, (
+                "image_path is not set and downloading automatically is disabled"
+            )
             image_url = (
                 self.TRAIN_IMAGE_URL if mode == 'train' else self.TEST_IMAGE_URL
             )
@@ -163,9 +165,9 @@ class MNIST(Dataset[Tuple["_ImageDataType", "npt.NDArray[np.int64]"]]):
 
         self.label_path = label_path
         if self.label_path is None:
-            assert (
-                download
-            ), "label_path is not set and downloading automatically is disabled"
+            assert download, (
+                "label_path is not set and downloading automatically is disabled"
+            )
             label_url = (
                 self.TRAIN_LABEL_URL
                 if self.mode == 'train'
@@ -281,9 +283,10 @@ class FashionMNIST(MNIST):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import itertools
+            >>> import paddle
             >>> import paddle.vision.transforms as T
             >>> from paddle.vision.datasets import FashionMNIST
 
@@ -319,7 +322,8 @@ class FashionMNIST(MNIST):
 
             >>> for img, label in itertools.islice(iter(fashion_mnist_test), 5):  # only show first 5 images
             ...     # do something with img and label
-            ...     print(type(img), img.shape, label)  # type: ignore
+            ...     assert isinstance(img, paddle.Tensor)
+            ...     print(type(img), img.shape, label)
             ...     # <class 'paddle.Tensor'> [1, 28, 28] [9]
     """
 

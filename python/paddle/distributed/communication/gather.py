@@ -51,14 +51,14 @@ def gather(
         None, if not async_op
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env: DISTRIBUTED)
             >>> import paddle
             >>> import paddle.distributed as dist
 
             >>> dist.init_parallel_env()
-            >>> gather_list = [] # type: ignore
+            >>> gather_list = []  # type: ignore
             >>> if dist.get_rank() == 0:
             ...     data = paddle.to_tensor([1, 2, 3])
             ...     dist.gather(data, gather_list, dst=0)
@@ -69,7 +69,7 @@ def gather(
             >>> # [[1, 2, 3], [4, 5, 6]] (2 GPUs, out for rank 0)
             >>> # [] (2 GPUs, out for rank 1)
     """
-    assert (
-        framework.in_dynamic_mode()
-    ), "gather doesn't support static graph mode yet."
+    assert framework.in_dynamic_mode(), (
+        "gather doesn't support static graph mode yet."
+    )
     return stream.gather(tensor, gather_list, dst, group, sync_op)

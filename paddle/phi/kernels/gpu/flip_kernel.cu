@@ -24,9 +24,9 @@ namespace phi {
 template <typename T>
 __global__ void FlipCudaKernel(const T* in_data,
                                T* out_data,
-                               phi::Array<int64_t, DDim::kMaxRank> shape,
-                               phi::Array<int64_t, DDim::kMaxRank> stride,
-                               phi::Array<int, DDim::kMaxRank> flip_dims,
+                               Array<int64_t, DDim::kMaxRank> shape,
+                               Array<int64_t, DDim::kMaxRank> stride,
+                               Array<int, DDim::kMaxRank> flip_dims,
                                const int rank,
                                const int64_t numel,
                                const int flip_dims_size) {
@@ -68,6 +68,9 @@ void FlipKernel(const Context& dev_ctx,
                 DenseTensor* out) {
   auto* in_data = x.data<T>();
   auto* out_data = dev_ctx.template Alloc<T>(out);
+  if (out->numel() == 0) {
+    return;
+  }
 
   auto x_dims = x.dims();
   const int rank = x_dims.size();
@@ -76,9 +79,9 @@ void FlipKernel(const Context& dev_ctx,
   size_t flip_dims_size = axis.size();
   auto x_stride = common::stride(x_dims);
 
-  phi::Array<int64_t, DDim::kMaxRank> stride_array;
-  phi::Array<int64_t, DDim::kMaxRank> shape_array;
-  phi::Array<int, DDim::kMaxRank> flip_dims_array;
+  Array<int64_t, DDim::kMaxRank> stride_array;
+  Array<int64_t, DDim::kMaxRank> shape_array;
+  Array<int, DDim::kMaxRank> flip_dims_array;
 
   for (int i = 0; i < rank; ++i) {
     stride_array[i] = x_stride[i];
@@ -90,7 +93,7 @@ void FlipKernel(const Context& dev_ctx,
     }
   }
 
-  auto config = phi::backends::gpu::GetGpuLaunchConfig1D(dev_ctx, numel);
+  auto config = backends::gpu::GetGpuLaunchConfig1D(dev_ctx, numel);
   FlipCudaKernel<T>
       <<<config.block_per_grid, config.thread_per_block, 0, dev_ctx.stream()>>>(
           in_data,
@@ -111,10 +114,10 @@ PD_REGISTER_KERNEL(flip,
                    phi::FlipKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
+                   phi::float16,
+                   phi::bfloat16,
                    int,
                    int64_t,
                    bool,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::complex64,
+                   phi::complex128) {}

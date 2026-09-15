@@ -260,7 +260,6 @@ class PluginTensorRTV2Ext : public nvinfer1::IPluginV2Ext {
   std::string name_space_;
 };
 
-#if IS_TRT_VERSION_GE(6000)
 class DynamicPluginTensorRT : public nvinfer1::IPluginV2DynamicExt {
  public:
   DynamicPluginTensorRT() : with_fp16_(false) {}
@@ -332,7 +331,6 @@ class DynamicPluginTensorRT : public nvinfer1::IPluginV2DynamicExt {
   std::string name_space_;
   std::string plugin_base_;
 };
-#endif
 
 class TensorRTPluginCreator : public nvinfer1::IPluginCreator {
  public:
@@ -370,11 +368,11 @@ class TrtPluginRegistry {
     static TrtPluginRegistry registry;
     return &registry;
   }
-  bool Regist(const std::string& name, const std::function<void()>& func) {
+  bool Register(const std::string& name, const std::function<void()>& func) {
     map.emplace(name, func);
     return true;
   }
-  void RegistToTrt() {
+  void RegisterToTrt() {
     for (auto& it : map) {
       it.second();
     }
@@ -402,7 +400,7 @@ class TrtPluginRegistrarV2 {
 
 #define REGISTER_TRT_PLUGIN_V2_HELPER(name)                     \
   UNUSED static bool REGISTER_TRT_PLUGIN_V2_HELPER##name =      \
-      paddle::platform::TrtPluginRegistry::Global()->Regist(    \
+      paddle::platform::TrtPluginRegistry::Global()->Register(  \
           #name, []() -> void {                                 \
             static paddle::platform::TrtPluginRegistrarV2<name> \
                 plugin_registrar_##name{};                      \

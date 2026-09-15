@@ -43,14 +43,18 @@ inline DDim GetOutputSqueezeShape(const std::vector<int> squeeze_dims,
             common::errors::InvalidArgument(
                 "For 0D Tensor, Each axis in Attr(axes) should be in the range "
                 "of [-1, 0]"
-                "But current axis is:%d, input tensor's shape = [%s]."));
+                "But current axis is:%d, input tensor's shape = [%s].",
+                squeeze_dims[i],
+                in_dims));
         PADDLE_ENFORCE_LE(
             squeeze_dims[i],
             0,
             common::errors::InvalidArgument(
                 "For 0D Tensor, Each axis in Attr(axes) should be in the range "
                 "of [-1, 0]"
-                "But current axis is:%d, input tensor's shape = [%s]."));
+                "But current axis is:%d, input tensor's shape = [%s].",
+                squeeze_dims[i],
+                in_dims));
         continue;
       }
 
@@ -100,7 +104,7 @@ inline DDim GetOutputSqueezeShape(const std::vector<int> squeeze_dims,
       output_shape.push_back(in_dims[i]);
     }
   }
-  return common::make_ddim(output_shape);
+  return make_ddim(output_shape);
 }
 
 inline DDim GetUnsqueezeShape(const std::vector<int64_t> unsqz_dims,
@@ -128,7 +132,7 @@ inline DDim GetUnsqueezeShape(const std::vector<int64_t> unsqz_dims,
     PADDLE_ENFORCE_LE(cur,
                       cur_output_rank,
                       common::errors::InvalidArgument(
-                          "The insert dimension value shoule not be larger "
+                          "The insert dimension value should not be larger "
                           "than the dimension size of input tensor"));
     // Move old axis, and insert new axis
     for (int i = cur_output_rank; i >= cur; --i) {
@@ -150,13 +154,13 @@ inline DDim GetUnsqueezeShape(const std::vector<int64_t> unsqz_dims,
     }
   }
 #undef UNSQUEEZE_MAX_RANK_SUPPORTED
-  return common::make_ddim(output_shape);
+  return make_ddim(output_shape);
 }
 
 inline const DenseTensor Unsqueeze(const DenseTensor& x, int axis = 0) {
   // don't copy data, only change the dims
   DenseTensor out(x);
-  std::vector<int> out_shape = common::vectorize<int>(x.dims());
+  std::vector<int64_t> out_shape = vectorize<int64_t>(x.dims());
   if (axis >= 0) {
     auto index = (out_shape.begin() + axis);
     out_shape.insert(index, 1);
@@ -164,7 +168,7 @@ inline const DenseTensor Unsqueeze(const DenseTensor& x, int axis = 0) {
     auto index = (out_shape.end() + axis + 1);
     out_shape.insert(index, 1);
   }
-  out.Resize(common::make_ddim(out_shape));
+  out.Resize(out_shape);
   return out;
 }
 

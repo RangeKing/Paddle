@@ -18,6 +18,7 @@
 
 #include "paddle/phi/common/scalar.h"
 #include "paddle/phi/core/dense_tensor.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/padding.h"
 namespace phi {
 template <typename T, typename Context>
@@ -27,6 +28,12 @@ void PadKernel(const Context& dev_ctx,
                const Scalar& pad_value,
                DenseTensor* out) {
   dev_ctx.template Alloc<T>(out);
+  if (x.numel() == 0) {
+    if (out) {
+      Full<T, Context>(dev_ctx, out->dims(), pad_value, out);
+    }
+    return;
+  }
   int rank = x.dims().size();
   funcs::PaddingFunctor<Context, T>(
       rank, dev_ctx, paddings, pad_value.to<T>(), x, out);

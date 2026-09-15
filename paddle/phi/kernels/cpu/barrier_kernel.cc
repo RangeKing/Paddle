@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "paddle/phi/kernels/barrier_kernel.h"
 #include "paddle/phi/core/dense_tensor.h"
 #include "paddle/phi/core/distributed/comm_context_manager.h"
 #include "paddle/phi/core/kernel_registry.h"
@@ -26,8 +27,8 @@ void BarrierKernel(const Context &dev_ctx,
                    const DenseTensor &x,
                    DenseTensor *out) {
 #if defined(PADDLE_WITH_GLOO)
-  auto comm_ctx = static_cast<phi::distributed::GlooCommContext *>(
-      dev_ctx.GetCommContext());
+  auto comm_ctx =
+      static_cast<distributed::GlooCommContext *>(dev_ctx.GetCommContext());
   PADDLE_ENFORCE_NE(comm_ctx,
                     nullptr,
                     ::common::errors::Unavailable(

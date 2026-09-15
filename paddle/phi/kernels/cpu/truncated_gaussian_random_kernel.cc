@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "paddle/phi/backends/cpu/cpu_context.h"
+#include "paddle/phi/common/amp_type_traits.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/funcs/truncated_normal.h"
 
@@ -27,20 +28,25 @@ namespace phi {
 template <typename T, typename Context>
 void TruncatedGaussianRandomKernel(const Context& dev_ctx,
                                    const std::vector<int>& shape,
-                                   float mean,
-                                   float std,
+                                   double mean,
+                                   double std,
                                    int seed,
-                                   float a,
-                                   float b,
+                                   double a,
+                                   double b,
                                    DataType dtype,
                                    DenseTensor* out) {
   auto tensor = out;
 
   T* data = dev_ctx.template Alloc<T>(tensor);
 
-  std::uniform_real_distribution<T> dist(std::numeric_limits<float>::min(),
-                                         1.0);
-  TruncatedNormal<T> truncated_normal(mean, std, a, b);
+  using MT = typename MPTypeTrait<T>::Type;
+
+  std::uniform_real_distribution<MT> dist(std::numeric_limits<float>::min(),
+                                          1.0);
+  TruncatedNormal<MT> truncated_normal(static_cast<MT>(mean),
+                                       static_cast<MT>(std),
+                                       static_cast<MT>(a),
+                                       static_cast<MT>(b));
   int64_t size = tensor->numel();
 
   std::shared_ptr<std::mt19937_64> engine;
@@ -51,7 +57,7 @@ void TruncatedGaussianRandomKernel(const Context& dev_ctx,
     engine = dev_ctx.GetGenerator()->GetCPUEngine();
   }
   for (int64_t i = 0; i < size; ++i) {
-    data[i] = truncated_normal(dist(*engine));
+    data[i] = static_cast<T>(truncated_normal(dist(*engine)));
   }
 }
 
@@ -62,4 +68,6 @@ PD_REGISTER_KERNEL(truncated_gaussian_random,
                    ALL_LAYOUT,
                    phi::TruncatedGaussianRandomKernel,
                    float,
-                   double) {}
+                   double,
+                   phi::float16,
+                   phi::bfloat16) {}

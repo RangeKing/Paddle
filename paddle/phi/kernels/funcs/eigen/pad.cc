@@ -11,8 +11,6 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License. */
-#include "paddle/phi/common/bfloat16.h"
-#include "paddle/phi/common/complex.h"
 #include "paddle/phi/kernels/funcs/eigen/eigen_function.h"
 
 namespace phi::funcs {
@@ -21,15 +19,15 @@ template <typename T, int Rank>
 struct EigenPad<Eigen::DefaultDevice, T, Rank> {
   using Array = std::array<std::pair<int64_t, int64_t>, Rank>;
   using Array32Bit = std::array<std::pair<int, int>, Rank>;
-  using InType = Eigen::TensorMap<
-      Eigen::Tensor<const T, Rank, Eigen::RowMajor, Eigen::DenseIndex>>;
+  using InType =
+      Eigen::TensorMap<Eigen::Tensor<const T, Rank, Eigen::RowMajor, int64_t>>;
   using InType32BitIndex =
-      Eigen::TensorMap<Eigen::Tensor<const T, Rank, Eigen::RowMajor, int>,
+      Eigen::TensorMap<Eigen::Tensor<const T, Rank, Eigen::RowMajor, int64_t>,
                        Eigen::Aligned>;
-  using OutType = Eigen::TensorMap<
-      Eigen::Tensor<T, Rank, Eigen::RowMajor, Eigen::DenseIndex>>;
+  using OutType =
+      Eigen::TensorMap<Eigen::Tensor<T, Rank, Eigen::RowMajor, int64_t>>;
   using OutType32BitIndex =
-      Eigen::TensorMap<Eigen::Tensor<T, Rank, Eigen::RowMajor, int>,
+      Eigen::TensorMap<Eigen::Tensor<T, Rank, Eigen::RowMajor, int64_t>,
                        Eigen::Aligned>;
 
   static void Eval(const Eigen::DefaultDevice& dev,

@@ -21,6 +21,7 @@ from paddle.distributed import fleet
 from paddle.nn import functional as F
 
 from ....communication.reduce import ReduceOp, _get_reduce_op
+from ....flex_checkpoint.dcp.sharded_weight import build_sharded_state_dict
 from ...base import topology as tp
 from ...utils.log_util import logger
 from . import mp_ops
@@ -65,7 +66,7 @@ class VocabParallelEmbedding(paddle.nn.Layer):
                None by default.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.distributed import fleet
@@ -77,16 +78,17 @@ class VocabParallelEmbedding(paddle.nn.Layer):
             ...             hidden_size,
             ...             inner_size,
             ...             gather_output=False,
-            ...             has_bias=True)
+            ...             has_bias=True,
+            ...         )
             ...         self.linear2 = fleet.meta_parallel.RowParallelLinear(
             ...             inner_size,
             ...             hidden_size,
             ...             input_is_parallel=True,
-            ...             has_bias=True)
+            ...             has_bias=True,
+            ...         )
             ...         self.linear3 = paddle.nn.Linear(hidden_size, output_size)
-            ...         self.embedding = fleet.meta_parallel.VocabParallelEmbedding(
-            ...                         vocab_size,
-            ...                         hidden_size)
+            ...         self.embedding = fleet.meta_parallel.VocabParallelEmbedding(vocab_size, hidden_size)
+            ...
             ...     def forward(self, x):
             ...         x = self.embedding(x)
             ...         x = self.linear1(x)
@@ -125,9 +127,9 @@ class VocabParallelEmbedding(paddle.nn.Layer):
         self.origin_num_embeddings = num_embeddings
         self.is_mp = self.world_size > 1
 
-        assert (
-            num_embeddings % self.world_size == 0
-        ), "The length of the vocabulary must be divisible by the parallelism degree of MP"
+        assert num_embeddings % self.world_size == 0, (
+            "The length of the vocabulary must be divisible by the parallelism degree of MP"
+        )
 
         per_part_size = num_embeddings // self.world_size
 
@@ -183,6 +185,15 @@ class VocabParallelEmbedding(paddle.nn.Layer):
             )
         return output
 
+    def sharded_state_dict(
+        self,
+        structured_name_prefix: str = "",
+    ):
+        state_dict = self.state_dict(structured_name_prefix="")
+        return build_sharded_state_dict(
+            state_dict, {"weight": 0}, structured_name_prefix
+        )
+
 
 _raise_cuda_env_unset_warning = True
 
@@ -227,7 +238,7 @@ class InnerOverlapLinear(paddle.autograd.PyLayer):
             dx = paddle.matmul(
                 dy, paddle.cast(weight, dtype=dy.dtype), transpose_y=True
             )
-        op_type = _get_reduce_op(ReduceOp.SUM, "_c_identity")
+        op_type = _get_reduce_op(ReduceOp.SUM)
         task = ctx.model_parallel_group.process_group.all_reduce(
             dx, op_type, sync_op=False
         )
@@ -350,7 +361,7 @@ class ColumnParallelLinear(paddle.nn.Layer):
             For detailed information, please refer to :ref:`api_guide_Name` .
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.distributed import fleet
@@ -362,16 +373,17 @@ class ColumnParallelLinear(paddle.nn.Layer):
             ...             hidden_size,
             ...             inner_size,
             ...             gather_output=False,
-            ...             has_bias=True)
+            ...             has_bias=True,
+            ...         )
             ...         self.linear2 = fleet.meta_parallel.RowParallelLinear(
             ...             inner_size,
             ...             hidden_size,
             ...             input_is_parallel=True,
-            ...             has_bias=True)
+            ...             has_bias=True,
+            ...         )
             ...         self.linear3 = paddle.nn.Linear(hidden_size, output_size)
-            ...         self.embedding = fleet.meta_parallel.VocabParallelEmbedding(
-            ...                         vocab_size,
-            ...                         hidden_size)
+            ...         self.embedding = fleet.meta_parallel.VocabParallelEmbedding(vocab_size, hidden_size)
+            ...
             ...     def forward(self, x):
             ...         x = self.embedding(x)
             ...         x = self.linear1(x)
@@ -474,9 +486,9 @@ class ColumnParallelLinear(paddle.nn.Layer):
             or self.mp_skip_c_identity
             or self.mp_fused_linear_param_grad_add
         ):
-            assert (
-                paddle.in_dynamic_mode()
-            ), "mp_async_allreduce, mp_skip_c_identity and mp_fused_linear_param_grad_add are only available under dygraph mode"
+            assert paddle.in_dynamic_mode(), (
+                "mp_async_allreduce, mp_skip_c_identity and mp_fused_linear_param_grad_add are only available under dygraph mode"
+            )
         if self.fuse_matmul_bias:
             if not is_fused_matmul_bias_supported():
                 raise NotImplementedError(
@@ -528,6 +540,15 @@ class ColumnParallelLinear(paddle.nn.Layer):
             output = output_parallel
         return output
 
+    def sharded_state_dict(
+        self,
+        structured_name_prefix: str = "",
+    ):
+        state_dict = self.state_dict(structured_name_prefix="")
+        return build_sharded_state_dict(
+            state_dict, {"weight": 1, "bias": 0}, structured_name_prefix
+        )
+
 
 class MPScale(PyLayer):
     @staticmethod
@@ -550,14 +571,14 @@ class RowParallelLinear(paddle.nn.Layer):
         weight_attr(ParamAttr|None): The attribute for the learnable weight of this layer. The default value is None
             and the weight will be initialized to zero. For detailed information, please refer to paddle.ParamAttr.
         has_bias(bool): whether to add bias.
-        input_is_parallel(bool): whether the input has already been splitted across the mp group.
+        input_is_parallel(bool): whether the input has already been split across the mp group.
         fuse_matmul_bias(bool): whether to fuse matmul and bias.
         mp_group(Group): The tensor parallel group.
         name(str, optional): Normally there is no need for user to set this parameter.
             For detailed information, please refer to :ref:`api_guide_Name` .
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.distributed import fleet
@@ -569,16 +590,17 @@ class RowParallelLinear(paddle.nn.Layer):
             ...             hidden_size,
             ...             inner_size,
             ...             gather_output=False,
-            ...             has_bias=True)
+            ...             has_bias=True,
+            ...         )
             ...         self.linear2 = fleet.meta_parallel.RowParallelLinear(
             ...             inner_size,
             ...             hidden_size,
             ...             input_is_parallel=True,
-            ...             has_bias=True)
+            ...             has_bias=True,
+            ...         )
             ...         self.linear3 = paddle.nn.Linear(hidden_size, output_size)
-            ...         self.embedding = fleet.meta_parallel.VocabParallelEmbedding(
-            ...                         vocab_size,
-            ...                         hidden_size)
+            ...         self.embedding = fleet.meta_parallel.VocabParallelEmbedding(vocab_size, hidden_size)
+            ...
             ...     def forward(self, x):
             ...         x = self.embedding(x)
             ...         x = self.linear1(x)
@@ -644,9 +666,9 @@ class RowParallelLinear(paddle.nn.Layer):
             or self.mp_skip_c_identity
             or self.mp_fused_linear_param_grad_add
         ):
-            assert (
-                paddle.in_dynamic_mode()
-            ), "mp_async_allreduce, mp_skip_c_identity and mp_fused_linear_param_grad_add are only available under dygraph mode"
+            assert paddle.in_dynamic_mode(), (
+                "mp_async_allreduce, mp_skip_c_identity and mp_fused_linear_param_grad_add are only available under dygraph mode"
+            )
         assert in_features % self.world_size == 0, (
             f"Number of row of the weight for linear ({in_features}) must be"
             f" divisible by model parallel size ({self.world_size})"
@@ -740,6 +762,15 @@ class RowParallelLinear(paddle.nn.Layer):
 
         return output
 
+    def sharded_state_dict(
+        self,
+        structured_name_prefix: str = "",
+    ):
+        state_dict = self.state_dict(structured_name_prefix="")
+        return build_sharded_state_dict(
+            state_dict, {"weight": 0}, structured_name_prefix
+        )
+
 
 class ParallelCrossEntropy(paddle.nn.Layer):
     """CrossEntropy with mp parallelized.
@@ -754,7 +785,7 @@ class ParallelCrossEntropy(paddle.nn.Layer):
             needs to be ignored. Default is -100 .
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +SKIP('No img to demonstrate')
             >>> from paddle.distributed.fleet.layers.mpu import ParallelCrossEntropy
@@ -789,5 +820,67 @@ class ParallelCrossEntropy(paddle.nn.Layer):
             label,
             group=self.model_parallel_group,
             ignore_index=self.ignore_index,
+        )
+        return loss
+
+
+class ParallelMultiLabelCrossEntropy(paddle.nn.Layer):
+    """CrossEntropy with mp parallelized.
+    this class is used for splitting softmax cross entropy in mp group.
+
+    Args:
+        mp_group(Group): The tensor parallel group.
+        name(str, optional): Normally there is no need for user to set this parameter.
+            For detailed information, please refer to :ref:`api_guide_Name` .
+        ignore_index (long int, optional):  Specifies a target value that is ignored and
+            does not contribute to the loss. A negative value means that no label value
+            needs to be ignored. Default is -100 .
+        sum_multi_label_loss (bool, optional): Whether to sum the loss. Default is True .
+
+    Examples:
+        .. code-block:: pycon
+
+            >>> # doctest: +SKIP('No img to demonstrate')
+            >>> from paddle.distributed.fleet.layers.mpu import ParallelMultiLabelCrossEntropy
+            >>> loss_func = ParallelMultiLabelCrossEntropy()
+            >>> loss = loss_func(img, label, smooth_weight)
+
+    """
+
+    def __init__(
+        self,
+        mp_group=None,
+        name=None,
+        ignore_index=-100,
+        sum_multi_label_loss=True,
+    ):
+        super().__init__()
+        self.name = name
+        self.model_parallel_group = (
+            tp._HYBRID_PARALLEL_GROUP.get_model_parallel_group()
+            if mp_group is None
+            else mp_group
+        )
+        self.world_size = (
+            tp._HYBRID_PARALLEL_GROUP.get_model_parallel_world_size()
+            if mp_group is None
+            else mp_group.nranks
+        )
+        self.rank = (
+            tp._HYBRID_PARALLEL_GROUP.get_model_parallel_rank()
+            if mp_group is None
+            else mp_group.rank
+        )
+        self.ignore_index = ignore_index
+        self.sum_multi_label_loss = sum_multi_label_loss
+
+    def forward(self, input, label, smooth_weight):
+        loss = mp_ops._c_softmax_with_multi_label_cross_entropy(
+            input,
+            label,
+            smooth_weight,
+            group=self.model_parallel_group,
+            ignore_index=self.ignore_index,
+            sum_multi_label_loss=self.sum_multi_label_loss,
         )
         return loss

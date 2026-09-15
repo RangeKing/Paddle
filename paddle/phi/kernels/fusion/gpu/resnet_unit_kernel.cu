@@ -14,7 +14,6 @@
 
 #pragma once
 
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/fusion/gpu/cudnn_bn_stats_finalize.cu.h"
 #include "paddle/phi/kernels/fusion/gpu/cudnn_norm_conv.cu.h"
@@ -32,12 +31,12 @@ void ResNetUnitKernel(const Context &dev_ctx,
                       const DenseTensor &bias_x_in,
                       const DenseTensor &mean_x_in,
                       const DenseTensor &var_x_in,
-                      const paddle::optional<DenseTensor> &z_in,
-                      const paddle::optional<DenseTensor> &filter_z_in,
-                      const paddle::optional<DenseTensor> &scale_z_in,
-                      const paddle::optional<DenseTensor> &bias_z_in,
-                      const paddle::optional<DenseTensor> &mean_z_in,
-                      const paddle::optional<DenseTensor> &var_z_in,
+                      const optional<DenseTensor> &z_in,
+                      const optional<DenseTensor> &filter_z_in,
+                      const optional<DenseTensor> &scale_z_in,
+                      const optional<DenseTensor> &bias_z_in,
+                      const optional<DenseTensor> &mean_z_in,
+                      const optional<DenseTensor> &var_z_in,
                       int stride,
                       int stride_z,
                       int padding,
@@ -64,41 +63,41 @@ void ResNetUnitKernel(const Context &dev_ctx,
                       DenseTensor *saved_invstd_z,
                       DenseTensor *running_mean_z,
                       DenseTensor *running_var_z) {
-  PADDLE_ENFORCE_EQ(phi::backends::gpu::CudnnDataType<T>::type,
+  PADDLE_ENFORCE_EQ(backends::gpu::CudnnDataType<T>::type,
                     CUDNN_DATA_HALF,
                     common::errors::Unavailable(
                         "ResNetUnitOp only supports float16 for now."));
 
   // input x
-  const phi::DenseTensor *input_x = &x_in;
-  const phi::DenseTensor *filter_x = &filter_x_in;
-  const phi::DenseTensor *scale_x = &scale_x_in;
-  const phi::DenseTensor *bias_x = &bias_x_in;
+  const DenseTensor *input_x = &x_in;
+  const DenseTensor *filter_x = &filter_x_in;
+  const DenseTensor *scale_x = &scale_x_in;
+  const DenseTensor *bias_x = &bias_x_in;
   // norm conv
-  phi::DenseTensor *conv_out_x = conv_x;
+  DenseTensor *conv_out_x = conv_x;
   // sbar
-  phi::DenseTensor *output = out;
-  phi::DenseTensor *bitmask = bit_mask;
+  DenseTensor *output = out;
+  DenseTensor *bitmask = bit_mask;
   // attrs
   double eps = static_cast<double>(epsilon);
   double momentum = static_cast<double>(momentum_in);
 
   bool is_train = !is_test && !use_global_stats;
 
-  auto input_x_shape = common::vectorize<int>(input_x->dims());
-  auto filter_x_shape = common::vectorize<int>(filter_x->dims());
+  auto input_x_shape = vectorize<int>(input_x->dims());
+  auto filter_x_shape = vectorize<int>(filter_x->dims());
   // std::swap used to convert shape of filter from conv2d when kernel size is
   // 1.
   if (filter_x_shape[1] != filter_x_shape[2] && 1 == filter_x_shape[2]) {
     std::swap(filter_x_shape[1], filter_x_shape[3]);
   }
   auto param_dims = scale_x->dims();
-  auto param_shape = common::vectorize<int>(scale_x->dims());
+  auto param_shape = vectorize<int>(scale_x->dims());
   if (1 == param_shape.size()) {
     param_shape = {1, 1, 1, param_shape[0]};
   }
-  auto output_shape = common::vectorize<int>(output->dims());
-  auto bitmask_shape = common::vectorize<int>(bitmask->dims());
+  auto output_shape = vectorize<int>(output->dims());
+  auto bitmask_shape = vectorize<int>(bitmask->dims());
   int output_channel = filter_x_shape[0];
   int64_t ele_count =
       std::accumulate(
@@ -106,8 +105,8 @@ void ResNetUnitKernel(const Context &dev_ctx,
       output_channel;
 
   // 1. Conv
-  phi::DenseTensor sum_x;
-  phi::DenseTensor sum_of_squares_x;
+  DenseTensor sum_x;
+  DenseTensor sum_of_squares_x;
   sum_x.Resize(param_dims);
   sum_of_squares_x.Resize(param_dims);
   phi::fusion::CudnnNormConvolution<T> conv_x_op(dev_ctx,
@@ -122,8 +121,8 @@ void ResNetUnitKernel(const Context &dev_ctx,
       dev_ctx, *input_x, *filter_x, conv_out_x, &sum_x, &sum_of_squares_x);
 
   // 2. BN
-  phi::DenseTensor equiv_scale_x;
-  phi::DenseTensor equiv_bias_x;
+  DenseTensor equiv_scale_x;
+  DenseTensor equiv_bias_x;
   equiv_scale_x.Resize(param_dims);
   equiv_bias_x.Resize(param_dims);
   phi::fusion::CudnnBNStatsFinalize<T> bn_x_op(dev_ctx, param_shape);
@@ -153,19 +152,19 @@ void ResNetUnitKernel(const Context &dev_ctx,
                                                 bitmask_shape);
   if (has_shortcut) {
     // input z
-    const phi::DenseTensor *input_z = z_in.get_ptr();
-    const phi::DenseTensor *filter_z = filter_z_in.get_ptr();
-    const phi::DenseTensor *scale_z = scale_z_in.get_ptr();
-    const phi::DenseTensor *bias_z = bias_z_in.get_ptr();
+    const DenseTensor *input_z = z_in.get_ptr();
+    const DenseTensor *filter_z = filter_z_in.get_ptr();
+    const DenseTensor *scale_z = scale_z_in.get_ptr();
+    const DenseTensor *bias_z = bias_z_in.get_ptr();
     // norm conv
-    phi::DenseTensor *conv_out_z = conv_z;
+    DenseTensor *conv_out_z = conv_z;
 
-    auto input_z_shape = common::vectorize<int>(input_z->dims());
-    auto filter_z_shape = common::vectorize<int>(filter_z->dims());
+    auto input_z_shape = vectorize<int>(input_z->dims());
+    auto filter_z_shape = vectorize<int>(filter_z->dims());
 
     // 3.1 Conv for second input
-    phi::DenseTensor sum_z;
-    phi::DenseTensor sum_of_squares_z;
+    DenseTensor sum_z;
+    DenseTensor sum_of_squares_z;
     sum_z.Resize(param_dims);
     sum_of_squares_z.Resize(param_dims);
     phi::fusion::CudnnNormConvolution<T> conv_z_op(dev_ctx,
@@ -180,8 +179,8 @@ void ResNetUnitKernel(const Context &dev_ctx,
         dev_ctx, *input_z, *filter_z, conv_out_z, &sum_z, &sum_of_squares_z);
 
     // 3.2 BN for second input
-    phi::DenseTensor equiv_scale_z;
-    phi::DenseTensor equiv_bias_z;
+    DenseTensor equiv_scale_z;
+    DenseTensor equiv_bias_z;
     equiv_scale_z.Resize(param_dims);
     equiv_bias_z.Resize(param_dims);
     phi::fusion::CudnnBNStatsFinalize<T> bn_z_op(dev_ctx, param_shape);
@@ -211,7 +210,7 @@ void ResNetUnitKernel(const Context &dev_ctx,
                     output,
                     bitmask);
   } else {
-    const phi::DenseTensor *input_z = fuse_add ? z_in.get_ptr() : nullptr;
+    const DenseTensor *input_z = fuse_add ? z_in.get_ptr() : nullptr;
     sbar_op.Forward(dev_ctx,
                     *conv_out_x,
                     equiv_scale_x,
@@ -226,7 +225,7 @@ void ResNetUnitKernel(const Context &dev_ctx,
 }  // namespace phi
 
 PD_REGISTER_KERNEL(
-    resnet_unit, GPU, ALL_LAYOUT, phi::ResNetUnitKernel, phi::dtype::float16) {}
+    resnet_unit, GPU, ALL_LAYOUT, phi::ResNetUnitKernel, phi::float16) {}
 #else
 namespace phi {
 template <typename T, typename Context>
@@ -237,12 +236,12 @@ void ResNetUnitEmptyKernel(const Context &dev_ctx,
                            const DenseTensor &bias_x_in,
                            const DenseTensor &mean_x_in,
                            const DenseTensor &var_x_in,
-                           const paddle::optional<DenseTensor> &z_in,
-                           const paddle::optional<DenseTensor> &filter_z_in,
-                           const paddle::optional<DenseTensor> &scale_z_in,
-                           const paddle::optional<DenseTensor> &bias_z_in,
-                           const paddle::optional<DenseTensor> &mean_z_in,
-                           const paddle::optional<DenseTensor> &var_z_in,
+                           const optional<DenseTensor> &z_in,
+                           const optional<DenseTensor> &filter_z_in,
+                           const optional<DenseTensor> &scale_z_in,
+                           const optional<DenseTensor> &bias_z_in,
+                           const optional<DenseTensor> &mean_z_in,
+                           const optional<DenseTensor> &var_z_in,
                            int stride,
                            int stride_z,
                            int padding,
@@ -273,9 +272,6 @@ void ResNetUnitEmptyKernel(const Context &dev_ctx,
       "ResNetUnitOp only supports CUDNN_VERSION >= 8000 for now."));
 }
 }  // namespace phi
-PD_REGISTER_KERNEL(resnet_unit,
-                   GPU,
-                   ALL_LAYOUT,
-                   phi::ResNetUnitEmptyKernel,
-                   phi::dtype::float16) {}
+PD_REGISTER_KERNEL(
+    resnet_unit, GPU, ALL_LAYOUT, phi::ResNetUnitEmptyKernel, phi::float16) {}
 #endif

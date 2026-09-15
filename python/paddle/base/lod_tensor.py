@@ -60,7 +60,7 @@ def create_lod_tensor(data, recursive_seq_lens, place):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle.base as base
             >>> import numpy as np
@@ -84,9 +84,9 @@ def create_lod_tensor(data, recursive_seq_lens, place):
             new_recursive_seq_lens.append(len(seq))
             converter.feed(seq)
 
-        assert [
-            new_recursive_seq_lens
-        ] == recursive_seq_lens, "data and recursive_seq_lens do not match"
+        assert [new_recursive_seq_lens] == recursive_seq_lens, (
+            "data and recursive_seq_lens do not match"
+        )
 
         arr = np.array(converter.data)
 
@@ -152,14 +152,19 @@ def create_random_int_lodtensor(
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle.base as base
 
-            >>> t = base.create_random_int_lodtensor(recursive_seq_lens=[[2, 3]],
-            ...         base_shape=[30], place=base.CPUPlace(), low=0, high=10)
+            >>> t = base.create_random_int_lodtensor(
+            ...     recursive_seq_lens=[[2, 3]],
+            ...     base_shape=[30],
+            ...     place=base.CPUPlace(),
+            ...     low=0,
+            ...     high=10,
+            ... )
             >>> print(t.shape())
-            [5, 30]
+            paddle.Size([5, 30])
     """
     assert isinstance(base_shape, list), "base_shape should be a list"
     # append the total number of basic elements to the front of its shape

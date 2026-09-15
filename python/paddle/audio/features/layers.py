@@ -14,9 +14,7 @@
 from __future__ import annotations
 
 from functools import partial
-from typing import TYPE_CHECKING, Literal
-
-from typing_extensions import TypeAlias
+from typing import TYPE_CHECKING, Literal, TypeAlias
 
 import paddle
 from paddle import nn
@@ -64,7 +62,7 @@ class Spectrogram(nn.Layer):
 
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.audio.features import Spectrogram
@@ -76,7 +74,7 @@ class Spectrogram(nn.Layer):
             >>> wav_data = paddle.linspace(-1.0, 1.0, int(num_frames)) * 0.1
             >>> waveform = wav_data.tile([num_channels, 1])
 
-            >>> feature_extractor = Spectrogram(n_fft=512, window = 'hann', power = 1.0)
+            >>> feature_extractor = Spectrogram(n_fft=512, window='hann', power=1.0)
             >>> feats = feature_extractor(waveform)
     """
 
@@ -152,7 +150,7 @@ class MelSpectrogram(nn.Layer):
         :ref:`api_paddle_nn_Layer`. An instance of MelSpectrogram.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.audio.features import MelSpectrogram
@@ -164,7 +162,7 @@ class MelSpectrogram(nn.Layer):
             >>> wav_data = paddle.linspace(-1.0, 1.0, int(num_frames)) * 0.1
             >>> waveform = wav_data.tile([num_channels, 1])
 
-            >>> feature_extractor = MelSpectrogram(sr=sample_rate, n_fft=512, window = 'hann', power = 1.0)
+            >>> feature_extractor = MelSpectrogram(sr=sample_rate, n_fft=512, window='hann', power=1.0)
             >>> feats = feature_extractor(waveform)
     """
 
@@ -262,7 +260,7 @@ class LogMelSpectrogram(nn.Layer):
         :ref:`api_paddle_nn_Layer`. An instance of LogMelSpectrogram.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.audio.features import LogMelSpectrogram
@@ -274,7 +272,7 @@ class LogMelSpectrogram(nn.Layer):
             >>> wav_data = paddle.linspace(-1.0, 1.0, int(num_frames)) * 0.1
             >>> waveform = wav_data.tile([num_channels, 1])
 
-            >>> feature_extractor = LogMelSpectrogram(sr=sample_rate, n_fft=512, window = 'hann', power = 1.0)
+            >>> feature_extractor = LogMelSpectrogram(sr=sample_rate, n_fft=512, window='hann', power=1.0)
             >>> feats = feature_extractor(waveform)
     """
 
@@ -370,7 +368,7 @@ class MFCC(nn.Layer):
         :ref:`api_paddle_nn_Layer`. An instance of MFCC.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.audio.features import MFCC
@@ -382,7 +380,7 @@ class MFCC(nn.Layer):
             >>> wav_data = paddle.linspace(-1.0, 1.0, int(num_frames)) * 0.1
             >>> waveform = wav_data.tile([num_channels, 1])
 
-            >>> feature_extractor = MFCC(sr=sample_rate, n_fft=512, window = 'hann')
+            >>> feature_extractor = MFCC(sr=sample_rate, n_fft=512, window='hann')
             >>> feats = feature_extractor(waveform)
     """
 
@@ -410,9 +408,9 @@ class MFCC(nn.Layer):
         dtype: str = 'float32',
     ) -> None:
         super().__init__()
-        assert (
-            n_mfcc <= n_mels
-        ), f'n_mfcc cannot be larger than n_mels: {n_mfcc} vs {n_mels}'
+        assert n_mfcc <= n_mels, (
+            f'n_mfcc cannot be larger than n_mels: {n_mfcc} vs {n_mels}'
+        )
         self._log_melspectrogram = LogMelSpectrogram(
             sr=sr,
             n_fft=n_fft,
@@ -446,7 +444,5 @@ class MFCC(nn.Layer):
         log_mel_feature = self._log_melspectrogram(x)
         mfcc = paddle.matmul(
             log_mel_feature.transpose((0, 2, 1)), self.dct_matrix
-        ).transpose(
-            (0, 2, 1)
-        )  # (B, n_mels, L)
+        ).transpose((0, 2, 1))  # (B, n_mels, L)
         return mfcc

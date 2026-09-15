@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import ast
+import sys
 import textwrap
 import unittest
 
@@ -38,7 +39,7 @@ class GastNodeTransformer(gast.NodeTransformer):
 
     def visit_With(self, node):
         """
-        The fileds `context_expr/optional_vars` of `ast.With` in PY2
+        The fields `context_expr/optional_vars` of `ast.With` in PY2
         is moved into `ast.With.items.withitem` in PY3.
         It will be generally represented by gast.With.items.withitem in gast.
         """
@@ -54,7 +55,7 @@ class GastNodeTransformer(gast.NodeTransformer):
 
     def visit_Call(self, node):
         """
-        The fileds `starargs/kwargs` of `ast.Call` in PY2
+        The fields `starargs/kwargs` of `ast.Call` in PY2
         is moved into `Starred/keyword` in PY3.
         It will be generally represented by gast.Starred/keyword in gast.
         """
@@ -143,7 +144,7 @@ class TestPythonCompatibility(unittest.TestCase):
 
     def test_with(self):
         """
-        The fileds `context_expr/optional_vars` of `ast.With` in PY2
+        The fields `context_expr/optional_vars` of `ast.With` in PY2
         is moved into `ast.With.items.withitem` in PY3.
         """
         source = """
@@ -182,6 +183,40 @@ class TestPythonCompatibility(unittest.TestCase):
             y = foo(*arg_new)
         """
         self._check_compatibility(source, target)
+
+    @unittest.skipIf(
+        sys.version_info < (3, 14),
+        "Python 3.14 t-string AST nodes are not available.",
+    )
+    def test_template_string_round_trip(self):
+        source = textwrap.dedent(
+            '''
+            result = t"Tasty {food}!"
+            '''
+        )
+
+        ast_root = ast.parse(source)
+        self.assertIsInstance(ast_root.body[0].value, ast.TemplateStr)
+
+        gast_root = gast.ast_to_gast(ast_root)
+        template_node = gast_root.body[0].value
+        self.assertIsInstance(template_node, gast.TemplateStr)
+        self.assertEqual(
+            [type(value) for value in template_node.values],
+            [gast.Constant, gast.Interpolation, gast.Constant],
+        )
+        self.assertEqual(template_node.values[0].value, "Tasty ")
+        self.assertEqual(template_node.values[1].str, "food")
+        self.assertEqual(template_node.values[2].value, "!")
+
+        round_trip_ast = gast.gast_to_ast(gast_root)
+        round_trip_template_node = round_trip_ast.body[0].value
+        self.assertIsInstance(round_trip_template_node, ast.TemplateStr)
+        self.assertEqual(
+            [type(value) for value in round_trip_template_node.values],
+            [ast.Constant, ast.Interpolation, ast.Constant],
+        )
+        compile(round_trip_ast, "<python-3.14-template-string>", "exec")
 
 
 if __name__ == '__main__':

@@ -219,7 +219,7 @@ class small_vector_template_common
   /// Check whether Elt will be invalidated by resizing the vector to NewSize.
   void assertSafeToReferenceAfterResize(const void *Elt, size_t NewSize) {
     (void)Elt;
-    (void)NewSize;  // just remove [-Wunused-paremeter]
+    (void)NewSize;  // just remove [-Wunused-parameter]
     assert(isSafeToReferenceAfterResize(Elt, NewSize) &&
            "Attempting to reference an element of the vector in an operation "
            "that invalidates it");
@@ -603,7 +603,12 @@ class small_vector_template_base<T, true>
     this->set_size(this->size() + 1);
   }
 
-  void pop_back() { this->set_size(this->size() - 1); }
+  void pop_back() {
+    if (this->size() > 0) {
+      this->at(this->size() - 1).~T();
+      this->set_size(this->size() - 1);
+    }
+  }
 };
 
 /// This class consists of common code factored out of the small_vector class to

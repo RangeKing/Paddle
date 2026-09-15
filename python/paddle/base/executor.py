@@ -40,11 +40,11 @@ from .framework import (
     Operator,
     Program,
     Variable,
-    convert_np_dtype_to_dtype_,
+    convert_to_vartype,
+    datatype_to_vartype,
     default_main_program,
     get_flags,
     in_pir_mode,
-    paddle_type_to_proto_type,
     process_type_promotion,
     set_flags,
 )
@@ -84,7 +84,7 @@ def global_scope() -> core._Scope:
         Scope: The global/default scope instance.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> import numpy
@@ -124,7 +124,7 @@ def scope_guard(scope: core._Scope) -> Generator[None, None, None]:
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> import numpy
@@ -132,7 +132,7 @@ def scope_guard(scope: core._Scope) -> Generator[None, None, None]:
 
             >>> new_scope = paddle.static.Scope()
             >>> with paddle.static.scope_guard(new_scope):
-            ...         paddle.static.global_scope().var("data").get_tensor().set(numpy.ones((2, 2)), paddle.CPUPlace())
+            ...     paddle.static.global_scope().var("data").get_tensor().set(numpy.ones((2, 2)), paddle.CPUPlace())
             >>> numpy.array(new_scope.find_var("data").get_tensor())
             array([[1., 1.],
                    [1., 1.]])
@@ -151,7 +151,7 @@ def as_numpy(tensor, copy=False):
     For higher dimensional sequence data, please use DenseTensor directly.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle.base as base
             >>> import numpy
@@ -160,7 +160,7 @@ def as_numpy(tensor, copy=False):
             >>> with base.scope_guard(new_scope):
             ...     base.global_scope().var("data").get_tensor().set(numpy.ones((2, 2)), base.CPUPlace())
             >>> tensor = new_scope.find_var("data").get_tensor()
-            >>> base.executor.as_numpy(tensor) # or numpy.array(new_scope.find_var("data").get_tensor())
+            >>> base.executor.as_numpy(tensor)  # or numpy.array(new_scope.find_var("data").get_tensor())
 
     Args:
        tensor(Variable): a instance of Tensor
@@ -203,9 +203,9 @@ def dtype_is_compatible_with(first, second):
         True if the two types are same.
     """
     if not isinstance(first, core.VarDesc.VarType):
-        first = convert_np_dtype_to_dtype_(first)
+        first = convert_to_vartype(first)
     if not isinstance(second, core.VarDesc.VarType):
-        second = convert_np_dtype_to_dtype_(second)
+        second = convert_to_vartype(second)
     return first == second
 
 
@@ -518,9 +518,9 @@ def _add_feed_fetch_ops(
         global_block, fetch_list, fetch_var_name, fetch_op
     ):
         for i, var in enumerate(fetch_list):
-            assert isinstance(
-                var, (Variable, str)
-            ), f"Wrong type for fetch_list[{i}]: {type(var)}"
+            assert isinstance(var, (Variable, str)), (
+                f"Wrong type for fetch_list[{i}]: {type(var)}"
+            )
             global_block.append_op(
                 type=fetch_op,
                 inputs={'X': [var]},
@@ -544,9 +544,9 @@ def _add_pir_fetch_ops(program, fetch_list, fetch_var_name):
     if need_fetch_info:
         with paddle.static.program_guard(program):
             for i, fetch_input in enumerate(need_fetch_info):
-                assert isinstance(
-                    fetch_input, Value
-                ), f"Wrong type for fetch_list[{i}]: {type(fetch_input)}"
+                assert isinstance(fetch_input, Value), (
+                    f"Wrong type for fetch_list[{i}]: {type(fetch_input)}"
+                )
                 if is_startup_program:
                     fetch_input = paddle._pir_ops.parameter(fetch_input.name)
                 out = paddle._pir_ops.fetch(
@@ -642,25 +642,6 @@ def _to_name_str(var):
         return _to_str(var)
 
 
-def _prepare_fleet_executor():
-    from ..distributed.backup_env import getenv_or_backup
-    from ..distributed.fleet.proto import fleet_executor_desc_pb2
-
-    trainer_endpoints_str = getenv_or_backup("PADDLE_TRAINER_ENDPOINTS", "")
-    trainer_endpoints = trainer_endpoints_str.split(',')
-    fleet_exe_desc = fleet_executor_desc_pb2.FleetExecutorDesc()
-    cur_rank = int(os.getenv("PADDLE_TRAINER_ID", 0))
-    fleet_exe_desc.cur_rank = cur_rank
-    nrank = len(trainer_endpoints)
-    for rank, endpoint in enumerate(trainer_endpoints):
-        rank_info = fleet_executor_desc_pb2.RankInfo()
-        rank_info.rank = rank
-        rank_info.ip_port = endpoint
-        fleet_exe_desc.cluster_info.append(rank_info)
-    fleet_exe = core.FleetExecutor(fleet_exe_desc.SerializeToString())
-    return fleet_exe
-
-
 def _get_strong_program_cache_key_for_new_exe(program, scope, feed, fetch_list):
     if isinstance(program, PirProgram):
         return (
@@ -720,7 +701,7 @@ def _as_lodtensor(data, place, dtype=None):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import numpy as np
             >>> import paddle.base as base
@@ -732,16 +713,16 @@ def _as_lodtensor(data, place, dtype=None):
     Args:
         data(numpy.ndarray|list|tuple|scalar): a instance of array, scalar, list or tuple
         data(core.Place): the place of created tensor
-        dtype(core.VarDesc.VarType|str): the expected data type of created tensor
+        dtype(str|paddle.dtype|np.dtype, optional): the expected data type of created tensor
 
     Returns:
         DenseTensor
     """
     # NOTE(zhiqiu): convert python builtin, like float, int, and list, to numpy ndarray
     if not isinstance(data, np.ndarray):
-        assert (
-            dtype is not None
-        ), 'The dtype should be given when feed data is not np.ndarray'
+        assert dtype is not None, (
+            'The dtype should be given when feed data is not np.ndarray'
+        )
         dtype = convert_dtype(dtype)
         if np.isscalar(data):
             data = np.array(data).astype(dtype)
@@ -758,6 +739,22 @@ def _as_lodtensor(data, place, dtype=None):
             raise TypeError(
                 f"Convert data of type {type(data)} to Tensor is not supported"
             )
+
+    if core.is_compiled_with_custom_device("iluvatar_gpu") and os.environ.get(
+        'FLAG_FORCE_FLOAT32', ''
+    ).lower() in ['1', 'true', 'on']:
+        import logging
+
+        if data.dtype == np.float64:
+            logging.warning(
+                "Input data type is float64 which is not supported on iluvatar gpu, we will forcibly set tensor dtype to float32!"
+            )
+            data = data.astype(np.float32)
+        elif data.dtype == np.complex128:
+            logging.warning(
+                "Input data type is complex128 which is not supported on iluvatar gpu, we will forcibly set tensor dtype to complex64!"
+            )
+            data = data.astype(np.complex64)
 
     # convert numpy.ndarray to tensor
     tensor = core.DenseTensor()
@@ -1229,8 +1226,19 @@ class _ExecutorCache:
         for op in global_block.ops:
             if op.name() == 'pd_op.data':
                 feed_target_name = op.attrs()["name"]
-                var_type = paddle_type_to_proto_type[op.attrs()["dtype"]]
+                var_type = datatype_to_vartype[op.attrs()["dtype"]]
                 var_shape = op.attrs()["shape"]
+                tup = (
+                    feed_target_name,
+                    var_type,
+                    var_shape,
+                    op.result(0).persistable,
+                )
+                data_op_infos.append(tup)
+            if op.name() == 'pd_op.feed':
+                feed_target_name = op.attrs()["name"]
+                var_type = datatype_to_vartype[op.results()[0].dtype]
+                var_shape = op.results()[0].shape
                 tup = (
                     feed_target_name,
                     var_type,
@@ -1265,11 +1273,10 @@ class Executor:
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> import numpy
-            >>> import os
 
             >>> # Executor is only used in static graph mode
             >>> paddle.enable_static()
@@ -1289,21 +1296,13 @@ class Executor:
             ...     hidden = paddle.static.nn.fc(data, 10)
             ...     loss = paddle.mean(hidden)
             ...     paddle.optimizer.SGD(learning_rate=0.01).minimize(loss)
-            ...
             >>> # Run the startup program once and only once.
             >>> # Not need to optimize/compile the startup program.
             >>> exe.run(startup_program)
 
-            >>> # Run the main program directly without compile.
+            >>> # Run the main program.
             >>> x = numpy.random.random(size=(10, 1)).astype('float32')
-            >>> loss_data, = exe.run(train_program, feed={"X": x}, fetch_list=[loss.name])
-
-            >>> # Or, compiled the program and run. See `CompiledProgram`
-            >>> # for more details.
-            >>> compiled_prog = paddle.static.CompiledProgram(
-            ...     train_program)
-            >>> loss_data, = exe.run(compiled_prog, feed={"X": x}, fetch_list=[loss.name])
-
+            >>> (loss_data,) = exe.run(train_program, feed={"X": x}, fetch_list=[loss])
     """
 
     place: _Place
@@ -1335,11 +1334,6 @@ class Executor:
 
         self._executor_cache = _ExecutorCache()
 
-        self._fleet_executor = None
-        # TODO(liyurui): This option will be removed and always true when the functionality
-        # of fleet executor with standalone executor is ready.
-        self._fleet_executor_with_standalone = False
-
         self.op_role_key = core.op_proto_and_checker_maker.kOpRoleAttrName()
 
         self.enable_job_schedule_profiler = False
@@ -1352,7 +1346,7 @@ class Executor:
     def __del__(self) -> None:
         # NOTE(Ruibiao): The manually call of clear is required. Because in Python, executor_cache
         # may not immediately destructed after Executor instance deleted (so does not the _StandaloneExecutor),
-        # that brings errors to mkl-dnn unit tests (see ClearMKLDNNCache in interpretercore.cc for why).
+        # that brings errors to one-dnn unit tests (see ClearONEDNNCache in interpretercore.cc for why).
         self.close()
         self._executor_cache.clear()
 
@@ -1559,7 +1553,7 @@ class Executor:
         Prune operators and variables which are not needed to generate
         :code:`fetch_list` and optimize operators.
         Prune operators and variables which are needed
-        to generate variables to be feeded.
+        to generate variables to be fed.
 
         Notes: This is a very low level API. Users should not use this API
         directly.
@@ -1675,7 +1669,7 @@ class Executor:
 
         Examples:
 
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
 
@@ -1808,7 +1802,7 @@ class Executor:
 
         Examples:
 
-            .. code-block:: python
+            .. code-block:: pycon
                 :name: code-example-1
 
                 >>> # doctest: +SKIP("This has diff in xdoctest env")
@@ -1834,14 +1828,14 @@ class Executor:
                 >>> x = numpy.random.random(size=(10, 1)).astype('float32')
                 >>> loss_val, array_val = exe.run(
                 ...     feed={'X': x},
-                ...     fetch_list=[loss.name, array.name]  # type: ignore[union-attr]
+                ...     fetch_list=[loss.name, array.name],  # type: ignore[union-attr]
                 ... )
                 >>> print(array_val)
                 >>> # doctest: +SKIP("Random output")
                 [array(0.16870381, dtype=float32)]
                 >>> # doctest: -SKIP
 
-            .. code-block:: python
+            .. code-block:: pycon
                 :name: code-example-2
 
                 >>> # doctest: +SKIP("This has diff in xdoctest env")
@@ -1866,15 +1860,15 @@ class Executor:
                 >>> build_strategy = paddle.static.BuildStrategy()
                 >>> binary = paddle.static.CompiledProgram(
                 ...     paddle.static.default_main_program(),
-                ...     build_strategy=build_strategy
+                ...     build_strategy=build_strategy,
                 ... )
                 >>> batch_size = 6
                 >>> x = np.random.random(size=(batch_size, 1)).astype('float32')
 
-                >>> prediction, = exe.run(
+                >>> (prediction,) = exe.run(
                 ...     binary,
                 ...     feed={'X': x},
-                ...     fetch_list=[prediction.name]
+                ...     fetch_list=[prediction.name],
                 ... )
                 >>> # If the user uses two GPU cards to run this python code, the printed result will be
                 >>> # (6, class_dim). The first dimension value of the printed result is the batch_size.
@@ -2055,7 +2049,7 @@ class Executor:
                             value = value.lower()
                             value = True if value == 'true' else False
                         stored_flag[flag] = bool(value)
-                    set_flags({f: True for f in schedule_flag})
+                    set_flags(dict.fromkeys(schedule_flag, True))
 
             program, new_exe = self._executor_cache.get_program_and_executor(
                 program,
@@ -2071,9 +2065,9 @@ class Executor:
             if hasattr(program, 'lr_scheduler'):
                 from paddle.optimizer.lr import LRScheduler
 
-                assert isinstance(
-                    program.lr_scheduler, LRScheduler
-                ), "must be LRScheduler"
+                assert isinstance(program.lr_scheduler, LRScheduler), (
+                    "must be LRScheduler"
+                )
                 lr_scheduler = program.lr_scheduler
                 lr_value = lr_scheduler()
                 lr_var = program.global_block().vars[lr_scheduler._var_name]
@@ -2126,9 +2120,9 @@ class Executor:
         acp._auto_checkpoint(self, program)
 
         program._compile(scope, self.place)
-        assert (
-            program._is_inference
-        ), f"Program must have _is_inference = True, but get {program._is_inference}"
+        assert program._is_inference, (
+            f"Program must have _is_inference = True, but get {program._is_inference}"
+        )
         return self._run_inference(program._executor, feed)
 
     def _run_pir_impl(
@@ -2200,9 +2194,9 @@ class Executor:
         if hasattr(program, 'lr_scheduler'):
             from paddle.optimizer.lr import LRScheduler
 
-            assert isinstance(
-                program.lr_scheduler, LRScheduler
-            ), "must be LRScheduler"
+            assert isinstance(program.lr_scheduler, LRScheduler), (
+                "must be LRScheduler"
+            )
 
             lr_scheduler = program.lr_scheduler
             lr_value = lr_scheduler()
@@ -2429,15 +2423,6 @@ class Executor:
         fetch_info=None,
         print_period=100,
     ):
-        is_heter = 0
-        use_ps_gpu = 0
-        if program._fleet_opt is not None:
-            if program._fleet_opt.get("worker_class", "") == "HeterCpuWorker":
-                is_heter = 1
-            if program._fleet_opt.get("trainer", "") == "HeterXpuTrainer":
-                is_heter = 1
-            if program._fleet_opt.get("use_ps_gpu", False):
-                use_ps_gpu = True
         if scope is None:
             scope = global_scope()
         if fetch_list is None:
@@ -2446,8 +2431,6 @@ class Executor:
             fetch_info = []
         assert len(fetch_list) == len(fetch_info)
         compiled = isinstance(program, compiler.CompiledProgram)
-        if is_heter:
-            ret = self.split_program_by_device(program)
         if not compiled:
             # TODO: Need a better way to distinguish and specify different execution mode
             if program._pipeline_opt:
@@ -2462,8 +2445,6 @@ class Executor:
                 trainer = TrainerFactory()._create_trainer(program._fleet_opt)
                 trainer._set_thread_barrier(program._is_distributed)
             trainer._set_program(program)
-            if is_heter:
-                trainer._set_heter_info(ret)
         else:
             if program._pipeline_opt:
                 trainer = TrainerFactory()._create_trainer(
@@ -2480,9 +2461,7 @@ class Executor:
             trainer._set_program(program.program)
 
         if thread <= 0:
-            if use_ps_gpu:
-                trainer._set_thread(len(program._fleet_opt["worker_places"]))
-            elif dataset.thread_num <= 0:
+            if dataset.thread_num <= 0:
                 raise RuntimeError(
                     "You should set thread num first, either in Dataset"
                     "or in Executor.train_from_dataset"
@@ -2612,9 +2591,6 @@ class Executor:
         if program._pipeline_opt is None:
             if program._heter_pipeline_opt is None:
                 self._dump_debug_info(program=program, trainer=trainer)
-        # warning if dataset not set psgpu in psgpu mode
-        if dataset.use_ps_gpu is False and trainer.proto_desc.use_ps_gpu:
-            logging.warning("dataset should call set_use_ps_gpu in PsGpu mode")
 
         dataset._dynamic_adjust_before_train(trainer.proto_desc.thread_num)
 
@@ -2760,9 +2736,6 @@ class Executor:
         # NOTE: only for debug, very slow
         # self._dump_debug_info(program=program, trainer=trainer)
 
-        # warning if dataset not set psgpu in psgpu mode
-        if dataset.use_ps_gpu is False and trainer.proto_desc.use_ps_gpu:
-            logging.warning("dataset should call set_use_ps_gpu in PsGpu mode")
         dataset._dynamic_adjust_before_train(trainer.proto_desc.thread_num)
 
         trainer_desc = trainer._desc()  # slow, cache
@@ -2775,255 +2748,6 @@ class Executor:
             self._add_ctx_cache(cache_key, ctx)
 
         return ctx
-
-    def _prepare_fleet_executor_carrier(
-        self,
-        carrier_id="",
-        program=None,
-        scope=None,
-        fleet_opt=None,
-        micro_scope_list=[],
-        with_standalone_executor=False,
-    ):
-        num_micro_batches = (
-            fleet_opt["num_micro_batches"]
-            if "num_micro_batches" in fleet_opt
-            else 1
-        )
-        cur_rank = int(os.getenv("PADDLE_TRAINER_ID", 0))
-        trainer_endpoints = os.getenv("PADDLE_TRAINER_ENDPOINTS", "").split(',')
-        nrank = len(trainer_endpoints)
-
-        assert 'scheduler' in fleet_opt or 'tasks' in fleet_opt, (
-            "Fleet executor need configuration for scheduler, you can choose from 1F1B or Origin. "
-            "Or you can provide a list of task nodes to init fleet executor directly."
-        )
-        if 'tasks' in fleet_opt:
-            assert 'task_id_to_rank' in fleet_opt, (
-                "If you provide tasks to init fleet executor,"
-                " task_id_to_rank should also be provided."
-            )
-            print('fleet executor will use user defined task nodes')
-            tasks = [task.task_node() for task in fleet_opt['tasks']]
-            task_id_to_rank = fleet_opt['task_id_to_rank']
-        else:
-            scheduler = fleet_opt['scheduler']
-            if scheduler == '1F1B':
-                from paddle.distributed.fleet.fleet_executor_utils import (
-                    run1f1b,
-                )
-
-                if (
-                    "dist_strategy" not in fleet_opt
-                    or "pp_degree" not in fleet_opt["dist_strategy"]
-                    or fleet_opt["dist_strategy"]["pp_degree"] == 1
-                ):
-                    warnings.warn("Using 1F1B scheduler with pp_degree == 1.")
-                tasks, task_id_to_rank = run1f1b(
-                    program,
-                    cur_rank,
-                    fleet_opt.get('num_micro_batches', 1),
-                    fleet_opt.get('dist_strategy', {}),
-                    nrank,
-                    with_standalone_executor,
-                )
-            elif scheduler == 'Origin':
-                from paddle.distributed.fleet.fleet_executor_utils import origin
-
-                if (
-                    "dist_strategy" in fleet_opt
-                    and "pp_degree" in fleet_opt["dist_strategy"]
-                ):
-                    assert (
-                        fleet_opt["dist_strategy"]["pp_degree"] == 1
-                    ), "For pipeline mode, the scheduler should be 1F1B instead of Origin."
-                if "num_micro_batches" in fleet_opt:
-                    assert (
-                        fleet_opt["num_micro_batches"] == 1
-                    ), "For origin scheduler mode, the num micro batches should be 1."
-                tasks, task_id_to_rank = origin(program, cur_rank)
-            else:
-                raise "Fleet_executor only supports 1F1B and Origin scheduler, " "but received " + str(
-                    scheduler
-                ) + "."
-            # NOTE: have to hold these vars, otherwise will be destructed
-            fleet_opt['tasks'] = tasks
-            fleet_opt['task_id_to_rank'] = task_id_to_rank
-        place = core.Place()
-        place.set_place(self.place)
-
-        inference_root_scope_vars = (
-            fleet_opt["fetch_var"] if "fetch_var" in fleet_opt else []
-        )
-        self._fleet_executor.init(
-            carrier_id,
-            program.desc,
-            scope,
-            place,
-            num_micro_batches,
-            tasks,
-            task_id_to_rank,
-            inference_root_scope_vars,
-            micro_scope_list,
-        )
-
-    def _run_using_fleet_executor(
-        self,
-        program=None,
-        feed=None,
-        feed_var_name="feed",
-        fetch_var_name="fetch",
-        fetch_list=None,
-        with_standalone_executor=False,
-        return_numpy=True,
-    ):
-        cache_key = _get_strong_program_cache_key(program, feed, fetch_list)
-        cached_program = self._get_program_cache(cache_key)
-        cached_scope = self._get_scope_cache(cache_key)
-        micro_cached_scopes = self._get_micro_scopes_cache(cache_key)
-        fleet_opt = program._pipeline_opt["fleet_opt"]
-        if cached_scope is None:
-            cached_scope = global_scope()
-            self._add_scope_cache(cache_key, cached_scope)
-        if micro_cached_scopes is None:
-            micro_cached_scopes = []
-            if fleet_opt.get("inference_generation"):
-                for _ in range(int(fleet_opt["num_micro_batches"])):
-                    micro_cached_scopes.append(cached_scope.new_scope())
-                self._add_micro_scopes_cache(cache_key, micro_cached_scopes)
-        if cached_program is None:
-            assert (
-                program._pipeline_opt
-            ), "program should have _pipeline_opt to start carrier"
-            real_feed = [] if feed is None else feed
-            real_program = program
-            if "section_program" in program._pipeline_opt:
-                real_program = program._pipeline_opt["section_program"]
-            cached_program = _add_feed_fetch_ops(
-                program=real_program,
-                feed=real_feed,
-                fetch_list=fetch_list,
-                feed_var_name=feed_var_name,
-                fetch_var_name=fetch_var_name,
-            )
-            main_block = cached_program.block(0)
-            for op in main_block.ops:
-                # set the op_role of fetch op to Optimize to avoid
-                # erase the fetched vars by gc for pipeline
-                if op.type == 'fetch':
-                    op._set_attr(
-                        'op_role',
-                        core.op_proto_and_checker_maker.OpRole.Optimize,
-                    )
-            self._add_program_cache(cache_key, cached_program)
-            fleet_opt = program._pipeline_opt["fleet_opt"]
-            if 'tasks' in fleet_opt:
-                # Insert feed/fetch op for cloned program in each task node,
-                # these ops has already been inserted into the origin program.
-                # To avoid every task nodes all have feed/fetch ops,
-                # only insert feed ops into the first task node,
-                # then insert fetch ops into the last task node.
-
-                # Insert feed ops
-                feed_task = fleet_opt['tasks'][0]
-                print("Inserting feed ops for task", feed_task.task_id())
-                feed_program = feed_task.get_program()
-                feed_program = self._add_feed_ops(
-                    program=feed_program,
-                    feed=real_feed,
-                    feed_var_name=feed_var_name,
-                )
-                feed_task.set_program(feed_program)
-
-                # Insert fetch ops
-                fetch_task = fleet_opt['tasks'][-1]
-                print("Inserting fetch ops for task", fetch_task.task_id())
-                fetch_program = fetch_task.get_program()
-                fetch_program = self._add_fetch_ops(
-                    program=fetch_program,
-                    fetch_list=fetch_list,
-                    fetch_var_name=fetch_var_name,
-                )
-                main_block = fetch_program.block(0)
-                for op in main_block.ops:
-                    # set the op_role of fetch op to Optimize to avoid
-                    # erase the fetched vars by gc for pipeline
-                    if op.type == 'fetch':
-                        op._set_attr(
-                            'op_role',
-                            core.op_proto_and_checker_maker.OpRole.Optimize,
-                        )
-                fetch_task.set_program(fetch_program)
-
-            micro_scope_list = []
-            if fleet_opt.get("inference_generation"):
-                for i in range(int(fleet_opt["num_micro_batches"])):
-                    micro_scope_list.append(cached_scope.new_scope())
-
-            self._prepare_fleet_executor_carrier(
-                cache_key,
-                program=cached_program,
-                scope=cached_scope,
-                fleet_opt=fleet_opt,
-                micro_scope_list=micro_cached_scopes,
-                with_standalone_executor=with_standalone_executor,
-            )
-
-        if feed:
-            # NOTE: don't have to traverse programs in task nodes,
-            # since they all sub program of cached program and
-            # cached program is also added feed fetch var
-            self._feed_data(cached_program, feed, feed_var_name, cached_scope)
-
-        from paddle.optimizer.lr import LRScheduler
-
-        if hasattr(program, 'lr_scheduler'):
-            lr_scheduler = program.lr_scheduler
-            assert isinstance(lr_scheduler, LRScheduler), "must be LRScheduler"
-            lr_value = lr_scheduler()
-            lr_var = program.global_block().vars[lr_scheduler._var_name]
-            data = np.array([lr_value]).astype(convert_dtype(lr_var.dtype))
-            tensor = core.get_variable_tensor(
-                cached_scope, lr_scheduler._var_name
-            )
-            tensor.set(data, self.place)
-
-        self._fleet_executor.run(cache_key)
-
-        if "fetch_var" in fleet_opt:
-            # If we speed up the generation in evaluation, we need to generate
-            # multiple queries at the same time. Each query will in separate scope in order
-            # not mix up. It indicate that final result will in multiple scopes and need to
-            # fetch each.
-            result_list = []
-            for scope in micro_cached_scopes:
-                scope_result_list = []
-                for varname in fleet_opt["fetch_var"]:
-                    tensor = None
-                    try:
-                        tensor = core.get_variable_tensor(scope, varname)
-                        if return_numpy:
-                            tensor = as_numpy(tensor)
-                    except:
-                        var = scope.find_var(varname)
-                        tensor = var.get_dense_tensor_array()
-                        if return_numpy:
-                            tensor = as_numpy(tensor)
-                        else:
-                            tensor = list(tensor)
-
-                    if tensor:
-                        scope_result_list.append(tensor)
-
-                if scope_result_list:
-                    result_list.append(scope_result_list)
-            return result_list
-
-        if fetch_list:
-            arr = cached_scope.find_var(fetch_var_name).get_fetch_list()
-            tensors = arr._move_to_list()
-            return as_numpy(tensors)
-        return None
 
     def _add_feed_ops(self, program, feed, feed_var_name):
         tmp_program = program.clone()
@@ -3084,9 +2808,9 @@ class Executor:
             global_block, fetch_list, fetch_var_name, fetch_op
         ):
             for i, var in enumerate(fetch_list):
-                assert isinstance(
-                    var, (Variable, str)
-                ), f"Wrong type for fetch_list[{i}]: {type(var)}"
+                assert isinstance(var, (Variable, str)), (
+                    f"Wrong type for fetch_list[{i}]: {type(var)}"
+                )
                 global_block.append_op(
                     type=fetch_op,
                     inputs={'X': [var]},
@@ -3181,7 +2905,7 @@ class Executor:
 
         The document of infer_from_dataset is almost the same as train_from_dataset,
         except that in distributed training, push gradients will be disabled in infer_from_dataset.
-        infer_from_dataset() can be used for evaluation in multi-threadvery easily.
+        infer_from_dataset() can be used for evaluation in multi-thread very easily.
 
         Args:
             program(Program|CompiledProgram): the program that needs to be run,
@@ -3205,8 +2929,9 @@ class Executor:
 
         Examples:
 
-            .. code-block:: python
+            .. code-block:: pycon
 
+                >>> # doctest: +SKIP("This does not supported in PIR mode")
                 >>> import paddle
 
                 >>> paddle.enable_static()
@@ -3218,11 +2943,13 @@ class Executor:
                 >>> dataset.set_use_var([x, y])
                 >>> dataset.set_thread(1)
                 >>> # you should set your own filelist, e.g. filelist = ["dataA.txt"]
-                >>> filelist = [] # type: ignore[var-annotated]
+                >>> filelist = []  # type: ignore[var-annotated]
                 >>> dataset.set_filelist(filelist)
                 >>> exe.run(paddle.static.default_startup_program())
-                >>> exe.infer_from_dataset(program=paddle.static.default_main_program(),
-                ...                         dataset=dataset)
+                >>> exe.infer_from_dataset(
+                ...     program=paddle.static.default_main_program(),
+                ...     dataset=dataset,
+                ... )
         """
         return self._run_from_dataset(
             program,
@@ -3327,12 +3054,14 @@ class Executor:
 
         Examples:
 
-            .. code-block:: python
+            .. code-block:: pycon
+
+                >>> # doctest: +SKIP("This does not supported in PIR mode")
 
                 >>> import paddle
 
                 >>> paddle.enable_static()
-                >>> place = paddle.CPUPlace() # you can set place = paddle.CUDAPlace(0) to use gpu
+                >>> place = paddle.CPUPlace()  # you can set place = paddle.CUDAPlace(0) to use gpu
                 >>> exe = paddle.static.Executor(place)
                 >>> x = paddle.static.data(name="x", shape=[None, 10, 10], dtype="int64")
                 >>> y = paddle.static.data(name="y", shape=[None, 1], dtype="int64", lod_level=1)
@@ -3340,11 +3069,13 @@ class Executor:
                 >>> dataset.set_use_var([x, y])
                 >>> dataset.set_thread(1)
                 >>> # you should set your own filelist, e.g. filelist = ["dataA.txt"]
-                >>> filelist = [] # type: ignore[var-annotated]
+                >>> filelist = []  # type: ignore[var-annotated]
                 >>> dataset.set_filelist(filelist)
                 >>> exe.run(paddle.static.default_startup_program())
-                >>> exe.train_from_dataset(program=paddle.static.default_main_program(),
-                ...                         dataset=dataset)
+                >>> exe.train_from_dataset(
+                ...     program=paddle.static.default_main_program(),
+                ...     dataset=dataset,
+                ... )
         """
         return self._run_from_dataset(
             program,

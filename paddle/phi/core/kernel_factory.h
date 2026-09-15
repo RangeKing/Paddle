@@ -70,7 +70,7 @@ class KernelKey {
   explicit KernelKey(const int& dtype, const Place& place)
       : backend_(TransToPhiBackend(place)),
         layout_(DataLayout::ALL_LAYOUT),
-        dtype_(phi::TransToPhiDataType(dtype)) {}
+        dtype_(TransToPhiDataType(dtype)) {}
 
   explicit KernelKey(const Place& place,
                      const DataLayout& layout,
@@ -88,8 +88,8 @@ class KernelKey {
   struct Hash {
     // Note: Now the number of bits we need does not exceed 32 bits, so there is
     // no need to use 64 bits. If needed in the future, it can be expanded,
-    // but now we don’t over-design.
-    TEST_API uint32_t operator()(const KernelKey& key) const;
+    // but now we don't over-design.
+    PADDLE_API uint32_t operator()(const KernelKey& key) const;
   };
 
   uint32_t hash_value() const { return Hash()(*this); }
@@ -313,7 +313,7 @@ struct KernelResult {
  *       if it still need other overload kernel, the op name can be
  *       `scale.***`.
  */
-class KernelFactory {
+class PADDLE_API KernelFactory {
  public:
   static KernelFactory& Instance();
 
@@ -363,9 +363,9 @@ inline std::ostream& operator<<(std::ostream& os, const KernelKey& kernel_key) {
   return os;
 }
 
-std::ostream& operator<<(std::ostream& os, AttributeType attr_type);
+PADDLE_API std::ostream& operator<<(std::ostream& os, AttributeType attr_type);
 
-std::ostream& operator<<(std::ostream& os, const Kernel& kernel);
+PADDLE_API std::ostream& operator<<(std::ostream& os, const Kernel& kernel);
 
 std::ostream& operator<<(std::ostream& os, KernelFactory& kernel_factory);
 

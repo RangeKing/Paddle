@@ -26,7 +26,7 @@ namespace phi {
 template <typename T, typename Context>
 void DropoutRawKernel(const Context& dev_ctx,
                       const DenseTensor& x,
-                      const paddle::optional<DenseTensor>& seed_tensor,
+                      const optional<DenseTensor>& seed_tensor,
                       const Scalar& p,
                       bool is_test,
                       const std::string& mode,
@@ -48,8 +48,8 @@ void DropoutRawKernel(const Context& dev_ctx,
   if (!is_test && mask) {
     int seed_data = 0;
     if (seed_tensor.get_ptr() != nullptr) {
-      if ((seed_tensor->place()).GetType() == phi::AllocationType::XPU) {
-        memory_utils::Copy(phi::CPUPlace(),
+      if ((seed_tensor->place()).GetType() == AllocationType::XPU) {
+        memory_utils::Copy(CPUPlace(),
                            &seed_data,
                            seed_tensor->place(),
                            seed_tensor->data<int>(),
@@ -67,7 +67,7 @@ void DropoutRawKernel(const Context& dev_ctx,
     auto* mask_data = mask->data<uint8_t>();
     xpu::ctx_guard RAII_GUARD(dev_ctx.x_context());
     auto dev_version =
-        phi::backends::xpu::get_xpu_version(dev_ctx.GetPlace().GetDeviceId());
+        backends::xpu::get_xpu_version(dev_ctx.GetPlace().GetDeviceId());
     // Special case when dropout_prob is 1.0
     if (dropout_prob == 1.0f) {
       int r = xpu::constant(dev_ctx.x_context(),
@@ -80,8 +80,8 @@ void DropoutRawKernel(const Context& dev_ctx,
       PADDLE_ENFORCE_XDNN_SUCCESS(r, "constant");
       return;
     }
-    if (dev_version == phi::backends::xpu::XPUVersion::XPU3) {
-      // int dropout_v3(Context* ctx, const T* input, T* res, uint8_t* mask,
+    if (dev_version == backends::xpu::XPUVersion::XPU3) {
+      // int dropout_v3(Context* xpu_ctx, const T* input, T* res, uint8_t* mask,
       // unsigned int seed, int64_t n, bool is_upscale, float dropout_prob);
       int r = xpu::dropout_v3(dev_ctx.x_context(),
                               reinterpret_cast<const XPUType*>(x_data),
@@ -95,8 +95,8 @@ void DropoutRawKernel(const Context& dev_ctx,
     } else {
       XPUType* mask_tmp_data =
           RAII_GUARD.alloc_l3_or_gm<XPUType>(mask->numel());
-      // int dropout(Context* ctx, const T* input, T* res, T* mask, unsigned int
-      // seed, int64_t n, bool is_upscale, float dropout_prob);
+      // int dropout(Context* xpu_ctx, const T* input, T* res, T* mask, unsigned
+      // int seed, int64_t n, bool is_upscale, float dropout_prob);
       int r = xpu::dropout(dev_ctx.x_context(),
                            reinterpret_cast<const XPUType*>(x_data),
                            reinterpret_cast<XPUType*>(y_data),
@@ -138,8 +138,8 @@ PD_REGISTER_KERNEL(dropout,
                    ALL_LAYOUT,
                    phi::DropoutRawKernel,
                    float,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {
+                   phi::float16,
+                   phi::bfloat16) {
   kernel->InputAt(1).SetBackend(phi::Backend::ALL_BACKEND);
   kernel->OutputAt(1).SetDataType(phi::DataType::UINT8);
 }

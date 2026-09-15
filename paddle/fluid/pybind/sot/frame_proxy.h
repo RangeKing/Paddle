@@ -18,7 +18,6 @@ extern "C" {
 #endif
 
 #include <Python.h>
-#include "paddle/fluid/pybind/sot/cpython_internals.h"
 #include "paddle/fluid/pybind/sot/macros.h"
 
 #if SOT_IS_SUPPORTED
@@ -51,13 +50,13 @@ typedef struct PyInterpreterFrameProxy {
 PyInterpreterFrameProxy *PyInterpreterFrameProxy_New(
     _PyInterpreterFrame *frame);
 PyMODINIT_FUNC PyInit__frame_proxy();
-
+typedef PyInterpreterFrameProxy FrameProxy;
 #else
 typedef PyFrameObject FrameObject;
+typedef PyFrameObject FrameProxy;
 #endif
 
 #endif
-
 #ifdef __cplusplus
 }
 #endif

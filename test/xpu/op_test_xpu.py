@@ -30,7 +30,7 @@ import paddle
 from paddle import base
 from paddle.base import core
 from paddle.base.backward import append_backward
-from paddle.base.framework import Program, convert_np_dtype_to_dtype_
+from paddle.base.framework import Program, convert_nptype_to_datatype_or_vartype
 
 
 class XPUOpTest(OpTest):
@@ -38,7 +38,7 @@ class XPUOpTest(OpTest):
     def setUpClass(cls):
         '''Fix random seeds to remove randomness from tests'''
         cls.use_xpu = True
-        cls.use_mkldnn = False
+        cls.use_onednn = False
         cls.epsilon_xpu2xpu = 0.00000001
         super().setUpClass()
 
@@ -292,8 +292,8 @@ class XPUOpTest(OpTest):
 
             # oneDNN numeric gradient should use CPU kernel
             use_onednn = False
-            if op_attrs.get("use_mkldnn"):
-                op_attrs["use_mkldnn"] = False
+            if op_attrs.get("use_onednn"):
+                op_attrs["use_onednn"] = False
                 use_onednn = True
 
             mean_grad_op_types = get_xpu_op_support_types('mean')
@@ -311,7 +311,7 @@ class XPUOpTest(OpTest):
             )
 
             if use_onednn:
-                op_attrs["use_mkldnn"] = True
+                op_attrs["use_onednn"] = True
 
             if no_grad_set is None:
                 no_grad_set = set()
@@ -357,7 +357,9 @@ class XPUOpTest(OpTest):
                     inputs={"X": cast_inputs},
                     outputs={"Out": cast_outputs},
                     attrs={
-                        "in_dtype": convert_np_dtype_to_dtype_(self.dtype),
+                        "in_dtype": convert_nptype_to_datatype_or_vartype(
+                            self.dtype
+                        ),
                         "out_dtype": core.VarDesc.VarType.FP32,
                     },
                 )
@@ -379,7 +381,9 @@ class XPUOpTest(OpTest):
                     outputs={"Out": recast_loss},
                     attrs={
                         "in_dtype": core.VarDesc.VarType.FP32,
-                        "out_dtype": convert_np_dtype_to_dtype_(self.dtype),
+                        "out_dtype": convert_nptype_to_datatype_or_vartype(
+                            self.dtype
+                        ),
                     },
                 )
                 recast_op.desc.infer_var_type(block.desc)

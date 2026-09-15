@@ -53,7 +53,7 @@ void ScaleKernel(const Context& dev_ctx,
       astream, {{DNNL_ARG_FROM, *src_memory_p}, {DNNL_ARG_TO, *dst_memory_p}});
   astream.wait();
 
-  out->set_mem_desc(dst_memory_p->get_desc());
+  phi::funcs::SetOneDNNMemDesc(out, dst_memory_p->get_desc());
 }
 
 }  // namespace phi
@@ -63,6 +63,6 @@ PD_REGISTER_KERNEL(scale,
                    ONEDNN,
                    phi::ScaleKernel,
                    float,
-                   phi::dtype::bfloat16,
+                   phi::bfloat16,
                    int8_t,
                    uint8_t) {}

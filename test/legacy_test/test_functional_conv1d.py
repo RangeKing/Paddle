@@ -16,6 +16,7 @@ import unittest
 from unittest import TestCase
 
 import numpy as np
+from op_test import get_places
 
 import paddle
 import paddle.base.dygraph as dg
@@ -70,16 +71,137 @@ class TestFunctionalConv1DErrorCase1(TestFunctionalConv1DError):
         self.data_format = "NCL"
 
 
-class TestFunctionalConv1DErrorCase2(TestFunctionalConv1DError):
+class TestFunctionalConv1D_CPU_FP16(TestCase):
     def setUp(self):
-        self.input = np.random.randn(0, 0, 0)
-        self.filter = np.random.randn(1, 0, 0)
+        self.padding = 0
+        self.stride = 1
+        self.dilation = 1
+        self.groups = 1
+        self.data_format = "NCL"
+
+    def test_cpu_fp16(self):
+        with dg.guard(paddle.CPUPlace()):
+            x = paddle.ones([1, 1, 1])
+            w = paddle.ones([1, 1, 1]).astype(paddle.float16)
+            b = paddle.ones([1]).astype(paddle.float16)
+            y = F.conv1d(
+                x,
+                w,
+                b,
+                padding=self.padding,
+                stride=self.stride,
+                dilation=self.dilation,
+                groups=self.groups,
+                data_format=self.data_format,
+            )
+            np.testing.assert_allclose(y.numpy(), [[[2]]])
+
+
+class TestFunctionalConv1D_ZeroSize(TestCase):
+    def init_data(self):
+        self.input = np.random.randn(0, 1, 2)
+        self.filter = np.random.randn(1, 1, 2)
+        self.np_out = np.zeros([0, 1, 1])
+
+    def setUp(self):
+        self.init_data()
         self.bias = None
         self.padding = 0
         self.stride = 1
         self.dilation = 1
         self.groups = 1
         self.data_format = "NCL"
+        self.places = get_places()
+
+    def test_dygraph(self):
+        for place in self.places:
+            with dg.guard(place):
+                input = paddle.to_tensor(self.input)
+                input.stop_gradient = False
+                filter = paddle.to_tensor(self.filter)
+                filter.stop_gradient = False
+                y = F.conv1d(
+                    input,
+                    filter,
+                    self.bias,
+                    padding=self.padding,
+                    stride=self.stride,
+                    dilation=self.dilation,
+                    groups=self.groups,
+                    data_format=self.data_format,
+                )
+                np.testing.assert_allclose(y.numpy(), self.np_out)
+                loss = y.sum()
+                loss.backward()
+                np.testing.assert_allclose(input.grad.shape, input.shape)
+                np.testing.assert_allclose(filter.grad, np.zeros(filter.shape))
+
+
+class TestFunctionalConv1D_ZeroSize2(TestFunctionalConv1D_ZeroSize):
+    def init_data(self):
+        self.input = np.random.randn(0, 0, 2)
+        self.filter = np.random.randn(1, 0, 2)
+        self.np_out = np.zeros([0, 0, 1])
+
+
+class TestFunctionalConv1D_ZeroKernelError(TestCase):
+    """kernel_size=0 should raise InvalidArgument, not crash with CUDA error."""
+
+    def _assert_raises(self, x_shape, w_shape, **kwargs):
+        places = get_places()
+        for place in places:
+            with dg.guard(place):
+                x = paddle.randn(x_shape)
+                w = paddle.to_tensor(
+                    np.random.randn(*w_shape).astype('float32')
+                )
+                with self.assertRaises(ValueError):
+                    F.conv1d(x, w, **kwargs)
+
+    def test_depthwise_zero_kernel(self):
+        # depthwise path (groups == in_channels), kernel_size=0
+        self._assert_raises(
+            [13, 64, 1007],
+            [64, 1, 0],
+            padding=3,
+            stride=1,
+            dilation=1,
+            groups=64,
+            data_format='NCL',
+        )
+
+    def test_depthwise_zero_kernel_small(self):
+        # smaller depthwise, kernel_size=0, NCL
+        self._assert_raises(
+            [2, 3, 4],
+            [6, 1, 0],
+            padding=0,
+            stride=2,
+            dilation=1,
+            groups=3,
+            data_format='NCL',
+        )
+
+    def test_depthwise_zero_kernel_nlc(self):
+        # NLC data format, kernel_size=0
+        self._assert_raises(
+            [13, 7, 32],
+            [32, 1, 0],
+            padding=1,
+            stride=1,
+            dilation=1,
+            groups=32,
+            data_format='NLC',
+        )
+
+    def test_depthwise_zero_kernel_float64(self):
+        places = get_places()
+        for place in places:
+            with dg.guard(place):
+                x = paddle.randn([2, 3, 4]).cast('float64')
+                w = paddle.to_tensor(np.random.randn(6, 1, 0).astype('float64'))
+                with self.assertRaises(ValueError):
+                    F.conv1d(x, w, padding=0, stride=2, groups=3)
 
 
 if __name__ == "__main__":

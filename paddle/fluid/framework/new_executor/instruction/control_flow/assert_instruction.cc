@@ -18,10 +18,12 @@
 #include "paddle/fluid/pir/dialect/operator/ir/control_flow_op.h"
 #include "paddle/phi/kernels/funcs/tensor_formatter.h"
 
+COMMON_DECLARE_bool(check_cuda_error);
+
 namespace paddle::framework {
 AssertInstruction::AssertInstruction(size_t id,
-                                     const phi::Place& place,
-                                     ::pir::Operation* op,
+                                     const Place& place,
+                                     pir::Operation* op,
                                      ValueExecutionInfo* value_exe_info)
     : InstructionBase(id, place),
       op_(op),
@@ -53,8 +55,12 @@ AssertInstruction::AssertInstruction(size_t id,
 }
 
 void AssertInstruction::Run() {
+  if (FLAGS_check_cuda_error) [[unlikely]] {
+    CUDAErrorCheck("AssertInstruction begin");
+  }
+
   DeviceContext().Wait();
-  const phi::DenseTensor& cond = cond_var_->Get<phi::DenseTensor>();
+  const DenseTensor& cond = cond_var_->Get<DenseTensor>();
 
   PADDLE_ENFORCE_EQ(
       cond.numel(),
@@ -69,19 +75,19 @@ void AssertInstruction::Run() {
     return;
   }
 
-  funcs::TensorFormatter formatter;
+  phi::funcs::TensorFormatter formatter;
   formatter.SetSummarize(
-      op_->attribute<::pir::Int64Attribute>("summarize").data());
+      op_->attribute<pir::Int64Attribute>("summarize").data());
 
   const std::vector<pir::Value>& inputs_data_val =
       op_->dyn_cast<paddle::dialect::AssertOp>()
           .data()
-          .defining_op<::pir::CombineOp>()
+          .defining_op<pir::CombineOp>()
           .inputs();
   for (pir::Value val : inputs_data_val) {
     const std::string& name = value_exe_info_->GetVarName(val);
-    const phi::DenseTensor& tensor =
-        value_exe_info_->GetVarByValue(val)->Get<phi::DenseTensor>();
+    const DenseTensor& tensor =
+        value_exe_info_->GetVarByValue(val)->Get<DenseTensor>();
     formatter.Print(tensor, name);
   }
   const std::string& error_msg = [&]() -> std::string {
@@ -98,6 +104,10 @@ void AssertInstruction::Run() {
       "true, but received false. %s",
       value_exe_info_->GetVarName(cond_var_),
       error_msg));
+
+  if (FLAGS_check_cuda_error) [[unlikely]] {
+    CUDAErrorCheck("AssertInstruction finish");
+  }
 }
 
 }  // namespace paddle::framework

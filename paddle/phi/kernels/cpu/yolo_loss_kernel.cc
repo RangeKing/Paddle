@@ -15,6 +15,7 @@
 #include "paddle/phi/kernels/yolo_loss_kernel.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <vector>
 
 #include "paddle/phi/backends/cpu/cpu_context.h"
@@ -56,8 +57,8 @@ static inline Box<T> GetYoloBox(const T* x,
                                 int an_idx,
                                 int grid_size,
                                 int input_size,
-                                int index,
-                                int stride,
+                                int64_t index,
+                                int64_t stride,
                                 float scale,
                                 float bias) {
   Box<T> b = {};
@@ -94,12 +95,12 @@ static void CalcBoxLocationLoss(T* loss,
                                 Box<T> gt,
                                 std::vector<int> anchors,
                                 int an_idx,
-                                int box_idx,
+                                int64_t box_idx,
                                 int gi,
                                 int gj,
                                 int grid_size,
                                 int input_size,
-                                int stride,
+                                int64_t stride,
                                 T score) {
   T tx = gt.x * grid_size - gi;
   T ty = gt.y * grid_size - gj;
@@ -116,10 +117,10 @@ static void CalcBoxLocationLoss(T* loss,
 template <typename T>
 static inline void CalcLabelLoss(T* loss,
                                  const T* input,
-                                 const int index,
+                                 const int64_t index,
                                  const int label,
                                  const int class_num,
-                                 const int stride,
+                                 const int64_t stride,
                                  const T pos,
                                  const T neg,
                                  T score) {
@@ -137,8 +138,8 @@ static inline void CalcObjnessLoss(T* loss,
                                    const int an_num,
                                    const int h,
                                    const int w,
-                                   const int stride,
-                                   const int an_stride) {
+                                   const int64_t stride,
+                                   const int64_t an_stride) {
   for (int i = 0; i < n; i++) {
     for (int j = 0; j < an_num; j++) {
       for (int k = 0; k < h; k++) {
@@ -182,7 +183,7 @@ void YoloLossKernel(const Context& dev_ctx,
                     const DenseTensor& x,
                     const DenseTensor& gt_box,
                     const DenseTensor& gt_label,
-                    const paddle::optional<DenseTensor>& gt_score,
+                    const optional<DenseTensor>& gt_score,
                     const std::vector<int>& anchors,
                     const std::vector<int>& anchor_mask,
                     int class_num,
@@ -206,8 +207,8 @@ void YoloLossKernel(const Context& dev_ctx,
   const int b = static_cast<int>(gt_box.dims()[1]);
   int input_size = downsample_ratio * h;
 
-  const int stride = h * w;
-  const int an_stride = (class_num + 5) * stride;
+  const int64_t stride = static_cast<int64_t>(h) * w;
+  const int64_t an_stride = static_cast<int64_t>(class_num + 5) * stride;
 
   T label_pos = 1.0;
   T label_neg = 0.0;
@@ -234,8 +235,7 @@ void YoloLossKernel(const Context& dev_ctx,
   if (!(gt_score.is_initialized())) {
     gtscore.Resize({n, b});
     dev_ctx.template Alloc<T>(&gtscore);
-    phi::funcs::SetConstant<Context, T>()(
-        dev_ctx, &gtscore, static_cast<T>(1.0));
+    funcs::SetConstant<Context, T>()(dev_ctx, &gtscore, static_cast<T>(1.0));
     gt_score_data = gtscore.data<T>();
   } else {
     gt_score_data = gt_score.get_ptr()->data<T>();
@@ -253,7 +253,7 @@ void YoloLossKernel(const Context& dev_ctx,
         for (int l = 0; l < w; l++) {
           // each predict box find a best match gt box, if overlap is bigger
           // then ignore_thresh, ignore the objectness loss.
-          int box_idx =
+          int64_t box_idx =
               GetEntryIndex(i, j, k * w + l, mask_num, an_stride, stride, 0);
           Box<T> pred = GetYoloBox(input_data,
                                    anchors,
@@ -281,7 +281,7 @@ void YoloLossKernel(const Context& dev_ctx,
           // If best IoU is bigger then ignore_thresh,
           // ignore the objectness loss.
           if (best_iou > ignore_thresh) {
-            int obj_idx = (i * mask_num + j) * stride + k * w + l;
+            int64_t obj_idx = (i * mask_num + j) * stride + k * w + l;
             obj_mask_data[obj_idx] = static_cast<T>(-1);
           }
           // all losses should be calculated if best IoU
@@ -323,7 +323,7 @@ void YoloLossKernel(const Context& dev_ctx,
       gt_match_mask_data[i * b + t] = mask_idx;
       if (mask_idx >= 0) {
         T score = gt_score_data[i * b + t];
-        int box_idx = GetEntryIndex(
+        int64_t box_idx = GetEntryIndex(
             i, mask_idx, gj * w + gi, mask_num, an_stride, stride, 0);
         CalcBoxLocationLoss<T>(loss_data + i,
                                input_data,
@@ -338,11 +338,11 @@ void YoloLossKernel(const Context& dev_ctx,
                                stride,
                                score);
 
-        int obj_idx = (i * mask_num + mask_idx) * stride + gj * w + gi;
+        int64_t obj_idx = (i * mask_num + mask_idx) * stride + gj * w + gi;
         obj_mask_data[obj_idx] = score;
 
         int label = gt_label_data[i * b + t];
-        int label_idx = GetEntryIndex(
+        int64_t label_idx = GetEntryIndex(
             i, mask_idx, gj * w + gi, mask_num, an_stride, stride, 5);
         CalcLabelLoss<T>(loss_data + i,
                          input_data,

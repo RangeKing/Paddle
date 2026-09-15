@@ -26,58 +26,58 @@ void CoalesceCooCPUKernel(const CPUContext& dev_ctx,
                           SparseCooTensor* out) {
   const DenseTensor& x_indices = x.indices();
   const DenseTensor& x_values = x.values();
-  DenseTensor out_indices = phi::EmptyLike<IntT>(dev_ctx, x_indices);
-  DenseTensor out_values = phi::EmptyLike<T>(dev_ctx, x_values);
+  DenseTensor out_indices = EmptyLike<IntT>(dev_ctx, x_indices);
+  DenseTensor out_values = EmptyLike<T>(dev_ctx, x_values);
 
   const int64_t sparse_dim = x.indices().dims()[0];
-  std::vector<IntT> sparse_offsets(sparse_dim), x_indexs(x.nnz());
-  phi::funcs::sparse::CalcOffsetsPerDim<IntT>(
+  std::vector<IntT> sparse_offsets(sparse_dim), x_nnz(x.nnz());
+  funcs::sparse::CalcOffsetsPerDim<IntT>(
       x.dims(), sparse_dim, sparse_offsets.data());
 
-  phi::funcs::sparse::FlattenIndices(x.indices().data<IntT>(),
-                                     sparse_offsets.data(),
-                                     x.nnz(),
-                                     sparse_dim,
-                                     0,
-                                     1,
-                                     x_indexs.data());
+  funcs::sparse::FlattenIndices(x.indices().data<IntT>(),
+                                sparse_offsets.data(),
+                                x.nnz(),
+                                sparse_dim,
+                                0,
+                                1,
+                                x_nnz.data());
 
   const T* x_values_ptr = x_values.data<T>();
   const int64_t stride =
       x.dims().size() == sparse_dim ? 1 : x.values().dims()[1];
 
-  std::map<IntT, std::vector<int64_t>> indices_to_index;
-  for (uint64_t i = 0; i < x_indexs.size(); i++) {
-    IntT index = x_indexs[i];
-    if (indices_to_index.find(index) == indices_to_index.end()) {
-      std::vector<int64_t> indexs;
-      indexs.push_back(static_cast<int>(i));
-      indices_to_index[index] = indexs;
+  std::map<IntT, std::vector<int64_t>> indices_to_nnz;
+  for (uint64_t i = 0; i < x_nnz.size(); i++) {
+    IntT index = x_nnz[i];
+    if (indices_to_nnz.find(index) == indices_to_nnz.end()) {
+      std::vector<int64_t> lost_indices;
+      lost_indices.push_back(static_cast<int>(i));
+      indices_to_nnz[index] = lost_indices;
     } else {
-      indices_to_index[index].push_back(i);
+      indices_to_nnz[index].push_back(i);
     }
   }
 
-  const int64_t out_nnz = indices_to_index.size();
+  const int64_t out_nnz = indices_to_nnz.size();
 
   out_indices.Resize({x_indices.dims()[0], out_nnz});
   if (out_values.dims().size() == 1) {
-    out_values.Resize(common::make_ddim({out_nnz}));
+    out_values.Resize({out_nnz});
   } else {
-    out_values.Resize(common::make_ddim({out_nnz, x_values.dims()[1]}));
+    out_values.Resize({out_nnz, x_values.dims()[1]});
   }
 
   IntT* out_indices_ptr = out_indices.data<IntT>();
   T* out_values_ptr = out_values.data<T>();
-  auto iter = indices_to_index.begin();
+  auto iter = indices_to_nnz.begin();
 
   Dim<DDim::kMaxRank> const_dims;
   for (int i = 0; i < x.dims().size(); i++) {
     const_dims[i] = x.dims()[i];
   }
 
-  for (int i = 0; iter != indices_to_index.end(); iter++, i++) {
-    phi::funcs::sparse::IndexToCoordinate(
+  for (int i = 0; iter != indices_to_nnz.end(); iter++, i++) {
+    funcs::sparse::IndexToCoordinate(
         iter->first, const_dims, out_nnz, sparse_dim, i, out_indices_ptr);
     memcpy(out_values_ptr + i * stride,
            x_values_ptr + iter->second[0] * stride,
@@ -111,12 +111,12 @@ PD_REGISTER_KERNEL(coalesce_coo,
                    phi::sparse::CoalesceCooKernel,
                    float,
                    double,
-                   phi::dtype::float16,
+                   phi::float16,
                    uint8_t,
                    int16_t,
                    int,
                    int64_t,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {
+                   phi::complex64,
+                   phi::complex128) {
   kernel->InputAt(0).SetDataLayout(phi::DataLayout::SPARSE_COO);
 }

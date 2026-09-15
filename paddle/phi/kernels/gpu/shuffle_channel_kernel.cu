@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "paddle/phi/kernels/gpu/shuffle_channel_kernel.h"
 #include "paddle/phi/backends/gpu/gpu_primitives.h"
 #include "paddle/phi/core/dense_tensor.h"
 #include "paddle/phi/core/kernel_registry.h"
@@ -35,7 +36,7 @@ void ShuffleChannelOpCUDAKernel(const Context& dev_ctx,
   int group_row = group;
   int group_column = channel / group_row;
   // count is the product of NCHW same as numel()
-  int count = num * group_column * group_row * sp_sz;
+  int64_t count = num * group_column * group_row * sp_sz;
 
   int blocks = NumBlocks(out->numel());
   int threads = kNumCUDAThreads;

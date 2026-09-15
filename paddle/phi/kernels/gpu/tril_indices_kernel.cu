@@ -15,7 +15,9 @@
 #include "paddle/phi/kernels/tril_indices_kernel.h"
 
 #include <algorithm>
+
 #include <tuple>
+#include "paddle/common/enforce.h"
 
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
@@ -24,10 +26,10 @@ namespace phi {
 
 template <typename T>
 __device__ inline int resolve_root_int(int b, int cX4, int x, int32_t sign) {
-  int bXb_cX4 = b * b - cX4;
+  int64_t bXb_cX4 = static_cast<int64_t>(b) * b - cX4;
   double sr = ::sqrt(static_cast<double>(bXb_cX4));
   T res = ::__double2ll_rd((-b + sign * sr) / 2);
-  if (bXb_cX4 != static_cast<int>(sr * sr)) {
+  if (bXb_cX4 != static_cast<int64_t>(sr * sr)) {
     int llsr = ::__double2ll_rd(sr);
     int diff = ::__double2ll_ru(
         ::sqrt(::fabs(static_cast<double>(bXb_cX4 - llsr * llsr))));
@@ -66,7 +68,9 @@ __global__ void tril_indices_kernel(T* out_data,
                                     int col,
                                     int trapezoid_size,
                                     int tril_size) {
-  int linear_index = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t linear_index =
+      static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x) +
+      static_cast<int64_t>(threadIdx.x);
 
   if (linear_index < tril_size) {
     T r, c;
@@ -96,7 +100,8 @@ void TrilIndicesKernel(const Context& dev_ctx,
                        DenseTensor* out) {
   T* out_data = dev_ctx.template Alloc<T>(out);
   auto out_dims = out->dims();
-  int tril_size = out_dims[1];
+  PADDLE_ENFORCE_LE_INT_MAX(out_dims[1], "tril_size");
+  int tril_size = static_cast<int>(out_dims[1]);
 
   if (tril_size > 0) {
     auto m_first_row = offset > 0

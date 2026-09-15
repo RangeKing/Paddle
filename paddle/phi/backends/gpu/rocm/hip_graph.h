@@ -152,7 +152,7 @@ class CUDAGraphNodeLauncher {
   //  With the callbacks defined and the CUDA function obtained, the kernel can
   //  be launched using the `KernelNodeLaunch` method.
   void KernelNodeLaunch(parameterSetter_t parameterSetter,
-                        gpuKernelCallback_t cudakernelCallback);
+                        gpuKernelCallback_t cudaKernelCallback);
 
   std::vector<cudaGraphExecuterSetter_t> GetParameterSettersForExecGraph(
       hipGraph_t graph);
@@ -175,19 +175,7 @@ class CUDAGraphNodeLauncher {
       parameterSetters;
 };
 
-#if defined(PADDLE_WITH_HIP)
 static void ThrowErrorIfNotSupportCUDAGraph() {}
-#else
-enum gpuStreamCaptureMode {
-  hipStreamCaptureModeGlobal = 0,
-  hipStreamCaptureModeThreadLocal = 1,
-  hipStreamCaptureModeRelaxed = 2
-};
-static void ThrowErrorIfNotSupportCUDAGraph() {
-  PADDLE_THROW(common::errors::Unimplemented(
-      "CUDA Graph is only supported when CUDA version >= 10.1"));
-}
-#endif
 
 using CUDAGraphID = unsigned long long;  // NOLINT
 
@@ -200,7 +188,8 @@ class CUDAGraph {
   // Since the constructor would throw error is CUDA_VERSION < 10010.
   // The non-static method of CUDAGraph need not check CUDA_VERSION
   // again.
-  CUDAGraph() {
+  explicit CUDAGraph(bool enable_replace = false)
+      : enable_replace_(enable_replace) {
     ThrowErrorIfNotSupportCUDAGraph();
     id_ = UniqueID();
   }
@@ -256,7 +245,8 @@ class CUDAGraph {
 
   static void BeginCapture(phi::GPUPlace place,
                            gpuStream_t stream,
-                           gpuStreamCaptureMode mode);
+                           gpuStreamCaptureMode mode,
+                           bool enable_replace = false);
   static std::unique_ptr<CUDAGraph> EndCapture();
 
   static void BeginSegmentCapture();
@@ -285,12 +275,8 @@ class CUDAGraph {
   static bool IsValidCapturing();
 
   static bool IsThreadLocalCapturing() {
-#if defined(PADDLE_WITH_HIP)
     return IsCapturing() &&
            capturing_graph_->capture_mode_ == hipStreamCaptureModeThreadLocal;
-#else
-    return false;
-#endif
   }
 
   static bool IsThisThreadCapturing() {
@@ -315,16 +301,15 @@ class CUDAGraph {
   static CUDAGraphID UniqueID();
 
  private:
-#if defined(PADDLE_WITH_HIP)
   std::vector<hipGraph_t> graphs_;
   std::vector<hipGraphExec_t> exec_graphs_;
   gpuStreamCaptureMode capture_mode_;
-#endif
   gpuStream_t stream_{nullptr};
   phi::GPUPlace place_;
   CUDAGraphID id_;
   int64_t pool_id_{kInvalidPoolID};
   bool is_reset_{false};
+  bool enable_replace_{false};
   std::mutex mtx_;
 
   std::vector<SetSeedFunc> set_seed_funcs_;
@@ -357,7 +342,6 @@ class CUDAGraph {
   static std::unique_ptr<CUDAGraph> capturing_graph_;
 };
 
-#if defined(PADDLE_WITH_HIP)
 class CUDAGraphCaptureModeGuard {
   DISABLE_COPY_AND_ASSIGN(CUDAGraphCaptureModeGuard);
 
@@ -382,15 +366,6 @@ class CUDAGraphCaptureModeGuard {
  private:
   gpuStreamCaptureMode old_mode_;
 };
-#else
-class CUDAGraphCaptureModeGuard {
-  DISABLE_COPY_AND_ASSIGN(CUDAGraphCaptureModeGuard);
-
- public:
-  explicit CUDAGraphCaptureModeGuard(
-      gpuStreamCaptureMode mode = hipStreamCaptureModeRelaxed) {}
-};
-#endif
 
 }  // namespace gpu
 }  // namespace backends

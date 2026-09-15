@@ -1,0 +1,34 @@
+name: 'Rerun Workflow'
+description: 'Re-run GitHub Actions workflow for a given Pull Request'
+inputs:
+  GITHUB_TOKEN:
+    description: 'GitHub token with repo scope'
+    required: true
+  OWNER:
+    description: 'Repository owner'
+    required: true
+  REPO:
+    description: 'Repository name'
+    required: true
+  PR_ID:
+    description: 'Pull Request ID'
+    required: false
+  HEAD_SHA:
+    description: 'Commit SHA to rerun workflow jobs for'
+    required: false
+  JOB_NAME:
+    description: 'Job name to rerun'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - run: bash ./.github/actions/rerun-workflow/rerun.sh
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.GITHUB_TOKEN }}
+        OWNER: ${{ inputs.OWNER }}
+        REPO: ${{ inputs.REPO }}
+        PR_ID: ${{ inputs.PR_ID }}
+        HEAD_SHA: ${{ inputs.HEAD_SHA }}
+        JOB_NAME: ${{ inputs.JOB_NAME }}

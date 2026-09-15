@@ -14,15 +14,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, TypeVar
-
-from typing_extensions import Concatenate
+from typing import TYPE_CHECKING, Any, Concatenate, TypeVar
 
 import paddle
 from paddle.base import core
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from paddle import Tensor
 
@@ -38,7 +36,7 @@ class PyLayerContext:
     ``PyLayerContext`` can assist the :ref:`api_paddle_autograd_PyLayer` in implementing certain functionalities.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.autograd import PyLayer
@@ -54,7 +52,7 @@ class PyLayerContext:
             ...     @staticmethod
             ...     def backward(ctx, dy):
             ...         # ctx is a object of PyLayerContext.
-            ...         y, = ctx.saved_tensor()
+            ...         (y,) = ctx.saved_tensor()
             ...         grad = dy * (1 - paddle.square(y))
             ...         return grad
     """
@@ -63,6 +61,74 @@ class PyLayerContext:
     not_inplace_tensors: tuple[Tensor, ...]
     non_differentiable: tuple[Tensor, ...]
     materialize_grads: bool
+    grad_in_dtype_consistent: bool
+
+    def set_grad_in_dtype_consistent(self, flag: bool) -> None:
+        """
+        Set whether to maintain gradient input dtype consistency between forward output and backward input.
+
+        Note:
+            This API should be called only inside `forward`.
+            By default, backward input gradients are automatically cast to match the dtype of forward outputs.
+            Set this to `False` to disable automatic casting and maintain original gradient dtypes in backward.
+
+        Args:
+            flag (bool): Whether to enable automatic dtype conversion in backward.
+                - `True`:  Cast backward input gradient to match forward output dtype (default behavior)
+                - `False`: Preserve original dtype of backward input gradient
+
+        Returns:
+            None
+
+        Examples:
+            .. code-block:: pycon
+
+                >>> import paddle
+                >>> from paddle.autograd import PyLayer
+                >>> paddle.seed(2025)
+                >>> class cus_tanh(PyLayer):
+                ...     @staticmethod
+                ...     def forward(ctx, x):
+                ...         y = paddle.tanh(x)
+                ...         # Pass tensors to backward.
+                ...         ctx.save_for_backward(y)
+                ...         # The gradient input in the backward process
+                ...         # will not be automatically cast to the dtype of the forward output.
+                ...         ctx.set_grad_in_dtype_consistent(False)
+                ...         return y
+                ...
+                ...     @staticmethod
+                ...     def backward(ctx, dy):
+                ...
+                ...         # Get the tensors passed by forward.
+                ...         (y,) = ctx.saved_tensor()
+                ...         grad = dy * (1 - paddle.square(y))
+                ...         return grad
+                >>> class cus_tanh_cast_grad(PyLayer):
+                ...     @staticmethod
+                ...     def forward(ctx, x):
+                ...         y = paddle.tanh(x)
+                ...         # Pass tensors to backward.
+                ...         ctx.save_for_backward(y)
+                ...         return y
+                ...
+                ...     @staticmethod
+                ...     def backward(ctx, dy):
+                ...         # Get the tensors passed by forward.
+                ...         (y,) = ctx.saved_tensor()
+                ...         grad = dy * (1 - paddle.square(y))
+                ...         # The gradient input in cus_tanh be cast to bfloat16 manually,
+                ...         # and cus_tanh will not cast the gradient to the dtype of the forward output.
+                ...         grad = paddle.cast(grad, paddle.float16)
+                ...         return grad
+                >>> x = paddle.randn([3, 3]).astype("float32")
+                >>> x.stop_gradient = False
+                >>> y = cus_tanh.apply(x)
+                >>> z = cus_tanh_cast_grad.apply(y)
+                >>> z.sum().backward()
+
+        """
+        self.grad_in_dtype_consistent = flag
 
     def save_for_backward(self, *tensors: Tensor) -> None:
         """
@@ -78,7 +144,7 @@ class PyLayerContext:
             None
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> from paddle.autograd import PyLayer
@@ -95,7 +161,7 @@ class PyLayerContext:
                 ...     @staticmethod
                 ...     def backward(ctx, dy):
                 ...         # Get the tensors passed by forward.
-                ...         y, = ctx.saved_tensor()
+                ...         (y,) = ctx.saved_tensor()
                 ...         grad = dy * (1 - paddle.square(y))
                 ...         return grad
 
@@ -111,7 +177,7 @@ class PyLayerContext:
             then return these tensors, otherwise return None.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> from paddle.autograd import PyLayer
@@ -128,11 +194,22 @@ class PyLayerContext:
                 ...     @staticmethod
                 ...     def backward(ctx, dy):
                 ...         # Get the tensors passed by forward.
-                ...         y, = ctx.saved_tensor()
+                ...         (y,) = ctx.saved_tensor()
                 ...         grad = dy * (1 - paddle.square(y))
                 ...         return grad
         """
         return self.container
+
+    @property
+    def saved_tensors(self):
+        """
+        Get the tensors stored by ``save_for_backward``. This attribute is an alias for the method ``saved_tensor()``.
+
+        Returns:
+            list of Tensors or None: If context contains tensors stored by `save_for_backward`,
+            then return these tensors, otherwise return None.
+        """
+        return self.saved_tensor()
 
     def mark_not_inplace(self, *args: Tensor) -> None:
         """
@@ -145,7 +222,7 @@ class PyLayerContext:
         Thereby preventing the auto grad information of the input Tensor from being overwritten.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
 
@@ -169,7 +246,7 @@ class PyLayerContext:
 
                 >>> for step in range(0, 2):
                 ...     a = x
-                ...     for j in range(0,2):
+                ...     for j in range(0, 2):
                 ...         a = attn_layers[j].apply(x)
                 ...     a.backward()
         """
@@ -188,7 +265,7 @@ class PyLayerContext:
         output.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> from paddle.autograd import PyLayer
@@ -227,7 +304,7 @@ class PyLayerContext:
         If False, undefined output grad tensors will be None.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> from paddle.autograd import PyLayer
@@ -236,7 +313,7 @@ class PyLayerContext:
                 >>> class Tanh(PyLayer):
                 ...     @staticmethod
                 ...     def forward(ctx, x):
-                ...         return x+x+x, x+x
+                ...         return x + x + x, x + x
                 ...
                 ...     @staticmethod
                 ...     def backward(ctx, grad, grad2):
@@ -247,11 +324,11 @@ class PyLayerContext:
                 ...     @staticmethod
                 ...     def forward(ctx, x):
                 ...         ctx.set_materialize_grads(False)
-                ...         return x+x+x, x+x
+                ...         return x + x + x, x + x
                 ...
                 ...     @staticmethod
                 ...     def backward(ctx, grad, grad2):
-                ...         assert grad2==None
+                ...         assert grad2 == None
                 ...         return grad
 
                 >>> x = paddle.ones([1], dtype="float64")
@@ -301,7 +378,7 @@ class PyLayer(core.eager.PyLayer, PyLayerContext, metaclass=PyLayerMeta):
     After building the custom operator, apply it by running the ``apply`` method.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.autograd import PyLayer
@@ -317,7 +394,7 @@ class PyLayer(core.eager.PyLayer, PyLayerContext, metaclass=PyLayerMeta):
             ...     @staticmethod
             ...     def backward(ctx, dy):
             ...         # Get the tensors passed by forward.
-            ...         y, = ctx.saved_tensor()
+            ...         (y,) = ctx.saved_tensor()
             ...         grad = dy * (1 - paddle.square(y))
             ...         return grad
 
@@ -350,7 +427,7 @@ class PyLayer(core.eager.PyLayer, PyLayerContext, metaclass=PyLayerMeta):
             tensors or other types : output of PyLayer.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> from paddle.autograd import PyLayer
@@ -366,7 +443,7 @@ class PyLayer(core.eager.PyLayer, PyLayerContext, metaclass=PyLayerMeta):
                 ...     @staticmethod
                 ...     def backward(ctx, dy):
                 ...         # Get the tensors passed by forward.
-                ...         y, = ctx.saved_tensor()
+                ...         (y,) = ctx.saved_tensor()
                 ...         grad = dy * (1 - paddle.square(y))
                 ...         return grad
         """
@@ -390,7 +467,7 @@ class PyLayer(core.eager.PyLayer, PyLayerContext, metaclass=PyLayerMeta):
             Tensor or list of Tensors: The gradient of forward's input tensor(s).
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import paddle
                 >>> from paddle.autograd import PyLayer
@@ -406,7 +483,7 @@ class PyLayer(core.eager.PyLayer, PyLayerContext, metaclass=PyLayerMeta):
                 ...     @staticmethod
                 ...     def backward(ctx, dy):
                 ...         # Get the tensors passed by forward.
-                ...         y, = ctx.saved_tensor()
+                ...         (y,) = ctx.saved_tensor()
                 ...         grad = dy * (1 - paddle.square(y))
                 ...         return grad
         """
@@ -417,7 +494,7 @@ class PyLayer(core.eager.PyLayer, PyLayerContext, metaclass=PyLayerMeta):
 
 
 def once_differentiable(
-    backward: Callable[Concatenate[PyLayerContext, ...], _RetT]
+    backward: Callable[Concatenate[PyLayerContext, ...], _RetT],
 ) -> Callable[Concatenate[PyLayerContext, ...], _RetT]:
     def wrapper(ctx: PyLayerContext, *args: Any) -> _RetT:
         with paddle.base.dygraph.no_grad():

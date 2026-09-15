@@ -14,12 +14,12 @@ limitations under the License. */
 
 #pragma once
 
-#ifdef PADDLE_WITH_XPU
 #include <map>
 #include <string>
 #include <unordered_map>
 
 #include "paddle/phi/common/bfloat16.h"
+#include "paddle/phi/common/complex.h"
 #include "paddle/phi/common/float16.h"
 #ifdef PADDLE_WITH_XPU_BKCL
 #include "xpu/bkcl.h"
@@ -30,14 +30,10 @@ limitations under the License. */
 #ifdef PADDLE_WITH_XPU_PLUGIN
 #include "xpu/plugin.h"
 #endif
-
+#ifdef PADDLE_WITH_XPU_FFT
+#include "fft/cuComplex.h"
+#endif
 namespace xpu = baidu::xpu::api;
-
-static std::map<int, std::string> XPUAPIErrorMsg = {
-    {xpu::Error_t::SUCCESS, "xpu api success"},
-    {xpu::Error_t::INVALID_PARAM, "xpu api invalid param"},
-    {xpu::Error_t::RUNTIME_ERROR, "xpu api runtime error"},
-    {xpu::Error_t::NO_ENOUGH_WORKSPACE, "xpu api no enough workspace"}};
 
 template <typename T>
 class XPUTypeTrait {
@@ -75,4 +71,60 @@ class XPUTypeToPhiType<bfloat16> {
   using Type = phi::dtype::bfloat16;
 };
 
+// XPUCopyTypeTrait is the same as XPUTypeTrait except for double, int16_t, and
+// uint8_t. Used for ops that simply copy data and do not need to calculate
+template <typename T>
+class XPUCopyTypeTrait {
+ public:
+  using Type = T;
+};
+
+template <>
+class XPUCopyTypeTrait<phi::dtype::float16> {
+ public:
+  using Type = float16;
+};
+
+template <>
+class XPUCopyTypeTrait<phi::dtype::bfloat16> {
+ public:
+  using Type = bfloat16;
+};
+
+template <>
+class XPUCopyTypeTrait<double> {
+ public:
+  using Type = int64_t;
+};
+
+template <>
+class XPUCopyTypeTrait<int16_t> {
+ public:
+  using Type = float16;
+};
+
+template <>
+class XPUCopyTypeTrait<uint8_t> {
+ public:
+  using Type = int8_t;
+};
+
+#ifdef PADDLE_WITH_XPU_FFT
+template <typename T>
+class XPUComplexTypeTrait {
+ public:
+  using Type = T;
+};
+
+template <>
+class XPUComplexTypeTrait<float> {
+ public:
+  using Type = cuFloatComplex;
+};
+
+template <>
+class XPUComplexTypeTrait<double> {
+ public:
+  using Type = cuDoubleComplex;
+};
 #endif

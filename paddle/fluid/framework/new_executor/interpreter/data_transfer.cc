@@ -24,13 +24,14 @@
 #ifdef PADDLE_WITH_DNNL
 #include "paddle/fluid/operators/ops_extra_info.h"
 #include "paddle/phi/backends/onednn/onednn_context.h"
+#include "paddle/phi/kernels/funcs/data_layout_transform.h"
 #endif
 
 namespace paddle::framework::interpreter {
 
 bool DataTransferHelper::apply(const phi::KernelKey& kernel_type_for_var,
                                const phi::KernelKey& expected_kernel_key,
-                               const phi::DenseTensor* tensor,
+                               const DenseTensor* tensor,
                                const std::string& var_name,
                                std::string* new_var_name,
                                std::vector<OpFuncNode>* op_func_nodes,
@@ -179,7 +180,7 @@ void DataTransferHelper::RunAndConstructOpFuncNode(
   new_op_func_node.dev_ctx_ = dev_ctx;
   new_op_func_node.operator_base_ = op;
 
-  const phi::Place& place = dev_ctx->GetPlace();
+  const Place& place = dev_ctx->GetPlace();
   if (phi::is_cpu_place(place)) {
     new_op_func_node.type_ = OpFuncType::kCpuSync;
   } else if (phi::is_gpu_place(place)) {
@@ -237,11 +238,10 @@ void DataTransferHelper::RunAndConstructOpFuncNode(
 // Var is initialized && var contains tensor && tensor is initialized
 bool IsTensorOfVarInitialized(Variable* var) {
   if (var->IsInitialized()) {
-    if (var->IsType<phi::DenseTensor>() || var->IsType<phi::SelectedRows>()) {
+    if (var->IsType<DenseTensor>() || var->IsType<phi::SelectedRows>()) {
       return GetDenseTensorOrSelectedRowsValueFromVar(*var)->IsInitialized();
     } else if (var->IsType<phi::TensorArray>()) {
-      return static_cast<const phi::DenseTensor*>(
-                 &(var->Get<phi::TensorArray>()[0]))
+      return static_cast<const DenseTensor*>(&(var->Get<phi::TensorArray>()[0]))
           ->IsInitialized();
     }
   }
@@ -258,14 +258,13 @@ std::shared_ptr<OperatorBase> TransferLayout(const std::string& var_name,
 #ifdef PADDLE_WITH_DNNL
 
   // NOTE(zhiqiu): hot fix, follow the same logic in DataCopy() in fetch_op.cc
-  if (in_layout == phi::DataLayout::ONEDNN &&
+  if (in_layout == DataLayout::ONEDNN &&
       var_name == framework::GradVarName("Filter") && is_fetch_v2) {
     VLOG(4) << "Match special case(Filter && fetch_v2) " << var_name;
-    out_layout = phi::DataLayout::kNCHW;
+    out_layout = DataLayout::kNCHW;
   }
 
-  if (in_layout == phi::DataLayout::ONEDNN &&
-      out_layout != phi::DataLayout::ONEDNN) {
+  if (in_layout == DataLayout::ONEDNN && out_layout != DataLayout::ONEDNN) {
     auto target_layout = phi::OneDNNContext::tls().get_cur_paddle_data_layout();
     VLOG(4) << "TransDataLayoutFromOneDNN: " << in_layout << "->"
             << target_layout;
@@ -357,6 +356,7 @@ std::shared_ptr<OperatorBase> TransferDtype(const std::string& var_name,
   attr_map["out_dtype"] = static_cast<int>(out_dtype);
   // NOTE(Aurelius84): In which case use_mkldnn = true?
   attr_map["use_mkldnn"] = false;
+  attr_map["use_onednn"] = false;
 
   // 3. Create cast op
   std::string op_type("cast");
@@ -375,8 +375,8 @@ std::shared_ptr<OperatorBase> TransferDtype(const std::string& var_name,
 
 std::shared_ptr<OperatorBase> TransferDevice(const std::string& var_name,
                                              std::string* new_var_name,
-                                             const phi::Place& src_place,
-                                             const phi::Place& dst_place,
+                                             const Place& src_place,
+                                             const Place& dst_place,
                                              VariableScope* var_scope,
                                              framework::Scope* local_scope) {
   // 1. Generate new_var_name and Initialize it
@@ -446,7 +446,7 @@ std::shared_ptr<OperatorBase> TransferDevice(const std::string& var_name,
 }
 
 void ApplyDataTransform(const OpKernelType& expected_kernel_key,
-                        const phi::Place& place,
+                        const Place& place,
                         VariableValueMap* ins_map_temp,
                         VariableValueMap* outs_map_temp,
                         VariableScope* var_scope,
@@ -476,7 +476,7 @@ void ApplyDataTransform(const OpKernelType& expected_kernel_key,
     }
   }
 
-  bool transfered = false;
+  bool transferred = false;
   DataTransferHelper data_transfer_helper(place, var_scope, local_scope);
   phi::Kernel* phi_kernel = op_func_node->phi_kernel_;
   auto has_infer_varkernel_fn =
@@ -506,15 +506,14 @@ void ApplyDataTransform(const OpKernelType& expected_kernel_key,
           const std::string var_name = argument_names[i];
           Variable* var = arguments->at(i);
 
-          const phi::DenseTensor* tensor_in = nullptr;
-          if (var->IsType<phi::DenseTensor>() ||
-              var->IsType<phi::SelectedRows>()) {
+          const DenseTensor* tensor_in = nullptr;
+          if (var->IsType<DenseTensor>() || var->IsType<phi::SelectedRows>()) {
             tensor_in = GetDenseTensorOrSelectedRowsValueFromVar(*var);
           } else if (var->IsType<phi::TensorArray>()) {
             if (var->Get<phi::TensorArray>().empty()) {
               continue;
             }
-            tensor_in = static_cast<const phi::DenseTensor*>(
+            tensor_in = static_cast<const DenseTensor*>(
                 &(var->Get<phi::TensorArray>()[0]));
           } else {
             continue;
@@ -529,15 +528,15 @@ void ApplyDataTransform(const OpKernelType& expected_kernel_key,
               // Var without buffer may be needed
               // for some situation like InferShape().
               // In this situation We cannot skip Var analysis, as
-              // MKL-DNN shape of Var may differ from kNHWC Var
+              // ONEDNN shape of Var may differ from NHWC Var
               // In such situation corresponding resized Var
               // has to be created and registered
               if ((tensor_in->layout() == DataLayout::ONEDNN) &&
-                  (var->IsType<phi::DenseTensor>() == true) &&
+                  (var->IsType<DenseTensor>() == true) &&
                   (expected_kernel_key.data_layout_ != DataLayout::ONEDNN)) {
                 VLOG(7) << "Created reshaped dummy input based on MKL-DNN "
-                           "phi::DenseTensor , "
-                           "but kNHWC layout"
+                           "DenseTensor , "
+                           "but NHWC layout"
                         << parameter_name << " in Operator " << op_base->Type();
                 auto op = TransferLayout(
                     var_name,
@@ -573,7 +572,7 @@ void ApplyDataTransform(const OpKernelType& expected_kernel_key,
               infer_varkernel_context.SetVarName(
                   const_cast<std::string*>(&parameter_name));
               infer_varkernel_context.SetDenseTensor(
-                  const_cast<phi::DenseTensor*>(tensor_in));
+                  const_cast<DenseTensor*>(tensor_in));
               kernel_key_for_var = phi_kernel->get_kerneltype_forvar_fn_(
                   &infer_varkernel_context);
             }
@@ -622,7 +621,7 @@ void ApplyDataTransform(const OpKernelType& expected_kernel_key,
           }
 
           if (is_transferred) {
-            transfered = true;
+            transferred = true;
             // update RuntimeContext.inputs and original op_func_node inputs
             op_func_node->input_index[parameter_name][i] =
                 var_scope->VarId(new_var_name);
@@ -733,7 +732,7 @@ void ApplyDataTransform(const OpKernelType& expected_kernel_key,
     }
   }
 
-  if (transfered) {
+  if (transferred) {
     // NOTE(zhiqiu): UPDATE the corresponding OperatorBase to make it consistent
     // with instruction.
     op_base->Inputs() = new_ins;
@@ -742,7 +741,7 @@ void ApplyDataTransform(const OpKernelType& expected_kernel_key,
 }
 
 void HandleComplexGradToRealGrad(const OpFuncNode& op_func_node,
-                                 const phi::Place& place,
+                                 const Place& place,
                                  const VariableNameMap& out_names,
                                  VariableValueMap* out_vars,
                                  VariableScope* var_scope,

@@ -15,6 +15,7 @@
 import unittest
 
 import numpy as np
+from op_test import get_device_place, is_custom_device
 
 import paddle
 import paddle.nn.functional as F
@@ -68,11 +69,7 @@ class TestPoissonNLLLossBasicCase(unittest.TestCase):
         self.dtype = dtype
         self.input_np = np.random.random(self.shape).astype(self.dtype)
         self.label_np = np.random.random(self.shape).astype(self.dtype)
-        self.place = (
-            paddle.CUDAPlace(0)
-            if core.is_compiled_with_cuda()
-            else paddle.CPUPlace()
-        )
+        self.place = get_device_place()
 
     def test_static_case(
         self,
@@ -161,7 +158,7 @@ class TestPoissonNLLLossBasicCase(unittest.TestCase):
                 log_input=log_input,
                 full=full,
                 epsilon=epsilon,
-                reduction="unsupport reduction",
+                reduction="unsupported reduction",
             )
         elif type == 'test_err_epsilon':
             self.assertRaises(
@@ -201,14 +198,14 @@ class TestPoissonNLLLossErrCase(TestPoissonNLLLossBasicCase):
 
 class TestPoissonNLLLossFloat16Case(TestPoissonNLLLossBasicCase):
     def test_api(self):
-        if core.is_compiled_with_cuda():
+        if core.is_compiled_with_cuda() or is_custom_device():
             self.test_static_case(dtype="float16")
             self.test_dynamic_case(dtype="float16")
 
 
 class TestPoissonNLLLossBfloat16Case(TestPoissonNLLLossBasicCase):
     def test_api(self):
-        if core.is_compiled_with_cuda():
+        if core.is_compiled_with_cuda() or is_custom_device():
             self.test_static_case(dtype="uint16")
             self.test_dynamic_case(dtype="uint16")
 
@@ -241,6 +238,147 @@ class TestPoissonNLLLossSumReductionCase(TestPoissonNLLLossBasicCase):
     def test_api(self):
         self.test_static_case(reduction="sum")
         self.test_dynamic_case(reduction="sum")
+
+
+class TestPoissonNLLLossCase_ZeroSize(unittest.TestCase):
+    def init_shape(self):
+        self.shape = [0, 2]
+
+    def setUp(self, dtype="float32"):
+        self.init_shape()
+        self.dtype = dtype
+        self.input_np = np.random.random(self.shape).astype(self.dtype)
+        self.label_np = np.random.random(self.shape).astype(self.dtype)
+        self.place = get_device_place()
+
+    def _test_dynamic_case_and_grad(
+        self,
+        dtype="float32",
+        log_input=True,
+        full=False,
+        epsilon=1e-8,
+        reduction="mean",
+    ):
+        self.setUp(dtype)
+        paddle.disable_static(self.place)
+
+        input_x = paddle.to_tensor(self.input_np)
+        input_x.stop_gradient = False
+        label = paddle.to_tensor(self.label_np)
+        out_ref = ref_poisson_nll_loss(
+            self.input_np,
+            self.label_np,
+            log_input=log_input,
+            full=full,
+            epsilon=epsilon,
+            reduction=reduction,
+        )
+        out1 = F.poisson_nll_loss(
+            input_x,
+            label,
+            log_input=log_input,
+            full=full,
+            epsilon=epsilon,
+            reduction=reduction,
+        )
+
+        np.allclose(out_ref, out1.numpy(), rtol=1e-5)
+
+        loss = paddle.sum(out1)
+        loss.backward()
+        np.testing.assert_allclose(input_x.grad.shape, input_x.shape)
+        paddle.enable_static()
+
+    def test_api(self):
+        self._test_dynamic_case_and_grad(reduction="sum")
+
+
+class TestPoissonNLLLossCase_ZeroSize2(TestPoissonNLLLossCase_ZeroSize):
+    def init_shape(self):
+        self.shape = [0, 0]
+
+
+class TestPoissonNLLLossAliasCase(unittest.TestCase):
+    def setUp(self):
+        self.shape = [10, 2]
+        self.input_np = np.random.random(self.shape).astype("float32")
+        self.label_np = np.random.random(self.shape).astype("float32")
+        self.place = get_device_place()
+
+    def test_alias_dynamic_case(self):
+        paddle.disable_static(self.place)
+        self.addCleanup(paddle.enable_static)
+
+        input_x = paddle.to_tensor(self.input_np)
+        label = paddle.to_tensor(self.label_np)
+        for reduction in ["mean", "none"]:
+            with self.subTest(reduction=reduction):
+                out_normal = F.poisson_nll_loss(
+                    input_x,
+                    label=label,
+                    log_input=False,
+                    epsilon=1e-6,
+                    reduction=reduction,
+                )
+                out_alias = F.poisson_nll_loss(
+                    input=input_x,
+                    target=label,
+                    log_input=False,
+                    eps=1e-6,
+                    reduction=reduction,
+                )
+                np.testing.assert_allclose(
+                    out_normal.numpy(), out_alias.numpy(), rtol=1e-5
+                )
+
+    def test_alias_static_case(self):
+        paddle.enable_static()
+        for reduction in ["mean", "none"]:
+            with self.subTest(reduction=reduction):
+                prog = paddle.static.Program()
+                startup_prog = paddle.static.Program()
+                with paddle.static.program_guard(prog, startup_prog):
+                    input = paddle.static.data("input", self.shape, "float32")
+                    label = paddle.static.data("label", self.shape, "float32")
+                    out_normal = F.poisson_nll_loss(
+                        input,
+                        label=label,
+                        log_input=False,
+                        epsilon=1e-6,
+                        reduction=reduction,
+                    )
+                    out_alias = F.poisson_nll_loss(
+                        input=input,
+                        target=label,
+                        log_input=False,
+                        eps=1e-6,
+                        reduction=reduction,
+                    )
+                exe = paddle.static.Executor(self.place)
+                exe.run(startup_prog)
+                res = exe.run(
+                    prog,
+                    feed={"input": self.input_np, "label": self.label_np},
+                    fetch_list=[out_normal, out_alias],
+                )
+                np.testing.assert_allclose(res[0], res[1], rtol=1e-5)
+
+    def test_alias_conflict_error(self):
+        paddle.disable_static(self.place)
+        self.addCleanup(paddle.enable_static)
+
+        input_x = paddle.to_tensor(self.input_np)
+        label = paddle.to_tensor(self.label_np)
+        with self.assertRaises((TypeError, ValueError)):
+            F.poisson_nll_loss(input_x, label=label, target=label)
+        with self.assertRaises((TypeError, ValueError)):
+            F.poisson_nll_loss(
+                input_x,
+                label,
+                log_input=False,
+                epsilon=1e-6,
+                eps=1e-6,
+            )
 
 
 if __name__ == "__main__":

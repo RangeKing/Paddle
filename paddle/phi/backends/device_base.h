@@ -16,10 +16,41 @@
 #include <vector>
 
 #include "paddle/phi/backends/c_comm_lib.h"
+#include "paddle/phi/backends/c_cuda_graph_lib.h"
 #include "paddle/phi/backends/event.h"
 #include "paddle/phi/backends/stream.h"
+#include "paddle/phi/common/place.h"
+#include "paddle/phi/core/allocator.h"
 
+struct C_CinnInterface;
 namespace phi {
+
+struct DeviceProp {
+  std::string name;
+  int deviceMajor = 0;
+  int deviceMinor = 0;
+  size_t totalGlobalMem = 0;
+  int multiProcessorCount = 0;
+  bool isMultiGpuBoard = false;
+  bool integrated = false;
+
+  DeviceProp() = default;
+
+  DeviceProp(const std::string& name_,
+             int deviceMajor_,
+             int deviceMinor_,
+             size_t totalGlobalMem_,
+             int multiProcessorCount_,
+             bool isMultiGpuBoard_,
+             bool integrated_)
+      : name(name_),
+        deviceMajor(deviceMajor_),
+        deviceMinor(deviceMinor_),
+        totalGlobalMem(totalGlobalMem_),
+        multiProcessorCount(multiProcessorCount_),
+        isMultiGpuBoard(isMultiGpuBoard_),
+        integrated(integrated_) {}
+};
 
 class TraceEventCollector;
 
@@ -33,12 +64,48 @@ class DeviceInterface {  // Driver / Runtime
 
   virtual ~DeviceInterface() {}
 
+  virtual C_CinnInterface* GetCinnInterface() { return nullptr; }
+
   // Info
-  virtual size_t GetComputeCapability();
+  virtual size_t GetComputeCapability(size_t dev_id);
 
-  virtual size_t GetRuntimeVersion();
+  virtual DeviceProp& GetDeviceProperties(size_t dev_id);
 
-  virtual size_t GetDriverVersion();
+  virtual size_t GetRuntimeVersion(size_t dev_id);
+
+  virtual size_t GetDriverVersion(size_t dev_id);
+
+  virtual size_t GetMultiProcessors(size_t dev_id);
+
+  virtual size_t GetMaxThreadsPerMultiProcessor(size_t dev_id);
+
+  virtual size_t GetMaxThreadsPerBlock(size_t dev_id);
+
+  virtual size_t GetMaxSharedMemPerBlock(size_t dev_id);
+
+  virtual size_t GetMaxBlocksPerMultiProcessor(size_t dev_id);
+
+  virtual size_t GetWarpSize(size_t dev_id);
+
+  virtual size_t GetMaxRegistersPerMultiProcessor(size_t dev_id);
+
+  virtual size_t GetPreferredVectorWidth(size_t dev_id);
+
+  virtual std::array<unsigned int, 3> GetMaxGridDimSize(size_t dev_id);
+
+  virtual std::array<unsigned int, 3> GetMaxBlockDimSize(size_t dev_id);
+
+  virtual bool IsFloat16Supported(size_t dev_id);
+
+  virtual bool IsBFloat16Supported(size_t dev_id);
+
+  virtual bool IsDnnAvailable(size_t dev_id);
+
+  virtual void* InitEigenDevice(const Place& place,
+                                stream::stream_t stream,
+                                phi::Allocator* allocator);
+
+  virtual void DestroyEigenDevice(size_t dev_id, void* eigen_device);
 
   // Platform
   //! Initialize
@@ -76,13 +143,13 @@ class DeviceInterface {  // Driver / Runtime
       const stream::Stream::Flag& flag = stream::Stream::Flag::kDefaultFlag);
 
   // ! Destroys an asynchronous stream.
-  virtual void DestroyStream(size_t dev_id, stream::Stream* stream);
+  virtual void DestroyStream(size_t dev_id, stream::stream_t stream);
 
   // ! Waits for stream tasks to complete.
-  virtual void SynchronizeStream(size_t dev_id, const stream::Stream* stream);
+  virtual void SynchronizeStream(size_t dev_id, stream::stream_t stream);
 
   // ! Queries an asynchronous stream for completion status.
-  virtual bool QueryStream(size_t dev_id, const stream::Stream* stream);
+  virtual bool QueryStream(size_t dev_id, stream::stream_t stream);
 
   // ! Add a callback to a compute stream.
   virtual void AddCallback(size_t dev_id,
@@ -185,7 +252,7 @@ class DeviceInterface {  // Driver / Runtime
                             phi::DataType data_type,
                             size_t root,
                             const ccl::CCLComm& ccl_comm,
-                            const stream::Stream& stream);
+                            const stream::stream_t& stream);
 
   virtual void CCLAllReduce(void* in_data,
                             void* out_data,
@@ -193,7 +260,7 @@ class DeviceInterface {  // Driver / Runtime
                             phi::DataType data_type,
                             ccl::CCLReduceOp reduce_op,
                             const ccl::CCLComm& ccl_comm,
-                            const stream::Stream& stream);
+                            const stream::stream_t& stream);
   virtual void CCLReduce(void* in_data,
                          void* out_data,
                          size_t num,
@@ -201,20 +268,20 @@ class DeviceInterface {  // Driver / Runtime
                          ccl::CCLReduceOp reduce_op,
                          size_t root_id,
                          const ccl::CCLComm& ccl_comm,
-                         const stream::Stream& stream);
+                         const stream::stream_t& stream);
   virtual void CCLAllGather(void* in_data,
                             void* out_data,
                             size_t num,
                             phi::DataType data_type,
                             const ccl::CCLComm& ccl_comm,
-                            const stream::Stream& stream);
+                            const stream::stream_t& stream);
   virtual void CCLReduceScatter(void* in_data,
                                 void* out_data,
                                 size_t num,
                                 phi::DataType data_type,
                                 ccl::CCLReduceOp op,
                                 const ccl::CCLComm& ccl_comm,
-                                const stream::Stream& stream);
+                                const stream::stream_t& stream);
   virtual void CCLGroupStart();
   virtual void CCLGroupEnd();
   virtual void CCLSend(void* sendbuf,
@@ -222,13 +289,13 @@ class DeviceInterface {  // Driver / Runtime
                        phi::DataType data_type,
                        size_t dst_rank,
                        const ccl::CCLComm& ccl_comm,
-                       const stream::Stream& stream);
+                       const stream::stream_t& stream);
   virtual void CCLRecv(void* recvbuf,
                        size_t num,
                        phi::DataType data_type,
                        size_t src_rank,
                        const ccl::CCLComm& ccl_comm,
-                       const stream::Stream& stream);
+                       const stream::stream_t& stream);
 
   virtual void CCLAllToAll(const void** send_buf,
                            const size_t* send_count,
@@ -239,10 +306,10 @@ class DeviceInterface {  // Driver / Runtime
                            size_t rank,
                            size_t nranks,
                            const ccl::CCLComm& comm,
-                           const stream::Stream& stream);
+                           const stream::stream_t& stream);
   // blas
   virtual void BlasAXPBY(size_t dev_id,
-                         const stream::Stream& stream,
+                         const stream::stream_t& stream,
                          phi::DataType dtype,
                          size_t numel,
                          float alpha,
@@ -269,6 +336,71 @@ class DeviceInterface {  // Driver / Runtime
   virtual void ProfilerCollectTraceData(phi::TraceEventCollector* collector,
                                         uint64_t start_ns,
                                         void* user_data);
+
+  virtual void InitBlasHandle(size_t dev_id,
+                              void** blas_handle,
+                              stream::stream_t stream);
+
+  virtual void BlasSetMathMode(size_t dev_id, void* blas_handle, int math_mode);
+
+  virtual void InitBlasLtHandle(size_t dev_id, void** blaslt_handle);
+
+  virtual void DestroyBlasHandle(size_t dev_id, void* blas_handle);
+
+  virtual void DestroyBlasLtHandle(size_t dev_id, void* blaslt_handle);
+
+  virtual void InitDnnHandle(size_t dev_id,
+                             void** dnn_handle,
+                             phi::stream::stream_t stream);
+
+  virtual void DestroyDnnHandle(size_t dev_id, void* dnn_handle);
+
+  // CudaGraph
+  virtual void CUDAStreamBeginCapture(size_t dev_id,
+                                      stream::stream_t stream,
+                                      graph::streamCaptureMode mode);
+
+  virtual void CudaStreamEndCapture(size_t dev_id,
+                                    stream::stream_t stream,
+                                    graph::CUDAGraph_t* pGraph);
+
+  virtual void CudaGraphLaunch(size_t dev_id,
+                               graph::CUDAGraphExec_t exec,
+                               stream::stream_t stream);
+
+  virtual void CudaGraphDestroy(graph::CUDAGraph_t graph);
+
+  virtual void CudaGraphExecDestroy(graph::CUDAGraphExec_t graphExec);
+
+  virtual void CudaGraphInstantiate(graph::CUDAGraphExec_t* pGraphExec,
+                                    graph::CUDAGraph_t* pGraph,
+                                    void** pErrorNode,
+                                    char* pLogBuffer,
+                                    size_t bufferSize);
+
+  virtual void CudaGraphGetNodes(graph::CUDAGraph_t graph,
+                                 graph::CUDAGraphNode_t* pNodes,
+                                 size_t* numNodes);
+
+  virtual void CudaStreamGetCaptureInfo(
+      size_t dev_id,
+      stream::stream_t stream,
+      graph::streamCaptureStatus* captureStatus_out,
+      unsigned long long* id_out = nullptr,  // NOLINT
+      graph::CUDAGraph_t* graph_out = nullptr,
+      graph::CUDAGraphNode_t* dependencies_out = nullptr,
+      void** edgeData_out = nullptr,
+      size_t* numDependencies_out = nullptr);
+
+  virtual void GetParameterSetterForExecGraph(graph::CUDAGraph_t graph,
+                                              graph::GraphHookManager* hook);
+
+  virtual void CudaGraphDebugDotPrint(graph::CUDAGraph_t graph,
+                                      const char* path,
+                                      unsigned flags);
+
+  virtual void CudaThreadExchangeStreamCaptureMode(
+      graph::streamCaptureMode* mode);
 
  private:
   const std::string type_;

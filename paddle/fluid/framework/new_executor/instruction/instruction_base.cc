@@ -33,8 +33,8 @@ static DDim GetDimsDebug(const Scope& scope,
     return DDim({-1});
   }
 
-  if (var->IsType<phi::DenseTensor>()) {
-    const phi::DenseTensor& tensor = var->Get<phi::DenseTensor>();
+  if (var->IsType<DenseTensor>()) {
+    const DenseTensor& tensor = var->Get<DenseTensor>();
     return tensor.dims();
   } else if (var->IsType<phi::SelectedRows>()) {
     if (get_actual_dim) {
@@ -61,15 +61,15 @@ static std::string GetDtype(const Scope& scope, const std::string& name) {
     return "";
   }
 
-  if (var->IsType<phi::DenseTensor>()) {
-    const phi::DenseTensor& tensor = var->Get<phi::DenseTensor>();
-    if (UNLIKELY(!tensor.IsInitialized())) {
+  if (var->IsType<DenseTensor>()) {
+    const DenseTensor& tensor = var->Get<DenseTensor>();
+    if (UNLIKELY(!tensor.has_allocation())) {
       return "";
     }
     return DataTypeToString(framework::TransToProtoVarType(tensor.dtype()));
   } else if (var->IsType<phi::SelectedRows>()) {
     auto tensor = var->Get<phi::SelectedRows>().value();
-    if (UNLIKELY(!tensor.IsInitialized())) {
+    if (UNLIKELY(!tensor.has_allocation())) {
       return "uninited";
     } else {
       return DataTypeToString(framework::TransToProtoVarType(tensor.dtype()));
@@ -86,21 +86,21 @@ static std::string GetPlace(const Scope& scope, const std::string& name) {
   if (var == nullptr) {
     return "";
   }
-  auto to_string = [](const phi::Place& p) {
+  auto to_string = [](const Place& p) {
     std::stringstream sstream;
     sstream << p;
     return sstream.str();
   };
 
-  if (var->IsType<phi::DenseTensor>()) {
-    const phi::DenseTensor& tensor = var->Get<phi::DenseTensor>();
-    if (UNLIKELY(!tensor.IsInitialized())) {
+  if (var->IsType<DenseTensor>()) {
+    const DenseTensor& tensor = var->Get<DenseTensor>();
+    if (UNLIKELY(!tensor.has_allocation())) {
       return "";
     }
     return to_string(tensor.place());
   } else if (var->IsType<phi::SelectedRows>()) {
     auto tensor = var->Get<phi::SelectedRows>().value();
-    if (UNLIKELY(!tensor.IsInitialized())) {
+    if (UNLIKELY(!tensor.has_allocation())) {
       return "uninited";
     } else {
       return to_string(tensor.place());
@@ -135,8 +135,8 @@ static LegacyLoD GetLoDDebug(const Scope& scope, const std::string& name) {
     return default_lod;
   }
 
-  if (var->IsType<phi::DenseTensor>()) {
-    const phi::DenseTensor& tensor = var->Get<phi::DenseTensor>();
+  if (var->IsType<DenseTensor>()) {
+    const DenseTensor& tensor = var->Get<DenseTensor>();
     return tensor.lod();
   } else {
     return default_lod;
@@ -149,30 +149,28 @@ static double GetDenseTensorEleSum(const Scope& scope,
   if (var == nullptr) {
     return std::numeric_limits<double>::quiet_NaN();
   }
-  if (var->IsType<phi::DenseTensor>() &&
-      var->Get<phi::DenseTensor>().initialized()) {
-    phi::DenseTensor cpu_tensor;
-    phi::CPUPlace place;
-    paddle::framework::TensorCopy(
-        var->Get<phi::DenseTensor>(), place, &cpu_tensor);
+  if (var->IsType<DenseTensor>() && var->Get<DenseTensor>().initialized()) {
+    DenseTensor cpu_tensor;
+    CPUPlace place;
+    paddle::framework::TensorCopy(var->Get<DenseTensor>(), place, &cpu_tensor);
     phi::DeviceContextPool& pool = phi::DeviceContextPool::Instance();
-    auto& dev_ctx = *pool.Get(var->Get<phi::DenseTensor>().place());
+    auto& dev_ctx = *pool.Get(var->Get<DenseTensor>().place());
     dev_ctx.Wait();
     double sum = 0.0;
     for (int64_t i = 0; i < cpu_tensor.numel(); i++) {
-      if (cpu_tensor.dtype() == phi::DataType::FLOAT32) {
+      if (cpu_tensor.dtype() == DataType::FLOAT32) {
         sum += static_cast<double>(cpu_tensor.data<float>()[i]);
-      } else if (cpu_tensor.dtype() == phi::DataType::FLOAT64) {
+      } else if (cpu_tensor.dtype() == DataType::FLOAT64) {
         sum += static_cast<double>(cpu_tensor.data<double>()[i]);
-      } else if (cpu_tensor.dtype() == phi::DataType::INT32) {
+      } else if (cpu_tensor.dtype() == DataType::INT32) {
         sum += static_cast<double>(cpu_tensor.data<int32_t>()[i]);
-      } else if (cpu_tensor.dtype() == phi::DataType::INT64) {
+      } else if (cpu_tensor.dtype() == DataType::INT64) {
         sum += static_cast<double>(cpu_tensor.data<int64_t>()[i]);
-      } else if (cpu_tensor.dtype() == phi::DataType::FLOAT16) {
+      } else if (cpu_tensor.dtype() == DataType::FLOAT16) {
         const phi::dtype::float16* data =
             cpu_tensor.data<phi::dtype::float16>();
         sum += static_cast<double>(data[0]);
-      } else if (cpu_tensor.dtype() == phi::DataType::BOOL) {
+      } else if (cpu_tensor.dtype() == DataType::BOOL) {
         sum += static_cast<double>(cpu_tensor.data<bool>()[i]);
       } else {
         return std::numeric_limits<double>::quiet_NaN();
@@ -183,7 +181,7 @@ static double GetDenseTensorEleSum(const Scope& scope,
   return std::numeric_limits<double>::quiet_NaN();
 }
 
-InstructionBase::InstructionBase(size_t id, const phi::Place& place)
+InstructionBase::InstructionBase(size_t id, const Place& place)
     : next_instrs_in_different_thread_(),
       next_instrs_in_same_thread_(),
       events_to_wait_info_(),
@@ -292,7 +290,7 @@ void InstructionBase::SetOutputs(
 }
 
 void InstructionBase::InitInputsOutputsIds(
-    ::pir::Operation* op, const ValueExecutionInfo& value_exec_info) {
+    pir::Operation* op, const ValueExecutionInfo& value_exec_info) {
   auto op_attributes = op->attributes();
   std::string op_name;
   if (op_attributes.count("op_name")) {
@@ -352,7 +350,7 @@ std::string InstructionBase::DebugStringEx(
   std::stringstream ss;
   ss << "Op(" << Name() << "), inputs:{";
 
-  const std::unordered_set<::pir::Value> no_need_buffer_vars = NoNeedBuffer();
+  const std::unordered_set<pir::Value> no_need_buffer_vars = NoNeedBuffer();
 
   for (auto it = Inputs().begin(); it != Inputs().end();) {
     auto& input = *it;

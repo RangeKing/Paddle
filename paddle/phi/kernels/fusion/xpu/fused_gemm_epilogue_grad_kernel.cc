@@ -14,7 +14,6 @@
 
 #include "glog/logging.h"
 #include "paddle/phi/backends/xpu/enforce_xpu.h"
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/core/scope_guard.h"
 #include "paddle/phi/kernels/xpu/xpu_api_wrapper.h"
@@ -25,18 +24,17 @@ namespace phi {
 namespace fusion {
 
 template <typename T, typename Context>
-void FusedGemmEpilogueXPUGradKernel(
-    const Context& dev_ctx,
-    const DenseTensor& x,
-    const DenseTensor& y,
-    const paddle::optional<DenseTensor>& reserve_space,
-    const DenseTensor& out_grad,
-    const bool trans_x,
-    const bool trans_y,
-    const std::string& activation_grad,
-    DenseTensor* x_grad,
-    DenseTensor* y_grad,
-    DenseTensor* bias_grad) {
+void FusedGemmEpilogueXPUGradKernel(const Context& dev_ctx,
+                                    const DenseTensor& x,
+                                    const DenseTensor& y,
+                                    const optional<DenseTensor>& reserve_space,
+                                    const DenseTensor& out_grad,
+                                    const bool trans_x,
+                                    const bool trans_y,
+                                    const std::string& activation_grad,
+                                    DenseTensor* x_grad,
+                                    DenseTensor* y_grad,
+                                    DenseTensor* bias_grad) {
   // (M * K) * (K * N)
   auto x_mat_dims =
       phi::flatten_to_2d(x.dims(), trans_x ? 1 : x.dims().size() - 1);
@@ -50,20 +48,20 @@ void FusedGemmEpilogueXPUGradKernel(
           << ", activation_grad=" << activation_grad
           << ", reserve_space=" << reserve_space.get_ptr();
 
-  phi::funcs::ComputeFusedGemmEpilogueBackwardXPU<T>(dev_ctx,
-                                                     &out_grad,
-                                                     &x,
-                                                     &y,
-                                                     reserve_space.get_ptr(),
-                                                     M,
-                                                     N,
-                                                     K,
-                                                     trans_x,
-                                                     trans_y,
-                                                     activation_grad,
-                                                     x_grad,
-                                                     y_grad,
-                                                     bias_grad);
+  funcs::ComputeFusedGemmEpilogueBackwardXPU<T>(dev_ctx,
+                                                &out_grad,
+                                                &x,
+                                                &y,
+                                                reserve_space.get_ptr(),
+                                                M,
+                                                N,
+                                                K,
+                                                trans_x,
+                                                trans_y,
+                                                activation_grad,
+                                                x_grad,
+                                                y_grad,
+                                                bias_grad);
 }
 
 }  // namespace fusion
@@ -74,4 +72,5 @@ PD_REGISTER_KERNEL(fused_gemm_epilogue_grad,
                    ALL_LAYOUT,
                    phi::fusion::FusedGemmEpilogueXPUGradKernel,
                    float,
-                   phi::dtype::float16) {}
+                   phi::bfloat16,
+                   phi::float16) {}

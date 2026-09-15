@@ -131,12 +131,17 @@ __global__ void FusedSoftmaxMaskVecKernel(T* dst,
   // gridDim/blockIdx = (DIV_UP(seq_len, warps_per_block), batch_size, head_num)
   // every block processes 4(warps_per_block) sequences
   // seq_id = seq_id * 4 + warp_id, eg.seq_len=128, 127=31*4+3
-  int seq_id = blockIdx.x * warps_per_block + threadIdx.y;
+  int64_t seq_id = static_cast<int64_t>(blockIdx.x) * warps_per_block +
+                   static_cast<int64_t>(threadIdx.y);
   if (seq_id >= seq_len) return;
 
   // ((bid*head_num + hid)*seq_len + seq_id) * seq_len
-  int offset =
-      ((blockIdx.y * gridDim.z + blockIdx.z) * seq_len + seq_id) * seq_len;
+  int64_t offset =
+      ((static_cast<int64_t>(blockIdx.y) * static_cast<int64_t>(gridDim.z) +
+        static_cast<int64_t>(blockIdx.z)) *
+           seq_len +
+       seq_id) *
+      seq_len;
   // (bid * seq_len + seq_id) * seq_len
   int mask_offset = (blockIdx.y * seq_len + seq_id) * seq_len;
   src += offset;
@@ -145,15 +150,15 @@ __global__ void FusedSoftmaxMaskVecKernel(T* dst,
 
   static_assert(ELEMENTS_PER_THREADS % VEC_SIZE == 0, "");
   constexpr int VEC_NUMS = ELEMENTS_PER_THREADS / VEC_SIZE;
-  using VecT = phi::AlignedVector<T, VEC_SIZE>;
+  using VecT = AlignedVector<T, VEC_SIZE>;
 
   VecT elements[VEC_NUMS];
   VecT tmp_mask;
   float max_val = -std::numeric_limits<float>::infinity();
 
   for (int i = 0; (i * warp_size + threadIdx.x) * VEC_SIZE < seq_len; ++i) {
-    phi::Load(src + (i * warp_size + threadIdx.x) * VEC_SIZE, &elements[i]);
-    phi::Load(mask + (i * warp_size + threadIdx.x) * VEC_SIZE, &tmp_mask);
+    Load(src + (i * warp_size + threadIdx.x) * VEC_SIZE, &elements[i]);
+    Load(mask + (i * warp_size + threadIdx.x) * VEC_SIZE, &tmp_mask);
 #pragma unroll
     for (int j = 0; j < VEC_SIZE; ++j) {
       // TODO(wangxi): vec add
@@ -181,7 +186,7 @@ __global__ void FusedSoftmaxMaskVecKernel(T* dst,
       float tmp = static_cast<float>(elements[i][j]) * mean_val;
       elements[i][j] = static_cast<T>(tmp);
     }
-    phi::Store(elements[i], dst + (i * warp_size + threadIdx.x) * VEC_SIZE);
+    Store(elements[i], dst + (i * warp_size + threadIdx.x) * VEC_SIZE);
   }
 }
 

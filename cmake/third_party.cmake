@@ -41,39 +41,6 @@ if(NOT WITH_SETUP_INSTALL)
       "Check submodules of paddle, and run 'git submodule sync --recursive && git submodule update --init --recursive'"
   )
 
-  execute_process(
-    COMMAND git submodule update --init third_party/openvino
-    WORKING_DIRECTORY ${PADDLE_SOURCE_DIR}
-    RESULT_VARIABLE result_var)
-  # List of modules to be deleted
-  set(delete_module
-      "thirdparty/zlib/zlib"
-      "thirdparty/gflags/gflags"
-      "thirdparty/gtest/gtest"
-      "thirdparty/ocl/icd_loader"
-      "thirdparty/ocl/cl_headers"
-      "thirdparty/ocl/clhpp_headers"
-      "thirdparty/onnx/onnx"
-      "src/bindings/python/thirdparty/pybind11"
-      "thirdparty/ittapi/ittapi"
-      "cmake/developer_package/ncc_naming_style/ncc"
-      "src/plugins/intel_gpu/thirdparty/onednn_gpu"
-      "thirdparty/open_model_zoo"
-      "thirdparty/json/nlohmann_json"
-      "thirdparty/flatbuffers/flatbuffers"
-      "thirdparty/snappy"
-      "thirdparty/level_zero/level-zero"
-      "src/plugins/intel_npu/thirdparty/level-zero-ext"
-      "src/plugins/intel_npu/thirdparty/yaml-cpp")
-  # Iterate over each module and perform actions
-  foreach(module IN LISTS delete_module)
-    # Remove the module from git cache
-    execute_process(
-      COMMAND git rm --cached ${module}
-      WORKING_DIRECTORY ${PADDLE_SOURCE_DIR}/third_party/openvino
-      RESULT_VARIABLE git_rm_result)
-  endforeach()
-
   # execute_process does not support sequential commands, so we execute echo command separately
   execute_process(
     COMMAND git submodule sync --recursive
@@ -83,10 +50,68 @@ if(NOT WITH_SETUP_INSTALL)
     message(FATAL_ERROR "Failed to sync submodule, please check your network !")
   endif()
 
-  execute_process(
-    COMMAND git submodule update --init --recursive
-    WORKING_DIRECTORY ${PADDLE_SOURCE_DIR}
-    RESULT_VARIABLE result_var)
+  if(WITH_OPENVINO)
+    execute_process(
+      COMMAND git submodule update --init --jobs=8 --depth=1
+              third_party/openvino
+      WORKING_DIRECTORY ${PADDLE_SOURCE_DIR}
+      RESULT_VARIABLE result_var)
+    # List of modules to be deleted
+    set(delete_module
+        "thirdparty/zlib/zlib"
+        "thirdparty/gflags/gflags"
+        "thirdparty/gtest/gtest"
+        "thirdparty/ocl/icd_loader"
+        "thirdparty/ocl/cl_headers"
+        "thirdparty/ocl/clhpp_headers"
+        "thirdparty/onnx/onnx"
+        "src/bindings/python/thirdparty/pybind11"
+        "thirdparty/ittapi/ittapi"
+        "cmake/developer_package/ncc_naming_style/ncc"
+        "src/plugins/intel_gpu/thirdparty/onednn_gpu"
+        "thirdparty/open_model_zoo"
+        "thirdparty/json/nlohmann_json"
+        "thirdparty/flatbuffers/flatbuffers"
+        "thirdparty/snappy"
+        "thirdparty/level_zero/level-zero"
+        "src/plugins/intel_npu/thirdparty/level-zero-ext"
+        "src/plugins/intel_npu/thirdparty/yaml-cpp")
+    # Iterate over each module and perform actions
+    foreach(module IN LISTS delete_module)
+      # Remove the module from git cache
+      execute_process(
+        COMMAND git rm --cached ${module}
+        WORKING_DIRECTORY ${PADDLE_SOURCE_DIR}/third_party/openvino
+        RESULT_VARIABLE git_rm_result)
+    endforeach()
+    execute_process(
+      COMMAND git submodule update --init --recursive --jobs=8
+      WORKING_DIRECTORY ${PADDLE_SOURCE_DIR}
+      RESULT_VARIABLE result_var)
+  else()
+    execute_process(
+      COMMAND git submodule status
+      WORKING_DIRECTORY ${PADDLE_SOURCE_DIR}
+      OUTPUT_VARIABLE submodule_list
+      RESULT_VARIABLE submodule_status_result)
+    if(NOT submodule_status_result EQUAL 0)
+      set(result_var ${submodule_status_result})
+    else()
+      string(REGEX MATCHALL "third_party/[^ )\n]+" submodule_paths
+                   "${submodule_list}")
+      set(submodule_update_paths)
+      foreach(submodule IN LISTS submodule_paths)
+        if(NOT submodule STREQUAL "third_party/openvino")
+          list(APPEND submodule_update_paths ${submodule})
+        endif()
+      endforeach()
+      execute_process(
+        COMMAND git submodule update --init --recursive --jobs=8
+                ${submodule_update_paths}
+        WORKING_DIRECTORY ${PADDLE_SOURCE_DIR}
+        RESULT_VARIABLE result_var)
+    endif()
+  endif()
   if(NOT result_var EQUAL 0)
     if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
       set(THIRD_PARTY_TAR_URL
@@ -278,23 +303,6 @@ if(WIN32 OR APPLE)
         CACHE STRING "Disable BOX_PS package in Windows and MacOS" FORCE)
   endif()
 
-  if(WITH_PSLIB)
-    message(WARNING "Windows or Mac is not supported with PSLIB in Paddle yet."
-                    "Force WITH_PSLIB=OFF")
-    set(WITH_PSLIB
-        OFF
-        CACHE STRING "Disable PSLIB package in Windows and MacOS" FORCE)
-  endif()
-
-  if(WITH_ARM_BRPC)
-    message(
-      WARNING "Windows or Mac is not supported with ARM_BRPC in Paddle yet."
-              "Force WITH_ARM_BRPC=OFF")
-    set(WITH_ARM_BRPC
-        OFF
-        CACHE STRING "Disable ARM_BRPC package in Windows and MacOS" FORCE)
-  endif()
-
   if(WITH_LIBMCT)
     message(WARNING "Windows or Mac is not supported with LIBMCT in Paddle yet."
                     "Force WITH_LIBMCT=OFF")
@@ -349,7 +357,6 @@ include(external/glog) # download, build, install glog
 
 ########################### include third_party according to flags ###############################
 if(WITH_GPU
-   AND NOT WITH_ARM
    AND NOT WIN32
    AND NOT APPLE)
   if(${CMAKE_CUDA_COMPILER_VERSION} GREATER_EQUAL 11.0)
@@ -372,7 +379,6 @@ if(WITH_CINN)
          DESTINATION ${CMAKE_BINARY_DIR}/cmake/cinn)
   endif()
   include(${CMAKE_BINARY_DIR}/cmake/cinn/config.cmake)
-  include(cmake/cinn/external/absl.cmake)
   include(cmake/cinn/external/llvm.cmake)
   include(cmake/cinn/external/isl.cmake)
   include(cmake/cinn/external/ginac.cmake)
@@ -401,6 +407,10 @@ list(
   extern_utf8proc)
 include(external/lapack) # download, build, install lapack
 
+if(WITH_MAGMA)
+  include(external/magma) # download, build, install magma
+endif()
+
 list(APPEND third_party_deps extern_eigen3 extern_gflags extern_glog
      extern_xxhash)
 list(
@@ -413,11 +423,17 @@ list(
   extern_threadpool
   extern_lapack)
 
+if(WITH_MAGMA)
+  list(APPEND third_party_deps extern_magma)
+endif()
+
 include(cblas) # find first, then download, build, install openblas
 
 message(STATUS "CBLAS_PROVIDER: ${CBLAS_PROVIDER}")
 if(${CBLAS_PROVIDER} STREQUAL MKLML)
   list(APPEND third_party_deps extern_mklml)
+elseif(${CBLAS_PROVIDER} STREQUAL HML)
+  list(APPEND third_party_deps extern_hml)
 elseif(${CBLAS_PROVIDER} STREQUAL EXTERN_OPENBLAS)
   list(APPEND third_party_deps extern_openblas)
 endif()
@@ -453,6 +469,11 @@ if(WITH_TESTING OR WITH_DISTRIBUTE)
   list(APPEND third_party_deps extern_gtest)
 endif()
 
+include(external/libuv)
+if(TARGET extern_libuv)
+  list(APPEND third_party_deps extern_libuv)
+endif()
+
 if(WITH_ONNXRUNTIME)
   include(external/onnxruntime
   )# download, build, install onnxruntime、paddle2onnx
@@ -461,7 +482,9 @@ if(WITH_ONNXRUNTIME)
 endif()
 
 if(WITH_GPU)
-  if(${CMAKE_CUDA_COMPILER_VERSION} LESS 11.0)
+  if(${CMAKE_CUDA_COMPILER_VERSION} LESS 11.0
+     OR (${CMAKE_CUDA_COMPILER_VERSION} GREATER_EQUAL 11.7
+         AND ${CMAKE_CUDA_COMPILER_VERSION} LESS 11.9))
     include(external/cub) # download cub
     list(APPEND third_party_deps extern_cub)
   elseif(${CMAKE_CUDA_COMPILER_VERSION} GREATER_EQUAL 12.0 AND WITH_SHARED_PHI)
@@ -488,8 +511,7 @@ if(WITH_GPU)
       POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_directory ${SRC_DIR} ${DST_DIR1}
       COMMAND ${CMAKE_COMMAND} -E copy_directory ${SRC_DIR} ${DST_DIR2}
-      COMMENT "copy_directory from ${SRC_DIR} to ${DST_DIR1}"
-      COMMENT "copy_directory from ${SRC_DIR} to ${DST_DIR2}")
+      COMMENT "Copy directory from ${SRC_DIR} to ${DST_DIR1} and ${DST_DIR2}")
   endif()
 endif()
 
@@ -498,26 +520,11 @@ if(WITH_XPU)
   list(APPEND third_party_deps extern_xpu)
 endif()
 
-if(WITH_PSLIB)
-  include(external/pslib) # download, build, install pslib
-  list(APPEND third_party_deps extern_pslib)
-  if(WITH_LIBMCT)
-    include(external/libmct) # download, build, install libmct
-    list(APPEND third_party_deps extern_libxsmm)
-  endif()
-  if(WITH_PSLIB_BRPC)
-    include(external/pslib_brpc) # download, build, install pslib_brpc
-    list(APPEND third_party_deps extern_pslib_brpc)
-  else()
-    include(external/snappy)
-    list(APPEND third_party_deps extern_snappy)
-
-    include(external/leveldb)
-    list(APPEND third_party_deps extern_leveldb)
-    if(NOT WITH_HETERPS)
-      include(external/brpc)
-      list(APPEND third_party_deps extern_brpc)
-    endif()
+if(WITH_FLAGCX)
+  include(external/flagcx)
+  list(APPEND third_party_deps flagcx)
+  if(WITH_XPU)
+    add_dependencies(flagcx_ep extern_xpu)
   endif()
 endif()
 
@@ -529,60 +536,6 @@ endif()
 if(WITH_BOX_PS)
   include(external/box_ps)
   list(APPEND third_party_deps extern_box_ps)
-endif()
-
-if(WITH_PSCORE)
-  include(external/snappy)
-  list(APPEND third_party_deps extern_snappy)
-
-  include(external/leveldb)
-  list(APPEND third_party_deps extern_leveldb)
-
-  if(WITH_ARM_BRPC)
-    include(external/arm_brpc)
-    list(APPEND third_party_deps extern_arm_brpc)
-  else()
-    include(external/brpc)
-    list(APPEND third_party_deps extern_brpc)
-  endif()
-
-  include(external/libmct) # download, build, install libmct
-  list(APPEND third_party_deps extern_libmct)
-
-  include(external/rocksdb) # download, build, install rocksdb
-  list(APPEND third_party_deps extern_rocksdb)
-
-  include(external/jemalloc) # download, build, install jemalloc
-  list(APPEND third_party_deps extern_jemalloc)
-
-  include(external/afs_api)
-  list(APPEND third_party_deps extern_afs_api)
-endif()
-
-if(WITH_RPC
-   AND NOT WITH_PSCORE
-   AND NOT WITH_PSLIB)
-  include(external/snappy)
-  list(APPEND third_party_deps extern_snappy)
-
-  include(external/leveldb)
-  list(APPEND third_party_deps extern_leveldb)
-
-  include(external/brpc)
-  list(APPEND third_party_deps extern_brpc)
-endif()
-
-if(WITH_DISTRIBUTE
-   AND NOT WITH_PSLIB
-   AND NOT WITH_PSCORE
-   AND NOT WITH_RPC)
-  include(external/snappy)
-  list(APPEND third_party_deps extern_snappy)
-
-  include(external/leveldb)
-  list(APPEND third_party_deps extern_leveldb)
-  include(external/brpc)
-  list(APPEND third_party_deps extern_brpc)
 endif()
 
 if(WITH_XBYAK)
@@ -629,6 +582,25 @@ if(WITH_CUSPARSELT)
   list(APPEND third_party_deps extern_cusparselt)
 endif()
 
+string(FIND "${CUDA_ARCH_BIN}" "90" ARCH_BIN_CONTAINS_90)
+if(NOT WITH_GPU
+   OR NOT WITH_DISTRIBUTE
+   OR (ARCH_BIN_CONTAINS_90 EQUAL -1))
+  set(WITH_NVSHMEM OFF)
+endif()
+if(WITH_SLEEF
+   AND NOT WITH_ROCM
+   AND NOT WIN32)
+  include(cmake/sleef.cmake)
+  if(TARGET extern_sleef)
+    list(APPEND third_party_deps extern_sleef)
+  endif()
+endif()
+if(WITH_NVSHMEM)
+  include(external/nvshmem)
+  list(APPEND third_party_deps extern_nvshmem)
+endif()
+
 if(WITH_ROCM)
   include(external/flashattn)
   list(APPEND third_party_deps extern_flashattn)
@@ -636,12 +608,12 @@ if(WITH_ROCM)
 endif()
 
 if(WITH_GPU
-   AND NOT WITH_ARM
    AND NOT WIN32
    AND NOT APPLE)
-  if(${CMAKE_CUDA_COMPILER_VERSION} GREATER_EQUAL 12.3)
+  if(${CMAKE_CUDA_COMPILER_VERSION} GREATER_EQUAL 12.3
+     AND ${CMAKE_CUDA_COMPILER_VERSION} LESS_EQUAL 13.0)
     foreach(arch ${NVCC_ARCH_BIN})
-      if(${arch} GREATER_EQUAL 90)
+      if(${arch} EQUAL 90)
         set(WITH_FLASHATTN_V3 ON)
         break()
       endif()

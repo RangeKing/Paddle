@@ -26,8 +26,8 @@ namespace phi {
 template <typename T>
 void set_zero_kernel(const int64_t N,
                      const int64_t** indices,
-                     const phi::DDim& stride,
-                     const phi::DDim& shape,
+                     const DDim& stride,
+                     const DDim& shape,
                      T* out) {
 #ifdef PADDLE_WITH_MKLML
 #pragma omp parallel for
@@ -51,8 +51,8 @@ template <typename T>
 void index_put_grad_kernel(const int64_t N,
                            const T* out_grad,
                            const int64_t** indices,
-                           const phi::DDim& stride,
-                           const phi::DDim& shape,
+                           const DDim& stride,
+                           const DDim& shape,
                            T* value_grad) {
 #ifdef PADDLE_WITH_MKLML
 #pragma omp parallel for
@@ -85,7 +85,7 @@ void LaunchIndexPutGradKernel(const Context& dev_ctx,
   }
 
   if (x_grad) {
-    phi::Copy(dev_ctx, out_grad, dev_ctx.GetPlace(), false, x_grad);
+    Copy(dev_ctx, out_grad, dev_ctx.GetPlace(), false, x_grad);
     if (!accumulate) {
       T* x_grad_data = x_grad->data<T>();
 
@@ -150,9 +150,8 @@ void LaunchIndexPutGradKernel(const Context& dev_ctx,
                                out_grad_dims,
                                tmp_value_grad_data);
 
-      std::vector<int64_t> after_dims =
-          common::vectorize(tmp_value_grad.dims());
-      std::vector<int64_t> before_dims = common::vectorize(value_grad->dims());
+      std::vector<int64_t> after_dims = vectorize(tmp_value_grad.dims());
+      std::vector<int64_t> before_dims = vectorize(value_grad->dims());
       std::vector<int64_t> compress_dims;
       std::vector<int64_t> dims_without_1;
 
@@ -160,7 +159,7 @@ void LaunchIndexPutGradKernel(const Context& dev_ctx,
           &after_dims, &before_dims, &compress_dims, &dims_without_1);
 
       auto pre_dims = value_grad->dims();
-      value_grad->Resize(common::make_ddim(dims_without_1));
+      value_grad->Resize(dims_without_1);
       IntArray v_axis(compress_dims);
       SumKernel<T>(dev_ctx,
                    tmp_value_grad,
@@ -182,6 +181,14 @@ void IndexPutGradKernel(const Context& dev_ctx,
                         bool accumulate,
                         DenseTensor* x_grad,
                         DenseTensor* value_grad) {
+  if (out_grad.numel() == 0) {
+    dev_ctx.template Alloc<T>(x_grad);
+    // Fill value_grad with 0.
+    if (value_grad) {
+      Full<T, Context>(dev_ctx, value_grad->dims(), 0, value_grad);
+    }
+    return;
+  }
   PADDLE_ENFORCE_EQ(
       x.dtype(),
       value.dtype(),
@@ -189,32 +196,28 @@ void IndexPutGradKernel(const Context& dev_ctx,
           "The data type of tensor value must be same to the data type "
           "of tensor x."));
   std::vector<DenseTensor> tmp_args;
-  std::vector<const phi::DenseTensor*> int_indices_v =
+  std::vector<const DenseTensor*> int_indices_v =
       funcs::DealWithBoolIndices<T, Context>(dev_ctx, indices, &tmp_args);
   if (int_indices_v.empty()) {
     if (x_grad) {
-      phi::Copy(dev_ctx, out_grad, dev_ctx.GetPlace(), false, x_grad);
+      Copy(dev_ctx, out_grad, dev_ctx.GetPlace(), false, x_grad);
     }
     if (value_grad) {
-      FullKernel<T, Context>(dev_ctx,
-                             common::vectorize(value_grad->dims()),
-                             0.0f,
-                             value_grad->dtype(),
-                             value_grad);
+      Full<T, Context>(dev_ctx, value_grad->dims(), 0.0f, value_grad);
     }
     return;
   }
   auto bd_dim = funcs::BroadCastTensorsDims(int_indices_v);
 
-  std::vector<int64_t> res_dim_v(common::vectorize(bd_dim));
-  std::vector<const phi::DenseTensor*> res_indices_v(x.dims().size(), nullptr);
+  std::vector<int64_t> res_dim_v(vectorize(bd_dim));
+  std::vector<const DenseTensor*> res_indices_v(x.dims().size(), nullptr);
   std::vector<DenseTensor> tmp_res_indices_v;
   std::vector<DenseTensor> range_tensor_v;
 
   for (int i = static_cast<int>(int_indices_v.size()); i < x.dims().size();
        ++i) {
     range_tensor_v.emplace_back(funcs::GetRangeTensor<int64_t, Context>(
-        dev_ctx, x.dims()[i], phi::DataType::INT64));
+        dev_ctx, x.dims()[i], DataType::INT64));
   }
 
   funcs::DealWithIndices<T, Context>(dev_ctx,
@@ -243,7 +246,7 @@ PD_REGISTER_KERNEL(index_put_grad,
                    int16_t,
                    uint8_t,
                    int8_t,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::complex64,
+                   phi::complex128) {}

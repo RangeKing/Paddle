@@ -17,26 +17,26 @@
 namespace phi {
 namespace math {
 template <typename T>
-class Unpool2dMaxFunctor<phi::CPUContext, T> {
+class Unpool2dMaxFunctor<CPUContext, T> {
  public:
-  void operator()(const phi::CPUContext& context,
-                  const phi::DenseTensor& input,
-                  const phi::DenseTensor& indices,
-                  phi::DenseTensor* output) {
+  void operator()(const CPUContext& context,
+                  const DenseTensor& input,
+                  const DenseTensor& indices,
+                  DenseTensor* output) {
     const int batch_size = static_cast<int>(input.dims()[0]);
     const int input_height = static_cast<int>(input.dims()[2]);
     const int input_width = static_cast<int>(input.dims()[3]);
     const int output_channels = static_cast<int>(output->dims()[1]);
     const int output_height = static_cast<int>(output->dims()[2]);
     const int output_width = static_cast<int>(output->dims()[3]);
-    int input_feasize = input_height * input_width;
-    int output_feasize = output_height * output_width;
+    int64_t input_feasize = static_cast<int64_t>(input_height) * input_width;
+    int64_t output_feasize = static_cast<int64_t>(output_height) * output_width;
     const T* input_data = input.data<T>();
     const int* indices_data = indices.data<int>();
     T* output_data = context.template Alloc<T>(output);
     for (int b = 0; b < batch_size; ++b) {
       for (int c = 0; c < output_channels; ++c) {
-        for (int i = 0; i < input_feasize; ++i) {
+        for (int64_t i = 0; i < input_feasize; ++i) {
           int index = indices_data[i];
 
           PADDLE_ENFORCE_LT(
@@ -60,29 +60,29 @@ class Unpool2dMaxFunctor<phi::CPUContext, T> {
   }
 };
 template <class T>
-class Unpool2dMaxGradFunctor<phi::CPUContext, T> {
+class Unpool2dMaxGradFunctor<CPUContext, T> {
  public:
-  void operator()(const phi::CPUContext& context,
-                  const phi::DenseTensor& input,
-                  const phi::DenseTensor& indices,
-                  const phi::DenseTensor& output,
-                  const phi::DenseTensor& output_grad,
-                  phi::DenseTensor* input_grad) {
+  void operator()(const CPUContext& context,
+                  const DenseTensor& input,
+                  const DenseTensor& indices,
+                  const DenseTensor& output,
+                  const DenseTensor& output_grad,
+                  DenseTensor* input_grad) {
     const int batch_size = static_cast<int>(input.dims()[0]);
     const int input_height = static_cast<int>(input.dims()[2]);
     const int input_width = static_cast<int>(input.dims()[3]);
     const int output_channels = static_cast<int>(output.dims()[1]);
     const int output_height = static_cast<int>(output.dims()[2]);
     const int output_width = static_cast<int>(output.dims()[3]);
-    int input_feasize = input_height * input_width;
-    int output_feasize = output_height * output_width;
+    int64_t input_feasize = static_cast<int64_t>(input_height) * input_width;
+    int64_t output_feasize = static_cast<int64_t>(output_height) * output_width;
     const int* indices_data = indices.data<int>();
     const T* output_grad_data = output_grad.data<T>();
     T* input_grad_data = context.template Alloc<T>(input_grad);
 
     for (int b = 0; b < batch_size; ++b) {
       for (int c = 0; c < output_channels; ++c) {
-        for (int i = 0; i < input_feasize; ++i) {
+        for (int64_t i = 0; i < input_feasize; ++i) {
           int index = indices_data[i];
           PADDLE_ENFORCE_LT(
               index,
@@ -106,12 +106,12 @@ class Unpool2dMaxGradFunctor<phi::CPUContext, T> {
 };
 
 template <typename T>
-class Unpool3dMaxFunctor<phi::CPUContext, T> {
+class Unpool3dMaxFunctor<CPUContext, T> {
  public:
-  void operator()(const phi::CPUContext& context,
-                  const phi::DenseTensor& input,
-                  const phi::DenseTensor& indices,
-                  phi::DenseTensor* output) {
+  void operator()(const CPUContext& context,
+                  const DenseTensor& input,
+                  const DenseTensor& indices,
+                  DenseTensor* output) {
     const int batch_size = static_cast<int>(input.dims()[0]);
     const int input_depth = static_cast<int>(input.dims()[2]);
     const int input_height = static_cast<int>(input.dims()[3]);
@@ -120,14 +120,16 @@ class Unpool3dMaxFunctor<phi::CPUContext, T> {
     const int output_depth = static_cast<int>(output->dims()[2]);
     const int output_height = static_cast<int>(output->dims()[3]);
     const int output_width = static_cast<int>(output->dims()[4]);
-    int input_feasize = input_depth * input_height * input_width;
-    int output_feasize = output_depth * output_height * output_width;
+    int64_t input_feasize =
+        static_cast<int64_t>(input_depth) * input_height * input_width;
+    int64_t output_feasize =
+        static_cast<int64_t>(output_depth) * output_height * output_width;
     const T* input_data = input.data<T>();
     const int* indices_data = indices.data<int>();
     T* output_data = context.template Alloc<T>(output);
     for (int b = 0; b < batch_size; ++b) {
       for (int c = 0; c < output_channels; ++c) {
-        for (int i = 0; i < input_feasize; ++i) {
+        for (int64_t i = 0; i < input_feasize; ++i) {
           int index = indices_data[i];
 
           PADDLE_ENFORCE_LT(
@@ -152,14 +154,14 @@ class Unpool3dMaxFunctor<phi::CPUContext, T> {
   }
 };
 template <class T>
-class Unpool3dMaxGradFunctor<phi::CPUContext, T> {
+class Unpool3dMaxGradFunctor<CPUContext, T> {
  public:
-  void operator()(const phi::CPUContext& context,
-                  const phi::DenseTensor& input,
-                  const phi::DenseTensor& indices,
-                  const phi::DenseTensor& output,
-                  const phi::DenseTensor& output_grad,
-                  phi::DenseTensor* input_grad) {
+  void operator()(const CPUContext& context,
+                  const DenseTensor& input,
+                  const DenseTensor& indices,
+                  const DenseTensor& output,
+                  const DenseTensor& output_grad,
+                  DenseTensor* input_grad) {
     const int batch_size = static_cast<int>(input.dims()[0]);
     const int input_depth = static_cast<int>(input.dims()[2]);
     const int input_height = static_cast<int>(input.dims()[3]);
@@ -168,15 +170,17 @@ class Unpool3dMaxGradFunctor<phi::CPUContext, T> {
     const int output_depth = static_cast<int>(output.dims()[2]);
     const int output_height = static_cast<int>(output.dims()[3]);
     const int output_width = static_cast<int>(output.dims()[4]);
-    int input_feasize = input_depth * input_height * input_width;
-    int output_feasize = output_depth * output_height * output_width;
+    int64_t input_feasize =
+        static_cast<int64_t>(input_depth) * input_height * input_width;
+    int64_t output_feasize =
+        static_cast<int64_t>(output_depth) * output_height * output_width;
     const int* indices_data = indices.data<int>();
     const T* output_grad_data = output_grad.data<T>();
     T* input_grad_data = context.template Alloc<T>(input_grad);
 
     for (int b = 0; b < batch_size; ++b) {
       for (int c = 0; c < output_channels; ++c) {
-        for (int i = 0; i < input_feasize; ++i) {
+        for (int64_t i = 0; i < input_feasize; ++i) {
           int index = indices_data[i];
           PADDLE_ENFORCE_LT(
               index,
@@ -200,13 +204,13 @@ class Unpool3dMaxGradFunctor<phi::CPUContext, T> {
   }
 };
 
-template class Unpool2dMaxGradFunctor<phi::CPUContext, float>;
-template class Unpool2dMaxGradFunctor<phi::CPUContext, double>;
-template class Unpool2dMaxFunctor<phi::CPUContext, float>;
-template class Unpool2dMaxFunctor<phi::CPUContext, double>;
-template class Unpool3dMaxGradFunctor<phi::CPUContext, float>;
-template class Unpool3dMaxGradFunctor<phi::CPUContext, double>;
-template class Unpool3dMaxFunctor<phi::CPUContext, float>;
-template class Unpool3dMaxFunctor<phi::CPUContext, double>;
+template class Unpool2dMaxGradFunctor<CPUContext, float>;
+template class Unpool2dMaxGradFunctor<CPUContext, double>;
+template class Unpool2dMaxFunctor<CPUContext, float>;
+template class Unpool2dMaxFunctor<CPUContext, double>;
+template class Unpool3dMaxGradFunctor<CPUContext, float>;
+template class Unpool3dMaxGradFunctor<CPUContext, double>;
+template class Unpool3dMaxFunctor<CPUContext, float>;
+template class Unpool3dMaxFunctor<CPUContext, double>;
 }  // namespace math
 }  // namespace phi

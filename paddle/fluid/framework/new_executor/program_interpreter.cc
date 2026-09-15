@@ -19,36 +19,48 @@
 #include "paddle/fluid/framework/new_executor/interpreter/interpreter_util.h"
 #include "paddle/fluid/framework/new_executor/interpreter/static_build.h"
 #include "paddle/fluid/framework/operator.h"
+#include "paddle/fluid/platform/onednn_helper.h"
 #include "paddle/fluid/platform/profiler/supplement_tracing.h"
+#include "paddle/phi/backends/device_manager.h"
 #include "paddle/phi/common/place.h"
 #include "paddle/phi/core/kernel_context.h"
 #include "paddle/phi/core/os_info.h"
+#include "paddle/phi/core/platform/cuda_graph_with_memory_pool.h"
 #include "paddle/phi/core/platform/device/gpu/gpu_info.h"
 #include "paddle/phi/core/platform/profiler/event_tracing.h"
 #include "paddle/phi/core/sparse_coo_tensor.h"
 #include "paddle/phi/core/sparse_csr_tensor.h"
-#ifdef PADDLE_WITH_DNNL
-#include "paddle/fluid/platform/onednn_helper.h"
-#endif
-#include "paddle/phi/backends/device_manager.h"
-#include "paddle/phi/core/platform/cuda_graph_with_memory_pool.h"
-#if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL)
+#if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL) || \
+    defined(PADDLE_WITH_CUSTOM_DEVICE)
 #include "paddle/common/flags.h"
 #include "paddle/fluid/distributed/collective/process_group.h"
+#include "paddle/phi/core/distributed/comm_context_manager.h"
+#ifdef PADDLE_WITH_CUSTOM_DEVICE
+#include "paddle/fluid/distributed/collective/process_group_custom.h"
+#include "paddle/phi/core/distributed/xccl_comm_context.h"
+#else
 #include "paddle/fluid/distributed/collective/process_group_nccl.h"
 #include "paddle/fluid/platform/device/gpu/nccl_helper.h"
-#include "paddle/phi/core/distributed/comm_context_manager.h"
 #include "paddle/phi/core/distributed/nccl_comm_context.h"
-COMMON_DECLARE_bool(dynamic_static_unified_comm);
 #endif
 
-PHI_DECLARE_bool(enable_host_event_recorder_hook);
+#endif
+
+COMMON_DECLARE_bool(enable_host_event_recorder_hook);
 PD_DECLARE_bool(log_memory_stats);
 COMMON_DECLARE_string(static_runtime_data_save_path);
 COMMON_DECLARE_bool(save_static_runtime_data);
 namespace paddle::framework {
 
-ProgramInterpreter::ProgramInterpreter(const phi::Place& place,
+#ifdef PADDLE_WITH_CUSTOM_DEVICE
+#define COMMCONTEXT phi::distributed::XCCLCommContext
+#define PROCESS_GROUP paddle::distributed::ProcessGroupCustom
+#else
+#define COMMCONTEXT phi::distributed::NCCLCommContext
+#define PROCESS_GROUP paddle::distributed::ProcessGroupNCCL
+#endif
+
+ProgramInterpreter::ProgramInterpreter(const Place& place,
                                        const BlockDesc& block,
                                        framework::Scope* scope,
                                        const ExecutionConfig& execution_config)
@@ -133,9 +145,9 @@ ProgramInterpreter::~ProgramInterpreter() {
   VLOG(4) << "~ProgramInterpreter(): " << this << " on " << place_;
 
 #ifdef PADDLE_WITH_DNNL
-  // Clear mkl-dnn cache,
-  // this is needed to have mkl-dnn unit tests working
-  platform::ClearMKLDNNCache(place_, this);
+  // Clear one-dnn cache,
+  // this is needed to have one-dnn unit tests working
+  platform::ClearONEDNNCache(place_, this);
 #endif
 }
 
@@ -236,7 +248,7 @@ void ProgramInterpreter::Build(
   CheckCUDAGraphBeforeRun(feed_names);
 
 #ifdef PADDLE_WITH_DNNL
-  platform::AttachPointerHashToMKLDNNKey(this, place_);
+  platform::AttachPointerHashToONEDNNKey(this, place_);
 #endif
 
   if (!is_build_ || switch_stream) {
@@ -258,19 +270,18 @@ void ProgramInterpreter::Build(
   }
 }
 
-FetchList ProgramInterpreter::Run(
-    const std::vector<std::string>& feed_names,
-    const std::vector<phi::DenseTensor>& feed_tensors,
-    bool need_fetch,
-    bool enable_job_schedule_profiler,
-    bool switch_stream) {
+FetchList ProgramInterpreter::Run(const std::vector<std::string>& feed_names,
+                                  const std::vector<DenseTensor>& feed_tensors,
+                                  bool need_fetch,
+                                  bool enable_job_schedule_profiler,
+                                  bool switch_stream) {
   enable_job_schedule_profiler_ = enable_job_schedule_profiler;
 
   SetDeviceId(place_);
   CheckCUDAGraphBeforeRun(feed_names);
 
 #ifdef PADDLE_WITH_DNNL
-  platform::AttachPointerHashToMKLDNNKey(this, place_);
+  platform::AttachPointerHashToONEDNNKey(this, place_);
 #endif
 
   bool is_build = is_build_;
@@ -463,7 +474,7 @@ void ProgramInterpreter::BuildAndCacheInstructionCtx(Instruction* instr_node) {
 }
 
 void ProgramInterpreter::BuildInplace() {
-  // NOTE(Ruibiao): coalesce_tensor_op outputs a FusedOutput phi::DenseTensor
+  // NOTE(Ruibiao): coalesce_tensor_op outputs a FusedOutput DenseTensor
   // and a list of Output Tensors which are sliced from the FusedOutput. These
   // outputs should not be the outvar of the in-place var-pair since memory
   // reuse between FusedOutput and Output Tensors is assumed. For the following
@@ -529,8 +540,8 @@ void ProgramInterpreter::BuildInplace() {
             auto invar = local_scope->FindVar(invar_name);
             auto outvar = local_scope->FindVar(outvar_name);
 
-            if (invar && outvar && invar->IsType<phi::DenseTensor>() &&
-                outvar->IsType<phi::DenseTensor>() &&
+            if (invar && outvar && invar->IsType<DenseTensor>() &&
+                outvar->IsType<DenseTensor>() &&
                 skip_inplace_outvars.find(outvar_name) ==
                     skip_inplace_outvars.end()) {
               instr.AddInplace(invar, outvar);
@@ -666,7 +677,7 @@ void ProgramInterpreter::BuildOperatorDependences() {
   }
 }
 
-// At the end of each step, the holder of phi::DenseTensor in phi::TensorArray
+// At the end of each step, the holder of DenseTensor in phi::TensorArray
 // is null. Clear these Tensors and leave phi::TensorArray empty, otherwise an
 // exception will occur in the next step
 void ProgramInterpreter::ClearDenseTensorArrayInLocalScope() {
@@ -811,7 +822,7 @@ void ProgramInterpreter::Convert(
           HasLocalScope() ? local_scope_ : var_scope_.GetMutableScope();
       paddle::framework::Variable* var = inner_scope->FindVar(
           var_scope_.GetNameById(static_cast<int>(var_id)));
-      if (var->IsType<phi::DenseTensor>() || var->IsType<phi::SelectedRows>() ||
+      if (var->IsType<DenseTensor>() || var->IsType<phi::SelectedRows>() ||
           var->IsType<phi::TensorArray>() ||
           var->IsType<phi::SparseCooTensor>() ||
           var->IsType<phi::SparseCsrTensor>()) {
@@ -904,8 +915,8 @@ void ProgramInterpreter::BuildSkipShareLoDInfo() {
     bool can_skip_lod = true;
     for (auto& input : vec_instruction_[i].InnerRuntimeContext()->inputs) {
       for (auto& var : input.second) {
-        if (var->IsType<phi::DenseTensor>()) {
-          if (!var->Get<phi::DenseTensor>().lod().empty()) {
+        if (var->IsType<DenseTensor>()) {
+          if (!var->Get<DenseTensor>().lod().empty()) {
             can_skip_lod = false;
             break;
           }
@@ -1014,25 +1025,36 @@ void ProgramInterpreter::RunOperator(const Instruction& instr_node) {
 
           auto dev_ctx =
               const_cast<phi::DeviceContext*>(&instr_node.DeviceContext());
-#if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL)
+#if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL) || \
+    defined(PADDLE_WITH_CUSTOM_DEVICE)
           auto attrs = op->Attrs();
-          if (attrs.find("ring_id") != attrs.end()) {
+          if (!dev_ctx->GetCommContext() &&
+              attrs.find("ring_id") != attrs.end()) {
             auto ring_id_attr = attrs.at("ring_id");
             int ring_id = PADDLE_GET(int, ring_id_attr);
             auto map = distributed::ProcessGroupMapFromGid::getInstance();
-            if (map->has(ring_id)) {
+            const auto& comm_context_manager =
+                phi::distributed::CommContextManager::GetInstance();
+            phi::distributed::CommContext* comm_context = nullptr;
+            if (comm_context_manager.Has(std::to_string(ring_id))) {
+              comm_context = comm_context_manager.Get(std::to_string(ring_id));
+            } else if (map->has(ring_id)) {
               distributed::ProcessGroup* pg = map->get(ring_id);
-              auto comm_context =
-                  static_cast<paddle::distributed::ProcessGroupNCCL*>(pg)
-                      ->GetOrCreateCommContext(place);
-              dev_ctx =
-                  static_cast<phi::distributed::NCCLCommContext*>(comm_context)
-                      ->GetDevContext();
-              dev_ctx->SetCommContext(comm_context);
-            } else {
-              VLOG(3) << "ring_id " << ring_id
-                      << " not found in ProcessGroupMapFromGid ";
+              comm_context =
+                  static_cast<PROCESS_GROUP*>(pg)->GetOrCreateCommContext(
+                      place);
             }
+
+            PADDLE_ENFORCE_NE(
+                comm_context,
+                nullptr,
+                common::errors::Unavailable(
+                    "NCCLCommContext is nullptr. For op with ring_id attr, "
+                    "comm_context should be set in dev_ctx, but it cannot be "
+                    "get from CommContextManager or ProcessGroup."));
+
+            dev_ctx = static_cast<COMMCONTEXT*>(comm_context)->GetDevContext();
+            dev_ctx->SetCommContext(comm_context);
           }
 #endif
           phi::KernelContext phi_kernel_context;
@@ -1107,9 +1129,9 @@ void ProgramInterpreter::RunOperator(const Instruction& instr_node) {
     for (auto& vname : op->InputVars()) {
       auto* var = local_scope->FindVar(vname);
       if (var == nullptr) continue;
-      const phi::DenseTensor* tensor{nullptr};
-      if (var->IsType<phi::DenseTensor>()) {
-        tensor = &var->Get<phi::DenseTensor>();
+      const DenseTensor* tensor{nullptr};
+      if (var->IsType<DenseTensor>()) {
+        tensor = &var->Get<DenseTensor>();
       } else {
         VLOG(6) << vname << " is not DenseTensor";
         continue;
@@ -1123,9 +1145,9 @@ void ProgramInterpreter::RunOperator(const Instruction& instr_node) {
     for (auto& vname : op->OutputVars(true)) {
       auto* var = local_scope->FindVar(vname);
       if (var == nullptr) continue;
-      const phi::DenseTensor* tensor{nullptr};
-      if (var->IsType<phi::DenseTensor>()) {
-        tensor = &var->Get<phi::DenseTensor>();
+      const DenseTensor* tensor{nullptr};
+      if (var->IsType<DenseTensor>()) {
+        tensor = &var->Get<DenseTensor>();
       } else {
         VLOG(6) << vname << "  is not DenseTensor";
         continue;
@@ -1413,14 +1435,13 @@ void ProgramInterpreter::RecordStreamForGC(const Instruction& instr) {
   phi::RecordEvent record(
       "RecordStreamForGC", phi::TracerEventType::UserDefined, 10);
 
-  auto TensorRecordStream = [](phi::DenseTensor& tensor,
-                               const gpuStream_t& stream) {
+  auto TensorRecordStream = [](DenseTensor& tensor, const gpuStream_t& stream) {
     auto allocation = tensor.Holder();
     if (allocation == nullptr) {
       return;
     }
 
-    const phi::Place& place = allocation->place();
+    const Place& place = allocation->place();
     if (phi::is_gpu_place(place)) {
       memory::RecordStream(allocation, stream);
     } else if (phi::is_cuda_pinned_place(place)) {
@@ -1467,8 +1488,8 @@ void ProgramInterpreter::RecordStreamForGC(const Instruction& instr) {
       continue;
     }
 
-    if (var->IsType<phi::DenseTensor>()) {
-      TensorRecordStream(*(var->GetMutable<phi::DenseTensor>()), instr.stream_);
+    if (var->IsType<DenseTensor>()) {
+      TensorRecordStream(*(var->GetMutable<DenseTensor>()), instr.stream_);
     } else if (
         var->IsType<
             operators::reader::
@@ -1532,11 +1553,10 @@ void ProgramInterpreter::CheckGC(const Instruction& instr) {
   }
 }
 
-void ProgramInterpreter::Prepare(
-    const std::vector<std::string>& feed_names,
-    const std::vector<phi::DenseTensor>& feed_tensors,
-    bool prepare_feed,
-    bool switch_stream) {
+void ProgramInterpreter::Prepare(const std::vector<std::string>& feed_names,
+                                 const std::vector<DenseTensor>& feed_tensors,
+                                 bool prepare_feed,
+                                 bool switch_stream) {
   PADDLE_ENFORCE_EQ(feed_names.size(),
                     feed_tensors.size(),
                     common::errors::PreconditionNotMet(
@@ -1553,7 +1573,7 @@ void ProgramInterpreter::Prepare(
           common::errors::NotFound("Variable %s should not be nullptr.",
                                    feed_names[i]));
 
-      auto feed_tensor = feed_var->GetMutable<phi::DenseTensor>();
+      auto feed_tensor = feed_var->GetMutable<DenseTensor>();
       feed_tensor->ShareDataWith(feed_tensors[i]);
       feed_tensor->set_lod(feed_tensors[i].lod());
     }

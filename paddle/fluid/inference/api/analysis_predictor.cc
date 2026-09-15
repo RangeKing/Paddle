@@ -18,7 +18,6 @@
 
 #include <algorithm>
 #include <cstdlib>
-#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <set>
@@ -54,22 +53,24 @@
 #include "paddle/fluid/inference/utils/io_utils.h"
 #include "paddle/fluid/inference/utils/model_utils.h"
 #include "paddle/fluid/inference/utils/singleton.h"
+#include "paddle/fluid/pir/utils/name_analysis.h"
 #include "paddle/fluid/prim/utils/utils.h"
 #include "paddle/fluid/primitive/base/decomp_trans.h"
 #include "paddle/phi/api/include/context_pool.h"
 #include "paddle/phi/api/include/tensor.h"
 #include "paddle/phi/backends/context_pool.h"
+#include "paddle/phi/backends/device_manager.h"
 #include "paddle/phi/common/backend.h"
 #include "paddle/phi/common/data_type.h"
 #include "paddle/phi/common/place.h"
+#include "paddle/phi/core/generator.h"
 #include "paddle/phi/core/memory/memcpy.h"
 #include "paddle/phi/core/platform/cpu_helper.h"
 #include "paddle/phi/core/platform/device/gpu/gpu_info.h"
 #include "paddle/phi/core/platform/device/gpu/gpu_types.h"
 #include "paddle/phi/core/platform/device_context.h"
 #include "paddle/phi/core/platform/profiler.h"
-
-#include "paddle/phi/core/generator.h"
+#include "paddle/phi/core/tensor_utils.h"
 #include "paddle/phi/kernels/funcs/data_type_transform.h"
 #include "paddle/utils/string/split.h"
 
@@ -108,8 +109,14 @@
 #include "paddle/pir/include/dialect/shape/utils/shape_analysis.h"
 #endif
 
+#ifdef PADDLE_WITH_DNNL
+#include "paddle/fluid/pir/dialect/operator/ir/op_onednn_dialect.h"
+#include "paddle/phi/backends/onednn/onednn_context.h"
+#endif
+
 #include "paddle/common/flags.h"
 #include "paddle/fluid/ir_adaptor/translator/translate.h"
+#include "paddle/fluid/pir/dialect/kernel/ir/kernel_op.h"
 #include "paddle/fluid/pir/dialect/operator/ir/pd_op.h"
 #include "paddle/fluid/pir/dialect/operator/utils/utils.h"
 #include "paddle/fluid/pir/serialize_deserialize/include/interface.h"
@@ -123,9 +130,11 @@
 #include "paddle/fluid/pir/transforms/general/remove_shadow_feed_pass.h"
 #include "paddle/fluid/pir/transforms/general/replace_fetch_with_shadow_output_pass.h"
 #include "paddle/fluid/pir/transforms/general/transfer_layout_pass.h"
+#include "paddle/fluid/pir/transforms/gpu/matmul_add_act_fuse_pass.h"
 #include "paddle/fluid/pir/transforms/passes.h"
 #include "paddle/fluid/pir/transforms/pd_op_to_kernel_pass.h"
 #include "paddle/fluid/pir/utils/general_functions.h"
+#include "paddle/phi/kernels/sparse/gpu/conv_host_buffer.h"
 #include "paddle/pir/include/core/attribute.h"
 #include "paddle/pir/include/core/block_argument.h"
 #include "paddle/pir/include/core/builtin_attribute.h"
@@ -134,7 +143,7 @@
 #include "paddle/pir/include/pass/pass_registry.h"
 
 COMMON_DECLARE_bool(pir_apply_inplace_pass);
-COMMON_DECLARE_bool(enable_auto_layout_pass);
+COMMON_DECLARE_bool(enable_auto_layout_pass_in_inference);
 namespace paddle {
 namespace {
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
@@ -183,7 +192,7 @@ void UpdatePrivateDeviceContext(InferGPUContext *gpu_context,
   gpu_context->SetRuntimeVersion(gpu_resource->GetGpuRuntimeVersion());
   VLOG(1) << "thread id is " << std::this_thread::get_id() << ", stream id is "
           << reinterpret_cast<void *>(gpu_resource->GetStream())
-          << ", allotor ptr is "
+          << ", allocator ptr is "
           << reinterpret_cast<void *>(
                  memory::allocation::AllocatorFacade::Instance()
                      .GetAllocator(place_, gpu_resource->GetStream())
@@ -423,6 +432,19 @@ bool AnalysisPredictor::Init(
     const std::shared_ptr<framework::ProgramDesc> &program) {
   VLOG(3) << "Predictor::init()";
 
+#if defined(PADDLE_WITH_CUDA) && !defined(PADDLE_WITH_HIP)
+  phi::sparse::ConvHostBuffer &conv_buffer_instance =
+      phi::sparse::ConvHostBuffer::getInstance();
+  if (conv_buffer_instance.using_buffer()) {
+    int *h_buffer;
+    PADDLE_ENFORCE_GPU_SUCCESS(
+        cudaHostAlloc((void **)&h_buffer,  // NOLINT
+                      conv_buffer_instance.get_buffer_size() * sizeof(int),
+                      cudaHostAllocDefault));
+    conv_buffer_instance.set_host_buffer(h_buffer);
+  }
+#endif
+
   if (config_.with_profile_) {
     LOG(WARNING) << "Profiler is activated, which might affect the performance";
 #ifdef PADDLE_WITH_NVTX
@@ -447,13 +469,10 @@ bool AnalysisPredictor::Init(
   } else if (!config_.model_dir().empty()) {
     std::string model_dir = config_.model_dir();
     load_pir_model_ = false;
-    for (const auto &entry : std::filesystem::directory_iterator(model_dir)) {
-      if (entry.is_regular_file() &&
-          entry.path().filename() == "__model__.json") {
-        load_pir_model_ = true;
-        config_.SetProgFile(config_.model_dir() + "/__model__.json");
-        break;
-      }
+    std::string model_json_path = model_dir + "/__model__.json";
+    if (paddle::inference::IsFileExists(model_json_path)) {
+      load_pir_model_ = true;
+      config_.SetProgFile(model_json_path);
     }
   }
   if (load_pir_model_) {
@@ -472,7 +491,8 @@ bool AnalysisPredictor::Init(
     }
     std::string optimized_params =
         optimized_model_path + "/" + "_optimized.pdiparams";
-    if (FileExists(optimized_model) && FileExists(optimized_params)) {
+    if (paddle::inference::IsFileExists(optimized_model) &&
+        paddle::inference::IsFileExists(optimized_params)) {
       config_.SetModel(optimized_model, optimized_params);
       if (config_.new_ir_enabled()) {
         load_pir_model_ = true;
@@ -734,6 +754,10 @@ void AnalysisPredictor::InitDeviceContexts() {
           xpu_context->SetAllocator(instance.GetAllocator(place_).get());
           xpu_context->SetGenerator(
               phi::DefaultXPUGenerator(place_.GetDeviceId()).get());
+          xpu_context->SetPinnedAllocator(
+              memory::allocation::AllocatorFacade::Instance()
+                  .GetAllocator(phi::XPUPinnedPlace())
+                  .get());
           xpu_context->SetHostAllocator(
               instance.GetAllocator(phi::CPUPlace()).get());
           xpu_context->SetHostGenerator(phi::DefaultCPUGenerator().get());
@@ -897,7 +921,8 @@ void AnalysisPredictor::OptimizeInferencePirProgram() {
       delete_assert_op_pm.Run(pir_program_.get());
     }
 
-    if (config_.use_gpu() && config_.cinn_enabled()) {
+    if ((config_.use_gpu() || config_.use_custom_device()) &&
+        config_.cinn_enabled()) {
       if (!config_.custom_pass_only_) {
         ::pir::PassManager fused_op_pm(::pir::IrContext::Instance(),
                                        config_.pm_opt_level_);
@@ -911,8 +936,11 @@ void AnalysisPredictor::OptimizeInferencePirProgram() {
         const std::vector<std::string> FusedOpPasses{// Operator fusion pass
                                                      "map_op_to_another_pass",
                                                      "conv2d_bn_fuse_pass",
+#ifndef PADDLE_WITH_HIP
                                                      "conv2d_add_act_fuse_pass",
-                                                     "conv2d_add_fuse_pass"};
+                                                     "conv2d_add_fuse_pass"
+#endif
+        };
 
         for (const auto &fused_op : FusedOpPasses) {
           fused_op_pm.AddPass(pir::PassRegistry::Instance().Get(fused_op));
@@ -920,13 +948,19 @@ void AnalysisPredictor::OptimizeInferencePirProgram() {
 
         if (config_.enable_gpu_mixed_) {
           AddAutoMixedPrecisionPass(fused_op_pm);
-          if (FLAGS_enable_auto_layout_pass) {
+          if (FLAGS_enable_auto_layout_pass_in_inference) {
             AddAutoLayoutPasses(fused_op_pm);
           } else {
             fused_op_pm.AddPass(
                 pir::PassRegistry::Instance().Get("transfer_layout_pass"));
           }
         }
+
+        auto matmul_add_act_fuse_pass = ::pir::CreateMatmulAddActFusePass();
+        matmul_add_act_fuse_pass->Set("use_cutlass",
+                                      new bool(config_.use_cutlass_));
+        fused_op_pm.AddPass(std::move(matmul_add_act_fuse_pass));
+
         fused_op_pm.Run(pir_program_.get());
       }
     }
@@ -981,23 +1015,41 @@ void AnalysisPredictor::OptimizeInferencePirProgram() {
       }
 #endif
 
-#ifdef PADDLE_WITH_DNNL
-    } else if (config_.mkldnn_enabled()) {
-      // mkldnn
+#ifdef PADDLE_WITH_CUSTOM_DEVICE
+    } else if (config_.use_custom_device()) {
+      // custom device
       if (!config_.custom_pass_only_) {
-        for (const auto &mkldnn_pass : kPirMkldnnPasses) {
+        auto kPirCustomDevicePasses =
+            phi::CustomDevicePassManager::Instance()->GetCustomDevicePass();
+        for (const auto &custom_device_pass : kPirCustomDevicePasses) {
           if (std::find(config_.deleted_passes_.begin(),
                         config_.deleted_passes_.end(),
-                        mkldnn_pass) == config_.deleted_passes_.end()) {
-            pass_pm.AddPass(pir::PassRegistry::Instance().Get(mkldnn_pass));
+                        custom_device_pass) == config_.deleted_passes_.end()) {
+            pass_pm.AddPass(
+                pir::PassRegistry::Instance().Get(custom_device_pass));
           }
         }
-        if (config_.mkldnn_bfloat16_enabled()) {
-          for (const auto &mkldnn_pass : kPirMkldnnBf16Passes) {
+      }
+#endif
+#ifdef PADDLE_WITH_DNNL
+    } else if (config_.onednn_enabled()) {
+      // onednn
+      pir::IrContext *ctx = pir::IrContext::Instance();
+      ctx->GetOrRegisterDialect<paddle::dialect::OneDNNOperatorDialect>();
+      if (!config_.custom_pass_only_) {
+        for (const auto &onednn_pass : kPirOnednnPasses) {
+          if (std::find(config_.deleted_passes_.begin(),
+                        config_.deleted_passes_.end(),
+                        onednn_pass) == config_.deleted_passes_.end()) {
+            pass_pm.AddPass(pir::PassRegistry::Instance().Get(onednn_pass));
+          }
+        }
+        if (config_.onednn_bfloat16_enabled()) {
+          for (const auto &onednn_pass : kPirOnednnBf16Passes) {
             if (std::find(config_.deleted_passes_.begin(),
                           config_.deleted_passes_.end(),
-                          mkldnn_pass) == config_.deleted_passes_.end()) {
-              pass_pm.AddPass(pir::PassRegistry::Instance().Get(mkldnn_pass));
+                          onednn_pass) == config_.deleted_passes_.end()) {
+              pass_pm.AddPass(pir::PassRegistry::Instance().Get(onednn_pass));
             }
           }
         }
@@ -1042,7 +1094,7 @@ void AnalysisPredictor::OptimizeInferencePirProgram() {
     if (config_.save_optimized_model_) {
       std::string optimized_model =
           GetOptimizedModelPath() + "/" + "_optimized.json";
-      pir::WriteModule(*pir_program_, optimized_model, 1, true, false, true);
+      pir::WriteModule(*pir_program_, optimized_model);
       LOG(INFO) << "Optimized model saved to " << optimized_model;
       SaveOrLoadPirParameters(true);
     }
@@ -1054,18 +1106,17 @@ void AnalysisPredictor::OptimizeInferencePirProgram() {
   if (config_.enable_gpu_mixed_) {
     if (!config_.cinn_enabled()) {
       AddAutoMixedPrecisionPass(basic_pass_pm);
-
-      if (FLAGS_enable_auto_layout_pass) {
-        AddAutoLayoutPasses(basic_pass_pm);
-      } else {
-        auto transfer_layout_pass = ::pir::CreateTransferLayoutPass();
-        if (std::find(config_.deleted_passes_.begin(),
-                      config_.deleted_passes_.end(),
-                      transfer_layout_pass->name()) ==
-            config_.deleted_passes_.end()) {
-          basic_pass_pm.AddPass(std::move(transfer_layout_pass));
-        }
-      }
+    }
+  }
+  if (FLAGS_enable_auto_layout_pass_in_inference) {
+    AddAutoLayoutPasses(basic_pass_pm);
+  } else {
+    auto transfer_layout_pass = ::pir::CreateTransferLayoutPass();
+    if (std::find(config_.deleted_passes_.begin(),
+                  config_.deleted_passes_.end(),
+                  transfer_layout_pass->name()) ==
+        config_.deleted_passes_.end()) {
+      basic_pass_pm.AddPass(std::move(transfer_layout_pass));
     }
   }
   auto common_subexpression_elimination_pass =
@@ -1078,10 +1129,17 @@ void AnalysisPredictor::OptimizeInferencePirProgram() {
   }
   auto params_sync_among_devices_pass =
       ::pir::CreateParamsSyncAmongDevicesPass();
+  int64_t params = 0;
+  for (auto op : pir_program_.get()->block()->ops()) {
+    if (op->isa<::pir::ParameterOp>()) {
+      params += 1;
+    }
+  }
   if (std::find(config_.deleted_passes_.begin(),
                 config_.deleted_passes_.end(),
                 params_sync_among_devices_pass->name()) ==
-      config_.deleted_passes_.end()) {
+          config_.deleted_passes_.end() &&
+      params > 0) {
     params_sync_among_devices_pass->SetNotOwned(pir::Pass::kPlaceAttr, &place_);
     params_sync_among_devices_pass->SetNotOwned(pir::Pass::kParamScopeAttr,
                                                 sub_scope_);
@@ -1124,8 +1182,7 @@ void AnalysisPredictor::OptimizeInferencePirProgram() {
   basic_pass_pm.Run(pir_program_.get());
   //----------------------------------------------------------------------------------------------//
 
-  pir_program_ =
-      paddle::dialect::PdOpLowerToKernelPass(pir_program_.get(), place_);
+  pir_program_ = pir::PdOpLowerToKernelPass(pir_program_.get(), place_);
 
   ::pir::PassManager lowered_pm(::pir::IrContext::Instance(), 3);
   auto remove_shadow_feed_pass = ::pir::CreateRemoveShadowFeedPass();
@@ -1293,7 +1350,7 @@ bool AnalysisPredictor::SaveOrLoadPirParameters(bool for_save) {
           std::min(num_threads, filter_param_names.size() / chunk_size);
       size_t remain_size = filter_param_names.size() % num_threads;
       VLOG(4) << "Start Load with multi-thread: " << num_threads
-              << " chund size: " << chunk_size;
+              << " chunk size: " << chunk_size;
 
       std::vector<std::future<std::vector<phi::DenseTensor *>>> futures;
 
@@ -1319,11 +1376,16 @@ bool AnalysisPredictor::SaveOrLoadPirParameters(bool for_save) {
       }
 
     } else {
-      pir::LoadCombineFunction(config_.params_file(),
-                               filter_param_names,
-                               &tensor_out,
-                               false,
-                               place_);
+      if (paddle::inference::IsFileExists(config_.params_file())) {
+        pir::LoadCombineFunction(config_.params_file(),
+                                 filter_param_names,
+                                 &tensor_out,
+                                 false,
+                                 place_);
+      } else {
+        LOG(WARNING) << "【Pir Load】Parameter Path not exists: "
+                     << config_.params_file();
+      }
     }
   }
   return true;
@@ -1339,7 +1401,7 @@ bool AnalysisPredictor::PreparePirProgram() {
       common::errors::Fatal("Here, pir_program must be a nullptr!"));
 
   pir_program_ = std::make_shared<pir::Program>(pir::IrContext::Instance());
-  pir::ReadModule(config_.prog_file(), pir_program_.get(), 1 /*pir_version*/);
+  pir::ReadModule(config_.prog_file(), pir_program_.get());
   if (!SaveOrLoadPirParameters(false)) {
     return false;
   }
@@ -1522,13 +1584,13 @@ void AnalysisPredictor::MkldnnPreSet(
 void AnalysisPredictor::MkldnnPreSet(
     const std::vector<std::vector<int>> &inputs_shape) {
 #ifdef PADDLE_WITH_DNNL
-  VLOG(2) << "AnalysisPredictor::ZeroCopyRun get_cur_mkldnn_session_id="
-          << phi::OneDNNContext::tls().get_cur_mkldnn_session_id();
+  VLOG(2) << "AnalysisPredictor::ZeroCopyRun get_cur_onednn_session_id="
+          << phi::OneDNNContext::tls().get_cur_onednn_session_id();
   // In cache clearing mode.
-  if (config_.mkldnn_cache_capacity_ > 0) {
+  if (config_.onednn_cache_capacity_ > 0) {
     VLOG(2) << "In mkldnn cache clear mode.";
-    phi::OneDNNContext::tls().set_cur_mkldnn_session_id(
-        phi::OneDNNContextThreadLocals::kMKLDNNSessionID_CacheClearing);
+    phi::OneDNNContext::tls().set_cur_onednn_session_id(
+        phi::OneDNNContextThreadLocals::kONEDNNSessionID_CacheClearing);
     // Set current_input_shape for caching dynamic shape.
     std::stringstream ss;
     for (const auto &input_shape : inputs_shape) {
@@ -1540,7 +1602,7 @@ void AnalysisPredictor::MkldnnPreSet(
     phi::OneDNNContext::tls().set_cur_input_shape_str(ss.str());
   }
   phi::OneDNNContext::tls().set_cur_input_shape_cache_capacity(
-      config_.mkldnn_cache_capacity_);
+      config_.onednn_cache_capacity_);
 
 #endif
 }
@@ -1548,7 +1610,7 @@ void AnalysisPredictor::MkldnnPreSet(
 void AnalysisPredictor::MkldnnPostReset() {
 #ifdef PADDLE_WITH_DNNL
   // In cache clearing mode.
-  if (config_.mkldnn_cache_capacity_ > 0 &&
+  if (config_.onednn_cache_capacity_ > 0 &&
       static_cast<phi::OneDNNContext *>(
           (&phi::DeviceContextPool::Instance())->Get(phi::CPUPlace()))
               ->GetCachedObjectsNumber() > 0) {
@@ -1558,10 +1620,10 @@ void AnalysisPredictor::MkldnnPostReset() {
               (&phi::DeviceContextPool::Instance())->Get(phi::CPUPlace()))
               ->GetShapeBlobSize();
       PADDLE_ENFORCE_LE(shape_blob_size,
-                        static_cast<size_t>(config_.mkldnn_cache_capacity_),
+                        static_cast<size_t>(config_.onednn_cache_capacity_),
                         common::errors::InvalidArgument(
                             "Required shape_blob_size should be less than or "
-                            "equal to config_.mkldnn_cache_capacity_. "));
+                            "equal to config_.onednn_cache_capacity_. "));
     }
     // We cannot reset to the default cache settings
     // as there maybe CopyToCPU method used and oneDNN
@@ -1575,7 +1637,7 @@ bool AnalysisPredictor::Run(const std::vector<PaddleTensor> &inputs,
                             int batch_size) {
   paddle::platform::SetNumThreads(config_.cpu_math_library_num_threads());
 #ifdef PADDLE_WITH_DNNL
-  if (config_.use_mkldnn_) MkldnnPreSet(inputs);
+  if (config_.use_onednn_) MkldnnPreSet(inputs);
 #endif
   VLOG(3) << "Predictor::predict";
   // set feed variable
@@ -1631,7 +1693,7 @@ bool AnalysisPredictor::Run(const std::vector<PaddleTensor> &inputs,
   // conflict when integrating it into deployment service.
   paddle::platform::SetNumThreads(1);
 #ifdef PADDLE_WITH_DNNL
-  if (config_.use_mkldnn_) MkldnnPostReset();
+  if (config_.use_onednn_) MkldnnPostReset();
 #endif
 #if defined(PADDLE_WITH_MKLML)
   // Frees unused memory allocated by the Intel® MKL Memory Allocator to
@@ -1652,7 +1714,7 @@ bool AnalysisPredictor::Run(const std::vector<paddle::Tensor> &inputs,
   }
   paddle::platform::SetNumThreads(config_.cpu_math_library_num_threads());
 #ifdef PADDLE_WITH_DNNL
-  if (config_.use_mkldnn_) MkldnnPreSet(inputs);
+  if (config_.use_onednn_) MkldnnPreSet(inputs);
 #endif
   VLOG(3) << "predict start";
   // set feed variable
@@ -1737,7 +1799,7 @@ bool AnalysisPredictor::Run(const std::vector<paddle::Tensor> &inputs,
     phi::DeviceContextPool::SetDeviceContexts(nullptr);
   }
 #ifdef PADDLE_WITH_DNNL
-  if (config_.use_mkldnn_) MkldnnPostReset();
+  if (config_.use_onednn_) MkldnnPostReset();
 #endif
 #if defined(PADDLE_WITH_MKLML)
   // Frees unused memory allocated by the Intel® MKL Memory Allocator to
@@ -1836,6 +1898,22 @@ bool AnalysisPredictor::SetFeed(const std::vector<paddle::Tensor> &inputs,
   return true;
 }
 
+phi::Place AnalysisPredictor::GetTensorPlace(const pir::Value &value) {
+  if (!value.use_empty()) {
+    auto next_op = value.first_use().owner();
+    if (next_op->isa<paddle::dialect::PhiKernelOp>()) {
+      auto place =
+          phi::TransToPhiPlace(next_op->dyn_cast<paddle::dialect::PhiKernelOp>()
+                                   .kernel_key()
+                                   .backend());
+      return place;
+    } else {
+      return place_;
+    }
+  } else {
+    return place_;
+  }
+}
 template <typename T>
 void AnalysisPredictor::GetFetchOne(const phi::DenseTensor &fetch,
                                     PaddleTensor *output) {
@@ -2022,9 +2100,9 @@ void AnalysisPredictor::PrepareArgument() {
   argument_->SetIpuCustomPatterns(config_.ipu_custom_patterns_);
 #endif
 
-  if (config_.mkldnn_enabled() && !config_.use_gpu()) {
-    LOG(INFO) << "MKLDNN is enabled";
-    argument_->SetMKLDNNEnabledOpTypes(config_.mkldnn_enabled_op_types_);
+  if (config_.onednn_enabled() && !config_.use_gpu()) {
+    LOG(INFO) << "ONEDNN is enabled";
+    argument_->SetONEDNNEnabledOpTypes(config_.onednn_enabled_op_types_);
   }
 
   if (config_.cinn_enabled()) {
@@ -2032,12 +2110,12 @@ void AnalysisPredictor::PrepareArgument() {
   }
 
 #ifdef PADDLE_WITH_DNNL
-  if (config_.mkldnn_bfloat16_enabled()) {
+  if (config_.onednn_bfloat16_enabled()) {
     LOG(INFO) << "Bfloat16 is enabled";
     argument_->SetBfloat16EnabledOpTypes(config_.bfloat16_enabled_op_types_);
   }
 
-  if (config_.mkldnn_int8_enabled()) {
+  if (config_.onednn_int8_enabled()) {
     LOG(INFO) << "Int8 is enabled";
     argument_->SetQuantizeEnabledOpTypes(config_.quantize_enabled_op_types_);
     argument_->SetQuantizeExcludedOpIds(config_.quantize_excluded_op_ids_);
@@ -2218,7 +2296,7 @@ void AnalysisPredictor::OptimizeInferenceProgram() {
 #if defined(_WIN32)
   argument_->PartiallyRelease();
 #else
-  if (config_.mkldnn_enabled() ||
+  if (config_.onednn_enabled() ||
       (config_.tensorrt_engine_enabled() &&
        config_.tensorrt_precision_mode_ ==
            AnalysisConfig::Precision::kInt8)) {  // NOLINT
@@ -2313,6 +2391,14 @@ CreatePaddlePredictor<AnalysisConfig, PaddleEngineKind::kAnalysis>(
         }
         if (std::getenv("FLAGS_cache_inference_while_scope") == nullptr) {
           SetGflag("cache_inference_while_scope", "1");
+        }
+        std::string model_path = config.prog_file();
+        if (!model_path.empty()) {
+          std::string model_dir = model_path.substr(0, model_path.rfind('.'));
+          SetGflag("trt_engine_serialized_path", model_dir.c_str());
+        } else if (!config.model_dir().empty()) {
+          std::string model_dir = config.model_dir();
+          SetGflag("trt_engine_serialized_path", model_dir.c_str());
         }
       });
 
@@ -2414,34 +2500,41 @@ std::map<std::string, paddle_infer::DataType>
 AnalysisPredictor::GetInputTypes() {
   std::map<std::string, paddle_infer::DataType> input_type;
   std::vector<std::string> names = GetInputNames();
-  for (const auto &name : names) {
-    auto *var = inference_program_->Block(0).FindVar(name);
-    PADDLE_ENFORCE_NOT_NULL(
-        var,
-        common::errors::PreconditionNotMet(
-            "Input %s does not exist inference_program_.", name));
-    auto dtype = var->GetDataType();
-    if (dtype == paddle::framework::proto::VarType::FP32) {
-      input_type[name] = paddle_infer::DataType::FLOAT32;
-    } else if (dtype == paddle::framework::proto::VarType::FP16) {
-      input_type[name] = paddle_infer::DataType::FLOAT16;
-    } else if (dtype == paddle::framework::proto::VarType::BF16) {
-      input_type[name] = paddle_infer::DataType::BFLOAT16;
-    } else if (dtype == paddle::framework::proto::VarType::INT64) {
-      input_type[name] = paddle_infer::DataType::INT64;
-    } else if (dtype == paddle::framework::proto::VarType::INT32) {
-      input_type[name] = paddle_infer::DataType::INT32;
-    } else if (dtype == paddle::framework::proto::VarType::UINT8) {
-      input_type[name] = paddle_infer::DataType::UINT8;
-    } else if (dtype == paddle::framework::proto::VarType::INT8) {
-      input_type[name] = paddle_infer::DataType::INT8;
-    } else if (dtype == paddle::framework::proto::VarType::FP64) {
-      input_type[name] = paddle_infer::DataType::FLOAT64;
-    } else if (dtype == paddle::framework::proto::VarType::BOOL) {
-      input_type[name] = paddle_infer::DataType::BOOL;
-    } else {
-      PADDLE_THROW(common::errors::Unimplemented(
-          "Unsupported data type `%s` when get input dtype ", dtype));
+  if (load_pir_model_) {
+    for (const auto &name : names) {
+      auto tensor = GetInputTensor(name);
+      input_type[name] = tensor->type();
+    }
+  } else {
+    for (const auto &name : names) {
+      auto *var = inference_program_->Block(0).FindVar(name);
+      PADDLE_ENFORCE_NOT_NULL(
+          var,
+          common::errors::PreconditionNotMet(
+              "Input %s does not exist inference_program_.", name));
+      auto dtype = var->GetDataType();
+      if (dtype == paddle::framework::proto::VarType::FP32) {
+        input_type[name] = paddle_infer::DataType::FLOAT32;
+      } else if (dtype == paddle::framework::proto::VarType::FP16) {
+        input_type[name] = paddle_infer::DataType::FLOAT16;
+      } else if (dtype == paddle::framework::proto::VarType::BF16) {
+        input_type[name] = paddle_infer::DataType::BFLOAT16;
+      } else if (dtype == paddle::framework::proto::VarType::INT64) {
+        input_type[name] = paddle_infer::DataType::INT64;
+      } else if (dtype == paddle::framework::proto::VarType::INT32) {
+        input_type[name] = paddle_infer::DataType::INT32;
+      } else if (dtype == paddle::framework::proto::VarType::UINT8) {
+        input_type[name] = paddle_infer::DataType::UINT8;
+      } else if (dtype == paddle::framework::proto::VarType::INT8) {
+        input_type[name] = paddle_infer::DataType::INT8;
+      } else if (dtype == paddle::framework::proto::VarType::FP64) {
+        input_type[name] = paddle_infer::DataType::FLOAT64;
+      } else if (dtype == paddle::framework::proto::VarType::BOOL) {
+        input_type[name] = paddle_infer::DataType::BOOL;
+      } else {
+        PADDLE_THROW(common::errors::Unimplemented(
+            "Unsupported data type `%s` when get input dtype ", dtype));
+      }
     }
   }
   return input_type;
@@ -2476,30 +2569,37 @@ std::map<std::string, paddle_infer::DataType>
 AnalysisPredictor::GetOutputTypes() {
   std::map<std::string, paddle_infer::DataType> output_type;
   std::vector<std::string> names = GetOutputNames();
-  for (const auto &name : names) {
-    auto *var = inference_program_->Block(0).FindVar(name);
-    PADDLE_ENFORCE_NOT_NULL(
-        var,
-        common::errors::PreconditionNotMet(
-            "Output %s does not exist inference_program_.", name));
-    auto dtype = var->GetDataType();
-    if (dtype == paddle::framework::proto::VarType::FP32) {
-      output_type[name] = paddle_infer::DataType::FLOAT32;
-    } else if (dtype == paddle::framework::proto::VarType::FP16) {
-      output_type[name] = paddle_infer::DataType::FLOAT16;
-    } else if (dtype == paddle::framework::proto::VarType::BF16) {
-      output_type[name] = paddle_infer::DataType::BFLOAT16;
-    } else if (dtype == paddle::framework::proto::VarType::INT64) {
-      output_type[name] = paddle_infer::DataType::INT64;
-    } else if (dtype == paddle::framework::proto::VarType::INT32) {
-      output_type[name] = paddle_infer::DataType::INT32;
-    } else if (dtype == paddle::framework::proto::VarType::UINT8) {
-      output_type[name] = paddle_infer::DataType::UINT8;
-    } else if (dtype == paddle::framework::proto::VarType::INT8) {
-      output_type[name] = paddle_infer::DataType::INT8;
-    } else {
-      PADDLE_THROW(common::errors::Unimplemented(
-          "Unsupported data type `%s` when get output dtype ", dtype));
+  if (load_pir_model_) {
+    for (const auto &name : names) {
+      auto tensor = GetOutputTensor(name);
+      output_type[name] = tensor->type();
+    }
+  } else {
+    for (const auto &name : names) {
+      auto *var = inference_program_->Block(0).FindVar(name);
+      PADDLE_ENFORCE_NOT_NULL(
+          var,
+          common::errors::PreconditionNotMet(
+              "Output %s does not exist inference_program_.", name));
+      auto dtype = var->GetDataType();
+      if (dtype == paddle::framework::proto::VarType::FP32) {
+        output_type[name] = paddle_infer::DataType::FLOAT32;
+      } else if (dtype == paddle::framework::proto::VarType::FP16) {
+        output_type[name] = paddle_infer::DataType::FLOAT16;
+      } else if (dtype == paddle::framework::proto::VarType::BF16) {
+        output_type[name] = paddle_infer::DataType::BFLOAT16;
+      } else if (dtype == paddle::framework::proto::VarType::INT64) {
+        output_type[name] = paddle_infer::DataType::INT64;
+      } else if (dtype == paddle::framework::proto::VarType::INT32) {
+        output_type[name] = paddle_infer::DataType::INT32;
+      } else if (dtype == paddle::framework::proto::VarType::UINT8) {
+        output_type[name] = paddle_infer::DataType::UINT8;
+      } else if (dtype == paddle::framework::proto::VarType::INT8) {
+        output_type[name] = paddle_infer::DataType::INT8;
+      } else {
+        PADDLE_THROW(common::errors::Unimplemented(
+            "Unsupported data type `%s` when get output dtype ", dtype));
+      }
     }
   }
   return output_type;
@@ -2518,22 +2618,28 @@ std::unique_ptr<ZeroCopyTensor> AnalysisPredictor::GetInputTensor(
       static_cast<void *>(scope), this->GetDeviceContexts()));
   res->input_or_output_ = true;
   res->SetName(name);
-  if (phi::is_cpu_place(place_)) {  // NOLINT
+  phi::Place input_place = place_;
+  if (load_pir_model_) {
+    input_place = GetTensorPlace(
+        pir::utils::name_analysis::GetValueByNameInPhiKernelProgram(
+            *(pir_program_.get()), name));
+  }
+  if (phi::is_cpu_place(input_place)) {  // NOLINT
     res->SetPlace(PaddlePlace::kCPU);
-  } else if (phi::is_ipu_place(place_)) {
+  } else if (phi::is_ipu_place(input_place)) {
     // Currently, IPUPlace's tensor copy between cpu and ipu has been set in
     // IpuBackend.
     res->SetPlace(PaddlePlace::kCPU);
-  } else if (phi::is_xpu_place(place_)) {
-    auto xpu_place = place_;
+  } else if (phi::is_xpu_place(input_place)) {
+    auto xpu_place = input_place;
     res->SetPlace(PaddlePlace::kXPU, xpu_place.GetDeviceId());
-  } else if (phi::is_custom_place(place_)) {
-    auto custom_place = place_;
+  } else if (phi::is_custom_place(input_place)) {
+    auto custom_place = input_place;
     res->SetPlace(PaddlePlace::kCUSTOM,
                   custom_place.GetDeviceId(),
                   custom_place.GetDeviceType());
   } else {
-    auto gpu_place = place_;
+    auto gpu_place = input_place;
     res->SetPlace(PaddlePlace::kGPU, gpu_place.GetDeviceId());
   }
   return res;
@@ -2582,7 +2688,7 @@ bool AnalysisPredictor::ZeroCopyRun(bool switch_stream) {
   }
   paddle::platform::SetNumThreads(config_.cpu_math_library_num_threads());
 #ifdef PADDLE_WITH_DNNL
-  if (config_.use_mkldnn_) {
+  if (config_.use_onednn_) {
     std::vector<std::vector<int>> shape_vector;
     auto names = GetInputNames();
     for (auto &name : names) {
@@ -2649,7 +2755,7 @@ bool AnalysisPredictor::ZeroCopyRun(bool switch_stream) {
     static std::once_flag set_output_holder_map;
     std::call_once(set_output_holder_map, [&]() {
       auto scope = executor_->GetScope();
-      VLOG(4) << "Set ouput tensor's holder.";
+      VLOG(4) << "Set output tensor's holder.";
       for (auto name : GetOutputNames()) {
         auto out_tensor = scope->FindVar(name)->GetMutable<phi::DenseTensor>();
 
@@ -2673,7 +2779,7 @@ bool AnalysisPredictor::ZeroCopyRun(bool switch_stream) {
     phi::DeviceContextPool::SetDeviceContexts(nullptr);
   }
 #ifdef PADDLE_WITH_DNNL
-  if (config_.use_mkldnn_) MkldnnPostReset();
+  if (config_.use_onednn_) MkldnnPostReset();
 #endif
 #if defined(PADDLE_WITH_MKLML)
   // Frees unused memory allocated by the Intel® MKL Memory Allocator to
@@ -3027,9 +3133,7 @@ uint64_t AnalysisPredictor::TryShrinkMemory() {
 
 void AnalysisPredictor::ClearIntermediateTensor() {
   if (config_.new_ir_enabled()) {
-    PADDLE_THROW(common::errors::PreconditionNotMet(
-        "Don't need to use this API [ClearIntermediateTensor] when PIR is "
-        "enabled."));
+    return;
   }
   PADDLE_ENFORCE_NOT_NULL(inference_program_.get(),
                           common::errors::PreconditionNotMet(
@@ -3206,7 +3310,7 @@ void AnalysisPredictor::RegisterOutputHook(
               auto *var = scope->FindVar(var_name);
               if (!var || !var->IsType<phi::DenseTensor>()) continue;
               auto dense_tensor = var->Get<phi::DenseTensor>();
-              if (!dense_tensor.initialized()) continue;
+              if (!dense_tensor.has_allocation()) continue;
               auto tensor = paddle::Tensor(
                   std::make_shared<phi::DenseTensor>(dense_tensor), var_name);
               for (auto &hookfunc : this->output_hookfuncs_) {
@@ -3227,7 +3331,7 @@ void AnalysisPredictor::RegisterOutputHook(
                 auto *var = scope->FindVar(var_name);
                 if (!var || !var->IsType<phi::DenseTensor>()) continue;
                 auto dense_tensor = var->Get<phi::DenseTensor>();
-                if (!dense_tensor.initialized()) continue;
+                if (!dense_tensor.has_allocation()) continue;
                 auto tensor = paddle::Tensor(
                     std::make_shared<phi::DenseTensor>(dense_tensor), var_name);
                 for (auto &hookfunc : this->output_hookfuncs_) {
@@ -3253,7 +3357,7 @@ void AnalysisPredictor::RegisterInputHook(const InputTensorHookFunc &hookfunc) {
               auto *var = scope->FindVar(var_name);
               if (!var || !var->IsType<phi::DenseTensor>()) continue;
               auto dense_tensor = var->Get<phi::DenseTensor>();
-              if (!dense_tensor.initialized()) continue;
+              if (!dense_tensor.has_allocation()) continue;
               auto tensor = paddle::Tensor(
                   std::make_shared<phi::DenseTensor>(dense_tensor), var_name);
               for (auto &hookfunc : this->input_hookfuncs_) {
@@ -3274,7 +3378,7 @@ void AnalysisPredictor::RegisterInputHook(const InputTensorHookFunc &hookfunc) {
                 auto *var = scope->FindVar(var_name);
                 if (!var || !var->IsType<phi::DenseTensor>()) continue;
                 auto dense_tensor = var->Get<phi::DenseTensor>();
-                if (!dense_tensor.initialized()) continue;
+                if (!dense_tensor.has_allocation()) continue;
                 auto tensor = paddle::Tensor(
                     std::make_shared<phi::DenseTensor>(dense_tensor), var_name);
                 for (auto &hookfunc : this->input_hookfuncs_) {
@@ -3384,6 +3488,7 @@ USE_TRT_CONVERTER(multiclass_nms3);
 USE_TRT_CONVERTER(nearest_interp);
 USE_TRT_CONVERTER(nearest_interp_v2);
 USE_TRT_CONVERTER(bilinear_interp_v2);
+USE_TRT_CONVERTER(linear_interp_v2);
 USE_TRT_CONVERTER(reshape);
 USE_TRT_CONVERTER(reshape2);
 USE_TRT_CONVERTER(gather_nd);
@@ -3458,9 +3563,9 @@ USE_TRT_CONVERTER(preln_layernorm_shift_partition)
 USE_TRT_CONVERTER(merge_layernorm)
 USE_TRT_CONVERTER(trans_layernorm)
 USE_TRT_CONVERTER(skip_merge_layernorm)
-USE_TRT_CONVERTER(generic_plugin_creater)
-USE_TRT_CONVERTER(custom_plugin_creater)
-USE_TRT_CONVERTER(custom_generic_plugin_creater)
+USE_TRT_CONVERTER(generic_plugin_creator)
+USE_TRT_CONVERTER(custom_plugin_creator)
+USE_TRT_CONVERTER(custom_generic_plugin_creator)
 USE_TRT_CONVERTER(fuse_eleadd_transpose)
 USE_TRT_CONVERTER(tanh_shrink)
 USE_TRT_CONVERTER(logsigmoid)
@@ -3493,14 +3598,12 @@ USE_TRT_CONVERTER(set_value)
 USE_TRT_CONVERTER(index_select);
 USE_TRT_CONVERTER(temporal_shift)
 #endif
-#if PADDLE_WITH_CUSPARSELT && IS_TRT_VERSION_GE(8000)
+#if PADDLE_WITH_CUSPARSELT
 USE_TRT_CONVERTER(sparse_fc)
 USE_TRT_CONVERTER(sparse_multihead_matmul)
 #endif
-#if IS_TRT_VERSION_GE(8000)
 USE_TRT_CONVERTER(quantize_linear)
 USE_TRT_CONVERTER(dequantize_linear)
-#endif
 #endif
 
 namespace paddle_infer {

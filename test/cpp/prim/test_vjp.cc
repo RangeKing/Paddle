@@ -83,7 +83,7 @@ TEST(VJP, TanhBackwardTest) {
   builder->Build<pir::ShadowOutputOp>(
       GetOpFromProgram("pd_op.tanh_grad", program)->result(0), "tanh_grad_out");
 
-  auto kernel_program = paddle::dialect::PdOpLowerToKernelPass(&program);
+  auto kernel_program = pir::PdOpLowerToKernelPass(&program);
 
   auto place = phi::CPUPlace();
   Scope scope;
@@ -140,7 +140,7 @@ TEST(VJP, Tanh_BackwardTest) {
   builder->Build<pir::ShadowOutputOp>(
       GetOpFromProgram("pd_op.tanh_grad", program)->result(0), tanh_grad_out);
 
-  auto kernel_program = paddle::dialect::PdOpLowerToKernelPass(&program);
+  auto kernel_program = pir::PdOpLowerToKernelPass(&program);
 
   auto place = phi::CPUPlace();
   Scope scope;
@@ -180,7 +180,8 @@ TEST(VJP, MeanBackwardTest) {
       std::vector<int64_t>{}, 1.0, phi::DataType::FLOAT32, phi::CPUPlace());
 
   std::vector<std::vector<bool>> stop_gradients{{false}};
-  std::vector<std::vector<pir::Value>> inputs{{op1.out()}};
+  std::vector<std::vector<pir::Value>> inputs{{op1.out()},
+                                              {op2.operand_source(1)}};
   std::vector<std::vector<pir::Value>> outputs{{op2.out()}};
   std::vector<std::vector<pir::Value>> out_grads{{op3.out()}};
 
@@ -194,7 +195,7 @@ TEST(VJP, MeanBackwardTest) {
   builder->Build<pir::ShadowOutputOp>(
       GetOpFromProgram("pd_op.mean_grad", program)->result(0), "mean_grad_out");
 
-  auto kernel_program = paddle::dialect::PdOpLowerToKernelPass(&program);
+  auto kernel_program = pir::PdOpLowerToKernelPass(&program);
 
   auto place = phi::CPUPlace();
   Scope scope;
@@ -255,7 +256,7 @@ TEST(VJP, ConcatBackwardTest) {
   builder->Build<pir::ShadowOutputOp>(
       GetOpFromProgram("builtin.split", program)->result(1), "split_out_1");
 
-  auto kernel_program = paddle::dialect::PdOpLowerToKernelPass(&program);
+  auto kernel_program = pir::PdOpLowerToKernelPass(&program);
 
   auto place = phi::CPUPlace();
   Scope scope;
@@ -323,7 +324,7 @@ TEST(VJP, AddBackwardTest) {
   builder->Build<pir::ShadowOutputOp>(
       GetOpFromProgram("pd_op.add_grad", program)->result(1), "add_grad_out_1");
 
-  auto kernel_program = paddle::dialect::PdOpLowerToKernelPass(&program);
+  auto kernel_program = pir::PdOpLowerToKernelPass(&program);
 
   auto place = phi::CPUPlace();
   Scope scope;
@@ -388,7 +389,7 @@ TEST(VJP, Add_BackwardTest) {
   builder->Build<pir::ShadowOutputOp>(
       GetOpFromProgram("pd_op.add_grad", program)->result(1), "add_grad_out_1");
 
-  auto kernel_program = paddle::dialect::PdOpLowerToKernelPass(&program);
+  auto kernel_program = pir::PdOpLowerToKernelPass(&program);
 
   auto place = phi::CPUPlace();
   Scope scope;
@@ -465,7 +466,7 @@ TEST(VJP, SplitBackwardTest) {
   builder->Build<pir::ShadowOutputOp>(
       GetOpFromProgram("pd_op.concat", program)->result(0), concat_out);
 
-  auto kernel_program = paddle::dialect::PdOpLowerToKernelPass(&program);
+  auto kernel_program = pir::PdOpLowerToKernelPass(&program);
 
   auto place = phi::CPUPlace();
   Scope scope;

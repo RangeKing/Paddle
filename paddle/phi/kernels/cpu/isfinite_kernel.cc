@@ -24,13 +24,15 @@ PD_REGISTER_KERNEL(isinf,
                    phi::IsinfKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
+                   phi::float16,
+                   phi::bfloat16,
                    int,
                    int64_t,
                    int16_t,
                    int8_t,
-                   uint8_t) {
+                   uint8_t,
+                   phi::complex64,
+                   phi::complex128) {
   kernel->OutputAt(0).SetDataType(phi::DataType::BOOL);
 }
 
@@ -40,10 +42,12 @@ PD_REGISTER_KERNEL(isnan,
                    phi::IsnanKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
+                   phi::float16,
+                   phi::bfloat16,
                    int,
-                   int64_t) {
+                   int64_t,
+                   phi::complex64,
+                   phi::complex128) {
   kernel->OutputAt(0).SetDataType(phi::DataType::BOOL);
 }
 
@@ -53,9 +57,42 @@ PD_REGISTER_KERNEL(isfinite,
                    phi::IsfiniteKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
+                   phi::float16,
+                   phi::bfloat16,
                    int,
-                   int64_t) {
+                   int64_t,
+                   phi::complex64,
+                   phi::complex128) {
   kernel->OutputAt(0).SetDataType(phi::DataType::BOOL);
 }
+
+#ifdef _WIN32
+namespace phi {
+INSTANTIATE_ISFINITE_KERNEL_Isnan(float, CPUContext);
+INSTANTIATE_ISFINITE_KERNEL_Isnan(double, CPUContext);
+INSTANTIATE_ISFINITE_KERNEL_Isnan(int, CPUContext);
+INSTANTIATE_ISFINITE_KERNEL_Isnan(int64_t, CPUContext);
+INSTANTIATE_ISFINITE_KERNEL_Isnan(float16, CPUContext);
+INSTANTIATE_ISFINITE_KERNEL_Isnan(bfloat16, CPUContext);
+INSTANTIATE_ISFINITE_KERNEL_Isnan(complex64, CPUContext);
+INSTANTIATE_ISFINITE_KERNEL_Isnan(complex128, CPUContext);
+
+INSTANTIATE_ISFINITE_KERNEL_Isinf(float, CPUContext);
+INSTANTIATE_ISFINITE_KERNEL_Isinf(double, CPUContext);
+INSTANTIATE_ISFINITE_KERNEL_Isinf(int, CPUContext);
+INSTANTIATE_ISFINITE_KERNEL_Isinf(int64_t, CPUContext);
+INSTANTIATE_ISFINITE_KERNEL_Isinf(float16, CPUContext);
+INSTANTIATE_ISFINITE_KERNEL_Isinf(bfloat16, CPUContext);
+INSTANTIATE_ISFINITE_KERNEL_Isinf(complex64, CPUContext);
+INSTANTIATE_ISFINITE_KERNEL_Isinf(complex128, CPUContext);
+
+INSTANTIATE_ISFINITE_KERNEL_Isfinite(float, CPUContext);
+INSTANTIATE_ISFINITE_KERNEL_Isfinite(double, CPUContext);
+INSTANTIATE_ISFINITE_KERNEL_Isfinite(int, CPUContext);
+INSTANTIATE_ISFINITE_KERNEL_Isfinite(int64_t, CPUContext);
+INSTANTIATE_ISFINITE_KERNEL_Isfinite(float16, CPUContext);
+INSTANTIATE_ISFINITE_KERNEL_Isfinite(bfloat16, CPUContext);
+INSTANTIATE_ISFINITE_KERNEL_Isfinite(complex64, CPUContext);
+INSTANTIATE_ISFINITE_KERNEL_Isfinite(complex128, CPUContext);
+}  // namespace phi
+#endif

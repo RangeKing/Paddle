@@ -29,9 +29,112 @@ limitations under the License. */
 #include "paddle/phi/kernels/cast_kernel.h"
 #include "paddle/phi/kernels/funcs/math_function.h"
 #include "paddle/phi/kernels/funcs/sparse/common_shape.h"
+#include "paddle/phi/kernels/sparse/gpu/conv_host_buffer.h"
+
+#define BUILD_CUDA_TENSOR(T, vector, tensor)                                \
+  if (vector.size() <= 4) {                                                 \
+    switch (vector.size()) {                                                \
+      case 1:                                                               \
+        build_cuda_tensor<<<1, 32, 0, dev_ctx.stream()>>>(tensor.data<T>(), \
+                                                          vector[0]);       \
+        break;                                                              \
+      case 2:                                                               \
+        build_cuda_tensor<<<1, 32, 0, dev_ctx.stream()>>>(                  \
+            tensor.data<T>(), vector[0], vector[1]);                        \
+        break;                                                              \
+      case 3:                                                               \
+        build_cuda_tensor<<<1, 32, 0, dev_ctx.stream()>>>(                  \
+            tensor.data<T>(), vector[0], vector[1], vector[2]);             \
+        break;                                                              \
+      case 4:                                                               \
+        build_cuda_tensor<<<1, 32, 0, dev_ctx.stream()>>>(                  \
+            tensor.data<T>(), vector[0], vector[1], vector[2], vector[3]);  \
+        break;                                                              \
+      default:                                                              \
+        break;                                                              \
+    }                                                                       \
+  } else {                                                                  \
+    backends::gpu::GpuMemcpyAsync(tensor.data<T>(),                         \
+                                  vector.data(),                            \
+                                  vector.size() * sizeof(T),                \
+                                  gpuMemcpyHostToDevice,                    \
+                                  dev_ctx.stream());                        \
+  }
 
 namespace phi {
 namespace sparse {
+
+template <typename T>
+__global__ void build_cuda_tensor(T* data, const T elem0) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx < 1) {
+    data[idx] = elem0;
+  }
+}
+
+template <typename T>
+__global__ void build_cuda_tensor(T* data, const T elem0, const T elem1) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx < 2) {
+    switch (idx) {
+      case 0:
+        data[idx] = elem0;
+        break;
+      case 1:
+        data[idx] = elem1;
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+template <typename T>
+__global__ void build_cuda_tensor(T* data,
+                                  const T elem0,
+                                  const T elem1,
+                                  const T elem2) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx < 3) {
+    switch (idx) {
+      case 0:
+        data[idx] = elem0;
+        break;
+      case 1:
+        data[idx] = elem1;
+        break;
+      case 2:
+        data[idx] = elem2;
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+template <typename T>
+__global__ void build_cuda_tensor(
+    T* data, const T elem0, const T elem1, const T elem2, const T elem3) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx < 4) {
+    switch (idx) {
+      case 0:
+        data[idx] = elem0;
+        break;
+      case 1:
+        data[idx] = elem1;
+        break;
+      case 2:
+        data[idx] = elem2;
+        break;
+      case 3:
+        data[idx] = elem3;
+        break;
+      default:
+        break;
+    }
+  }
+}
 
 template <typename T>
 inline __device__ bool DevIsZero(const T* data, const int64_t cols) {
@@ -50,7 +153,7 @@ __global__ void GetNonZeroNums(const T* dense_data,
                                const int rows,
                                const int cols,
                                int* non_zero_num,
-                               int* temp_indexs) {
+                               int* temp_indices) {
   int tid = threadIdx.x + blockIdx.x * blockDim.x;
   __shared__ int counter;
   if (threadIdx.x == 0) counter = 0;
@@ -64,7 +167,7 @@ __global__ void GetNonZeroNums(const T* dense_data,
       atomicAdd(&counter, 1);
       index = i;
     }
-    temp_indexs[i] = index;
+    temp_indices[i] = index;
   }
   __syncthreads();
   if (threadIdx.x == 0) {
@@ -78,12 +181,12 @@ __global__ void GetNonZeroElementsAndIndices(const T* dense_data,
                                              const int64_t cols,
                                              const int64_t* x_dims,
                                              const int non_zero_num,
-                                             const int* indexs,
+                                             const int* sparse_indices,
                                              int64_t* indices,
                                              T* sparse_data) {
   int tid = threadIdx.x + blockIdx.x * blockDim.x;
   for (int i = tid; i < non_zero_num; i += gridDim.x * blockDim.x) {
-    int64_t sparse_index = indexs[i];
+    int64_t sparse_index = sparse_indices[i];
     int64_t x_index = sparse_index;
     for (int64_t j = sparse_dim - 1; j >= 0; j--) {
       indices[j * non_zero_num + i] = sparse_index % x_dims[j];
@@ -112,60 +215,59 @@ void DenseToCooKernel(const Context& dev_ctx,
   auto dims_2d = flatten_to_2d(x_dims, sparse_dim);
   const int rows = dims_2d[0];
   const int cols = dims_2d[1];
-  DenseTensor nums = phi::Empty<int32_t>(dev_ctx, {1});
-  DenseTensor d_x_dims = phi::Empty<int64_t>(dev_ctx, {x_dims.size()});
+  DenseTensor nums = Empty<int32_t>(dev_ctx, {1});
+  DenseTensor d_x_dims = Empty<int64_t>(dev_ctx, {x_dims.size()});
 
   // 1. get numbers of non zero elements, and get the index of non zero elements
   int* nums_ptr = nums.data<int>();
-  phi::backends::gpu::GpuMemsetAsync(
-      nums_ptr, 0, sizeof(int), dev_ctx.stream());
-  auto config = phi::backends::gpu::GetGpuLaunchConfig1D(dev_ctx, rows, 1);
+  backends::gpu::GpuMemsetAsync(nums_ptr, 0, sizeof(int), dev_ctx.stream());
+  auto config = backends::gpu::GetGpuLaunchConfig1D(dev_ctx, rows, 1);
 
-  DenseTensor temp_indexs = phi::Empty<int32_t>(dev_ctx, {rows});
-  int* temp_indexs_ptr = temp_indexs.data<int>();
+  DenseTensor temp_indices = Empty<int32_t>(dev_ctx, {rows});
+  int* temp_indices_ptr = temp_indices.data<int>();
 
   GetNonZeroNums<<<config.block_per_grid.x,
                    config.thread_per_block.x,
                    0,
                    dev_ctx.stream()>>>(
-      x_data, rows, cols, nums_ptr, temp_indexs_ptr);
+      x_data, rows, cols, nums_ptr, temp_indices_ptr);
 
 #ifdef PADDLE_WITH_HIP
   thrust::remove(thrust::hip::par.on(dev_ctx.stream()),
 #else
   thrust::remove(thrust::cuda::par.on(dev_ctx.stream()),
 #endif
-                 temp_indexs_ptr,
-                 temp_indexs_ptr + rows,
+                 temp_indices_ptr,
+                 temp_indices_ptr + rows,
                  -1);
 
   // 2. copy non_zero_num to host, copy x_dims to device
   int non_zero_num = 0;
-  phi::backends::gpu::GpuMemcpyAsync(&non_zero_num,
-                                     nums_ptr,
-                                     sizeof(int),
-                                     gpuMemcpyDeviceToHost,
-                                     dev_ctx.stream());
-  phi::backends::gpu::GpuMemcpyAsync(d_x_dims.data<int64_t>(),
-                                     x_dims.Get(),
-                                     x_dims.size() * sizeof(x_dims[0]),
-                                     gpuMemcpyHostToDevice,
-                                     dev_ctx.stream());
+  backends::gpu::GpuMemcpyAsync(&non_zero_num,
+                                nums_ptr,
+                                sizeof(int),
+                                gpuMemcpyDeviceToHost,
+                                dev_ctx.stream());
+  backends::gpu::GpuMemcpyAsync(d_x_dims.data<int64_t>(),
+                                x_dims.Get(),
+                                x_dims.size() * sizeof(x_dims[0]),
+                                gpuMemcpyHostToDevice,
+                                dev_ctx.stream());
 
   dev_ctx.Wait();  // wait the copy
 
   const auto values_dims =
-      phi::funcs::sparse::InferDenseDims(x_dims, sparse_dim, non_zero_num);
-  phi::DenseTensor indices = phi::Empty<int64_t>(
-      dev_ctx, {sparse_dim, static_cast<int64_t>(non_zero_num)});
+      funcs::sparse::InferDenseDims(x_dims, sparse_dim, non_zero_num);
+  DenseTensor indices =
+      Empty<int64_t>(dev_ctx, {sparse_dim, static_cast<int64_t>(non_zero_num)});
   int64_t* indices_data = indices.data<int64_t>();
-  phi::DenseTensor values;
+  DenseTensor values;
   values.Resize(values_dims);
   T* sparse_data = dev_ctx.template Alloc<T>(&values);
 
-  // 3. calc indices by indexs and get values by indexs
+  // 3. calc indices by indices and get values by indices
   if (non_zero_num > 0) {
-    config = phi::backends::gpu::GetGpuLaunchConfig1D(dev_ctx, non_zero_num, 1);
+    config = backends::gpu::GetGpuLaunchConfig1D(dev_ctx, non_zero_num, 1);
     GetNonZeroElementsAndIndices<<<config.block_per_grid.x,
                                    config.thread_per_block.x,
                                    0,
@@ -174,7 +276,7 @@ void DenseToCooKernel(const Context& dev_ctx,
                                                        cols,
                                                        d_x_dims.data<int64_t>(),
                                                        non_zero_num,
-                                                       temp_indexs_ptr,
+                                                       temp_indices_ptr,
                                                        indices_data,
                                                        sparse_data);
   }
@@ -227,11 +329,11 @@ void CsrToCooGPUKernel(const GPUContext& dev_ctx,
 
   if (x.nnz() <= 0) {
 #ifdef PADDLE_WITH_HIP
-    DenseTensor indices = phi::Empty<int>(dev_ctx, {sparse_dim, non_zero_num});
+    DenseTensor indices = Empty<int>(dev_ctx, {sparse_dim, non_zero_num});
 #else
-    DenseTensor indices = phi::Empty<IntT>(dev_ctx, {sparse_dim, non_zero_num});
+    DenseTensor indices = Empty<IntT>(dev_ctx, {sparse_dim, non_zero_num});
 #endif
-    DenseTensor values = phi::EmptyLike<T, GPUContext>(dev_ctx, x.values());
+    DenseTensor values = EmptyLike<T, GPUContext>(dev_ctx, x.values());
     out->SetMember(indices, values, x_dims, true);
     return;
   }
@@ -256,13 +358,13 @@ void CsrToCooGPUKernel(const GPUContext& dev_ctx,
   int rows = x_dims.size() == 2 ? x_dims[0] : x_dims[1];
 
 #ifdef PADDLE_WITH_HIP
-  DenseTensor indices = phi::Empty<int>(dev_ctx, {sparse_dim, non_zero_num});
+  DenseTensor indices = Empty<int>(dev_ctx, {sparse_dim, non_zero_num});
   int* coo_indices = indices.data<int>();
   int* coo_rows_data = coo_indices;
   int* coo_cols_data = coo_rows_data + non_zero_num;
 #else
-  DenseTensor indices = phi::Empty<IntT>(dev_ctx, {sparse_dim, non_zero_num});
-  DenseTensor offsets = phi::Empty<IntT>(dev_ctx, {batches});
+  DenseTensor indices = Empty<IntT>(dev_ctx, {sparse_dim, non_zero_num});
+  DenseTensor offsets = Empty<IntT>(dev_ctx, {batches});
   IntT* coo_indices = indices.data<IntT>();
   IntT* batch_ptr = x_dims.size() == 2 ? nullptr : coo_indices;
   IntT* coo_rows_data =
@@ -270,7 +372,7 @@ void CsrToCooGPUKernel(const GPUContext& dev_ctx,
   IntT* coo_cols_data = coo_rows_data + non_zero_num;
   IntT* offsets_ptr = batches == 1 ? nullptr : offsets.data<IntT>();
 #endif
-  DenseTensor values = phi::EmptyLike<T, GPUContext>(dev_ctx, csr_values);
+  DenseTensor values = EmptyLike<T, GPUContext>(dev_ctx, csr_values);
   T* coo_values_data = values.data<T>();
 
   if (batches > 1) {
@@ -279,7 +381,7 @@ void CsrToCooGPUKernel(const GPUContext& dev_ctx,
         "'rocsparse_csr2coo' only supports batches "
         "with a value of 1 currently."));
 #else
-    auto config = phi::backends::gpu::GetGpuLaunchConfig1D(dev_ctx, batches, 1);
+    auto config = backends::gpu::GetGpuLaunchConfig1D(dev_ctx, batches, 1);
     GetBatchSizes<IntT><<<config.block_per_grid.x, config.thread_per_block.x>>>(
         csr_crows_data, rows, batches, offsets_ptr);
 
@@ -300,26 +402,26 @@ void CsrToCooGPUKernel(const GPUContext& dev_ctx,
                                     rocsparse_index_base_zero);
   });
 #else
-  auto config = phi::backends::gpu::GetGpuLaunchConfig1D(dev_ctx, rows, 1);
+  auto config = backends::gpu::GetGpuLaunchConfig1D(dev_ctx, rows, 1);
   config.block_per_grid.y = batches;
   ConvertCsrCrowsToCooRows<IntT>
       <<<config.block_per_grid, config.thread_per_block.x>>>(
           csr_crows_data, offsets_ptr, coo_rows_data, batch_ptr, rows);
 #endif
-  phi::backends::gpu::GpuMemcpyAsync(coo_cols_data,
-                                     csr_cols_data,
+  backends::gpu::GpuMemcpyAsync(coo_cols_data,
+                                csr_cols_data,
 #ifdef PADDLE_WITH_HIP
-                                     sizeof(int) * non_zero_num,
+                                sizeof(int) * non_zero_num,
 #else
-                                     sizeof(IntT) * non_zero_num,
+                                sizeof(IntT) * non_zero_num,
 #endif
-                                     gpuMemcpyDeviceToDevice,
-                                     dev_ctx.stream());
-  phi::backends::gpu::GpuMemcpyAsync(coo_values_data,
-                                     csr_values_data,
-                                     sizeof(T) * non_zero_num,
-                                     gpuMemcpyDeviceToDevice,
-                                     dev_ctx.stream());
+                                gpuMemcpyDeviceToDevice,
+                                dev_ctx.stream());
+  backends::gpu::GpuMemcpyAsync(coo_values_data,
+                                csr_values_data,
+                                sizeof(T) * non_zero_num,
+                                gpuMemcpyDeviceToDevice,
+                                dev_ctx.stream());
 
 #ifdef PADDLE_WITH_HIP
   if (std::is_same<IntT, int64_t>::value)
@@ -412,9 +514,9 @@ void CooToCsrGPUKernel(const GPUContext& dev_ctx,
   int batches = x_dims.size() == 2 ? 1 : x_dims[0];
   int rows = x_dims.size() == 2 ? x_dims[0] : x_dims[1];
 
-  phi::DenseTensor crows = phi::Empty<IntT>(dev_ctx, {batches * (rows + 1)});
-  phi::DenseTensor cols = phi::Empty<IntT>(dev_ctx, {non_zero_num});
-  phi::DenseTensor values = phi::EmptyLike<T, GPUContext>(dev_ctx, x.values());
+  DenseTensor crows = Empty<IntT>(dev_ctx, {batches * (rows + 1)});
+  DenseTensor cols = Empty<IntT>(dev_ctx, {non_zero_num});
+  DenseTensor values = EmptyLike<T, GPUContext>(dev_ctx, x.values());
   if (non_zero_num <= 0) {
     out->SetMember(crows, cols, values, x_dims);
     return;
@@ -431,13 +533,12 @@ void CooToCsrGPUKernel(const GPUContext& dev_ctx,
   const IntT* coo_cols_data = coo_rows_data + non_zero_num;
   const T* coo_values_data = coo_values.data<T>();
 
-  auto config = phi::backends::gpu::GetGpuLaunchConfig1D(dev_ctx, batches, 1);
+  auto config = backends::gpu::GetGpuLaunchConfig1D(dev_ctx, batches, 1);
   if (batches > 1) {
-    auto config =
-        phi::backends::gpu::GetGpuLaunchConfig1D(dev_ctx, non_zero_num, 1);
-    phi::DenseTensor batches_offset = phi::Empty<int>(dev_ctx, {batches});
+    auto config = backends::gpu::GetGpuLaunchConfig1D(dev_ctx, non_zero_num, 1);
+    DenseTensor batches_offset = Empty<int>(dev_ctx, {batches});
     int* batches_offset_ptr = batches_offset.data<int>();
-    phi::funcs::SetConstant<GPUContext, int> set_zero;
+    funcs::SetConstant<GPUContext, int> set_zero;
     // set zero if the nnz=0 of batches[0]
     set_zero(dev_ctx, &batches_offset, static_cast<IntT>(0));
     GetBatchesOffset<IntT><<<config.block_per_grid.x,
@@ -460,16 +561,16 @@ void CooToCsrGPUKernel(const GPUContext& dev_ctx,
         nullptr, coo_rows_data, csr_crows_data, rows, non_zero_num);
   }
 
-  phi::backends::gpu::GpuMemcpyAsync(csr_cols_data,
-                                     coo_cols_data,
-                                     sizeof(IntT) * non_zero_num,
-                                     gpuMemcpyDeviceToDevice,
-                                     dev_ctx.stream());
-  phi::backends::gpu::GpuMemcpyAsync(csr_values_data,
-                                     coo_values_data,
-                                     sizeof(T) * non_zero_num,
-                                     gpuMemcpyDeviceToDevice,
-                                     dev_ctx.stream());
+  backends::gpu::GpuMemcpyAsync(csr_cols_data,
+                                coo_cols_data,
+                                sizeof(IntT) * non_zero_num,
+                                gpuMemcpyDeviceToDevice,
+                                dev_ctx.stream());
+  backends::gpu::GpuMemcpyAsync(csr_values_data,
+                                coo_values_data,
+                                sizeof(T) * non_zero_num,
+                                gpuMemcpyDeviceToDevice,
+                                dev_ctx.stream());
   out->SetMember(crows, cols, values, x_dims);
 }
 
@@ -522,7 +623,7 @@ void CooToDenseGPUKernel(const GPUContext& dev_ctx,
   dev_ctx.template Alloc<T>(out);
 
   T* out_data = out->data<T>();
-  phi::backends::gpu::GpuMemsetAsync(
+  backends::gpu::GpuMemsetAsync(
       out_data, 0, sizeof(T) * out->numel(), dev_ctx.stream());
 
   if (x.nnz() <= 0) {
@@ -543,14 +644,9 @@ void CooToDenseGPUKernel(const GPUContext& dev_ctx,
 
   DenseTensor d_sparse_offsets = Empty<int64_t>(dev_ctx, {sparse_dim});
 
-  phi::backends::gpu::GpuMemcpyAsync(d_sparse_offsets.data<int64_t>(),
-                                     sparse_offsets.data(),
-                                     sparse_dim * sizeof(int64_t),
-                                     gpuMemcpyHostToDevice,
-                                     dev_ctx.stream());
+  BUILD_CUDA_TENSOR(int64_t, sparse_offsets, d_sparse_offsets);
 
-  auto config =
-      phi::backends::gpu::GetGpuLaunchConfig1D(dev_ctx, non_zero_num, 1);
+  auto config = backends::gpu::GetGpuLaunchConfig1D(dev_ctx, non_zero_num, 1);
 
   KernelCooToDense<T, IntT>
       <<<config.block_per_grid.x,
@@ -563,6 +659,9 @@ void CooToDenseGPUKernel(const GPUContext& dev_ctx,
                              non_zero_num,
                              base_offset,
                              sparse_dim);
+  phi::sparse::ConvHostBuffer& conv_host_buffer =
+      phi::sparse::ConvHostBuffer::getInstance();
+  conv_host_buffer.reset();
 }
 
 template <typename T, typename Context>
@@ -573,6 +672,15 @@ void CooToDenseKernel(const Context& dev_ctx,
       x.indices().dtype(), "CooToDenseGPUKernel", ([&] {
         CooToDenseGPUKernel<T, data_t>(dev_ctx, x, out);
       }));
+
+  // Set proper dense layout after conversion from sparse
+  // SparseCooTensor uses SPARSE_COO layout, but DenseTensor should use
+  // a standard dense layout (NCHW, NHWC, etc.)
+  if (out->meta().layout == DataLayout::SPARSE_COO ||
+      out->meta().layout == DataLayout::SPARSE_CSR) {
+    // Default to NCHW for dense tensors
+    out->set_meta(DenseTensorMeta(out->dtype(), out->dims(), DataLayout::NCHW));
+  }
 }
 
 }  // namespace sparse
@@ -584,14 +692,14 @@ PD_REGISTER_KERNEL(dense_to_coo,
                    phi::sparse::DenseToCooKernel,
                    float,
                    double,
-                   phi::dtype::float16,
+                   phi::float16,
                    uint8_t,
                    int8_t,
                    int16_t,
                    int,
                    int64_t,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::complex64,
+                   phi::complex128) {}
 
 PD_REGISTER_KERNEL(csr_to_coo,
                    GPU,
@@ -599,15 +707,15 @@ PD_REGISTER_KERNEL(csr_to_coo,
                    phi::sparse::CsrToCooKernel,
                    float,
                    double,
-                   phi::dtype::float16,
+                   phi::float16,
                    uint8_t,
                    int8_t,
                    int16_t,
                    int,
                    int64_t,
                    bool,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::complex64,
+                   phi::complex128) {}
 
 PD_REGISTER_KERNEL(coo_to_csr,
                    GPU,
@@ -615,15 +723,15 @@ PD_REGISTER_KERNEL(coo_to_csr,
                    phi::sparse::CooToCsrKernel,
                    float,
                    double,
-                   phi::dtype::float16,
+                   phi::float16,
                    uint8_t,
                    int8_t,
                    int16_t,
                    int,
                    int64_t,
                    bool,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::complex64,
+                   phi::complex128) {}
 
 PD_REGISTER_KERNEL(dense_to_csr,
                    GPU,
@@ -631,14 +739,14 @@ PD_REGISTER_KERNEL(dense_to_csr,
                    phi::sparse::DenseToCsrKernel,
                    float,
                    double,
-                   phi::dtype::float16,
+                   phi::float16,
                    uint8_t,
                    int8_t,
                    int16_t,
                    int,
                    int64_t,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::complex64,
+                   phi::complex128) {}
 
 PD_REGISTER_KERNEL(coo_to_dense,
                    GPU,
@@ -646,15 +754,15 @@ PD_REGISTER_KERNEL(coo_to_dense,
                    phi::sparse::CooToDenseKernel,
                    float,
                    double,
-                   phi::dtype::float16,
+                   phi::float16,
                    uint8_t,
                    int8_t,
                    int16_t,
                    int,
                    int64_t,
                    bool,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::complex64,
+                   phi::complex128) {}
 
 PD_REGISTER_KERNEL(csr_to_dense,
                    GPU,
@@ -662,15 +770,15 @@ PD_REGISTER_KERNEL(csr_to_dense,
                    phi::sparse::CsrToDenseKernel,
                    float,
                    double,
-                   phi::dtype::float16,
+                   phi::float16,
                    uint8_t,
                    int8_t,
                    int16_t,
                    int,
                    int64_t,
                    bool,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::complex64,
+                   phi::complex128) {}
 
 PD_REGISTER_KERNEL(values_coo,
                    GPU,
@@ -678,15 +786,15 @@ PD_REGISTER_KERNEL(values_coo,
                    phi::sparse::ValuesCooKernel,
                    float,
                    double,
-                   phi::dtype::float16,
+                   phi::float16,
                    uint8_t,
                    int8_t,
                    int16_t,
                    int,
                    int64_t,
                    bool,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {
+                   phi::complex64,
+                   phi::complex128) {
   kernel->InputAt(0).SetDataLayout(phi::DataLayout::SPARSE_COO);
 }
 
@@ -696,15 +804,15 @@ PD_REGISTER_KERNEL(values_csr,
                    phi::sparse::ValuesCsrKernel,
                    float,
                    double,
-                   phi::dtype::float16,
+                   phi::float16,
                    uint8_t,
                    int8_t,
                    int16_t,
                    int,
                    int64_t,
                    bool,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {
+                   phi::complex64,
+                   phi::complex128) {
   kernel->InputAt(0).SetDataLayout(phi::DataLayout::SPARSE_CSR);
 }
 
@@ -714,7 +822,7 @@ PD_REGISTER_KERNEL(indices_coo,
                    phi::sparse::IndicesCooKernel,
                    float,
                    double,
-                   phi::dtype::float16,
+                   phi::float16,
                    uint8_t,
                    int8_t,
                    int16_t,
@@ -729,10 +837,10 @@ PD_REGISTER_KERNEL(sparse_coo_tensor,
                    phi::sparse::SparseCooTensorKernel,
                    float,
                    double,
-                   phi::dtype::float16,
+                   phi::float16,
                    uint8_t,
                    int16_t,
                    int,
                    int64_t,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::complex64,
+                   phi::complex128) {}

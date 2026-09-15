@@ -54,8 +54,7 @@ static std::unordered_set<std::string> ReaderOpSet() {
 
 class CompiledProgramPrivate {
  public:
-  CompiledProgramPrivate(const std::vector<phi::Place> &places,
-                         Scope *global_scope)
+  CompiledProgramPrivate(const std::vector<Place> &places, Scope *global_scope)
       : places_(places), global_scope_(global_scope) {}
 
   ~CompiledProgramPrivate() {
@@ -313,7 +312,7 @@ class CompiledProgramPrivate {
 #endif
 
   BuildStrategy build_strategy_;
-  std::vector<phi::Place> places_;
+  std::vector<Place> places_;
   std::vector<Scope *> local_scopes_;
   Scope *global_scope_;  // not owned
 
@@ -323,7 +322,7 @@ class CompiledProgramPrivate {
   platform::BKCLCommunicator *bkcl_ctxs_{nullptr};
 #endif
   bool own_local_scope_;
-  DeviceType use_device_ = p::kCUDA;
+  DeviceType use_device_ = kCUDA;
   bool use_all_reduce_;
   size_t nranks_;
 
@@ -332,7 +331,7 @@ class CompiledProgramPrivate {
 };
 
 bool CompiledProgramPrivate::IsUseCUDA(DeviceType use_device) {
-  return use_device == p::kCUDA;
+  return use_device == kCUDA;
 }
 
 ir::Graph *CompiledProgramPrivate::ApplyMemoryOptimizePass(ir::Graph *graph) {
@@ -425,7 +424,7 @@ std::vector<Scope *> &CompiledProgram::GetLocalScopes() {
   return member_->local_scopes_;
 }
 
-void InitP2P(const std::vector<phi::Place> &places) {
+void InitP2P(const std::vector<Place> &places) {
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
   std::call_once(p2p_init_flag, [&]() {
     int count = places.size();
@@ -435,7 +434,7 @@ void InitP2P(const std::vector<phi::Place> &places) {
     for (int i = 0; i < count; i++) {
       if (!phi::is_gpu_place(places[i])) return;
 
-      phi::GPUPlace device = places[i];
+      GPUPlace device = places[i];
       devices.push_back(device.GetDeviceId());
     }
 
@@ -469,7 +468,7 @@ void InitP2P(const std::vector<phi::Place> &places) {
 #endif
 }
 
-CompiledProgram::CompiledProgram(const std::vector<phi::Place> &places,
+CompiledProgram::CompiledProgram(const std::vector<Place> &places,
                                  const std::vector<std::string> &bcast_vars,
                                  const std::string &loss_var_name,
                                  Scope *scope,
@@ -521,11 +520,11 @@ void CompiledProgram::BCastParamsToDevices(const std::vector<std::string> &vars,
   // the initializing bcast, all vars would be bcast from device(0).
   for (auto &var : vars) {
     framework::Variable *main_var = member_->local_scopes_[0]->FindVar(var);
-    if (main_var == nullptr || !main_var->IsType<phi::DenseTensor>()) {
+    if (main_var == nullptr || !main_var->IsType<DenseTensor>()) {
       continue;
     }
 
-    auto &main_tensor = main_var->Get<phi::DenseTensor>();
+    auto &main_tensor = main_var->Get<DenseTensor>();
     if (!main_tensor.IsInitialized()) {
       VLOG(3) << "one in var not inited, return!";
       continue;
@@ -546,7 +545,7 @@ void CompiledProgram::BCastParamsToDevices(const std::vector<std::string> &vars,
           buffer = const_cast<void *>(main_tensor.data());
         } else {
           auto local_scope = member_->local_scopes_[i];
-          auto *t = local_scope->Var(var)->GetMutable<phi::DenseTensor>();
+          auto *t = local_scope->Var(var)->GetMutable<DenseTensor>();
           t->Resize(dims);
           buffer = t->mutable_data(place, main_tensor.dtype());
         }
@@ -609,7 +608,7 @@ void CompiledProgram::BCastParamsToDevices(const std::vector<std::string> &vars,
           buffer = const_cast<void *>(main_tensor.data());
         } else {
           auto local_scope = member_->local_scopes_[i];
-          auto *t = local_scope->Var(var)->GetMutable<phi::DenseTensor>();
+          auto *t = local_scope->Var(var)->GetMutable<DenseTensor>();
           t->Resize(dims);
           buffer = t->mutable_data(place, main_tensor.dtype());
         }
@@ -646,10 +645,10 @@ void CompiledProgram::BCastParamsToDevices(const std::vector<std::string> &vars,
           common::errors::PreconditionNotMet("Not compiled with BKCL."));
 #endif
     } else {
-      phi::CPUPlace cpu;
+      CPUPlace cpu;
       for (size_t i = 1; i < member_->places_.size(); ++i) {
         auto local_scope = member_->local_scopes_[i];
-        auto *t = local_scope->Var(var)->GetMutable<phi::DenseTensor>();
+        auto *t = local_scope->Var(var)->GetMutable<DenseTensor>();
 
         auto copy_memory = [&] {
           t->Resize(dims);
@@ -716,11 +715,11 @@ void CompiledProgram::InitProgramPrivateMemberInfo(
 #endif
 
   std::string device_name;
-  if (member_->use_device_ == p::kCPU) {
+  if (member_->use_device_ == kCPU) {
     device_name = "CPU";
-  } else if (member_->use_device_ == p::kCUDA) {
+  } else if (member_->use_device_ == kCUDA) {
     device_name = "CUDA";
-  } else if (member_->use_device_ == p::kXPU) {
+  } else if (member_->use_device_ == kXPU) {
     device_name = "XPU";
   } else {
     PADDLE_THROW(
@@ -827,7 +826,7 @@ void CompiledProgram::PrepareNCCLCommunicator(Scope *global_scope) {
     PADDLE_THROW(common::errors::PreconditionNotMet("Not compiled with CUDA."));
 #endif
   }
-  if (member_->use_device_ == p::kXPU && member_->nranks_ > 1) {
+  if (member_->use_device_ == kXPU && member_->nranks_ > 1) {
 #if defined(PADDLE_WITH_XPU_BKCL)
     member_->InitOrGetBKCLCommunicator(global_scope, member_->build_strategy_);
 

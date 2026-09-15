@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from typing import Callable, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 from typing_extensions import ParamSpec
 
@@ -23,12 +23,12 @@ import paddle
 from .opcode_translator import eval_frame_callback
 from .profiler import SotStepProfilerGuard
 from .utils import (
-    GraphLogger,
     InfoCollector,
     StepInfoManager,
-    StepState,
-    log_do,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -49,7 +49,7 @@ def symbolic_translate(fn: Callable[P, R], **kwargs) -> Callable[P, R]:
         Callable, The wrapped function.
 
     Examples:
-        >>> # doctest: +SKIP("Cound not get source code of function foo."")
+        >>> # doctest: +SKIP("Could not get source code of function foo."")
         >>> import paddle
         >>> import numpy as np
         >>> from sot.translate import symbolic_translate
@@ -72,9 +72,7 @@ def symbolic_translate(fn: Callable[P, R], **kwargs) -> Callable[P, R]:
         >>> symbolic_translate_out
         Tensor(shape=[], dtype=int64, place=Place(cpu), stop_gradient=True,
         2)
-        >>> np.testing.assert_allclose(
-        ...     dygraph_out.numpy(), symbolic_translate_out.numpy()
-        ... )
+        >>> np.testing.assert_allclose(dygraph_out.numpy(), symbolic_translate_out.numpy())
         >>> # For the false branch, the output is 0.
         >>> cond = paddle.to_tensor(False)
         >>> dygraph_out = foo(cond, x)
@@ -85,53 +83,36 @@ def symbolic_translate(fn: Callable[P, R], **kwargs) -> Callable[P, R]:
         >>> symbolic_translate_out
         Tensor(shape=[], dtype=int64, place=Place(cpu), stop_gradient=True,
         0)
-        >>> np.testing.assert_allclose(
-        ...     dygraph_out.numpy(), symbolic_translate_out.numpy()
-        ... )
+        >>> np.testing.assert_allclose(dygraph_out.numpy(), symbolic_translate_out.numpy())
 
     """
+
+    if not paddle.framework.use_pir_api():
+        raise RuntimeError(
+            "SOT is only supported when running in PIR mode. Please set the environment variable "
+            "FLAGS_enable_pir_api=1 to enable it."
+        )
 
     kwargs.setdefault('training', True)
 
     def callback(frame):
         return eval_frame_callback(frame, **kwargs)
 
-    def impl_sot(*args: P.args, **kwargs: P.kwargs) -> R:
-        assert hasattr(
-            fn, "__code__"
-        ), "Target function doesn't have code for simulating."
-        StepInfoManager().sot_step()
-        GraphLogger().clear()
-        InfoCollector().clear()
-        paddle.framework.core.set_eval_frame(callback)
-        try:
-            outs = fn(*args, **kwargs)
-        except Exception as e:
-            raise e
-        finally:
-            paddle.framework.core.set_eval_frame(None)
-
-        log_do(1, lambda: GraphLogger().print_info())
-        InfoCollector().print_report()
-        return outs
-
-    def impl_dynamic(*args: P.args, **kwargs: P.kwargs) -> R:
-        outs = fn(*args, **kwargs)
-        return outs
-
     def impl(*args: P.args, **kwargs: P.kwargs) -> R:
+        assert hasattr(fn, "__code__"), (
+            "Target function doesn't have code for simulating."
+        )
         with StepInfoManager().step_guard(fn.__code__), SotStepProfilerGuard():
-            state = StepInfoManager().current_state
+            InfoCollector().clear_step_info()
+            paddle.framework.core.set_eval_frame(callback)
+            try:
+                outs = fn(*args, **kwargs)
+            except Exception as e:
+                raise e
+            finally:
+                paddle.framework.core.set_eval_frame(None)
 
-            if state == StepState.RUN_SOT:
-                return impl_sot(*args, **kwargs)
-            elif state == StepState.RUN_DYN:
-                return impl_dynamic(*args, **kwargs)
-            elif state == StepState.COLLECT_INFO:
-                return StepInfoManager().collect_info(
-                    impl_dynamic, impl_sot, *args, **kwargs
-                )
-            else:
-                raise RuntimeError("Unknown state.")
+            InfoCollector().print_step_report()
+            return outs
 
     return impl

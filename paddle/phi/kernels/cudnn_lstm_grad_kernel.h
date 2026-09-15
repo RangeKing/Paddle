@@ -21,12 +21,12 @@ namespace phi {
 
 template <typename T, typename Context>
 void CudnnLSTMGradKernel(
-    const Context& ctx,
+    const Context& dev_ctx,
     const DenseTensor& x,
     const DenseTensor& init_h,
     const DenseTensor& init_c,
-    const paddle::optional<std::vector<const DenseTensor*>>& weight_list,
-    const paddle::optional<DenseTensor>& sequence_length,
+    const optional<std::vector<const DenseTensor*>>& weight_list,
+    const optional<DenseTensor>& sequence_length,
     const DenseTensor& out,
     const DenseTensor& reserve,
     const DenseTensor& state_out,

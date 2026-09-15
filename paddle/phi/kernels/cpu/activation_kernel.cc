@@ -16,6 +16,7 @@ limitations under the License. */
 
 #include "paddle/phi/backends/cpu/cpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/activation_functor.h"
 #include "paddle/phi/kernels/impl/activation_impl.h"
 
@@ -55,6 +56,19 @@ namespace phi {
         dev_ctx, x, out, functor);                                      \
   }
 
+#define DEFINE_CPU_ACT_KERNEL_WITH_ONE_DOUBLE_ATTRS(name, functor_class, attr) \
+  template <typename T, typename Context>                                      \
+  void name##Kernel(const Context& dev_ctx,                                    \
+                    const DenseTensor& x,                                      \
+                    double attr,                                               \
+                    DenseTensor* out) {                                        \
+    funcs::functor_class<T> functor;                                           \
+    auto attrs = functor.GetAttrs();                                           \
+    *(attrs[0].second) = attr;                                                 \
+    ActivationImpl<T, T, Context, funcs::functor_class<T>>(                    \
+        dev_ctx, x, out, functor);                                             \
+  }
+
 #define DEFINE_CPU_ACT_KERNEL_WITH_TWO_ATTRS(               \
     name, functor_class, attr1, attr2)                      \
   template <typename T, typename Context>                   \
@@ -71,8 +85,52 @@ namespace phi {
         dev_ctx, x, out, functor);                          \
   }
 
-DEFINE_CPU_ACTIVATION_KERNEL(Sin, SinFunctor)
-DEFINE_CPU_ACTIVATION_KERNEL(Cos, CosFunctor)
+#define DEFINE_CPU_ACT_KERNEL_WITH_TWO_DOUBLE_ATTRS(        \
+    name, functor_class, attr1, attr2)                      \
+  template <typename T, typename Context>                   \
+  void name##Kernel(const Context& dev_ctx,                 \
+                    const DenseTensor& x,                   \
+                    double attr1,                           \
+                    double attr2,                           \
+                    DenseTensor* out) {                     \
+    funcs::functor_class<T> functor;                        \
+    auto attrs = functor.GetAttrs();                        \
+    *(attrs[0].second) = attr1;                             \
+    *(attrs[1].second) = attr2;                             \
+    ActivationImpl<T, T, Context, funcs::functor_class<T>>( \
+        dev_ctx, x, out, functor);                          \
+  }
+
+// Specialized Sin kernel with vectorized Sleef implementation for float/double
+// This ensures high precision computation
+template <typename T, typename Context>
+void SinKernel(const Context& dev_ctx, const DenseTensor& x, DenseTensor* out) {
+  if constexpr (std::is_same<T, float>::value ||
+                std::is_same<T, double>::value) {
+    // Use vectorized Sleef path for float/double for high precision
+    VectorizedSinImpl<T, Context>(dev_ctx, x, out);
+  } else {
+    // Use generic path for other types (float16, bfloat16, complex)
+    funcs::SinFunctor<T> functor;
+    ActivationImpl<T, T, Context, funcs::SinFunctor<T>>(
+        dev_ctx, x, out, functor);
+  }
+}
+
+// Specialized Cos kernel with vectorized Sleef implementation for float/double
+template <typename T, typename Context>
+void CosKernel(const Context& dev_ctx, const DenseTensor& x, DenseTensor* out) {
+  if constexpr (std::is_same<T, float>::value ||
+                std::is_same<T, double>::value) {
+    // Use vectorized Sleef path for float/double for high precision
+    VectorizedCosImpl<T, Context>(dev_ctx, x, out);
+  } else {
+    // Use generic path for other types (float16, bfloat16, complex)
+    funcs::CosFunctor<T> functor;
+    ActivationImpl<T, T, Context, funcs::CosFunctor<T>>(
+        dev_ctx, x, out, functor);
+  }
+}
 DEFINE_CPU_ACTIVATION_KERNEL(Tan, TanFunctor)
 DEFINE_CPU_ACTIVATION_KERNEL(Asin, AsinFunctor)
 DEFINE_CPU_ACTIVATION_KERNEL(Atan, AtanFunctor)
@@ -96,15 +154,32 @@ DEFINE_CPU_ACTIVATION_KERNEL(LogSigmoid, LogSigmoidFunctor)
 DEFINE_CPU_ACTIVATION_KERNEL(Floor, FloorFunctor)
 DEFINE_CPU_ACTIVATION_KERNEL(Ceil, CeilFunctor)
 DEFINE_CPU_ACTIVATION_KERNEL(Negative, NegativeFunctor)
+DEFINE_CPU_ACTIVATION_KERNEL(Rint, RintFunctor)
 
 DEFINE_CPU_ACTIVATION_KERNEL_WITH_INT_IN_FLOAT_OUT(Log, LogFunctor)
 DEFINE_CPU_ACTIVATION_KERNEL_WITH_INT_IN_FLOAT_OUT(Log2, Log2Functor)
 DEFINE_CPU_ACTIVATION_KERNEL_WITH_INT_IN_FLOAT_OUT(Log10, Log10Functor)
 DEFINE_CPU_ACTIVATION_KERNEL_WITH_INT_IN_FLOAT_OUT(Log1p, Log1pFunctor)
-DEFINE_CPU_ACTIVATION_KERNEL_WITH_INT_IN_FLOAT_OUT(Exp, ExpFunctor)
 DEFINE_CPU_ACTIVATION_KERNEL_WITH_INT_IN_FLOAT_OUT(Expm1, Expm1Functor)
 
-DEFINE_CPU_ACT_KERNEL_WITH_ONE_ATTRS(LeakyRelu, LeakyReluFunctor, alpha)
+// Specialized Exp kernel with vectorized MKL VML/Sleef implementation
+// for float/double. This ensures high precision computation.
+template <typename T, typename Context>
+void ExpKernel(const Context& dev_ctx, const DenseTensor& x, DenseTensor* out) {
+  if constexpr (std::is_same<T, float>::value ||
+                std::is_same<T, double>::value) {
+    // Use vectorized MKL VML/Sleef path for float/double for high precision
+    VectorizedExpImpl<T, Context>(dev_ctx, x, out);
+  } else {
+    // Use generic path for other types (int, int64, float16, complex)
+    funcs::ExpFunctor<T> functor;
+    using U = typename std::conditional_t<std::is_integral<T>::value, float, T>;
+    ActivationImpl<T, U, Context, funcs::ExpFunctor<T>>(
+        dev_ctx, x, out, functor);
+  }
+}
+
+DEFINE_CPU_ACT_KERNEL_WITH_ONE_DOUBLE_ATTRS(LeakyRelu, LeakyReluFunctor, alpha)
 DEFINE_CPU_ACT_KERNEL_WITH_ONE_ATTRS(Mish, MishFunctor, threshold)
 DEFINE_CPU_ACT_KERNEL_WITH_ONE_ATTRS(HardShrink, HardShrinkFunctor, threshold)
 DEFINE_CPU_ACT_KERNEL_WITH_ONE_ATTRS(SoftShrink, SoftShrinkFunctor, lambda)
@@ -113,7 +188,10 @@ DEFINE_CPU_ACT_KERNEL_WITH_ONE_ATTRS(Celu, CELUFunctor, alpha)
 
 DEFINE_CPU_ACT_KERNEL_WITH_TWO_ATTRS(HardTanh, HardTanhFunctor, t_min, t_max)
 DEFINE_CPU_ACT_KERNEL_WITH_TWO_ATTRS(STanh, STanhFunctor, scale_a, scale_b)
-DEFINE_CPU_ACT_KERNEL_WITH_TWO_ATTRS(Softplus, SoftplusFunctor, beta, threshold)
+DEFINE_CPU_ACT_KERNEL_WITH_TWO_DOUBLE_ATTRS(Softplus,
+                                            SoftplusFunctor,
+                                            beta,
+                                            threshold)
 DEFINE_CPU_ACT_KERNEL_WITH_TWO_ATTRS(HardSigmoid,
                                      HardSigmoidFunctor,
                                      slope,
@@ -173,6 +251,34 @@ void RoundKernel(const Context& dev_ctx,
       dev_ctx, x, out, functor);
 }
 
+template <typename T, typename Context>
+void PowKernel(const Context& dev_ctx,
+               const DenseTensor& x,
+               const Scalar& factor,
+               DenseTensor* out) {
+  PADDLE_ENFORCE_NOT_NULL(
+      out, errors::InvalidArgument("Output Out should not be nullptr"));
+  dev_ctx.template Alloc<T>(out);
+  if (factor.to<float>() == 0) {
+    std::vector<int64_t> vec_dims = vectorize(out->dims());
+    Full<T, Context>(dev_ctx, vec_dims, static_cast<T>(1), out);
+    return;
+  }
+  if (factor.to<float>() == 1) {
+    Copy<Context>(dev_ctx, x, dev_ctx.GetPlace(), false, out);
+    return;
+  }
+  auto x_flatten =
+      EigenVector<T>::Flatten(GET_DATA_SAFELY(&x, "Input", "X", "Activation"));
+  auto out_flatten = EigenVector<T>::Flatten(
+      GET_DATA_SAFELY(out, "Output", "Out", "Activation"));
+  auto* place = dev_ctx.eigen_device();
+  funcs::PowFunctor<T> functor;
+  auto attrs = functor.GetAttrs();
+  *(attrs[0].second) = factor.to<float>();
+  functor(*place, x_flatten, out_flatten);
+}
+
 }  // namespace phi
 PD_REGISTER_KERNEL(relu, CPU, ALL_LAYOUT, phi::ReluKernel, float, double) {}
 
@@ -186,8 +292,8 @@ PD_REGISTER_KERNEL(relu, CPU, ALL_LAYOUT, phi::ReluKernel, float, double) {}
                      phi::func,                                \
                      float,                                    \
                      double,                                   \
-                     phi::dtype::complex<float>,               \
-                     phi::dtype::complex<double>) {}
+                     phi::complex64,                           \
+                     phi::complex128) {}
 
 PD_REGISTER_ACTIVATION_KERNEL_WITH_COMPLEX(sin, SinKernel)
 PD_REGISTER_ACTIVATION_KERNEL_WITH_COMPLEX(cos, CosKernel)
@@ -212,9 +318,32 @@ PD_REGISTER_ACTIVATION_KERNEL_WITH_COMPLEX(silu, SiluKernel)
 PD_REGISTER_ACTIVATION_KERNEL(mish, MishKernel)
 PD_REGISTER_ACTIVATION_KERNEL_WITH_COMPLEX(stanh, STanhKernel)
 PD_REGISTER_ACTIVATION_KERNEL_WITH_COMPLEX(reciprocal, ReciprocalKernel)
-PD_REGISTER_ACTIVATION_KERNEL(sqrt, SqrtKernel)
+PD_REGISTER_ACTIVATION_KERNEL_WITH_COMPLEX(sqrt, SqrtKernel)
 PD_REGISTER_ACTIVATION_KERNEL(rsqrt, RsqrtKernel)
 PD_REGISTER_ACTIVATION_KERNEL_WITH_COMPLEX(softplus, SoftplusKernel)
+PD_REGISTER_ACTIVATION_KERNEL(logit, LogitKernel)
+PD_REGISTER_ACTIVATION_KERNEL_WITH_COMPLEX(softsign, SoftsignKernel)
+PD_REGISTER_ACTIVATION_KERNEL_WITH_COMPLEX(sigmoid, SigmoidKernel)
+PD_REGISTER_ACTIVATION_KERNEL_WITH_COMPLEX(logsigmoid, LogSigmoidKernel)
+PD_REGISTER_ACTIVATION_KERNEL(hardsigmoid, HardSigmoidKernel)
+PD_REGISTER_ACTIVATION_KERNEL(swish, SwishKernel)
+PD_REGISTER_ACTIVATION_KERNEL(relu6, Relu6Kernel)
+PD_REGISTER_ACTIVATION_KERNEL_WITH_COMPLEX(hardswish, HardSwishKernel)
+PD_REGISTER_ACTIVATION_KERNEL(celu, CeluKernel)
+
+PD_REGISTER_KERNEL(
+    rint, CPU, ALL_LAYOUT, phi::RintKernel, int, int64_t, float, double) {}
+
+PD_REGISTER_KERNEL(round,
+                   CPU,
+                   ALL_LAYOUT,
+                   phi::RoundKernel,
+                   int,
+                   int64_t,
+                   float,
+                   double,
+                   phi::complex64,
+                   phi::complex128) {}
 
 PD_REGISTER_KERNEL(exp,
                    CPU,
@@ -224,9 +353,9 @@ PD_REGISTER_KERNEL(exp,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::float16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::float16,
+                   phi::complex64,
+                   phi::complex128) {}
 
 PD_REGISTER_KERNEL(expm1,
                    CPU,
@@ -236,11 +365,10 @@ PD_REGISTER_KERNEL(expm1,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::float16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::float16,
+                   phi::complex64,
+                   phi::complex128) {}
 
-PD_REGISTER_KERNEL(logit, CPU, ALL_LAYOUT, phi::LogitKernel, float, double) {}
 PD_REGISTER_KERNEL(square,
                    CPU,
                    ALL_LAYOUT,
@@ -249,14 +377,8 @@ PD_REGISTER_KERNEL(square,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
-PD_REGISTER_ACTIVATION_KERNEL_WITH_COMPLEX(softsign, SoftsignKernel)
-PD_REGISTER_ACTIVATION_KERNEL_WITH_COMPLEX(sigmoid, SigmoidKernel)
-PD_REGISTER_ACTIVATION_KERNEL_WITH_COMPLEX(logsigmoid, LogSigmoidKernel)
-PD_REGISTER_ACTIVATION_KERNEL(hardsigmoid, HardSigmoidKernel)
-PD_REGISTER_ACTIVATION_KERNEL(swish, SwishKernel)
-PD_REGISTER_ACTIVATION_KERNEL(relu6, Relu6Kernel)
+                   phi::complex64,
+                   phi::complex128) {}
 
 PD_REGISTER_KERNEL(log,
                    CPU,
@@ -266,10 +388,11 @@ PD_REGISTER_KERNEL(log,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::complex64,
+                   phi::complex128) {}
+
 PD_REGISTER_KERNEL(log2,
                    CPU,
                    ALL_LAYOUT,
@@ -278,10 +401,11 @@ PD_REGISTER_KERNEL(log2,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::complex64,
+                   phi::complex128) {}
+
 PD_REGISTER_KERNEL(log10,
                    CPU,
                    ALL_LAYOUT,
@@ -290,10 +414,11 @@ PD_REGISTER_KERNEL(log10,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::complex64,
+                   phi::complex128) {}
+
 PD_REGISTER_KERNEL(log1p,
                    CPU,
                    ALL_LAYOUT,
@@ -302,15 +427,11 @@ PD_REGISTER_KERNEL(log1p,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::complex64,
+                   phi::complex128) {}
 
-PD_REGISTER_ACTIVATION_KERNEL_WITH_COMPLEX(hardswish, HardSwishKernel)
-PD_REGISTER_ACTIVATION_KERNEL(round, RoundKernel)
-PD_REGISTER_ACTIVATION_KERNEL(floor, FloorKernel)
-PD_REGISTER_ACTIVATION_KERNEL(ceil, CeilKernel)
 PD_REGISTER_KERNEL(negative,
                    CPU,
                    ALL_LAYOUT,
@@ -320,8 +441,44 @@ PD_REGISTER_KERNEL(negative,
                    int16_t,
                    int,
                    int64_t,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
-PD_REGISTER_ACTIVATION_KERNEL(celu, CeluKernel)
-PD_REGISTER_KERNEL(
-    pow, CPU, ALL_LAYOUT, phi::PowKernel, float, double, int, int64_t) {}
+                   phi::complex64,
+                   phi::complex128) {}
+
+PD_REGISTER_KERNEL(pow,
+                   CPU,
+                   ALL_LAYOUT,
+                   phi::PowKernel,
+                   float,
+                   double,
+                   int,
+                   int64_t,
+                   phi::complex64,
+                   phi::complex128) {}
+
+PD_REGISTER_KERNEL(ceil,
+                   CPU,
+                   ALL_LAYOUT,
+                   phi::CeilKernel,
+                   float,
+                   double,
+                   uint8_t,
+                   int8_t,
+                   int16_t,
+                   int,
+                   int64_t,
+                   phi::float16,
+                   phi::bfloat16) {}
+
+PD_REGISTER_KERNEL(floor,
+                   CPU,
+                   ALL_LAYOUT,
+                   phi::FloorKernel,
+                   float,
+                   double,
+                   uint8_t,
+                   int8_t,
+                   int16_t,
+                   int,
+                   int64_t,
+                   phi::float16,
+                   phi::bfloat16) {}

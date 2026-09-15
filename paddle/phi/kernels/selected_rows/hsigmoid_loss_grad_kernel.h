@@ -21,13 +21,13 @@ namespace phi {
 namespace sr {
 
 template <typename T, typename Context>
-void HSigmoidLossGradKernel(const Context& ctx,
+void HSigmoidLossGradKernel(const Context& dev_ctx,
                             const DenseTensor& x,
                             const DenseTensor& w,
                             const DenseTensor& label,
-                            const paddle::optional<DenseTensor>& path,
-                            const paddle::optional<DenseTensor>& code,
-                            const paddle::optional<DenseTensor>& bias,
+                            const optional<DenseTensor>& path,
+                            const optional<DenseTensor>& code,
+                            const optional<DenseTensor>& bias,
                             const DenseTensor& pre_out,
                             const DenseTensor& out_grad,
                             int num_classes,

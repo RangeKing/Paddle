@@ -15,14 +15,12 @@
 from __future__ import annotations
 
 import math
-from typing import (
-    Iterable,
-    Iterator,
-    Sequence,
-    Sized,
-)
+from collections.abc import Iterable, Iterator, Sequence, Sized
+from typing import overload
 
 import numpy as np
+
+from paddle.utils.decorator_utils import batch_sampler_decorator
 
 from .dataset import IterableDataset
 from .sampler import RandomSampler, Sampler, SequenceSampler
@@ -64,7 +62,7 @@ class BatchSampler(Sampler[Sequence[int]]):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import numpy as np
             >>> from paddle.io import RandomSampler, BatchSampler, Dataset
@@ -77,17 +75,17 @@ class BatchSampler(Sampler[Sequence[int]]):
             ...
             ...     def __getitem__(self, idx):
             ...         image = np.random.random([784]).astype('float32')
-            ...         label = np.random.randint(0, 9, (1, )).astype('int64')
+            ...         label = np.random.randint(0, 9, (1,)).astype('int64')
             ...         return image, label
             ...
             ...     def __len__(self):
             ...         return self.num_samples
-            ...
-            >>> bs = BatchSampler(dataset=RandomDataset(100),
-            ...                     shuffle=False,
-            ...                     batch_size=16,
-            ...                     drop_last=False)
-            ...
+            >>> bs = BatchSampler(
+            ...     dataset=RandomDataset(100),
+            ...     shuffle=False,
+            ...     batch_size=16,
+            ...     drop_last=False,
+            ... )
             >>> for batch_indices in bs:
             ...     print(batch_indices)
             [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
@@ -95,10 +93,11 @@ class BatchSampler(Sampler[Sequence[int]]):
             [96, 97, 98, 99]
             >>> # init with sampler
             >>> sampler = RandomSampler(RandomDataset(100))
-            >>> bs = BatchSampler(sampler=sampler,
-            ...                     batch_size=8,
-            ...                     drop_last=True)
-            ...
+            >>> bs = BatchSampler(
+            ...     sampler=sampler,
+            ...     batch_size=8,
+            ...     drop_last=True,
+            ... )
             >>> for batch_indices in bs:
             ...     print(batch_indices)
             [56, 12, 68, 0, 82, 66, 91, 44]
@@ -111,6 +110,25 @@ class BatchSampler(Sampler[Sequence[int]]):
     shuffle: bool
     drop_last: bool
 
+    @overload
+    def __init__(
+        self,
+        dataset: Sized | None = None,
+        sampler: Sampler | Iterable[int] | None = None,
+        shuffle: bool = False,
+        batch_size: int = 1,
+        drop_last: bool = False,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self,
+        sampler: Sampler | Iterable[int] | None = None,
+        batch_size: int = 1,
+        drop_last: bool = False,
+    ) -> None: ...
+
+    @batch_sampler_decorator
     def __init__(
         self,
         dataset: Sized | None = None,
@@ -120,35 +138,35 @@ class BatchSampler(Sampler[Sequence[int]]):
         drop_last: bool = False,
     ) -> None:
         if dataset is None:
-            assert (
-                sampler is not None
-            ), "either dataset or sampler should be set"
-            assert isinstance(
-                sampler, (Sampler, Iterable)
-            ), f"sampler should be either paddle.io.Sampler or Iterable, but got {type(sampler)}"
+            assert sampler is not None, (
+                "either dataset or sampler should be set"
+            )
+            assert isinstance(sampler, (Sampler, Iterable)), (
+                f"sampler should be either paddle.io.Sampler or Iterable, but got {type(sampler)}"
+            )
             assert not shuffle, "shuffle should be False when sampler is set"
             self.sampler = sampler
         else:
-            assert not isinstance(
-                dataset, IterableDataset
-            ), "dataset should not be a paddle.io.IterableDataset"
+            assert not isinstance(dataset, IterableDataset), (
+                "dataset should not be a paddle.io.IterableDataset"
+            )
             assert sampler is None, "should not set both dataset and sampler"
-            assert isinstance(
-                shuffle, bool
-            ), f"shuffle should be a boolean value, but got {type(shuffle)}"
+            assert isinstance(shuffle, bool), (
+                f"shuffle should be a boolean value, but got {type(shuffle)}"
+            )
             if shuffle:
                 self.sampler = RandomSampler(dataset)
             else:
                 self.sampler = SequenceSampler(dataset)
 
-        assert (
-            isinstance(batch_size, int) and batch_size > 0
-        ), f"batch_size should be a positive integer, but got {batch_size}"
+        assert isinstance(batch_size, int) and batch_size > 0, (
+            f"batch_size should be a positive integer, but got {batch_size}"
+        )
         self.batch_size = batch_size  # per_device_batch_size or mini_batch_size
         self.shuffle = shuffle
-        assert isinstance(
-            drop_last, bool
-        ), f"drop_last should be a boolean value, but got {type(drop_last)}"
+        assert isinstance(drop_last, bool), (
+            f"drop_last should be a boolean value, but got {type(drop_last)}"
+        )
         self.drop_last = drop_last
 
         # TODO(dev): consider to make it as public argument, acc_steps is only used
@@ -178,9 +196,9 @@ class _InfiniteIterableSampler(Sampler[Sequence[None]]):
     batch_size: int
 
     def __init__(self, dataset: IterableDataset, batch_size: int = 1) -> None:
-        assert isinstance(
-            dataset, IterableDataset
-        ), "dataset should be an instance of paddle.io.IterableDataset"
+        assert isinstance(dataset, IterableDataset), (
+            "dataset should be an instance of paddle.io.IterableDataset"
+        )
         self.dataset = dataset
         self.batch_size = batch_size
 
@@ -215,12 +233,15 @@ class DistributedBatchSampler(BatchSampler):
             batch indices. Default False.
         drop_last(bool, optional): whether drop the last incomplete(less than a mini-batch) batch dataset size.
             Default False.
+        seed(int, optional): random seed used to shuffle indices order if
+            :attr:`shuffle=True`. This number should be identical across all
+            processes in the distributed group. Default 0.
 
     Returns:
         DistributedBatchSampler, return an iterable object for indices iterating.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import numpy as np
 
@@ -233,12 +254,11 @@ class DistributedBatchSampler(BatchSampler):
             ...
             ...     def __getitem__(self, idx):
             ...         image = np.random.random([784]).astype('float32')
-            ...         label = np.random.randint(0, 9, (1, )).astype('int64')
+            ...         label = np.random.randint(0, 9, (1,)).astype('int64')
             ...         return image, label
             ...
             ...     def __len__(self):
             ...         return self.num_samples
-            ...
             >>> dataset = RandomDataset(100)
             >>> sampler = DistributedBatchSampler(dataset, batch_size=64)
 
@@ -264,33 +284,34 @@ class DistributedBatchSampler(BatchSampler):
         rank: int | None = None,
         shuffle: bool = False,
         drop_last: bool = False,
+        seed: int = 0,
     ) -> None:
         self.dataset = dataset
 
-        assert (
-            isinstance(batch_size, int) and batch_size > 0
-        ), "batch_size should be a positive integer"
+        assert isinstance(batch_size, int) and batch_size > 0, (
+            "batch_size should be a positive integer"
+        )
         self.batch_size = batch_size
         assert isinstance(shuffle, bool), "shuffle should be a boolean value"
         self.shuffle = shuffle
-        assert isinstance(
-            drop_last, bool
-        ), "drop_last should be a boolean number"
+        assert isinstance(drop_last, bool), (
+            "drop_last should be a boolean number"
+        )
 
         from paddle.distributed import ParallelEnv
 
         if num_replicas is not None:
-            assert (
-                isinstance(num_replicas, int) and num_replicas > 0
-            ), "num_replicas should be a positive integer"
+            assert isinstance(num_replicas, int) and num_replicas > 0, (
+                "num_replicas should be a positive integer"
+            )
             self.nranks = num_replicas
         else:
             self.nranks = ParallelEnv().nranks
 
         if rank is not None:
-            assert (
-                isinstance(rank, int) and rank >= 0
-            ), "rank should be a non-negative integer"
+            assert isinstance(rank, int) and rank >= 0, (
+                "rank should be a non-negative integer"
+            )
             self.local_rank = rank
         else:
             self.local_rank = ParallelEnv().local_rank
@@ -299,6 +320,7 @@ class DistributedBatchSampler(BatchSampler):
         self.epoch = 0
         self.num_samples = int(math.ceil(len(self.dataset) * 1.0 / self.nranks))
         self.total_size = self.num_samples * self.nranks
+        self.seed = seed
 
         # TODO(dev): consider to make it as public argument, acc_steps is only used
         # in auto-parallel
@@ -319,7 +341,7 @@ class DistributedBatchSampler(BatchSampler):
 
         assert len(indices) == self.total_size
         if self.shuffle:
-            np.random.RandomState(self.epoch).shuffle(indices)
+            np.random.RandomState(self.seed + self.epoch).shuffle(indices)
             self.epoch += 1
 
         # subsample
@@ -339,8 +361,9 @@ class DistributedBatchSampler(BatchSampler):
             indices = indices[len(indices) - last_batch_size :]
             subsampled_indices.extend(
                 indices[
-                    self.local_rank
-                    * last_local_batch_size : (self.local_rank + 1)
+                    self.local_rank * last_local_batch_size : (
+                        self.local_rank + 1
+                    )
                     * last_local_batch_size
                 ]
             )
@@ -374,13 +397,13 @@ class DistributedBatchSampler(BatchSampler):
         as seeds of random numbers. By default, users may not set this, all
         replicas (workers) use a different random ordering for each epoch.
         If set same number at each epoch, this sampler will yield the same
-        ordering at all epoches.
+        ordering at all epochs.
 
         Arguments:
             epoch (int): Epoch number.
 
         Examples:
-            .. code-block:: python
+            .. code-block:: pycon
 
                 >>> import numpy as np
 
@@ -393,12 +416,11 @@ class DistributedBatchSampler(BatchSampler):
                 ...
                 ...     def __getitem__(self, idx):
                 ...         image = np.random.random([784]).astype('float32')
-                ...         label = np.random.randint(0, 9, (1, )).astype('int64')
+                ...         label = np.random.randint(0, 9, (1,)).astype('int64')
                 ...         return image, label
                 ...
                 ...     def __len__(self):
                 ...         return self.num_samples
-                ...
                 >>> dataset = RandomDataset(100)
                 >>> sampler = DistributedBatchSampler(dataset, batch_size=64)
 

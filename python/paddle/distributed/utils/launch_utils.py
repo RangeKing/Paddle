@@ -14,11 +14,13 @@
 
 import copy
 import os
+import platform
 import signal
 import socket
 import subprocess
 import sys
 import time
+from collections.abc import Sequence
 from contextlib import closing
 
 from paddle.distributed.fleet.launch_utils import get_backend_by_compile_flag
@@ -168,9 +170,9 @@ class Cluster:
         r = []
         for pod in self.pods:
             ep = f"{pod.addr}:{pod.port}"
-            assert (
-                pod.port is not None and pod.addr is not None
-            ), f"{ep} not a valid endpoint"
+            assert pod.port is not None and pod.addr is not None, (
+                f"{ep} not a valid endpoint"
+            )
             r.append(ep)
 
         return r
@@ -286,9 +288,9 @@ def get_cluster(node_ips, node_ip, trainer_endpoints, selected_gpus):
         pod.addr = ip
         cur_node_endpoints = trainer_endpoints[node_rank]
         # when use paddlecloud, endpoints may > selected_gpus(user_defined)
-        assert len(cur_node_endpoints) >= len(
-            selected_gpus
-        ), "current trainer_endpoints size should be greater equal than selected_gpus size."
+        assert len(cur_node_endpoints) >= len(selected_gpus), (
+            "current trainer_endpoints size should be greater equal than selected_gpus size."
+        )
         for i in range(len(selected_gpus)):
             trainer = Trainer()
             trainer.gpus.append(selected_gpus[i])
@@ -342,7 +344,7 @@ def get_host_name_ip():
 def add_arguments(argname, type, default, help, argparser, **kwargs):
     """Add argparse's argument.
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import argparse
             >>> from paddle.distributed.utils import launch_utils
@@ -552,3 +554,36 @@ def _print_arguments(args):
     for arg, value in sorted(vars(args).items()):
         print(f"{arg}: {value}")
     print("------------------------------------------------")
+
+
+def filter_pids(processes: Sequence[str], self_pid: int) -> list[int]:
+    """Filter valid PIDs from a list of strings, excluding the current self_pid."""
+    pids_to_kill = []
+    for process in processes:
+        pid_str = process.strip()
+        if not pid_str.isdigit():
+            continue
+        pid_int = int(pid_str)
+        if pid_int == self_pid:
+            continue
+        pids_to_kill.append(pid_int)
+    return pids_to_kill
+
+
+def terminate_processes(processes: Sequence[int]) -> bool:
+    """
+    Terminate a list of processes by their PIDs.
+    Returns True if all processes were successfully terminated (or already dead).
+    Returns False if any process failed to terminate due to permissions.
+    """
+    sig = signal.SIGKILL if platform.system() != "Windows" else signal.SIGTERM
+    success = True
+    for pid in processes:
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            # Target already exited.
+            pass
+        except PermissionError:
+            success = False
+    return success

@@ -15,7 +15,12 @@
 import unittest
 
 import numpy as np
-from op_test import OpTest, convert_float_to_uint16
+from op_test import (
+    OpTest,
+    convert_float_to_uint16,
+    get_device_place,
+    is_custom_device,
+)
 
 import paddle
 from paddle import base
@@ -77,7 +82,8 @@ class TestCrossOpCase1(TestCrossOp):
 
 
 @unittest.skipIf(
-    not core.is_compiled_with_cuda(), "core is not compiled with CUDA"
+    not (core.is_compiled_with_cuda() or is_custom_device()),
+    "core is not compiled with CUDA",
 )
 class TestCrossFP16Op(TestCrossOp):
     def initTestCase(self):
@@ -116,8 +122,8 @@ class TestCrossComplex128Op(TestCrossOp):
 
 
 @unittest.skipIf(
-    not core.is_compiled_with_cuda()
-    or not core.is_bfloat16_supported(core.CUDAPlace(0)),
+    not (core.is_compiled_with_cuda() or is_custom_device())
+    or not core.is_bfloat16_supported(get_device_place()),
     "core is not compiled with CUDA and not support the bfloat16",
 )
 class TestCrossBF16Op(OpTest):
@@ -148,14 +154,14 @@ class TestCrossBF16Op(OpTest):
         self.outputs = {'Out': convert_float_to_uint16(out)}
 
     def test_check_output(self):
-        if core.is_compiled_with_cuda():
-            place = core.CUDAPlace(0)
+        if core.is_compiled_with_cuda() or is_custom_device():
+            place = get_device_place()
             if core.is_bfloat16_supported(place):
                 self.check_output_with_place(place, check_pir=True)
 
     def test_check_grad_normal(self):
-        if core.is_compiled_with_cuda():
-            place = core.CUDAPlace(0)
+        if core.is_compiled_with_cuda() or is_custom_device():
+            place = get_device_place()
             if core.is_bfloat16_supported(place):
                 self.check_grad_with_place(
                     place, ['X', 'Y'], 'Out', check_pir=True
@@ -234,32 +240,6 @@ class TestCrossAPI(unittest.TestCase):
         main = paddle.static.Program()
         startup = paddle.static.Program()
 
-    def test_cross_api1(self):
-        with paddle.pir_utils.OldIrGuard():
-            self.input_data()
-
-            main = paddle.static.Program()
-            startup = paddle.static.Program()
-
-            # case 1:
-            with paddle.static.program_guard(main, startup):
-                x = paddle.static.data(name="x", shape=[-1, 3], dtype="float32")
-                y = paddle.static.data(name='y', shape=[-1, 3], dtype='float32')
-
-                y_1 = paddle.cross(x, y, name='result')
-                self.assertEqual(('result' in y_1.name), True)
-
-            main = paddle.static.Program()
-            startup = paddle.static.Program()
-
-            # case 2:
-            with paddle.static.program_guard(main, startup):
-                x = paddle.static.data(name="x", shape=[0, 3], dtype="float32")
-                y = paddle.static.data(name='y', shape=[0, 3], dtype='float32')
-
-                y_1 = paddle.cross(x, y, axis=1, name='result')
-                self.assertEqual(('result' in y_1.name), True)
-
     def test_dygraph_api(self):
         self.input_data()
         # case 1:
@@ -291,6 +271,127 @@ class TestCrossAPI(unittest.TestCase):
             np_z = z.numpy()
         expect_out = np.empty((0, 3))
         np.testing.assert_allclose(expect_out, np_z, rtol=1e-05)
+
+
+class TestCrossOpZeroSizeTest(TestCrossOp):
+    def initTestCase(self):
+        self.shape = (0, 3, 3)
+        self.dtype = np.float64
+        self.attr = {'dim': -1}
+
+    def init_output(self):
+        z_list = []
+        for i in range(0):
+            z_list.append(np.cross(self.inputs['X'][i], self.inputs['Y'][i]))
+        self.outputs = {'Out': np.array(z_list).reshape(self.shape)}
+
+
+class TestCrossOpZeroSizeTest1(TestCrossOp):
+    def initTestCase(self):
+        self.shape = (3, 0, 3)
+        self.dtype = np.float64
+        self.attr = {'dim': -1}
+
+    def init_output(self):
+        z_list = []
+        for i in range(3):
+            z_list.append(np.cross(self.inputs['X'][i], self.inputs['Y'][i]))
+        self.outputs = {'Out': np.array(z_list).reshape(self.shape)}
+
+
+class TestCrossOpZeroSizeTest2(TestCrossOp):
+    def initTestCase(self):
+        self.shape = (0, 0, 3)
+        self.dtype = np.float64
+        self.attr = {'dim': -1}
+
+    def init_output(self):
+        z_list = []
+        for i in range(0):
+            z_list.append(np.cross(self.inputs['X'][i], self.inputs['Y'][i]))
+        self.outputs = {'Out': np.array(z_list).reshape(self.shape)}
+
+
+class TestCrossOpZeroSizeCPUTest(TestCrossOp):
+    def initTestCase(self):
+        self.shape = (0, 0, 3)
+        self.dtype = np.float64
+        self.attr = {'dim': -1}
+
+    def init_output(self):
+        z_list = []
+        for i in range(0):
+            z_list.append(np.cross(self.inputs['X'][i], self.inputs['Y'][i]))
+        self.outputs = {'Out': np.array(z_list).reshape(self.shape)}
+
+    def test_check_output(self):
+        place = paddle.CPUPlace()
+        self.check_output_with_place(place, check_pir=True)
+
+    def test_check_grad_normal(self):
+        place = paddle.CPUPlace()
+        self.check_grad_with_place(place, ['X', 'Y'], 'Out', check_pir=True)
+
+
+class TestCrossOpZeroSizeCPUTest1(TestCrossOpZeroSizeCPUTest):
+    def initTestCase(self):
+        self.shape = (3, 0, 3)
+        self.dtype = np.float64
+        self.attr = {'dim': -1}
+
+    def init_output(self):
+        z_list = []
+        for i in range(3):
+            z_list.append(np.cross(self.inputs['X'][i], self.inputs['Y'][i]))
+        self.outputs = {'Out': np.array(z_list).reshape(self.shape)}
+
+
+class TestCrossOpZeroSizeCPUTest2(TestCrossOpZeroSizeCPUTest):
+    def initTestCase(self):
+        self.shape = (0, 0, 3)
+        self.dtype = np.float64
+        self.attr = {'dim': -1}
+
+    def init_output(self):
+        z_list = []
+        for i in range(0):
+            z_list.append(np.cross(self.inputs['X'][i], self.inputs['Y'][i]))
+        self.outputs = {'Out': np.array(z_list).reshape(self.shape)}
+
+
+class TestLinalgCrossDefaultDim(unittest.TestCase):
+    def test_linalg_cross_default_dim(self):
+        # Test that paddle.linalg.cross defaults to dim=-1, not axis=9 auto
+        # Using shape [3, 2, 3] where auto-axis picks dim 0, but dim=-1 picks dim 2
+        paddle.disable_static()
+        np_x = np.random.randn(3, 2, 3).astype('float32')
+        np_y = np.random.randn(3, 2, 3).astype('float32')
+
+        x = paddle.to_tensor(np_x)
+        y = paddle.to_tensor(np_y)
+
+        # linalg.cross with default (should use dim=-1)
+        out_default = paddle.linalg.cross(x, y)
+        # linalg.cross with explicit dim=-1
+        out_neg1 = paddle.linalg.cross(x, y, dim=-1)
+        # linalg.cross with explicit dim=2
+        out_dim2 = paddle.linalg.cross(x, y, dim=2)
+        # linalg.cross with explicit dim=0
+        out_dim0 = paddle.linalg.cross(x, y, dim=0)
+
+        np.testing.assert_allclose(
+            out_default.numpy(), out_neg1.numpy(), rtol=1e-5
+        )
+        np.testing.assert_allclose(
+            out_default.numpy(), out_dim2.numpy(), rtol=1e-5
+        )
+        # dim=0 should give different result when shape is [3, 2, 3]
+        with self.assertRaises(AssertionError):
+            np.testing.assert_allclose(
+                out_default.numpy(), out_dim0.numpy(), rtol=1e-5
+            )
+
+        paddle.enable_static()
 
 
 if __name__ == '__main__':

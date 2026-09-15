@@ -17,9 +17,11 @@ import unittest
 
 import numpy as np
 
+import paddle
 from paddle.io import (
     BatchSampler,
     Dataset,
+    DistributedBatchSampler,
     RandomSampler,
     Sampler,
     SequenceSampler,
@@ -108,6 +110,17 @@ class TestRandomSampler(unittest.TestCase):
             rets.append(i)
         assert tuple(sorted(rets)) == tuple(range(0, 60))
 
+    def test_with_illegal_generator(self):
+        dataset = RandomDataset(100, 10)
+        generator = paddle.Generator()
+        sampler = RandomSampler(dataset, generator=generator)
+        assert len(sampler) == 100
+
+        rets = []
+        for i in iter(sampler):
+            rets.append(i)
+        assert tuple(sorted(rets)) == tuple(range(0, 100))
+
     def test_with_generator_num_samples(self):
         dataset = RandomDataset(100, 10)
         generator = iter(range(0, 60))
@@ -134,7 +147,7 @@ class TestSubsetRandomSampler(unittest.TestCase):
         sampler = SubsetRandomSampler(indices)
         assert len(sampler) == len(indices)
 
-        hints = {i: 0 for i in indices}
+        hints = dict.fromkeys(indices, 0)
         for index in iter(sampler):
             hints[index] += 1
         for h in hints.values():
@@ -211,6 +224,38 @@ class TestBatchSamplerWithSampler(TestBatchSampler):
             drop_last=self.drop_last,
         )
         return bs
+
+
+class TestBatchSamplerTorchPositionalArg(TestBatchSampler):
+    def init_batch_sampler(self):
+        dataset = RandomDataset(1000, 10)
+        sampler = SequenceSampler(dataset)
+        bs = BatchSampler(sampler, self.batch_size, self.drop_last)
+        return bs
+
+
+class TestBatchSamplerTorchPositionalArgWithIterableSampler(TestBatchSampler):
+    def init_batch_sampler(self):
+        sampler = range(1000)
+        bs = BatchSampler(sampler, self.batch_size, self.drop_last)
+        return bs
+
+
+class TestBatchSamplerPositionalArgError(TestBatchSampler):
+    def init_batch_sampler(self):
+        dataset = RandomDataset(1000, 10)
+        sampler = SequenceSampler(dataset)
+        bs = BatchSampler(
+            sampler, self.batch_size, self.drop_last, self.shuffle
+        )
+        return bs
+
+    def test_main(self):
+        try:
+            bs = self.init_batch_sampler()
+            self.assertTrue(False)
+        except TypeError:
+            pass
 
 
 class TestBatchSamplerWithSamplerDropLast(unittest.TestCase):
@@ -358,6 +403,70 @@ class TestWeightedRandomSampler(unittest.TestCase):
             self.assertTrue(False)
         except ValueError:
             self.assertTrue(True)
+
+
+class TestDistributedBatchSamplerSeed(unittest.TestCase):
+    def test_seed_deterministic(self):
+        """Test that same seed produces same indices"""
+        dataset = RandomDataset(100, 10)
+        sampler1 = DistributedBatchSampler(
+            dataset,
+            batch_size=16,
+            num_replicas=2,
+            rank=0,
+            shuffle=True,
+            seed=42,
+        )
+        sampler2 = DistributedBatchSampler(
+            dataset,
+            batch_size=16,
+            num_replicas=2,
+            rank=0,
+            shuffle=True,
+            seed=42,
+        )
+        indices1 = []
+        for batch in sampler1:
+            indices1.extend(batch)
+        indices2 = []
+        for batch in sampler2:
+            indices2.extend(batch)
+        self.assertEqual(indices1, indices2)
+
+    def test_seed_different(self):
+        """Test that different seeds produce different indices"""
+        dataset = RandomDataset(100, 10)
+        sampler1 = DistributedBatchSampler(
+            dataset,
+            batch_size=16,
+            num_replicas=2,
+            rank=0,
+            shuffle=True,
+            seed=42,
+        )
+        sampler2 = DistributedBatchSampler(
+            dataset,
+            batch_size=16,
+            num_replicas=2,
+            rank=0,
+            shuffle=True,
+            seed=123,
+        )
+        indices1 = []
+        for batch in sampler1:
+            indices1.extend(batch)
+        indices2 = []
+        for batch in sampler2:
+            indices2.extend(batch)
+        self.assertNotEqual(indices1, indices2)
+
+    def test_seed_default_value(self):
+        """Test that default seed is 0"""
+        dataset = RandomDataset(100, 10)
+        sampler = DistributedBatchSampler(
+            dataset, batch_size=16, num_replicas=1, rank=0, shuffle=True
+        )
+        self.assertEqual(sampler.seed, 0)
 
 
 if __name__ == '__main__':

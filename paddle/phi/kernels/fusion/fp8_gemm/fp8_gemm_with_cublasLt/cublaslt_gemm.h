@@ -20,20 +20,15 @@ limitations under the License. */
 #include <string>
 #include <unordered_map>
 
+#include "paddle/phi/api/include/context_pool.h"
 #include "paddle/phi/backends/dynload/cublasLt.h"
 #include "paddle/phi/backends/gpu/gpu_info.h"
-#include "paddle/phi/common/float8_e4m3fn.h"
-#include "paddle/phi/common/float8_e5m2.h"
-#include "paddle/phi/common/memory_utils.h"
-#include "paddle/phi/core/dense_tensor.h"
-
-#include "paddle/phi/api/include/context_pool.h"
 #include "paddle/phi/common/data_type.h"
+#include "paddle/phi/common/memory_utils.h"
 #include "paddle/phi/common/place.h"
 #include "paddle/phi/core/allocator.h"
+#include "paddle/phi/core/dense_tensor.h"
 #include "paddle/phi/kernels/funcs/blas/blaslt_gemm_search.h"
-
-namespace dyl = phi::dynload;
 
 namespace phi {
 namespace fusion {
@@ -55,27 +50,27 @@ inline cudaDataType_t GetCublasLtDataType() {
 }
 
 template <>
-inline cudaDataType_t GetCublasLtDataType<phi::dtype::float16>() {
+inline cudaDataType_t GetCublasLtDataType<phi::float16>() {
   return CUDA_R_16F;
 }
 
 template <>
-inline cudaDataType_t GetCublasLtDataType<phi::dtype::bfloat16>() {
+inline cudaDataType_t GetCublasLtDataType<phi::bfloat16>() {
   return CUDA_R_16BF;
 }
 
 template <typename T>
-void CublasLtMatmulFP8(const phi::GPUContext& dev_ctx,
+void CublasLtMatmulFP8(const GPUContext& dev_ctx,
                        const int batch_count,
                        const int m,
                        const int n,
                        const int k,
-                       const phi::DenseTensor& mat_a,
-                       const phi::DenseTensor& mat_b,
+                       const DenseTensor& mat_a,
+                       const DenseTensor& mat_b,
                        const float scale,
-                       const paddle::optional<DenseTensor>& bias,
+                       const optional<DenseTensor>& bias,
                        const std::string& activation_type,
-                       phi::DenseTensor* out) {
+                       DenseTensor* out) {
   // init data structure
   cublasStatus_t status;
   auto A_type = CUDA_R_8F_E4M3;
@@ -92,19 +87,19 @@ void CublasLtMatmulFP8(const phi::GPUContext& dev_ctx,
   float beta_ = 0.0f;
 
   cublasComputeType_t cudaComputeType = CUBLAS_COMPUTE_32F;
-  status =
-      dyl::cublasLtMatmulDescCreate(&matmul_desc_, cudaComputeType, CUDA_R_32F);
+  status = dynload::cublasLtMatmulDescCreate(
+      &matmul_desc_, cudaComputeType, CUDA_R_32F);
   PADDLE_CUBLASLT_STATUS_CHECK(cublasLtMatmulDescCreate);
 
   cublasOperation_t op_transpose = CUBLAS_OP_T;
-  status = dyl::cublasLtMatmulDescSetAttribute(matmul_desc_,
-                                               CUBLASLT_MATMUL_DESC_TRANSA,
-                                               &op_transpose,
-                                               sizeof(op_transpose));
+  status = dynload::cublasLtMatmulDescSetAttribute(matmul_desc_,
+                                                   CUBLASLT_MATMUL_DESC_TRANSA,
+                                                   &op_transpose,
+                                                   sizeof(op_transpose));
   PADDLE_CUBLASLT_STATUS_CHECK(cublasLtMatmulDescSetAttribute);
 
   // int8_t fast_accum = 1;
-  // status = dyl::cublasLtMatmulDescSetAttribute(matmul_desc_,
+  // status = dynload::cublasLtMatmulDescSetAttribute(matmul_desc_,
   //                                              CUBLASLT_MATMUL_DESC_FAST_ACCUM,
   //                                              &fast_accum,
   //                                              sizeof(fast_accum));
@@ -118,17 +113,19 @@ void CublasLtMatmulFP8(const phi::GPUContext& dev_ctx,
   }
   if (activation_type == "gelu") {
     epilogue = CUBLASLT_EPILOGUE_GELU;
-    status = dyl::cublasLtMatmulDescSetAttribute(matmul_desc_,
-                                                 CUBLASLT_MATMUL_DESC_EPILOGUE,
-                                                 &epilogue,
-                                                 sizeof(epilogue));
+    status =
+        dynload::cublasLtMatmulDescSetAttribute(matmul_desc_,
+                                                CUBLASLT_MATMUL_DESC_EPILOGUE,
+                                                &epilogue,
+                                                sizeof(epilogue));
     PADDLE_CUBLASLT_STATUS_CHECK(cublasLtMatmulDescSetAttribute);
   } else if (activation_type == "relu") {
     epilogue = CUBLASLT_EPILOGUE_RELU;
-    status = dyl::cublasLtMatmulDescSetAttribute(matmul_desc_,
-                                                 CUBLASLT_MATMUL_DESC_EPILOGUE,
-                                                 &epilogue,
-                                                 sizeof(epilogue));
+    status =
+        dynload::cublasLtMatmulDescSetAttribute(matmul_desc_,
+                                                CUBLASLT_MATMUL_DESC_EPILOGUE,
+                                                &epilogue,
+                                                sizeof(epilogue));
     PADDLE_CUBLASLT_STATUS_CHECK(cublasLtMatmulDescSetAttribute);
   } else if (activation_type == "identity") {
     VLOG(3) << "No activation function set, the activation type is identity";
@@ -137,10 +134,10 @@ void CublasLtMatmulFP8(const phi::GPUContext& dev_ctx,
         "Can not support this activation type, please check the act"));
   }
 
-  status = dyl::cublasLtMatrixLayoutCreate(&B_desc_, B_type, k, n, k);
-  status = dyl::cublasLtMatrixLayoutCreate(&A_desc_, A_type, k, m, k);
-  status = dyl::cublasLtMatrixLayoutCreate(&Bias_desc_, Bias_type, n, m, 0);
-  status = dyl::cublasLtMatrixLayoutCreate(&C_desc_, C_type, n, m, n);
+  status = dynload::cublasLtMatrixLayoutCreate(&B_desc_, B_type, k, n, k);
+  status = dynload::cublasLtMatrixLayoutCreate(&A_desc_, A_type, k, m, k);
+  status = dynload::cublasLtMatrixLayoutCreate(&Bias_desc_, Bias_type, n, m, 0);
+  status = dynload::cublasLtMatrixLayoutCreate(&C_desc_, C_type, n, m, n);
   PADDLE_CUBLASLT_STATUS_CHECK(cublasLtMatrixLayoutCreate);
 
   if (batch_count > 1) {
@@ -148,49 +145,49 @@ void CublasLtMatmulFP8(const phi::GPUContext& dev_ctx,
     int64_t stridea = m * k;
     int64_t stridebias = 0;
     int64_t stridec = m * n;
-    status = dyl::cublasLtMatrixLayoutSetAttribute(
+    status = dynload::cublasLtMatrixLayoutSetAttribute(
         B_desc_,
         CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT,
         &batch_count,
         sizeof(batch_count));
     PADDLE_CUBLASLT_STATUS_CHECK(cublasLtMatmulDescSetAttribute);
-    status = dyl::cublasLtMatrixLayoutSetAttribute(
+    status = dynload::cublasLtMatrixLayoutSetAttribute(
         B_desc_,
         CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET,
         &strideb,
         sizeof(strideb));
     PADDLE_CUBLASLT_STATUS_CHECK(cublasLtMatmulDescSetAttribute);
-    status = dyl::cublasLtMatrixLayoutSetAttribute(
+    status = dynload::cublasLtMatrixLayoutSetAttribute(
         A_desc_,
         CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT,
         &batch_count,
         sizeof(batch_count));
     PADDLE_CUBLASLT_STATUS_CHECK(cublasLtMatmulDescSetAttribute);
-    status = dyl::cublasLtMatrixLayoutSetAttribute(
+    status = dynload::cublasLtMatrixLayoutSetAttribute(
         A_desc_,
         CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET,
         &stridea,
         sizeof(stridea));
     PADDLE_CUBLASLT_STATUS_CHECK(cublasLtMatmulDescSetAttribute);
-    status = dyl::cublasLtMatrixLayoutSetAttribute(
+    status = dynload::cublasLtMatrixLayoutSetAttribute(
         Bias_desc_,
         CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT,
         &batch_count,
         sizeof(batch_count));
     PADDLE_CUBLASLT_STATUS_CHECK(cublasLtMatmulDescSetAttribute);
-    status = dyl::cublasLtMatrixLayoutSetAttribute(
+    status = dynload::cublasLtMatrixLayoutSetAttribute(
         Bias_desc_,
         CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET,
         &stridebias,
         sizeof(stridebias));
     PADDLE_CUBLASLT_STATUS_CHECK(cublasLtMatmulDescSetAttribute);
-    status = dyl::cublasLtMatrixLayoutSetAttribute(
+    status = dynload::cublasLtMatrixLayoutSetAttribute(
         C_desc_,
         CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT,
         &batch_count,
         sizeof(batch_count));
     PADDLE_CUBLASLT_STATUS_CHECK(cublasLtMatmulDescSetAttribute);
-    status = dyl::cublasLtMatrixLayoutSetAttribute(
+    status = dynload::cublasLtMatrixLayoutSetAttribute(
         C_desc_,
         CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET,
         &stridec,
@@ -205,8 +202,8 @@ void CublasLtMatmulFP8(const phi::GPUContext& dev_ctx,
                               n,
                               k,
                               batch_count,
-                              mat_b.data<phi::dtype::float8_e4m3fn>(),
-                              mat_a.data<phi::dtype::float8_e4m3fn>(),
+                              mat_b.data<phi::float8_e4m3fn>(),
+                              mat_a.data<phi::float8_e4m3fn>(),
                               bias_ptr,
                               out->data<T>(),
                               &alpha_,
@@ -230,22 +227,22 @@ void CublasLtMatmulFP8(const phi::GPUContext& dev_ctx,
     cublasLtMatmulPreference_t preference = NULL;
 
     size_t workspace_size = 64 * 1024 * 1024;
-    status = dyl::cublasLtMatmulPreferenceCreate(&preference);
-    status = dyl::cublasLtMatmulPreferenceSetAttribute(
+    status = dynload::cublasLtMatmulPreferenceCreate(&preference);
+    status = dynload::cublasLtMatmulPreferenceSetAttribute(
         preference,
         CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES,
         &workspace_size,
         sizeof(workspace_size));
-    status = dyl::cublasLtMatmulAlgoGetHeuristic(dev_ctx.cublaslt_handle(),
-                                                 matmul_desc_,
-                                                 B_desc_,
-                                                 A_desc_,
-                                                 Bias_desc_,
-                                                 C_desc_,
-                                                 preference,
-                                                 1,
-                                                 &heuristicResult,
-                                                 &returnedResults);
+    status = dynload::cublasLtMatmulAlgoGetHeuristic(dev_ctx.cublaslt_handle(),
+                                                     matmul_desc_,
+                                                     B_desc_,
+                                                     A_desc_,
+                                                     Bias_desc_,
+                                                     C_desc_,
+                                                     preference,
+                                                     1,
+                                                     &heuristicResult,
+                                                     &returnedResults);
 
     PADDLE_ENFORCE_NE(returnedResults,
                       0,
@@ -255,14 +252,14 @@ void CublasLtMatmulFP8(const phi::GPUContext& dev_ctx,
   }
 
   cublasLtMatmulHeuristicResult_t heurResult;
-  status = dyl::cublasLtMatmulAlgoCheck(dev_ctx.cublaslt_handle(),
-                                        matmul_desc_,
-                                        B_desc_,
-                                        A_desc_,
-                                        Bias_desc_,
-                                        C_desc_,
-                                        algo,
-                                        &heurResult);
+  status = dynload::cublasLtMatmulAlgoCheck(dev_ctx.cublaslt_handle(),
+                                            matmul_desc_,
+                                            B_desc_,
+                                            A_desc_,
+                                            Bias_desc_,
+                                            C_desc_,
+                                            algo,
+                                            &heurResult);
   PADDLE_ENFORCE_EQ(
       status,
       CUBLAS_STATUS_SUCCESS,
@@ -272,31 +269,31 @@ void CublasLtMatmulFP8(const phi::GPUContext& dev_ctx,
   auto temp_workspace = phi::memory_utils::Alloc(
       phi::GPUPlace(backends::gpu::GetCurrentDeviceId()), temp_workspace_size);
 
-  status = dyl::cublasLtMatmul(dev_ctx.cublaslt_handle(),
-                               matmul_desc_,
-                               &alpha_,
-                               mat_b.data<phi::dtype::float8_e4m3fn>(),
-                               B_desc_,
-                               mat_a.data<phi::dtype::float8_e4m3fn>(),
-                               A_desc_,
-                               &beta_,
-                               bias_ptr,
-                               Bias_desc_,
-                               out->data<T>(),
-                               C_desc_,
-                               algo,
-                               temp_workspace->ptr(),  // NOLINT
-                               temp_workspace_size,
-                               dev_ctx.stream());
+  status = dynload::cublasLtMatmul(dev_ctx.cublaslt_handle(),
+                                   matmul_desc_,
+                                   &alpha_,
+                                   mat_b.data<phi::float8_e4m3fn>(),
+                                   B_desc_,
+                                   mat_a.data<phi::float8_e4m3fn>(),
+                                   A_desc_,
+                                   &beta_,
+                                   bias_ptr,
+                                   Bias_desc_,
+                                   out->data<T>(),
+                                   C_desc_,
+                                   algo,
+                                   temp_workspace->ptr(),  // NOLINT
+                                   temp_workspace_size,
+                                   dev_ctx.stream());
   PADDLE_CUBLASLT_STATUS_CHECK(cublasLtMatmul);
 }
 
 template <typename Context>
 void cublaslt_fp8_fp8_fp16_gemm(
-    const Context& ctx,
+    const Context& dev_ctx,
     const DenseTensor& x,
     const DenseTensor& y,
-    const paddle::optional<DenseTensor>& bias,
+    const optional<DenseTensor>& bias,
     bool transpose_x,
     bool transpose_y,
     const float scale,  // only support per-tensor quantization
@@ -328,7 +325,7 @@ void cublaslt_fp8_fp8_fp16_gemm(
     PADDLE_ENFORCE_EQ(bias->dims()[0] == n,
                       true,
                       common::errors::InvalidArgument(
-                          "FP8 gemm bias_vecotr_dim needs to equal "
+                          "FP8 gemm bias_vector_dim needs to equal "
                           "to n, n = %d, but bias_vector_dim = %d",
                           n,
                           bias->dims()[0]));
@@ -339,21 +336,21 @@ void cublaslt_fp8_fp8_fp16_gemm(
                     common::errors::InvalidArgument(
                         "FP8 gemm need k % 16 = 0, but k = %d", k));
 
-  ctx.template Alloc<phi::dtype::float16>(out);
+  dev_ctx.template Alloc<phi::float16>(out);
   int batch_count = 1;
   for (size_t i = 0; i < rank - 2; ++i) {
     batch_count *= x.dims()[i];
   }
-  CublasLtMatmulFP8<phi::dtype::float16>(
-      ctx, batch_count, m, n, k, x, y, scale, bias, activation_type, out);
+  CublasLtMatmulFP8<phi::float16>(
+      dev_ctx, batch_count, m, n, k, x, y, scale, bias, activation_type, out);
 }
 
 template <typename Context>
 void cublaslt_fp8_fp8_bf16_gemm(
-    const Context& ctx,
+    const Context& dev_ctx,
     const DenseTensor& x,
     const DenseTensor& y,
-    const paddle::optional<DenseTensor>& bias,
+    const optional<DenseTensor>& bias,
     bool transpose_x,
     bool transpose_y,
     const float scale,  // only support per-tensor quantization
@@ -385,7 +382,7 @@ void cublaslt_fp8_fp8_bf16_gemm(
     PADDLE_ENFORCE_EQ(bias->dims()[0] == n,
                       true,
                       common::errors::InvalidArgument(
-                          "FP8 gemm bias_vecotr_dim needs to equal "
+                          "FP8 gemm bias_vector_dim needs to equal "
                           "to n, n = %d, but bias_vector_dim = %d",
                           n,
                           bias->dims()[0]));
@@ -396,13 +393,13 @@ void cublaslt_fp8_fp8_bf16_gemm(
                     common::errors::InvalidArgument(
                         "FP8 gemm need k % 16 = 0, but k = %d", k));
 
-  ctx.template Alloc<phi::dtype::bfloat16>(out);
+  dev_ctx.template Alloc<phi::bfloat16>(out);
   int batch_count = 1;
   for (size_t i = 0; i < rank - 2; ++i) {
     batch_count *= x.dims()[i];
   }
-  CublasLtMatmulFP8<phi::dtype::bfloat16>(
-      ctx, batch_count, m, n, k, x, y, scale, bias, activation_type, out);
+  CublasLtMatmulFP8<phi::bfloat16>(
+      dev_ctx, batch_count, m, n, k, x, y, scale, bias, activation_type, out);
 }
 
 }  // namespace cutlass_internal

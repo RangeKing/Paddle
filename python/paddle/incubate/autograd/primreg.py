@@ -23,9 +23,9 @@ class Registry:
         self.tab = {}
 
     def register(self, name, value):
-        assert (
-            name not in self.tab
-        ), f'name "{name}" should not be registered before.'
+        assert name not in self.tab, (
+            f'name "{name}" should not be registered before.'
+        )
         self.tab[name] = value
 
     def lookup(self, name):
@@ -76,7 +76,7 @@ def op_position_inputs(op):
         Tensor(s): Inputs of the op
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> from paddle.incubate.autograd.primops import _simple_binop
             >>> from paddle.base.layer_helper import LayerHelper
@@ -92,17 +92,17 @@ def op_position_inputs(op):
 
     """
     args = _primop_position_argnames.lookup(op.type)
-    assert (
-        args is not None
-    ), f'args of {op.type} should not be None in op_position_inputs().'
+    assert args is not None, (
+        f'args of {op.type} should not be None in op_position_inputs().'
+    )
     *input_names, _ = args
 
     inputs = []
     for name in input_names:
         vars = list(map(op.block.var, op.input(name)))
-        assert (
-            len(vars) >= 0
-        ), f'len(vars) should be greater than or equal to 0, but len(vars)={len(vars)}.'
+        assert len(vars) >= 0, (
+            f'len(vars) should be greater than or equal to 0, but len(vars)={len(vars)}.'
+        )
         if len(vars) > 1:
             inputs.append(vars)
         else:
@@ -122,7 +122,7 @@ def op_position_output(op):
         Tensor(s): Output of the op
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +SKIP('Depends on external code.')
             >>> from paddle.incubate.autograd.primops import _simple_binop
@@ -142,9 +142,9 @@ def op_position_output(op):
     *_, output_name = args
 
     outvars = list(map(op.block.var, op.output(output_name)))
-    assert (
-        len(outvars) >= 0
-    ), f'len(outvars) should be greater than or equal to 0, but len(outvars)={len(outvars)}.'
+    assert len(outvars) >= 0, (
+        f'len(outvars) should be greater than or equal to 0, but len(outvars)={len(outvars)}.'
+    )
     if len(outvars) > 1:
         output = outvars
     else:
@@ -165,7 +165,7 @@ def REGISTER_FN(op_type, *position_argnames):
         wrapper: Inner wrapper function
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +SKIP('Depends on external code.')
             >>> from paddle.incubate.autograd.primops import _simple_binop
@@ -174,7 +174,7 @@ def REGISTER_FN(op_type, *position_argnames):
 
             >>> @REGISTER_FN('tanh_p', 'X', 'Y')
             >>> def tanh(x, out=None):
-            ...    return _simple_unop(LayerHelper('tanh_p', **locals()))
+            ...     return _simple_unop(LayerHelper('tanh_p', **locals()))
 
     """
 
@@ -201,7 +201,7 @@ def REGISTER_ORIG2PRIM(op_type):
         wrapper: Inner wrapper function
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +SKIP('Depends on external code.')
             >>> from paddle.base.layer_helper import LayerHelper
@@ -211,7 +211,7 @@ def REGISTER_ORIG2PRIM(op_type):
 
             >>> @REGISTER_ORIG2PRIM('tanh')
             >>> def tanh_orig2prim(op):
-            ...     x, = get_input_var_list(op)
+            ...     (x,) = get_input_var_list(op)
             ...     return primops.tanh(x)
 
     """
@@ -220,9 +220,9 @@ def REGISTER_ORIG2PRIM(op_type):
 
     def wrapper(f):
         def _lower(op, *args, **kwargs):
-            assert (
-                op.type == op_type
-            ), f'op.type should be equal to op_type, but op.type is {op.type} and op_type is {op_type}'
+            assert op.type == op_type, (
+                f'op.type should be equal to op_type, but op.type is {op.type} and op_type is {op_type}'
+            )
             return f(op, *args, **kwargs)
 
         _orig2prim.register(op_type, _lower)
@@ -241,7 +241,7 @@ def REGISTER_COMPOSITE(op_type):
         wrapper: Inner wrapper function
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +SKIP('Depends on external code.')
             >>> import paddle
@@ -260,9 +260,9 @@ def REGISTER_COMPOSITE(op_type):
 
     def wrapper(f):
         def _lower(op, *args, **kwargs):
-            assert (
-                op.type == op_type
-            ), f'op.type should be equal to op_type, but op.type is {op.type} and op_type is {op_type}'
+            assert op.type == op_type, (
+                f'op.type should be equal to op_type, but op.type is {op.type} and op_type is {op_type}'
+            )
             return f(*args, **kwargs)
 
         _composite_ops.register(op_type, _lower)
@@ -281,7 +281,7 @@ def REGISTER_PRIM2ORIG(op_type):
         wrapper: Inner wrapper function
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +SKIP('Depends on external code.')
             >>> import paddle
@@ -290,18 +290,17 @@ def REGISTER_PRIM2ORIG(op_type):
 
             >>> @REGISTER_PRIM2ORIG('tanh_p')
             >>> def tanh_prim2orig(op):
-            ...     x, = get_input_var_list(op)
+            ...     (x,) = get_input_var_list(op)
             ...     return paddle.tanh(x)
-            ...
     """
     if not isinstance(op_type, str):
         raise TypeError(f'op_type must be str, but got {type(op_type)}.')
 
     def wrapper(f):
         def _lower(op, *args, **kwargs):
-            assert (
-                op.type == op_type
-            ), f'op.type should be equal to op_type, but op.type is {op.type} and op_type is {op_type}'
+            assert op.type == op_type, (
+                f'op.type should be equal to op_type, but op.type is {op.type} and op_type is {op_type}'
+            )
             return f(op, *args, **kwargs)
 
         _prim2orig.register(op_type, _lower)
@@ -320,7 +319,7 @@ def REGISTER_JVP(op_type):
         wrapper: Inner wrapper function
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +SKIP('Depends on external code.')
             >>> from paddle.incubate.autograd import primops
@@ -336,9 +335,9 @@ def REGISTER_JVP(op_type):
 
     def wrapper(f):
         def _jvp(op, *args, **kwargs):
-            assert (
-                op.type == op_type
-            ), f'op.type should be equal to op_type, but op.type is {op.type} and op_type is {op_type}'
+            assert op.type == op_type, (
+                f'op.type should be equal to op_type, but op.type is {op.type} and op_type is {op_type}'
+            )
             return f(op, *args, **kwargs)
 
         _primop_jvp.register(op_type, _jvp)
@@ -359,7 +358,7 @@ def REGISTER_TRANSPOSE(op_type):
         wrapper: Inner wrapper function
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +SKIP('Depends on external code.')
             >>> from paddle.incubate.autograd.primreg import REGISTER_TRANSPOSE
@@ -374,9 +373,9 @@ def REGISTER_TRANSPOSE(op_type):
 
     def wrapper(f):
         def _transpose(op, dot_checker, *args, **kwargs):
-            assert (
-                op.type == op_type
-            ), f'op.type should be equal to op_type, but op.type is {op.type} and op_type is {op_type}'
+            assert op.type == op_type, (
+                f'op.type should be equal to op_type, but op.type is {op.type} and op_type is {op_type}'
+            )
             return f(op, dot_checker, *args, **kwargs)
 
         _primop_transpose.register(op_type, _transpose)

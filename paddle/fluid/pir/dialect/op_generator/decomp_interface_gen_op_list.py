@@ -32,6 +32,7 @@ GENERATE_IMPL_DECOMP = [
     "add_n",
     "addmm",
     "any",
+    "baddbmm",
     "bce_loss",
     "bmm",
     "diag",
@@ -56,6 +57,7 @@ GENERATE_IMPL_DECOMP = [
     "lerp",
     "log_loss",
     "log_softmax",
+    "linear_v2",
     "mean",
     "mean_all",
     "meshgrid",
@@ -64,6 +66,7 @@ GENERATE_IMPL_DECOMP = [
     "reciprocal",
     "relu",
     "relu6",
+    "fused_rms_norm_quant",
     "sigmoid_cross_entropy_with_logits",
     "silu",
     "softmax",
@@ -77,6 +80,7 @@ GENERATE_IMPL_DECOMP = [
     "unbind",
     "unsqueeze",
     "unstack",
+    "masked_fill",
 ]
 decomp_rule_interface_declare_gen_op_list = (
     GENERATE_IMPL_DECOMP + MANUAL_IMPL_DECOMP
@@ -93,6 +97,7 @@ decomp_ops_contain_unused_output = ["squeeze", "unsqueeze"]
 GENERATE_IMPL_VJP = [
     'abs_grad',
     'add_grad',
+    'angle_grad',
     'bce_loss_grad',
     'cos_grad',
     'divide_grad',
@@ -108,6 +113,7 @@ GENERATE_IMPL_VJP = [
     'layer_norm_grad',
     'log_grad',
     'matmul_grad',
+    'linear_v2_grad',
     'max_grad',
     'maximum_grad',
     'mean_grad',
@@ -117,6 +123,7 @@ GENERATE_IMPL_VJP = [
     'reduce_as_grad',
     'relu_grad',
     'relu6_grad',
+    'elu_grad',
     'reshape_grad',
     'roll_grad',
     'rsqrt_grad',
@@ -133,6 +140,9 @@ GENERATE_IMPL_VJP = [
     'transpose_grad',
     'unsqueeze_grad',
     'p_norm_grad',
+    'masked_fill_grad',
+    'index_put_grad',
+    'index_add_grad',
 ]
 
 # declare belongs to codegen, but implementation not

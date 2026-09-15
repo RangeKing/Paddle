@@ -21,7 +21,7 @@
 namespace phi {
 
 template <typename T, typename Context>
-void BilinearGradKernel(const Context& ctx,
+void BilinearGradKernel(const Context& dev_ctx,
                         const DenseTensor& x,
                         const DenseTensor& y,
                         const DenseTensor& weight,
@@ -39,46 +39,45 @@ void BilinearGradKernel(const Context& ctx,
   auto x_mat = EigenMatrix<T>::From(x);
   auto y_mat = EigenMatrix<T>::From(y);
   auto dout_mat = EigenMatrix<T>::From(dout);
-  auto& place = *ctx.eigen_device();
-  // Create the intermediate variable to calculate the Output(Y@Grad).
+  auto& place = *dev_ctx.eigen_device();
+  // Create the intermediate variable to calculate the Output(Y@GRAD).
   DenseTensor x_scale;
-  x_scale.Resize(common::make_ddim({batch_size, x_dim}));
-  ctx.template Alloc<T>(&x_scale);
+  x_scale.Resize({batch_size, x_dim});
+  dev_ctx.template Alloc<T>(&x_scale);
   auto x_scale_mat = EigenMatrix<T>::From(x_scale);
 
-  // Create the intermediate variable to calculate the Output(X@Grad).
+  // Create the intermediate variable to calculate the Output(X@GRAD).
   DenseTensor y_scale;
-  y_scale.Resize(common::make_ddim({batch_size, y_dim}));
-  ctx.template Alloc<T>(&y_scale);
+  y_scale.Resize({batch_size, y_dim});
+  dev_ctx.template Alloc<T>(&y_scale);
   auto y_scale_mat = EigenMatrix<T>::From(y_scale);
 
   funcs::SetConstant<Context, T> set_zero;
 
   if (dx) {
-    ctx.template Alloc<T>(dx);
-    set_zero(ctx, dx, static_cast<T>(0));
+    dev_ctx.template Alloc<T>(dx);
+    set_zero(dev_ctx, dx, static_cast<T>(0));
   }
 
   if (dy) {
-    ctx.template Alloc<T>(dy);
-    set_zero(ctx, dy, static_cast<T>(0));
+    dev_ctx.template Alloc<T>(dy);
+    set_zero(dev_ctx, dy, static_cast<T>(0));
   }
 
   if (dweight) {
-    ctx.template Alloc<T>(dweight);
+    dev_ctx.template Alloc<T>(dweight);
   }
 
-  auto blas = funcs::GetBlas<Context, T>(ctx);
+  auto blas = funcs::GetBlas<Context, T>(dev_ctx);
 
-  // Calculate the Output(X@Grad) and Output(Y@Grad).
+  // Calculate the Output(X@GRAD) and Output(Y@GRAD).
   if (dx || dy || dweight) {
     Eigen::DSizes<int, 2> bcast_for_x(1, y_dim);
     Eigen::DSizes<int, 2> bcast_for_y(1, x_dim);
     Eigen::DSizes<int, 2> bcast_for_weight(1, x_dim);
 
     for (int i = 0; i < out_dim; ++i) {
-      DenseTensor weight_i =
-          weight.Slice(i, i + 1).Resize(common::make_ddim({x_dim, y_dim}));
+      DenseTensor weight_i = weight.Slice(i, i + 1).Resize({x_dim, y_dim});
       auto output_vec = dout_mat.chip(i, 1);
 
       if (dx) {
@@ -116,8 +115,8 @@ void BilinearGradKernel(const Context& ctx,
                     dy->data<T>());
         }
         if (dweight) {
-          DenseTensor dweight_i = dweight->Slice(i, i + 1).Resize(
-              common::make_ddim({x_dim, y_dim}));
+          DenseTensor dweight_i =
+              dweight->Slice(i, i + 1).Resize({x_dim, y_dim});
           blas.GEMM(CblasTrans,
                     CblasNoTrans,
                     x_dim,
@@ -135,7 +134,7 @@ void BilinearGradKernel(const Context& ctx,
 
   // calculate the gradient of Input(Bias).
   if (dbias) {
-    ctx.template Alloc<T>(dbias);
+    dev_ctx.template Alloc<T>(dbias);
     auto dbias_mat = EigenVector<T>::Flatten(*dbias);
     dbias_mat.device(place) = dout_mat.sum(Eigen::DSizes<int, 1>(0));
   }

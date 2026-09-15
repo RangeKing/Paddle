@@ -17,7 +17,6 @@ from __future__ import annotations
 from functools import partial
 from typing import (
     TYPE_CHECKING,
-    Callable,
     TypedDict,
 )
 
@@ -31,6 +30,8 @@ from ..ops import ConvNormActivation
 from ._utils import _make_divisible
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from paddle import Tensor
 
     class _MobileNetV3Options(TypedDict):
@@ -312,7 +313,7 @@ class MobileNetV3Small(MobileNetV3):
         :ref:`api_paddle_nn_Layer`. An instance of MobileNetV3 Small architecture model.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.vision.models import MobileNetV3Small
@@ -324,7 +325,7 @@ class MobileNetV3Small(MobileNetV3):
             >>> out = model(x)
 
             >>> print(out.shape)
-            [1, 1000]
+            paddle.Size([1, 1000])
     """
 
     def __init__(
@@ -370,7 +371,7 @@ class MobileNetV3Large(MobileNetV3):
         :ref:`api_paddle_nn_Layer`. An instance of MobileNetV3 Large architecture model.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.vision.models import MobileNetV3Large
@@ -382,7 +383,7 @@ class MobileNetV3Large(MobileNetV3):
             >>> out = model(x)
 
             >>> print(out.shape)
-            [1, 1000]
+            paddle.Size([1, 1000])
     """
 
     def __init__(
@@ -448,9 +449,9 @@ def _mobilenet_v3(
         model = MobileNetV3Small(scale=scale, **kwargs)
     if pretrained:
         arch = f"{arch}_x{scale}"
-        assert (
-            arch in model_urls
-        ), f"{arch} model do not have a pretrained model now, you should set pretrained=False"
+        assert arch in model_urls, (
+            f"{arch} model do not have a pretrained model now, you should set pretrained=False"
+        )
         weight_path = get_weights_path_from_url(
             model_urls[arch][0], model_urls[arch][1]
         )
@@ -477,7 +478,7 @@ def mobilenet_v3_small(
         :ref:`api_paddle_nn_Layer`. An instance of MobileNetV3 Small architecture model.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.vision.models import mobilenet_v3_small
@@ -495,7 +496,7 @@ def mobilenet_v3_small(
             >>> out = model(x)
 
             >>> print(out.shape)
-            [1, 1000]
+            paddle.Size([1, 1000])
     """
     model = _mobilenet_v3(
         "mobilenet_v3_small", scale=scale, pretrained=pretrained, **kwargs
@@ -520,7 +521,7 @@ def mobilenet_v3_large(
         :ref:`api_paddle_nn_Layer`. An instance of MobileNetV3 Large architecture model.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.vision.models import mobilenet_v3_large
@@ -538,7 +539,7 @@ def mobilenet_v3_large(
             >>> out = model(x)
 
             >>> print(out.shape)
-            [1, 1000]
+            paddle.Size([1, 1000])
     """
     model = _mobilenet_v3(
         "mobilenet_v3_large", scale=scale, pretrained=pretrained, **kwargs

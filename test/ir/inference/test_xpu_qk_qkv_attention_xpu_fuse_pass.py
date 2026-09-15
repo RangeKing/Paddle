@@ -32,7 +32,7 @@ class TestGatherAddTransposePass1(PassAutoScanTest):
         # Here we will compose a program
         # Still has some risks that the program is invalid or cause bug while running
         # Use function `is_program_valid` to filter the invalid programs before running
-        # Use function `add_skip_pass_case` to ignore the programs even if they cause bug while runing
+        # Use function `add_skip_pass_case` to ignore the programs even if they cause bug while running
         reshape_1_op = OpConfig(
             "reshape2",
             inputs={"X": ["input"]},
@@ -160,7 +160,7 @@ class TestGatherAddTransposePass1(PassAutoScanTest):
         return program_config
 
     def test(self):
-        self.run_and_statis(
+        self.run_and_statistics(
             quant=False,
             max_examples=25,
             passes=["qk_qkv_attention_xpu_fuse_pass"],
@@ -180,7 +180,7 @@ class TestGatherAddTransposePass2(PassAutoScanTest):
         # Here we will compose a program
         # Still has some risks that the program is invalid or cause bug while running
         # Use function `is_program_valid` to filter the invalid programs before running
-        # Use function `add_skip_pass_case` to ignore the programs even if they cause bug while runing
+        # Use function `add_skip_pass_case` to ignore the programs even if they cause bug while running
         reshape_1_op = OpConfig(
             "reshape2",
             inputs={"X": ["input"]},
@@ -308,7 +308,7 @@ class TestGatherAddTransposePass2(PassAutoScanTest):
         return program_config
 
     def test(self):
-        self.run_and_statis(
+        self.run_and_statistics(
             quant=False,
             max_examples=25,
             passes=["qk_qkv_attention_xpu_fuse_pass"],

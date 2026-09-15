@@ -169,7 +169,7 @@ def all_gather(
         This API only supports the dygraph mode now.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env: DISTRIBUTED)
             >>> import paddle
@@ -177,7 +177,7 @@ def all_gather(
 
             >>> dist.init_parallel_env()
             >>> local_rank = dist.get_rank()
-            >>> tensor_list = [] # type: ignore
+            >>> tensor_list = []  # type: ignore
             >>> if local_rank == 0:
             ...     data = paddle.to_tensor([[4, 5, 6], [4, 5, 6]])
             >>> else:
@@ -207,9 +207,9 @@ def all_gather(
                 tensor_or_tensor_list, tensor, group, sync_op, use_calc_stream
             )
     else:
-        assert (
-            group is None
-        ), "Group can not be used in static graph mode for now."
+        assert group is None, (
+            "Group can not be used in static graph mode for now."
+        )
         if paddle.is_tensor(tensor_or_tensor_list):
             raise RuntimeError(
                 "Only support passing a tensor list to `all_gather` in static graph mode now."

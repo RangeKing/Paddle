@@ -14,15 +14,12 @@ limitations under the License. */
 #pragma once
 
 #include <Python.h>
-// Avoid a problem with copysign defined in pyconfig.h on Windows.
-#ifdef copysign
-#undef copysign
-#endif
 
 #include <vector>
 
 #include "glog/logging.h"
 #include "paddle/fluid/pir/drr/include/drr_pattern_base.h"
+#include "paddle/fluid/pybind/data_type_caster.h"
 #include "paddle/utils/variant.h"
 #include "pybind11/numpy.h"
 #include "pybind11/pybind11.h"

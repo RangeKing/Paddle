@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from . import rnn  # noqa: F401
 from .clip_grad_norm_ import clip_grad_norm_
 from .clip_grad_value_ import clip_grad_value_
 from .spectral_norm_hook import spectral_norm

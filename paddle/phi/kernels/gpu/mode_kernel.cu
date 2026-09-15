@@ -15,8 +15,6 @@
 #include "paddle/phi/kernels/mode_kernel.h"
 
 #include "paddle/phi/backends/gpu/gpu_context.h"
-#include "paddle/phi/common/bfloat16.h"
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/funcs/math_function.h"
 #include "paddle/phi/kernels/funcs/mode.h"
@@ -33,30 +31,42 @@ void ModeKernel(const Context& dev_ctx,
   // get the input dims
   const auto& in_dims = x.dims();
   for (int i = 0; i < in_dims.size(); i++) {
-    PADDLE_ENFORCE_LT(0,
-                      in_dims[i],
-                      errors::InvalidArgument(
-                          "The dims of Input(X) should be greater than 0."));
+    PADDLE_ENFORCE_LE(
+        0,
+        in_dims[i],
+        errors::InvalidArgument(
+            "The dims of Input(X) should be greater than or equal to 0."));
   }
   // calculate the real axis
   if (axis < 0) axis += in_dims.size();
+  if (keepdim) {
+    PADDLE_ENFORCE_GT(
+        in_dims[axis],
+        0,
+        errors::InvalidArgument(
+            "If keepdim is True, in_dims[axis] should be greater than 0."));
+  }
 
   auto out_dims = out->dims();
 
   const T* input_data = x.data<T>();
   T* output_data = dev_ctx.template Alloc<T>(out);
   int64_t* indices_data = dev_ctx.template Alloc<int64_t>(indices);
+  // out and indices have the same numel.
+  if (out->numel() == 0) {
+    return;
+  }
 
   // For 0D Tensor
   if (in_dims.size() == 0) {
-    phi::Copy<Context>(dev_ctx, x, dev_ctx.GetPlace(), false, out);
-    phi::funcs::set_constant(dev_ctx, indices, static_cast<int64_t>(0));
+    Copy<Context>(dev_ctx, x, dev_ctx.GetPlace(), false, out);
+    funcs::set_constant(dev_ctx, indices, static_cast<int64_t>(0));
     return;
   }
 
   if (axis == in_dims.size() - 1) {
     const int64_t& input_height =
-        common::product(common::slice_ddim(in_dims, 0, in_dims.size() - 1));
+        common::product(slice_ddim(in_dims, 0, in_dims.size() - 1));
     const int64_t& input_width = in_dims[in_dims.size() - 1];
     funcs::GetModebySort<T>(
         dev_ctx, &x, input_width, input_height, output_data, indices_data);
@@ -80,7 +90,7 @@ void ModeKernel(const Context& dev_ctx,
       for (int i = axis + 1; i < in_dims.size(); i++) {
         tmp_out_shape.emplace_back(in_dims[i]);
       }
-      DDim tmp_out_dim = common::make_ddim(tmp_out_shape);
+      DDim tmp_out_dim = make_ddim(tmp_out_shape);
       out->Resize(tmp_out_dim);
       indices->Resize(tmp_out_dim);
     }
@@ -109,8 +119,8 @@ void ModeKernel(const Context& dev_ctx,
     trans_out.Resize(trans_out_shape);
     T* trans_out_data = dev_ctx.template Alloc<T>(&trans_out);
 
-    const int64_t input_height = common::product(
-        common::slice_ddim(trans_shape, 0, trans_shape.size() - 1));
+    const int64_t input_height =
+        common::product(slice_ddim(trans_shape, 0, trans_shape.size() - 1));
     const int64_t input_width = trans_shape[trans_shape.size() - 1];
     funcs::GetModebySort<T>(dev_ctx,
                             &trans_input,
@@ -139,7 +149,7 @@ PD_REGISTER_KERNEL(mode,
                    double,
                    int32_t,
                    int64_t,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {
+                   phi::float16,
+                   phi::bfloat16) {
   kernel->OutputAt(1).SetDataType(phi::DataType::INT64);
 }

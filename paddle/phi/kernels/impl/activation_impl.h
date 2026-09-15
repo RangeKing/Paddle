@@ -17,7 +17,8 @@
 #include "paddle/phi/backends/all_context.h"
 #include "paddle/phi/core/dense_tensor.h"
 #include "paddle/phi/kernels/funcs/activation_functor.h"
-#include "paddle/phi/kernels/funcs/blas/blas.h"
+#include "paddle/phi/kernels/funcs/sleef_vectorized_math.h"
+// #include "paddle/phi/kernels/funcs/blas/blas.h"
 
 namespace phi {
 
@@ -31,25 +32,110 @@ void ActivationImpl(const Context& dev_ctx,
   PADDLE_ENFORCE_NOT_NULL(Out,
                           errors::NotFound("Output Out should not be nullptr"));
   dev_ctx.template Alloc<U>(Out);
-  auto x = phi::EigenVector<T>::Flatten(
-      GET_DATA_SAFELY(&X, "Input", "X", "Activation"));
-  auto out = phi::EigenVector<U>::Flatten(
+  if (Out->numel() == 0) {
+    return;
+  }
+  auto x =
+      EigenVector<T>::Flatten(GET_DATA_SAFELY(&X, "Input", "X", "Activation"));
+  auto out = EigenVector<U>::Flatten(
       GET_DATA_SAFELY(Out, "Output", "Out", "Activation"));
   auto* place = dev_ctx.eigen_device();
-  // use 32bit index to speed up computation
-  bool use_32bit_index = out.size() < Eigen::NumTraits<int>::highest();
-  bool is_gpu_place = dev_ctx.GetPlace().GetType() == phi::AllocationType::GPU;
-  if (use_32bit_index && is_gpu_place) {
-    functor(*place, To32BitIndex(x), To32BitIndex(out));
+  functor(*place, x, out);
+}
+
+// Vectorized Sin implementation for CPU - high precision
+// Only enabled for float/double on CPU to ensure bit-level alignment
+template <typename T, typename Context>
+void VectorizedSinImpl(const Context& dev_ctx,
+                       const DenseTensor& X,
+                       DenseTensor* Out) {
+  PADDLE_ENFORCE_NOT_NULL(Out,
+                          errors::NotFound("Output Out should not be nullptr"));
+  dev_ctx.template Alloc<T>(Out);
+  if (Out->numel() == 0) {
+    return;
+  }
+
+  const T* x_data = X.data<T>();
+  T* out_data = Out->data<T>();
+  int64_t numel = X.numel();
+
+  // Check if data is contiguous and use vectorized path
+  if (funcs::sleef_vec::should_use_vectorized_path(x_data, out_data, numel)) {
+    funcs::sleef_vec::vsin(out_data, x_data, numel);
   } else {
-    functor(*place, x, out);
+    // Fallback to Eigen-based implementation
+    auto x = EigenVector<T>::Flatten(GET_DATA_SAFELY(&X, "Input", "X", "Sin"));
+    auto out =
+        EigenVector<T>::Flatten(GET_DATA_SAFELY(Out, "Output", "Out", "Sin"));
+    auto* place = dev_ctx.eigen_device();
+    out.device(*place) = x.unaryExpr(funcs::Sine<T>()).eval();
+  }
+}
+
+// Vectorized Cos implementation for CPU - high precision
+template <typename T, typename Context>
+void VectorizedCosImpl(const Context& dev_ctx,
+                       const DenseTensor& X,
+                       DenseTensor* Out) {
+  PADDLE_ENFORCE_NOT_NULL(Out,
+                          errors::NotFound("Output Out should not be nullptr"));
+  dev_ctx.template Alloc<T>(Out);
+  if (Out->numel() == 0) {
+    return;
+  }
+
+  const T* x_data = X.data<T>();
+  T* out_data = Out->data<T>();
+  int64_t numel = X.numel();
+
+  // Check if data is contiguous and use vectorized path
+  if (funcs::sleef_vec::should_use_vectorized_path(x_data, out_data, numel)) {
+    funcs::sleef_vec::vcos(out_data, x_data, numel);
+  } else {
+    // Fallback to Eigen-based implementation
+    auto x = EigenVector<T>::Flatten(GET_DATA_SAFELY(&X, "Input", "X", "Cos"));
+    auto out =
+        EigenVector<T>::Flatten(GET_DATA_SAFELY(Out, "Output", "Out", "Cos"));
+    auto* place = dev_ctx.eigen_device();
+    out.device(*place) = x.unaryExpr(funcs::Cosine<T>()).eval();
+  }
+}
+
+// Vectorized Exp implementation for CPU - high precision
+template <typename T, typename Context>
+void VectorizedExpImpl(const Context& dev_ctx,
+                       const DenseTensor& X,
+                       DenseTensor* Out) {
+  PADDLE_ENFORCE_NOT_NULL(Out,
+                          errors::NotFound("Output Out should not be nullptr"));
+  dev_ctx.template Alloc<T>(Out);
+  if (Out->numel() == 0) {
+    return;
+  }
+
+  const T* x_data = X.data<T>();
+  T* out_data = Out->data<T>();
+  int64_t numel = X.numel();
+
+  // Check if data is contiguous and use vectorized path
+  if (funcs::sleef_vec::should_use_vectorized_path_for_exp(
+          x_data, out_data, numel)) {
+    funcs::sleef_vec::vexp(out_data, x_data, numel);
+  } else {
+    // Fallback to Eigen-based implementation
+    auto x = EigenVector<T>::Flatten(GET_DATA_SAFELY(&X, "Input", "X", "Exp"));
+    auto out =
+        EigenVector<T>::Flatten(GET_DATA_SAFELY(Out, "Output", "Out", "Exp"));
+    auto* place = dev_ctx.eigen_device();
+    out.device(*place) = x.exp();
   }
 }
 
 template <typename T, typename Context>
 void LogitKernel(const Context& dev_ctx,
                  const DenseTensor& x,
-                 float eps,
+                 double eps,
                  DenseTensor* out) {
   dev_ctx.template Alloc<T>(out);
 
@@ -60,25 +146,6 @@ void LogitKernel(const Context& dev_ctx,
 
   funcs::LogitFunctor<T> functor;
   functor(place, eigen_in, eigen_out, eigen_p, eps);
-}
-
-template <typename T, typename Context>
-void PowKernel(const Context& dev_ctx,
-               const DenseTensor& x,
-               const Scalar& factor,
-               DenseTensor* out) {
-  PADDLE_ENFORCE_NOT_NULL(out,
-                          errors::NotFound("Output Out should not be nullptr"));
-  dev_ctx.template Alloc<T>(out);
-  auto x_flatten = phi::EigenVector<T>::Flatten(
-      GET_DATA_SAFELY(&x, "Input", "X", "Activation"));
-  auto out_flatten = phi::EigenVector<T>::Flatten(
-      GET_DATA_SAFELY(out, "Output", "Out", "Activation"));
-  auto* place = dev_ctx.eigen_device();
-  phi::funcs::PowFunctor<T> functor;
-  auto attrs = functor.GetAttrs();
-  *(attrs[0].second) = factor.to<float>();
-  functor(*place, x_flatten, out_flatten);
 }
 
 }  // namespace phi

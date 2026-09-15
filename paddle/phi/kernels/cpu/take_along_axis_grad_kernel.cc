@@ -29,31 +29,30 @@ void TakeAlongAxisGradKernel(const Context& dev_ctx,
                              const DenseTensor& out_grad,
                              int axis,
                              DenseTensor* x_grad) {
-  PADDLE_ENFORCE_EQ(
-      dev_ctx.GetPlace().GetType() == phi::AllocationType::CPU,
-      true,
-      errors::PreconditionNotMet("This kernel only runs on CPU."));
-
   // We need to know the shape of input matrix to determine the shape of grad
   // matrix of input.
   x_grad->Resize(x.dims());
   dev_ctx.template Alloc<T>(x_grad);
 
+  if (x_grad->numel() == 0) {
+    return;
+  }
+
   // Set to zero tensor.
-  phi::funcs::SetConstant<Context, T> functor;
+  funcs::SetConstant<Context, T> functor;
   functor(dev_ctx, x_grad, static_cast<T>(0));
 
   const auto& index_type = index.dtype();
-  if (index_type == phi::DataType::INT32) {
-    phi::funcs::cpu_scatter_add_kernel<T, int32_t>(
+  if (index_type == DataType::INT32) {
+    funcs::cpu_scatter_add_kernel<T, int32_t>(
         *x_grad,
         axis,
         index,
         out_grad,
         true,
         dev_ctx);  // the gradient of gather is scatter
-  } else if (index_type == phi::DataType::INT64) {
-    phi::funcs::cpu_scatter_add_kernel<T, int64_t>(
+  } else if (index_type == DataType::INT64) {
+    funcs::cpu_scatter_add_kernel<T, int64_t>(
         *x_grad, axis, index, out_grad, true, dev_ctx);
   }
 }
@@ -67,5 +66,6 @@ PD_REGISTER_KERNEL(take_along_axis_grad,
                    float,
                    double,
                    int,
+                   int16_t,
                    uint8_t,
                    int64_t) {}

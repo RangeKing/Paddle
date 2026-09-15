@@ -23,26 +23,30 @@
 namespace phi {
 
 template <typename T, typename Context>
-void GumbelSoftmaxGradKernel(const Context& ctx,
+void GumbelSoftmaxGradKernel(const Context& dev_ctx,
                              const DenseTensor& out,
                              const DenseTensor& dout,
                              int axis,
                              DenseTensor* dx) {
   const int rank = dx->dims().size();
   axis = funcs::CanonicalAxis(axis, rank);
-  int axis_dim = dx->dims()[axis];
+  int64_t axis_dim = dx->dims()[axis];
+
   // allocate memory on device.
 
-  ctx.template Alloc<T>(dx);
+  dev_ctx.template Alloc<T>(dx);
   if (dx->numel() == 0) {
     return;
   }
 
   // For 0D Tensor
   if (rank == 0) {
-    phi::funcs::set_constant(ctx, dx, static_cast<T>(0.0));
+    funcs::set_constant(dev_ctx, dx, static_cast<T>(0.0));
     return;
   }
+
+  // TODO(large-tensor): SoftmaxGradFunctor not support int64
+  PADDLE_ENFORCE_LE_INT_MAX(axis_dim, "axis_dim");
 
   const int size_to_axis = funcs::SizeToAxis(axis, dx->dims());
   const int size_from_axis = funcs::SizeFromAxis(axis, dx->dims());
@@ -50,8 +54,8 @@ void GumbelSoftmaxGradKernel(const Context& ctx,
   dx_2d.Resize({size_to_axis, size_from_axis});
   out_2d.Resize({size_to_axis, size_from_axis});
   dout_2d.Resize({size_to_axis, size_from_axis});
-  phi::funcs::SoftmaxGradFunctor<Context, T>()(
-      ctx, axis_dim, &out_2d, &dout_2d, &dx_2d);
+  funcs::SoftmaxGradFunctor<Context, T>()(
+      dev_ctx, axis_dim, &out_2d, &dout_2d, &dx_2d);
 }
 
 }  // namespace phi

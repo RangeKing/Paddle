@@ -13,22 +13,25 @@
 // limitations under the License.
 
 #pragma once
-
+#include <cstring>
 #include <unordered_map>
+#include <vector>
 
 #include "paddle/phi/common/data_type.h"
 #include "paddle/phi/common/place.h"
 #include "paddle/phi/core/utils/rw_lock.h"
 
 #include "paddle/phi/backends/c_comm_lib.h"
+#include "paddle/phi/backends/c_cuda_graph_lib.h"
 #include "paddle/phi/backends/device_base.h"
 #include "paddle/phi/backends/device_ext.h"
 #include "paddle/phi/backends/event.h"
 #include "paddle/phi/backends/stream.h"
 #include "paddle/phi/common/port.h"
 
+struct C_CinnInterface;
 namespace phi {
-class Device final {
+class PADDLE_API Device final {
  public:
   Device(size_t dev_id, DeviceInterface* impl) : dev_id_(dev_id), impl_(impl) {}
 
@@ -45,13 +48,13 @@ class Device final {
       const stream::Stream::Flag& flag = stream::Stream::Flag::kDefaultFlag);
 
   // ! Destroys an asynchronous stream.
-  void DestroyStream(stream::Stream* stream);
+  void DestroyStream(stream::stream_t stream);
 
   // ! Waits for stream tasks to complete.
-  void SynchronizeStream(const stream::Stream* stream);
+  void SynchronizeStream(stream::stream_t stream);
 
   // ! Queries an asynchronous stream for completion status.
-  bool QueryStream(const stream::Stream* stream);
+  bool QueryStream(stream::stream_t stream);
 
   // ! Add a callback to a compute stream.
   void AddCallback(stream::Stream* stream, stream::Stream::Callback* callback);
@@ -115,7 +118,7 @@ class Device final {
   // Blas
   // ! y = alpha * x + beta * y
   template <typename T>
-  void BlasAXPBY(const stream::Stream& stream,
+  void BlasAXPBY(const stream::stream_t& stream,
                  size_t numel,
                  float alpha,
                  const T* x,
@@ -124,6 +127,10 @@ class Device final {
 
   std::string Type();
 
+  struct C_CinnInterface* GetCinnInterface() const {
+    return impl_->GetCinnInterface();
+  }
+
  private:
   size_t dev_id_;
   DeviceInterface* impl_;
@@ -131,7 +138,7 @@ class Device final {
   bool initialized_{false};
 };
 
-class DeviceManager {
+class PADDLE_API DeviceManager {
  public:
   static bool Register(std::unique_ptr<DeviceInterface> device);
   static bool RegisterPinnedDevice(DeviceInterface* device);
@@ -168,6 +175,47 @@ class DeviceManager {
 
   static size_t GetExtraPaddingSize(const Place& place);
 
+  static size_t GetComputeCapability(const Place& place);
+
+  static phi::DeviceProp& GetDeviceProperties(const std::string& device_type,
+                                              size_t device_id);
+
+  static size_t GetRuntimeVersion(const Place& place);
+
+  static size_t GetDriverVersion(const Place& place);
+
+  static size_t GetMultiProcessors(const Place& place);
+
+  static size_t GetMaxThreadsPerMultiProcessor(const Place& place);
+
+  static size_t GetMaxThreadsPerBlock(const Place& place);
+
+  static size_t GetMaxSharedMemPerBlock(const Place& place);
+
+  static size_t GetMaxBlocksPerMultiProcessor(const Place& place);
+
+  static size_t GetWarpSize(const Place& place);
+
+  static size_t GetMaxRegistersPerMultiProcessor(const Place& place);
+
+  static size_t GetPreferredVectorWidth(const Place& place);
+
+  static std::array<unsigned int, 3> GetMaxGridDimSize(const Place& place);
+
+  static std::array<unsigned int, 3> GetMaxBlockDimSize(const Place& place);
+
+  static bool IsFloat16Supported(const Place& place);
+
+  static bool IsBFloat16Supported(const Place& place);
+
+  static bool IsDnnAvailable(const Place& place);
+
+  static void* InitEigenDevice(const Place& place,
+                               stream::stream_t stream,
+                               phi::Allocator* allocator);
+
+  static void DestroyEigenDevice(const Place& place, void* eigen_device);
+
   static void MemoryStats(const Place& place, size_t* total, size_t* free);
 
   static size_t GetDeviceCount(const std::string& device_type);
@@ -193,70 +241,70 @@ class DeviceManager {
   static void CCLBroadcast(const std::string& device_type,
                            void* data,
                            size_t num,
-                           phi::DataType data_type,
+                           DataType data_type,
                            size_t root,
                            const ccl::CCLComm& ccl_comm,
-                           const stream::Stream& stream);
+                           const stream::stream_t& stream);
   static void CCLAllReduce(const std::string& device_type,
                            void* in_data,
                            void* out_data,
                            size_t num,
-                           phi::DataType data_type,
+                           DataType data_type,
                            ccl::CCLReduceOp reduce_op,
                            const ccl::CCLComm& ccl_comm,
-                           const stream::Stream& stream);
+                           const stream::stream_t& stream);
   static void CCLReduce(const std::string& device_type,
                         void* in_data,
                         void* out_data,
                         size_t num,
-                        phi::DataType data_type,
+                        DataType data_type,
                         ccl::CCLReduceOp reduce_op,
                         size_t root_id,
                         const ccl::CCLComm& ccl_comm,
-                        const stream::Stream& stream);
+                        const stream::stream_t& stream);
   static void CCLAllGather(const std::string& device_type,
                            void* in_data,
                            void* out_data,
                            size_t num,
-                           phi::DataType data_type,
+                           DataType data_type,
                            const ccl::CCLComm& ccl_comm,
-                           const stream::Stream& stream);
+                           const stream::stream_t& stream);
   static void CCLReduceScatter(const std::string& device_type,
                                void* in_data,
                                void* out_data,
                                size_t num,
-                               phi::DataType data_type,
+                               DataType data_type,
                                ccl::CCLReduceOp op,
                                const ccl::CCLComm& ccl_comm,
-                               const stream::Stream& stream);
+                               const stream::stream_t& stream);
   static void CCLGroupStart(const std::string& device_type);
   static void CCLGroupEnd(const std::string& device_type);
   static void CCLSend(const std::string& device_type,
                       void* sendbuf,
                       size_t num,
-                      phi::DataType data_type,
+                      DataType data_type,
                       size_t dst_rank,
                       const ccl::CCLComm& ccl_comm,
-                      const stream::Stream& stream);
+                      const stream::stream_t& stream);
   static void CCLRecv(const std::string& device_type,
                       void* recvbuf,
                       size_t num,
-                      phi::DataType data_type,
+                      DataType data_type,
                       size_t src_rank,
                       const ccl::CCLComm& ccl_comm,
-                      const stream::Stream& stream);
+                      const stream::stream_t& stream);
 
   static void CCLAllToAll(const std::string& device_type,
                           const void** send_buf,
                           const size_t* send_count,
-                          const phi::DataType* send_dtype,
+                          const DataType* send_dtype,
                           void** recv_buf,
                           const size_t* recv_count,
-                          const phi::DataType* recv_dtype,
+                          const DataType* recv_dtype,
                           size_t rank,
                           size_t nranks,
                           const ccl::CCLComm& comm,
-                          const stream::Stream& stream);
+                          const stream::stream_t& stream);
   // profiler
   static void ProfilerInitialize(const std::string& dev_type,
                                  phi::TraceEventCollector* collector,
@@ -280,6 +328,78 @@ class DeviceManager {
 
   static void Release();
 
+  static void InitBlasHandle(const Place& place,
+                             void** blas_handle,
+                             stream::stream_t stream);
+
+  static void BlasSetMathMode(const Place& place,
+                              void* blas_handle,
+                              int math_mode);
+
+  static void InitBlasLtHandle(const Place& place, void** blaslt_handle);
+
+  static void DestroyBlasHandle(const Place& place, void* blas_handle);
+
+  static void DestroyBlasLtHandle(const Place& place, void* blaslt_handle);
+
+  static void InitDnnHandle(const Place& place,
+                            void** dnn_handle,
+                            stream::stream_t stream);
+
+  static void DestroyDnnHandle(const Place& place, void* dnn_handle);
+
+  // cudaGraph
+  static void CUDAStreamBeginCapture(const Place& place,
+                                     stream::stream_t stream,
+                                     graph::streamCaptureMode mode);
+
+  static void CudaStreamEndCapture(const Place& place,
+                                   stream::stream_t stream,
+                                   graph::CUDAGraph_t* pGraph);
+
+  static void CudaGraphLaunch(const Place& place,
+                              graph::CUDAGraphExec_t exec,
+                              stream::stream_t stream);
+
+  static void CudaGraphDestroy(const Place& place, graph::CUDAGraph_t Graph);
+
+  static void CudaGraphExecDestroy(const Place& place,
+                                   graph::CUDAGraphExec_t GraphExec);
+
+  static void CudaGraphInstantiate(const Place& place,
+                                   graph::CUDAGraphExec_t* pGraphExec,
+                                   graph::CUDAGraph_t* pGraph,
+                                   void** pErrorNode,
+                                   char* pLogBuffer,
+                                   size_t bufferSize);
+
+  static void CudaGraphGetNodes(const Place& place,
+                                graph::CUDAGraph_t Graph,
+                                graph::CUDAGraphNode_t* pNodes,
+                                size_t* numNodes);
+
+  static void CudaGraphDebugDotPrint(const Place& place,
+                                     graph::CUDAGraph_t Graph,
+                                     const char* path,
+                                     unsigned int flags);
+
+  static void CudaStreamGetCaptureInfo(
+      const Place& place,
+      stream::stream_t stream,
+      graph::streamCaptureStatus* captureStatus_out,
+      unsigned long long* id_out = nullptr,  // NOLINT
+      graph::CUDAGraph_t* graph_out = nullptr,
+      graph::CUDAGraphNode_t* dependencies_out = nullptr,
+      void** edgeData_out = nullptr,
+      size_t* numDependencies_out = nullptr);
+
+  static void GetParameterSetterForExecGraph(const Place& place,
+                                             graph::CUDAGraph_t graph,
+                                             graph::GraphHookManager* hook);
+
+  static void CudaThreadExchangeStreamCaptureMode(
+      const Place& place, graph::streamCaptureMode* mode);
+
  private:
   DISABLE_COPY_AND_ASSIGN(DeviceManager);
   DeviceManager() {}
@@ -294,9 +414,28 @@ class DeviceManager {
 };
 
 std::vector<std::string> ListAllLibraries(const std::string& library_dir);
-
 #ifdef PADDLE_WITH_CUSTOM_DEVICE
-void LoadCustomRuntimeLib(const std::string& dso_lib_path, void* dso_handle);
+
+class CustomDevicePassManager {
+ public:
+  explicit CustomDevicePassManager(const std::vector<std::string>& passes)
+      : all_passes_(passes) {}
+  ~CustomDevicePassManager() = default;
+  static CustomDevicePassManager* Instance() {
+    std::vector<std::string> passes;
+    static CustomDevicePassManager manager(passes);
+    return &manager;
+  }
+  void SetCustomDevicePass(const std::vector<std::string>& passes) {
+    all_passes_ = passes;
+  }
+  const std::vector<std::string> GetCustomDevicePass() const {
+    return all_passes_;
+  }
+
+ private:
+  std::vector<std::string> all_passes_;
+};
 
 void LoadCustomRuntimeLib(const CustomRuntimeParams& runtime_params,
                           std::unique_ptr<C_DeviceInterface> device_interface,

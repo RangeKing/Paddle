@@ -307,9 +307,9 @@ class AutoParallelizer:
 
         if self._enable_auto_mapping and self._need_rank_mapping:
             # Do the mapping pass before parallelization
-            assert (
-                self._cluster is not None
-            ), "The cluster must not be none when using auto mapping."
+            assert self._cluster is not None, (
+                "The cluster must not be none when using auto mapping."
+            )
             dist_programs = {}
             world_process_group = get_world_process_group()
             dist_context = None
@@ -417,9 +417,9 @@ class AutoParallelizer:
             ]
             new_process = subprocess.Popen(new_cmd)
             new_process.wait()
-            assert (
-                new_process.returncode == 0
-            ), "Launch failed with rank mapping"
+            assert new_process.returncode == 0, (
+                "Launch failed with rank mapping"
+            )
             print("Successfully do the second launch for auto mapping!")
             sys.exit(0)
         else:
@@ -433,7 +433,11 @@ class AutoParallelizer:
                 with open(
                     searched_dist_context_path, "rb"
                 ) as dist_context_file:
-                    saved_dist_context = pickle.load(dist_context_file)
+                    from paddle.framework.restricted_unpickler import (
+                        safe_load_pickle,
+                    )
+
+                    saved_dist_context = safe_load_pickle(dist_context_file)
                     dist_context = DistributedContext()
                     for op in self._main_program.global_block().ops:
                         dist_attr = saved_dist_context["ops_dist_attr"][

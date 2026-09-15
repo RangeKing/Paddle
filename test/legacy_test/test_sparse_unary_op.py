@@ -11,15 +11,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 import unittest
 
 import numpy as np
+from op_test import get_device, is_custom_device
 
 import paddle
-from paddle.base.framework import convert_np_dtype_to_dtype_, in_pir_mode
+from paddle.base.framework import (
+    convert_nptype_to_datatype_or_vartype,
+    in_pir_mode,
+)
 
-devices = ['cpu', 'gpu']
+devices = ['cpu', get_device()]
 
 
 class TestSparseUnary(unittest.TestCase):
@@ -52,11 +55,22 @@ class TestSparseUnary(unittest.TestCase):
             mask = paddle.randint(0, 2, [8, 16, 32]).astype("float64")
             while paddle.sum(mask) == 0:
                 mask = paddle.randint(0, 2, [8, 16, 32]).astype("float64")
+        elif dtype in ['int32', 'int64']:
+            origin_x = paddle.randint(0, 2, [8, 16, 32]).astype(dtype)
+            mask = paddle.randint(0, 2, [8, 16, 32]).astype(dtype)
+            while paddle.sum(mask) == 0:
+                mask = paddle.randint(0, 2, [8, 16, 32]).astype(dtype)
         else:
             origin_x = paddle.rand([8, 16, 32], dtype)
             mask = paddle.randint(0, 2, [8, 16, 32]).astype(dtype)
             while paddle.sum(mask) == 0:
                 mask = paddle.randint(0, 2, [8, 16, 32]).astype(dtype)
+            # to_sparse_coo drops zero-valued elements, so sparse grad at those
+            # positions is always 0, while dense grad may be non-zero there
+            # (e.g. cos(0)=1), causing expect_grad to diverge from sp_x.grad.
+            # Under fp16, paddle.rand can produce exact zeros, so fold the
+            # origin_x==0 positions into mask to align with sparse semantics.
+            mask = mask * (origin_x != 0).astype(dtype)
 
         # --- check sparse coo with dense --- #
         dense_x = origin_x * mask
@@ -80,7 +94,7 @@ class TestSparseUnary(unittest.TestCase):
             if dense_func == paddle.cast:
                 dense_out = dense_func(dense_x, args[1])
 
-                int_dtype = convert_np_dtype_to_dtype_(args[0])
+                int_dtype = convert_nptype_to_datatype_or_vartype(args[0])
                 if sp_out.is_sparse_csr():
                     self.assertEqual(sp_out.crows().dtype, int_dtype)
                     self.assertEqual(sp_out.cols().dtype, int_dtype)
@@ -100,15 +114,17 @@ class TestSparseUnary(unittest.TestCase):
             expect_grad = np.nan_to_num(dense_x.grad.numpy(), 0.0, 0.0, 0.0)
         else:
             expect_grad = (dense_x.grad * mask).numpy()
-        np.testing.assert_allclose(
-            sp_x.grad.to_dense().numpy(), expect_grad, rtol=1e-05
-        )
+        if dtype not in ['int32', 'int64']:
+            np.testing.assert_allclose(
+                sp_x.grad.to_dense().numpy(), expect_grad, rtol=1e-05
+            )
 
     def compare_with_dense(self, dense_func, sparse_func, dtype='float32'):
         for device in devices:
             # The sparse unary op is only compatible with float16 on the CUDA.
             if (device == 'cpu' and dtype != 'float16') or (
-                device == 'gpu' and paddle.is_compiled_with_cuda()
+                device == get_device()
+                and (paddle.is_compiled_with_cuda() or is_custom_device())
             ):
                 self.check_result(dense_func, sparse_func, 'coo', device, dtype)
                 self.check_result(dense_func, sparse_func, 'csr', device, dtype)
@@ -116,7 +132,8 @@ class TestSparseUnary(unittest.TestCase):
     def compare_with_dense_one_attr(self, dense_func, sparse_func, attr1):
         for device in devices:
             if device == 'cpu' or (
-                device == 'gpu' and paddle.is_compiled_with_cuda()
+                device == get_device()
+                and (paddle.is_compiled_with_cuda() or is_custom_device())
             ):
                 self.check_result(
                     dense_func, sparse_func, 'coo', device, 'float32', attr1
@@ -130,7 +147,8 @@ class TestSparseUnary(unittest.TestCase):
     ):
         for device in devices:
             if device == 'cpu' or (
-                device == 'gpu' and paddle.is_compiled_with_cuda()
+                device == get_device()
+                and (paddle.is_compiled_with_cuda() or is_custom_device())
             ):
                 self.check_result(
                     dense_func,
@@ -255,9 +273,13 @@ class TestSparseUnary(unittest.TestCase):
 
     def test_sparse_deg2rad(self):
         self.compare_with_dense(paddle.deg2rad, paddle.sparse.deg2rad)
+        self.compare_with_dense(paddle.deg2rad, paddle.sparse.deg2rad, 'int32')
+        self.compare_with_dense(paddle.deg2rad, paddle.sparse.deg2rad, 'int64')
 
     def test_sparse_rad2deg(self):
         self.compare_with_dense(paddle.rad2deg, paddle.sparse.rad2deg)
+        self.compare_with_dense(paddle.rad2deg, paddle.sparse.rad2deg, 'int32')
+        self.compare_with_dense(paddle.rad2deg, paddle.sparse.rad2deg, 'int64')
 
     def test_sparse_neg(self):
         self.compare_with_dense(paddle.neg, paddle.sparse.neg)
@@ -314,6 +336,16 @@ class TestSparseUnaryStatic(unittest.TestCase):
             n = 0
             while paddle.sum(mask) == 0:
                 mask = paddle.randint(0, 2, [8, 16, 32]).astype("float64")
+                n += 1
+                if n > 1000:
+                    mask[0] = 1
+                    break
+        elif dtype in ['int32', 'int64']:
+            origin_x = paddle.randint(0, 2, [8, 16, 32]).astype(dtype)
+            mask = paddle.randint(0, 2, [8, 16, 32]).astype(dtype)
+            n = 0
+            while paddle.sum(mask) == 0:
+                mask = paddle.randint(0, 2, [8, 16, 32]).astype(dtype)
                 n += 1
                 if n > 1000:
                     mask[0] = 1
@@ -381,7 +413,7 @@ class TestSparseUnaryStatic(unittest.TestCase):
             if dense_func == paddle.cast:
                 dense_out = dense_func(dense_x, args[1])
 
-                int_dtype = convert_np_dtype_to_dtype_(args[0])
+                int_dtype = convert_nptype_to_datatype_or_vartype(args[0])
                 # only support coo format
                 self.assertEqual(sp_out.indices().dtype, int_dtype)
             else:
@@ -396,7 +428,8 @@ class TestSparseUnaryStatic(unittest.TestCase):
             for device in devices:
                 # The sparse unary op is only compatible with float16 on the CUDA.
                 if (device == 'cpu' and dtype != 'float16') or (
-                    device == 'gpu' and paddle.is_compiled_with_cuda()
+                    device == get_device()
+                    and (paddle.is_compiled_with_cuda() or is_custom_device())
                 ):
                     self.check_result_coo(
                         dense_func, sparse_func, device, dtype
@@ -406,7 +439,8 @@ class TestSparseUnaryStatic(unittest.TestCase):
         if in_pir_mode():
             for device in devices:
                 if device == 'cpu' or (
-                    device == 'gpu' and paddle.is_compiled_with_cuda()
+                    device == get_device()
+                    and (paddle.is_compiled_with_cuda() or is_custom_device())
                 ):
                     self.check_result_coo(
                         dense_func, sparse_func, device, 'float32', attr1
@@ -418,7 +452,8 @@ class TestSparseUnaryStatic(unittest.TestCase):
         if in_pir_mode():
             for device in devices:
                 if device == 'cpu' or (
-                    device == 'gpu' and paddle.is_compiled_with_cuda()
+                    device == get_device()
+                    and (paddle.is_compiled_with_cuda() or is_custom_device())
                 ):
                     self.check_result_coo(
                         dense_func,
@@ -533,9 +568,13 @@ class TestSparseUnaryStatic(unittest.TestCase):
 
     def test_sparse_deg2rad(self):
         self.compare_with_dense(paddle.deg2rad, paddle.sparse.deg2rad)
+        self.compare_with_dense(paddle.deg2rad, paddle.sparse.deg2rad, 'int32')
+        self.compare_with_dense(paddle.deg2rad, paddle.sparse.deg2rad, 'int64')
 
     def test_sparse_rad2deg(self):
         self.compare_with_dense(paddle.rad2deg, paddle.sparse.rad2deg)
+        self.compare_with_dense(paddle.rad2deg, paddle.sparse.rad2deg, 'int32')
+        self.compare_with_dense(paddle.rad2deg, paddle.sparse.rad2deg, 'int64')
 
     def test_sparse_neg(self):
         self.compare_with_dense(paddle.neg, paddle.sparse.neg)

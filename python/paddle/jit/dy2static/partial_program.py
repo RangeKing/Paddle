@@ -27,7 +27,6 @@ from paddle.base.framework import get_flags
 from paddle.optimizer.lr import LRScheduler
 
 from . import logging_utils
-from .export_subgraph import SubGraphRole, pir_exporter
 from .utils import (
     RETURN_NO_VALUE_MAGIC_NUM,
     backend_guard,
@@ -178,8 +177,6 @@ class PartialProgramLayer:
         self._origin_main_program = self._verify_program(main_program)
         with paddle.base.framework._dygraph_guard(paddle.base.dygraph.Tracer()):
             self._cuda_graph_vec = self._create_cuda_graph_vec()
-        self._cuda_graph_capture_mode = ""
-        self._cuda_graph_pool_id = 0
         # Set default mode to train
         self.training = True
         self._infer_info = ProgramInfo()
@@ -214,7 +211,6 @@ class PartialProgramLayer:
         self._out_var_descs = [
             self._outputs[var_id].desc for var_id in self._outputs.var_ids
         ]
-        self._debug_name = None
 
     def __call__(self, inputs):
         """
@@ -517,14 +513,11 @@ class PartialProgramLayer:
             infer_program = self._infer_pure_fp16_program
         else:
             infer_program = self._infer_program
-        # NOTE(Aurelius84): Export forward_program for SubGraphChecker,
-        # see export_subgraph for detail.
-        pir_exporter(self, infer_program, SubGraphRole.Infer)
         return infer_program
 
     @property
     def forward_program(self):
-        forward_program, role = None, None
+        forward_program = None
         if self.training:
             if _in_amp_guard():
                 progs = self._train_amp_forward_backward_program
@@ -609,10 +602,12 @@ class PartialProgramLayer:
             new_grad_name = var.name + suffix + "@GRAD"
             found_ops = list(
                 filter(
-                    lambda x: x[0] >= start_idx
-                    and any(
-                        out_arg == var_grad_name
-                        for out_arg in x[1].output_arg_names
+                    lambda x: (
+                        x[0] >= start_idx
+                        and any(
+                            out_arg == var_grad_name
+                            for out_arg in x[1].output_arg_names
+                        )
                     ),
                     enumerate(target_program.block(0).ops),
                 )
@@ -750,7 +745,7 @@ class PartialProgramLayer:
         is_prim_enabled = (
             core._is_fwd_prim_enabled() or core._is_bwd_prim_enabled()
         )
-        in_cinn_backend = self._backend == "CINN"
+        in_cinn_backend = self._backend.is_cinn()
         is_cinn_enabled = self._build_strategy.build_cinn_pass
         if is_prim_enabled or in_cinn_backend or is_cinn_enabled:
             in_pir_pt_mode = False
@@ -788,15 +783,6 @@ class PartialProgramLayer:
                     self._grad_var_names.get('out', []),
                     'x_grad_names',
                     self._grad_var_names.get('x', []),
-                )
-            )
-        if self._cuda_graph_capture_mode:
-            attrs.extend(
-                (
-                    'cuda_graph_capture_mode',
-                    self._cuda_graph_capture_mode,
-                    'cuda_graph_pool_id',
-                    self._cuda_graph_pool_id,
                 )
             )
 
@@ -854,22 +840,6 @@ class PartialProgramLayer:
 
         self._apply_inplace_pass(forward_built_program, backward_built_program)
 
-        # NOTE(Aurelius84): Export forward/backward program for SubGraphChecker,
-        # see export_subgraph for detail.
-        pir_exporter(
-            self,
-            forward_built_program,
-            SubGraphRole.Forward,
-            set(),
-            set(forward_skip_vars),
-        )
-        pir_exporter(
-            self,
-            backward_built_program,
-            SubGraphRole.Backward,
-            set(forward_skip_vars),
-            set(backward_skip_vars),
-        )
         return [forward_built_program, backward_built_program]
 
     def _apply_inplace_pass(self, forward_program, backward_program):

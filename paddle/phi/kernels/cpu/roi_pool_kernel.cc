@@ -17,6 +17,7 @@
 #include "paddle/phi/backends/cpu/cpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/empty_kernel.h"
+#include "paddle/phi/kernels/full_kernel.h"
 
 namespace phi {
 
@@ -24,7 +25,7 @@ template <typename T, typename Context>
 void RoiPoolKernel(const Context& dev_ctx,
                    const DenseTensor& x,
                    const DenseTensor& boxes,
-                   const paddle::optional<DenseTensor>& boxes_num,
+                   const optional<DenseTensor>& boxes_num,
                    int pooled_height,
                    int pooled_width,
                    float spatial_scale,
@@ -37,8 +38,9 @@ void RoiPoolKernel(const Context& dev_ctx,
   int width = static_cast<int>(x_dims[3]);
   int rois_num = static_cast<int>(boxes.dims()[0]);
 
-  if (rois_num == 0) {
-    dev_ctx.template Alloc<T>(out);
+  if (x.numel() == 0 || boxes.numel() == 0) {
+    Full<T, Context>(dev_ctx, out->dims(), 0, out);
+    Full<int64_t, Context>(dev_ctx, arg_max->dims(), 0, arg_max);
     return;
   }
 
@@ -141,7 +143,7 @@ void RoiPoolKernel(const Context& dev_ctx,
 
           for (int h = hstart; h < hend; ++h) {
             for (int w = wstart; w < wend; ++w) {
-              const int index = h * width + w;
+              const int64_t index = static_cast<int64_t>(h) * width + w;
               if (batch_data[index] > output_data[pool_index]) {
                 output_data[pool_index] = batch_data[index];
                 arg_max_data[pool_index] = index;

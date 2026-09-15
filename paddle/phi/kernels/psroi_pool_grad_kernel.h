@@ -20,10 +20,10 @@
 namespace phi {
 
 template <typename T, typename Context>
-void PsroiPoolGradKernel(const Context& ctx,
+void PsroiPoolGradKernel(const Context& dev_ctx,
                          const DenseTensor& x,
                          const DenseTensor& rois,
-                         const paddle::optional<DenseTensor>& rois_num,
+                         const optional<DenseTensor>& rois_num,
                          const DenseTensor& dout,
                          int pooled_height,
                          int pooled_width,

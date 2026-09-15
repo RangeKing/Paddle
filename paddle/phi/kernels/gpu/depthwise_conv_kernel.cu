@@ -13,10 +13,9 @@
 // limitations under the License.
 
 #include "paddle/phi/backends/gpu/gpu_context.h"
-#include "paddle/phi/common/bfloat16.h"
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/cpu/conv_util.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/batch_norm_utils.h"
 #include "paddle/phi/kernels/gpu/depthwise_conv.h"
 
@@ -33,6 +32,10 @@ void DepthwiseConvKernel(const Context& dev_ctx,
                          const std::vector<int>& dilations_t,
                          const std::string& data_format,
                          DenseTensor* out) {
+  if (input.numel() == 0 || filter.numel() == 0) {
+    Full<T, Context>(dev_ctx, out->dims(), 0, out);
+    return;
+  }
   DenseTensor* output = out;
   dev_ctx.template Alloc<T>(output);
 
@@ -72,20 +75,39 @@ void DepthwiseConvKernel(const Context& dev_ctx,
             input.dims()[1]));
   }
 
+// Enable if cudnn above 8.2, hip already has cudnn kernel.
+#if defined(CUDNN_VERSION) && CUDNN_VERSION_MIN(8, 2, 0) && \
+    !defined(PADDLE_WITH_HIP)
+  DWConvParams params(has_fuse_relu, data_format, strides, dilations);
+  if (params.UseCudnnDepthwise<Context>(dev_ctx, input, filter)) {
+    DepthwiseConvCudnnKernel<T>(dev_ctx,
+                                input,
+                                filter,
+                                strides_t,
+                                paddings_t,
+                                padding_algorithm,
+                                groups,
+                                dilations_t,
+                                data_format,
+                                out);
+    return;
+  }
+#endif
+
   // update padding and dilation
   auto in_dims = input.dims();
   auto filter_dims = filter.dims();
 
   DDim in_data_dims;
-  const phi::DataLayout data_layout = common::StringToDataLayout(data_format);
-  if (data_layout != phi::DataLayout::kNHWC) {
+  const DataLayout data_layout = StringToDataLayout(data_format);
+  if (data_layout != DataLayout::NHWC) {
     in_data_dims = slice_ddim(in_dims, 2, in_dims.size());
   } else {
     in_data_dims = slice_ddim(in_dims, 1, in_dims.size() - 1);
   }
 
   DDim filter_data_dims = slice_ddim(filter_dims, 2, filter_dims.size());
-  std::vector<int> ksize = common::vectorize<int>(filter_data_dims);
+  std::vector<int> ksize = vectorize<int>(filter_data_dims);
   UpdatePaddingAndDilation(
       &paddings, &dilations, padding_algorithm, in_data_dims, strides, ksize);
 
@@ -97,8 +119,7 @@ void DepthwiseConvKernel(const Context& dev_ctx,
   }
 
   if (fuse_relu) {
-    paddle::operators::math::DepthwiseConvFunctor<Context, T, true>
-        depthwiseConv;
+    math::DepthwiseConvFunctor<Context, T, true> depthwiseConv;
     depthwiseConv(dev_ctx,
                   input,
                   filter,
@@ -108,8 +129,7 @@ void DepthwiseConvKernel(const Context& dev_ctx,
                   output,
                   data_layout);
   } else {
-    paddle::operators::math::DepthwiseConvFunctor<Context, T, false>
-        depthwiseConv;
+    math::DepthwiseConvFunctor<Context, T, false> depthwiseConv;
     depthwiseConv(dev_ctx,
                   input,
                   filter,
@@ -129,5 +149,5 @@ PD_REGISTER_KERNEL(depthwise_conv2d,
                    phi::DepthwiseConvKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}

@@ -71,7 +71,7 @@ class AttrTypeWriter {
  * If the pir type has value, it should have a data() method,
  * which returns the value of type. The data() method is better
  * suited to return TYPE  which supported by json like std::vector,
- * std::string, int, float and so on. if not, serailizeTypeToJson
+ * std::string, int, float and so on. if not, serializeTypeToJson
  * need to be specialized.
  */
 
@@ -95,7 +95,7 @@ Json serializeTypeToJson(const T& type) {
  * It also need have a data() method, which returns the value of
  * attribute. The data() method is better suited to return TYPE
  * which supported by json like std::vector, std::string, int,
- * float and so on. if not, serailizeAttrToJson
+ * float and so on. if not, serializeAttrToJson
  * need to be specialized.
  */
 
@@ -212,7 +212,7 @@ Json serializeAttrToJson<paddle::dialect::ScalarAttribute>(
     content.push_back(scalar.to<phi::dtype::complex<double>>().imag);
   } else {
     PADDLE_THROW(common::errors::InvalidArgument(
-        "Invalid tensor data type `", dtype_, "`."));
+        "Invalid tensor data type `%s`.", dtype_));
   }
   json_obj[DATA] = content;
   return json_obj;
@@ -254,7 +254,8 @@ Json writeType(const pir::Type& type) {
   } else {
     PADDLE_ENFORCE(
         false,
-        common::errors::InvalidArgument("Unknown Type %s when write type"));
+        common::errors::InvalidArgument("Unknown Type %s when write type",
+                                        type.dialect().name()));
   }
   VLOG(8) << "Finish write Type ... ";
 
@@ -282,7 +283,8 @@ Json writeAttr(const pir::Attribute& attr) {
   } else {
     PADDLE_ENFORCE(
         false,
-        common::errors::InvalidArgument("Unknown Attr %s when write attr"));
+        common::errors::InvalidArgument("Unknown Attr %s when write attr",
+                                        attr.dialect().name()));
   }
 
   VLOG(8) << "Finish write attr ... ";
@@ -420,7 +422,8 @@ Json AttrTypeWriter::WriteBuiltInAttr(const pir::Attribute& attr) {
   } else {
     PADDLE_ENFORCE(false,
                    common::errors::InvalidArgument(
-                       "Unknown Attr %s when write Builtin dialect attr"));
+                       "Unknown Attr %s when write Builtin dialect attr",
+                       attr.dialect().name()));
   }
   return attr_json;
 }
@@ -550,7 +553,7 @@ Json serializeTypeToJsonIncludeWriteType<paddle::dialect::DistDenseTensorType>(
   content.push_back(serializeAttrToJson<paddle::dialect::TensorDistAttribute>(
       type.tensor_dist_attr()));
 
-  // serialize common::DDim local_ddim;
+  // serialize DDim local_ddim;
   std::vector<int64_t> local_ddim_;
   for (auto i = 0; i < type.local_ddim().size(); i++) {
     local_ddim_.push_back(type.local_ddim().at(i));
@@ -607,6 +610,14 @@ Json AttrTypeWriter::WriteBuiltInType(const pir::Type& type) {
     VLOG(8) << "Write IndexType ... ";
     return pir::serializeTypeToJson<pir::IndexType>(
         type.dyn_cast<pir::IndexType>());
+  } else if (type.isa<pir::Float8E4M3FNType>()) {
+    VLOG(8) << "Write Float8E4M3FNType ... ";
+    return pir::serializeTypeToJson<pir::Float8E4M3FNType>(
+        type.dyn_cast<pir::Float8E4M3FNType>());
+  } else if (type.isa<pir::Float8E5M2Type>()) {
+    VLOG(8) << "Write Float8E5M2Type ... ";
+    return pir::serializeTypeToJson<pir::Float8E5M2Type>(
+        type.dyn_cast<pir::Float8E5M2Type>());
   } else if (type.isa<pir::Complex64Type>()) {
     VLOG(8) << "Write Complex64Type ... ";
     return pir::serializeTypeToJson<pir::Complex64Type>(
@@ -659,10 +670,10 @@ Json AttrTypeWriter::WritePaddleOperatorAttr(const pir::Attribute& attr) {
     return pir::serializeAttrToJson<paddle::dialect::DataLayoutAttribute>(
         attr.dyn_cast<paddle::dialect::DataLayoutAttribute>());
   } else {
-    PADDLE_ENFORCE(
-        false,
-        common::errors::InvalidArgument(
-            "Unknown Attr %s when write paddle.operatordialect attr"));
+    PADDLE_ENFORCE(false,
+                   common::errors::InvalidArgument(
+                       "Unknown Attr %s when write paddle.operatordialect attr",
+                       attr.dialect().name()));
   }
   return Json::object();
 }
@@ -726,10 +737,10 @@ Json AttrTypeWriter::WritePaddleDistAttr(const pir::Attribute& attr) {
     return pir::serializeAttrToJson<paddle::dialect::OperationDistAttribute>(
         attr.dyn_cast<paddle::dialect::OperationDistAttribute>());
   } else {
-    PADDLE_ENFORCE(
-        false,
-        common::errors::InvalidArgument(
-            "Unknown Attr %s when write paddle.operatordialect attr"));
+    PADDLE_ENFORCE(false,
+                   common::errors::InvalidArgument(
+                       "Unknown Attr %s when write paddle.operatordialect attr",
+                       attr.dialect().name()));
   }
   return Json::object();
 }

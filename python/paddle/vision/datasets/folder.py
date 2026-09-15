@@ -14,12 +14,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, List, Literal, Tuple
-
-from typing_extensions import TypeAlias
+from typing import TYPE_CHECKING, Any, Literal, TypeAlias
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from paddle._typing.dtype_like import _DTypeLiteral
     from paddle.vision.transforms.transforms import _Transform
@@ -59,9 +57,9 @@ def has_valid_extension(filename: str, extensions: Sequence[str]) -> bool:
     Returns:
         bool: True if the filename ends with one of given extensions
     """
-    assert isinstance(
-        extensions, (list, tuple)
-    ), "`extensions` must be list or tuple."
+    assert isinstance(extensions, (list, tuple)), (
+        "`extensions` must be list or tuple."
+    )
     extensions = tuple([x.lower() for x in extensions])
     return filename.lower().endswith(extensions)
 
@@ -89,7 +87,7 @@ def make_dataset(dir, class_to_idx, extensions, is_valid_file=None):
     return images
 
 
-class DatasetFolder(Dataset[Tuple["_ImageDataType", int]]):
+class DatasetFolder(Dataset[tuple["_ImageDataType", int]]):
     """A generic data loader where the samples are arranged in this way:
 
     .. code-block:: text
@@ -126,12 +124,13 @@ class DatasetFolder(Dataset[Tuple["_ImageDataType", int]]):
 
     Example:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import shutil
             >>> import tempfile
             >>> import cv2
             >>> import numpy as np
+            >>> import paddle
             >>> import paddle.vision.transforms as T
             >>> from pathlib import Path
             >>> from paddle.vision.datasets import DatasetFolder
@@ -166,7 +165,7 @@ class DatasetFolder(Dataset[Tuple["_ImageDataType", int]]):
             ...             "pqr.jpeg",
             ...             "stu.jpg"]}]},
             ...     "this_will_be_ignored.txt",
-            ... ]
+            ... ]  # fmt: skip
 
             >>> # You can replace this with any directory to explore the structure
             >>> # of generated data. e.g. fake_data_dir = "./temp_dir"
@@ -207,9 +206,14 @@ class DatasetFolder(Dataset[Tuple["_ImageDataType", int]]):
             ...     ]
             ... )
 
+            >>> def cv2_loader(path: str):
+            ...     image = cv2.imread(path)
+            ...     assert image is not None
+            ...     return image
+
             >>> data_folder_2 = DatasetFolder(
             ...     fake_data_dir,
-            ...     loader=lambda x: cv2.imread(x),  # load image with OpenCV
+            ...     loader=cv2_loader,  # load image with OpenCV
             ...     extensions=(".jpg",),  # only load *.jpg files
             ...     transform=transform,  # apply transform to every image
             ... )
@@ -223,7 +227,8 @@ class DatasetFolder(Dataset[Tuple["_ImageDataType", int]]):
 
             >>> for img, label in iter(data_folder_2):
             ...     # do something with img and label
-            ...     print(type(img), img.shape, label)  # type: ignore
+            ...     assert isinstance(img, paddle.Tensor)
+            ...     print(type(img), img.shape, label)
             ...     # <class 'paddle.Tensor'> [3, 64, 64] 0
 
             >>> shutil.rmtree(fake_data_dir)
@@ -341,7 +346,7 @@ def default_loader(path):
         return pil_loader(path)
 
 
-class ImageFolder(Dataset[List["_ImageDataType"]]):
+class ImageFolder(Dataset[list["_ImageDataType"]]):
     """A generic data loader where the samples are arranged in this way:
 
     .. code-block:: text
@@ -371,12 +376,13 @@ class ImageFolder(Dataset[List["_ImageDataType"]]):
 
     Example:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import shutil
             >>> import tempfile
             >>> import cv2
             >>> import numpy as np
+            >>> import paddle
             >>> import paddle.vision.transforms as T
             >>> from pathlib import Path
             >>> from paddle.vision.datasets import ImageFolder
@@ -408,7 +414,7 @@ class ImageFolder(Dataset[List["_ImageDataType"]]):
             ...         {"mno": [
             ...             "pqr.jpg"]}]},
             ...     "this_will_be_ignored.txt",
-            ... ]
+            ... ]  # fmt: skip
 
             >>> # You can replace this with any directory to explore the structure
             >>> # of generated data. e.g. fake_data_dir = "./temp_dir"
@@ -442,9 +448,14 @@ class ImageFolder(Dataset[List["_ImageDataType"]]):
             ...     ]
             ... )
 
+            >>> def cv2_loader(path: str):
+            ...     image = cv2.imread(path)
+            ...     assert image is not None
+            ...     return image
+
             >>> image_folder_2 = ImageFolder(
             ...     fake_data_dir,
-            ...     loader=lambda x: cv2.imread(x),  # load image with OpenCV
+            ...     loader=cv2_loader,  # load image with OpenCV
             ...     extensions=(".jpg",),  # only load *.jpg files
             ...     transform=transform,  # apply transform to every image
             ... )
@@ -458,7 +469,8 @@ class ImageFolder(Dataset[List["_ImageDataType"]]):
 
             >>> for (img,) in iter(image_folder_2):
             ...     # do something with img
-            ...     print(type(img), img.shape)  # type: ignore
+            ...     assert isinstance(img, paddle.Tensor)
+            ...     print(type(img), img.shape)
             ...     # <class 'paddle.Tensor'> [3, 64, 64]
 
             >>> shutil.rmtree(fake_data_dir)

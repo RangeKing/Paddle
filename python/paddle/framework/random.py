@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 import paddle
 from paddle.base import core
+from paddle.utils.decorator_utils import param_one_alias
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -37,7 +38,7 @@ def seed(seed: int) -> paddle.base.core.Generator:
         Generator: The global default generator object.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> gen = paddle.seed(102)
@@ -71,7 +72,7 @@ def seed(seed: int) -> paddle.base.core.Generator:
 
 def get_rng_state(
     device: str | None = None,
-) -> list[paddle.base.core.GeneratorState]:
+) -> list[core.GeneratorState]:
     """
     Get all random states of random generators of specified device.
 
@@ -84,7 +85,7 @@ def get_rng_state(
         list[GeneratorState], object.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> sts = paddle.get_rng_state()
@@ -136,7 +137,7 @@ def get_cuda_rng_state() -> list[paddle.base.core.GeneratorState]:
         GeneratorState:  object.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> sts = paddle.get_cuda_rng_state()
@@ -150,6 +151,7 @@ def get_cuda_rng_state() -> list[paddle.base.core.GeneratorState]:
     return state_list
 
 
+@param_one_alias(["state_list", "new_state"])
 def set_rng_state(
     state_list: Sequence[paddle.base.core.GeneratorState],
     device: str | None = None,
@@ -160,6 +162,7 @@ def set_rng_state(
 
     Args:
         state_list(list|tuple): The device states to set back to device generators. state_list is obtained from get_rng_state().
+            Alias: ``new_state``.
         device(str): This parameter determines the specific running device.
             It can be ``cpu``, ``gpu``, ``xpu``, Default is None.
             If None, return the generators of current device (specified by ``set_device``).
@@ -168,7 +171,7 @@ def set_rng_state(
         None.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> sts = paddle.get_rng_state()
@@ -178,7 +181,7 @@ def set_rng_state(
     if device is None:
         place = paddle.framework._current_expected_place_()
     else:
-        place = device._convert_to_place(device)
+        place = paddle.device._convert_to_place(device)
 
     if isinstance(place, paddle.CUDAPlace):
         if not len(state_list) == core.get_cuda_device_count():
@@ -195,15 +198,12 @@ def set_rng_state(
         for i in range(core.get_xpu_device_count()):
             core.default_xpu_generator(i).set_state(state_list[i])
     elif isinstance(place, paddle.CustomPlace):
-        dev_cnt = sum(
-            [
-                place.get_device_type() == s.split(':')[0]
-                for s in core.get_available_custom_device()
-            ]
-        )
+        dev_types = core.get_all_custom_device_type()
+        dev_type = dev_types[0]
+        dev_cnt = core.get_custom_device_count(dev_type)
         if not len(state_list) == dev_cnt:
             raise ValueError(
-                f"Length of custom device state list should be equal to the {place.get_dtype_type()} device count"
+                f"Length of custom device state list should be equal to the {dev_cnt} device count"
             )
         for i in range(dev_cnt):
             core.default_custom_device_generator(
@@ -233,7 +233,7 @@ def set_cuda_rng_state(
         None.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> sts = paddle.get_cuda_rng_state()
@@ -274,3 +274,32 @@ def set_random_seed_generator(name: str, seed: int) -> None:
 
 def get_random_seed_generator(name: str) -> paddle.base.core.Generator:
     return core.get_random_seed_generator(name)
+
+
+class Generator:
+    def __new__(
+        cls, device: str | int | paddle.core.Place = None
+    ) -> core.Generator:
+        """
+        Generator is a random number generator.
+
+        Args:
+            device(str|int|paddle.core.Place): The device type to create the generator on.
+                It can be ``cpu``, ``gpu``, ``xpu``, or a paddle.core.Place instance.
+                default is None, which means using current device.
+
+        Examples:
+            .. code-block:: pycon
+
+                >>> import paddle
+                >>> g_cpu = paddle.Generator()
+        """
+        place = paddle.device.device_to_place(device)
+        if isinstance(place, core.CPUPlace):
+            return core.default_cpu_generator()
+        elif isinstance(place, core.CUDAPlace):
+            return core.default_cuda_generator(place.gpu_device_id())
+        elif isinstance(place, core.XPUPlace):
+            return core.default_xpu_generator(place.gpu_device_id())
+        elif isinstance(place, core.CustomPlace):
+            return core.default_custom_device_generator(place)

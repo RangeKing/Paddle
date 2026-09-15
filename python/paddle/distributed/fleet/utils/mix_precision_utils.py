@@ -52,9 +52,9 @@ class MixPrecisionLayer(nn.Layer):
         # Hook used for back-prop and grad-merge.
         @paddle.autograd.no_grad()
         def param_hook(tmp_grad):
-            assert (
-                param.grad is None
-            ), f"In main_grad node, param.grad should be None, but find param[{param.name}] has grad."
+            assert param.grad is None, (
+                f"In main_grad node, param.grad should be None, but find param[{param.name}] has grad."
+            )
             if tmp_grad is not None and tmp_grad._is_initialized():
                 # Some previous pylayer may return None, should check grad validation.
                 if param.main_grad is None:
@@ -102,6 +102,16 @@ class MixPrecisionOptimizer:
     @imperative_base.no_grad
     @framework.dygraph_only
     def step(self):
+        need_shard = any(
+            hasattr(p, '_need_shard') for p in self._parameter_list
+        )
+        if need_shard:
+            fleet.meta_parallel.sharding.group_sharded_fully_shard.FullyShardOptimizer(
+                self
+            )
+            self.step()
+            return
+
         if not isinstance(self._parameter_list[0], dict):
             params_grads = []
             for param in self._parameter_list:

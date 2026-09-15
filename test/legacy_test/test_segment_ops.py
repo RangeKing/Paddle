@@ -15,7 +15,12 @@
 import unittest
 
 import numpy as np
-from op_test import OpTest, convert_float_to_uint16
+from op_test import (
+    OpTest,
+    convert_float_to_uint16,
+    get_device_place,
+    is_custom_device,
+)
 
 import paddle
 from paddle.base import core
@@ -132,7 +137,7 @@ class TestSegmentOps(OpTest):
         if self.dtype == np.uint16:
             self.inputs['X'] = convert_float_to_uint16(self.inputs['X'])
             self.outputs['Out'] = convert_float_to_uint16(self.outputs['Out'])
-            self.place = core.CUDAPlace(0)
+            self.place = get_device_place()
 
 
 class TestSegmentSum2(TestSegmentOps):
@@ -221,9 +226,9 @@ class TestSegmentMean(TestSegmentOps):
         self.convert_bf16()
 
     def test_check_output(self):
-        if core.is_compiled_with_cuda():
+        if core.is_compiled_with_cuda() or is_custom_device():
             self.check_output_with_place(
-                core.CUDAPlace(0), check_pir=True, check_symbol_infer=False
+                get_device_place(), check_pir=True, check_symbol_infer=False
             )
         # due to CPU kernel not implement calculate 'SummedIds'
         # so cannot check 'SummedIds'
@@ -265,9 +270,101 @@ class TestSegmentMeanFP16Op(TestSegmentMean):
         self.dtype = np.float16
 
 
+class TestSegmentMaxFP16OddNumel(TestSegmentMax):
+    """Test MAX+float16 with odd output numel to exercise 4-byte alignment
+    padding. Input [21,5], 7 segments -> output [7,5]=35 numel (odd),
+    35*2=70 bytes, padded to 72."""
+
+    def prepare(self):
+        super().prepare()
+        self.dtype = np.float16
+        self.shape = [21, 5]
+
+    def set_segment(self, origin_len, reduce_len):
+        return np.sort(
+            np.array(
+                [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6],
+                dtype='int64',
+            )
+        )
+
+
+class TestSegmentMinFP16OddNumel(TestSegmentMin):
+    """Test MIN+float16 with odd output numel to exercise 4-byte alignment
+    padding. Input [21,5], 7 segments -> output [7,5]=35 numel (odd),
+    35*2=70 bytes, padded to 72."""
+
+    def prepare(self):
+        super().prepare()
+        self.dtype = np.float16
+        self.shape = [21, 5]
+
+    def set_segment(self, origin_len, reduce_len):
+        return np.sort(
+            np.array(
+                [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6],
+                dtype='int64',
+            )
+        )
+
+
+class TestSegmentMaxFP16OddNumelInt32(TestSegmentMax):
+    """Test MAX+float16+int32 segment_ids with odd output numel."""
+
+    def prepare(self):
+        super().prepare()
+        self.dtype = np.float16
+        self.shape = [21, 5]
+
+    def set_segment(self, origin_len, reduce_len):
+        return np.sort(
+            np.array(
+                [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6],
+                dtype='int32',
+            )
+        )
+
+    def setUp(self):
+        self.prepare()
+        x, segment_ids = self.set_data()
+        result = self.compute(x, segment_ids)
+        self.inputs = {
+            'X': x.astype(self.dtype),
+            'SegmentIds': segment_ids.astype(np.int32),
+        }
+        self.outputs = {'Out': result.astype(self.dtype)}
+
+
+class TestSegmentMinFP16OddNumelInt32(TestSegmentMin):
+    """Test MIN+float16+int32 segment_ids with odd output numel."""
+
+    def prepare(self):
+        super().prepare()
+        self.dtype = np.float16
+        self.shape = [21, 5]
+
+    def set_segment(self, origin_len, reduce_len):
+        return np.sort(
+            np.array(
+                [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6],
+                dtype='int32',
+            )
+        )
+
+    def setUp(self):
+        self.prepare()
+        x, segment_ids = self.set_data()
+        result = self.compute(x, segment_ids)
+        self.inputs = {
+            'X': x.astype(self.dtype),
+            'SegmentIds': segment_ids.astype(np.int32),
+        }
+        self.outputs = {'Out': result.astype(self.dtype)}
+
+
 @unittest.skipIf(
-    not core.is_compiled_with_cuda()
-    or not core.is_bfloat16_supported(core.CUDAPlace(0)),
+    not (core.is_compiled_with_cuda() or is_custom_device())
+    or not core.is_bfloat16_supported(get_device_place()),
     "core is not compiled with CUDA or not support bfloat16",
 )
 class TestSegmentSumBF16Op(TestSegmentOps):
@@ -286,8 +383,8 @@ class TestSegmentSumBF16Op(TestSegmentOps):
 
 
 @unittest.skipIf(
-    not core.is_compiled_with_cuda()
-    or not core.is_bfloat16_supported(core.CUDAPlace(0)),
+    not (core.is_compiled_with_cuda() or is_custom_device())
+    or not core.is_bfloat16_supported(get_device_place()),
     "core is not compiled with CUDA or not support bfloat16",
 )
 class TestSegmentMaxBF16Op(TestSegmentMax):
@@ -312,8 +409,8 @@ class TestSegmentMaxBF16Op(TestSegmentMax):
 
 
 @unittest.skipIf(
-    not core.is_compiled_with_cuda()
-    or not core.is_bfloat16_supported(core.CUDAPlace(0)),
+    not (core.is_compiled_with_cuda() or is_custom_device())
+    or not core.is_bfloat16_supported(get_device_place()),
     "core is not compiled with CUDA or not support bfloat16",
 )
 class TestSegmentMinBF16Op(TestSegmentMin):
@@ -338,8 +435,8 @@ class TestSegmentMinBF16Op(TestSegmentMin):
 
 
 @unittest.skipIf(
-    not core.is_compiled_with_cuda()
-    or not core.is_bfloat16_supported(core.CUDAPlace(0)),
+    not (core.is_compiled_with_cuda() or is_custom_device())
+    or not core.is_bfloat16_supported(get_device_place()),
     "core is not compiled with CUDA or not support bfloat16",
 )
 class TestSegmentMeanBF16Op(TestSegmentMean):
@@ -357,8 +454,126 @@ class TestSegmentMeanBF16Op(TestSegmentMean):
         self.check_grad_with_place(self.place, ["X"], "Out", check_pir=True)
 
 
-class API_SegmentOpsTest(unittest.TestCase):
+@unittest.skipIf(
+    not (core.is_compiled_with_cuda() or is_custom_device())
+    or not core.is_bfloat16_supported(get_device_place()),
+    "core is not compiled with CUDA or not support bfloat16",
+)
+class TestSegmentMaxBF16OddNumel(TestSegmentMaxBF16Op):
+    """Test MAX+bfloat16 with odd output numel to exercise 4-byte alignment
+    padding. Input [21,5], 7 segments -> output [7,5]=35 numel (odd),
+    35*2=70 bytes, padded to 72."""
 
+    def prepare(self):
+        super().prepare()
+        self.shape = [21, 5]
+
+    def set_segment(self, origin_len, reduce_len):
+        return np.sort(
+            np.array(
+                [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6],
+                dtype='int64',
+            )
+        )
+
+
+@unittest.skipIf(
+    not (core.is_compiled_with_cuda() or is_custom_device())
+    or not core.is_bfloat16_supported(get_device_place()),
+    "core is not compiled with CUDA or not support bfloat16",
+)
+class TestSegmentMinBF16OddNumel(TestSegmentMinBF16Op):
+    """Test MIN+bfloat16 with odd output numel to exercise 4-byte alignment
+    padding. Input [21,5], 7 segments -> output [7,5]=35 numel (odd),
+    35*2=70 bytes, padded to 72."""
+
+    def prepare(self):
+        super().prepare()
+        self.shape = [21, 5]
+
+    def set_segment(self, origin_len, reduce_len):
+        return np.sort(
+            np.array(
+                [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6],
+                dtype='int64',
+            )
+        )
+
+
+# default SUM
+class TestSegmentOps_ZeroSize(OpTest):
+    def set_data(self):
+        x = np.random.uniform(-1, 1, self.shape).astype(self.dtype)
+        segment_ids = self.set_segment(self.shape[0])
+        return x, segment_ids
+
+    def set_segment(self, len):
+        segment = np.random.randint(0, len, size=[len])
+        segment = np.sort(segment)
+        return segment.astype('int64')
+
+    def compute(self, x, segment_ids):
+        return compute_segment_sum(x, segment_ids)
+
+    def prepare(self):
+        self.op_type = "segment_pool"
+        self.python_api = segment_pool_split
+        self.python_out_sig = ["Out"]
+        self.dtype = np.float64
+        self.shape = [30, 0]
+        self.attrs = {"pooltype": "SUM"}
+
+    def setUp(self):
+        self.prepare()
+        x, segment_ids = self.set_data()
+        result = self.compute(x, segment_ids)
+        self.inputs = {
+            'X': x,
+            'SegmentIds': segment_ids.astype(np.int64),
+        }
+        self.outputs = {'Out': result.astype(self.dtype)}
+
+    def test_check_output(self):
+        self.check_output(check_pir=True, check_symbol_infer=False)
+
+    def test_check_grad(self):
+        self.check_grad(["X"], "Out", check_pir=True)
+
+
+class TestSegmentOps_Min_ZeroSize(TestSegmentOps_ZeroSize):
+    def compute(self, x, segment_ids):
+        result, self.gradient = compute_segment_min_max(
+            x, segment_ids, pooltype="MIN"
+        )
+        return result
+
+    def prepare(self):
+        super().prepare()
+        self.attrs = {'pooltype': "MIN"}
+
+
+class TestSegmentOps_Max_ZeroSize(TestSegmentOps_ZeroSize):
+    def compute(self, x, segment_ids):
+        result, self.gradient = compute_segment_min_max(
+            x, segment_ids, pooltype="MAX"
+        )
+        return result
+
+    def prepare(self):
+        super().prepare()
+        self.attrs = {'pooltype': "MAX"}
+
+
+class TestSegmentOps_Mean_ZeroSize(TestSegmentOps_ZeroSize):
+    def compute(self, x, segment_ids):
+        return compute_segment_mean(x, segment_ids)
+
+    def prepare(self):
+        super().prepare()
+        self.attrs = {'pooltype': "MEAN"}
+
+
+class API_SegmentOpsTest(unittest.TestCase):
     def test_static(self):
         with paddle.static.program_guard(paddle.static.Program()):
             x = paddle.static.data(name="x", shape=[3, 3], dtype="float32")
@@ -412,7 +627,6 @@ class API_SegmentOpsTest(unittest.TestCase):
 
 
 class API_GeometricSegmentOpsTest(unittest.TestCase):
-
     def test_static(self):
         with paddle.static.program_guard(paddle.static.Program()):
             x = paddle.static.data(name="x", shape=[3, 3], dtype="float32")
@@ -488,8 +702,8 @@ class API_GeometricSegmentOpsTest(unittest.TestCase):
             )
 
     def test_dygraph_cuda_float16(self):
-        if core.is_compiled_with_cuda():
-            device = paddle.CUDAPlace(0)
+        if core.is_compiled_with_cuda() or is_custom_device():
+            device = get_device_place()
             with paddle.base.dygraph.guard(device):
                 x = paddle.to_tensor(
                     [[1, 2, 3], [3, 2, 1], [4, 5, 6]], dtype='float16'
@@ -511,6 +725,96 @@ class API_GeometricSegmentOpsTest(unittest.TestCase):
                 np.testing.assert_allclose(
                     np_res, ret_res.numpy(), rtol=1e-05, atol=1e-06
                 )
+
+    def test_infermeta_dimension_validation(self):
+        """Test InferMeta dimension validation for both dynamic and static graph modes.
+
+        This test covers the dimension checking logic added to InferMeta:
+        - config.is_runtime || !contain_unknown_dim
+        - Should check in dynamic mode (is_runtime=true)
+        - Should check in static mode when dimensions are known (!contain_unknown_dim)
+        - Should skip in static mode when dimensions contain unknown (-1)
+        """
+
+        device = paddle.CPUPlace()
+
+        # ========== Dynamic Graph Tests ==========
+        with paddle.base.dygraph.guard(device):
+            # Test 1: Normal case - dimensions match, should pass
+            x = paddle.to_tensor(
+                [[1, 2, 3], [3, 2, 1], [4, 5, 6]], dtype='float32'
+            )  # [3, 3]
+            y = paddle.to_tensor([0, 0, 1], dtype='int32')  # [3]
+            res_sum = paddle.geometric.segment_sum(x, y)
+            self.assertEqual(res_sum.shape[0], 2)  # max segment id is 1
+
+            # Test 2: Error case - segment_ids is shorter
+            x = paddle.to_tensor(
+                [[1, 2, 3], [3, 2, 1], [4, 5, 6]], dtype='float32'
+            )  # [3, 3]
+            y = paddle.to_tensor([0, 1], dtype='int32')  # [2] - 2 vs 3
+            with self.assertRaises(ValueError) as cm:
+                paddle.geometric.segment_sum(x, y)
+            self.assertIn("same size as dimension 0", str(cm.exception))
+
+            # Test 3: Error case - segment_ids is longer
+            x = paddle.to_tensor(
+                [[1, 2, 3], [3, 2, 1], [4, 5, 6]], dtype='float32'
+            )  # [3, 3]
+            y = paddle.to_tensor([0, 0, 1, 2], dtype='int32')  # [4] - 4 vs 3
+            with self.assertRaises(ValueError) as cm:
+                paddle.geometric.segment_sum(x, y)
+            self.assertIn("same size as dimension 0", str(cm.exception))
+
+            # Test 4: Error case - segment_ids is multi-dimensional
+            x = paddle.to_tensor(
+                [[1, 2, 3], [3, 2, 1]], dtype='float32'
+            )  # [3, 3]
+            y = paddle.to_tensor([[0, 0], [1, 1]], dtype='int32')  # [2, 2]
+            with self.assertRaises(ValueError) as cm:
+                paddle.geometric.segment_sum(x, y)
+            self.assertIn("1-D tensor", str(cm.exception))
+
+            # Test 5: Error case - segment_ids shorter, verify error message
+            x = paddle.to_tensor(
+                [[1, 2, 3], [2, 1, 3], [3, 4, 5]], dtype='float32'
+            )  # [3, 3]
+            y = paddle.to_tensor([0, 1], dtype='int32')  # [2]
+            with self.assertRaises(ValueError) as cm:
+                paddle.geometric.segment_mean(x, y)
+            self.assertIn("same size as dimension 0", str(cm.exception))
+
+            # Test 6: Error case - segment_ids longer, verify error message
+            x = paddle.to_tensor(
+                [[1, 2, 3], [2, 1, 3], [3, 4, 5]], dtype='float32'
+            )  # [3, 3]
+            y = paddle.to_tensor([0, 0, 1, 2], dtype='int32')  # [4]
+            with self.assertRaises(ValueError) as cm:
+                paddle.geometric.segment_min(x, y)
+            self.assertIn("same size as dimension 0", str(cm.exception))
+
+        # ========== Static Graph Tests ==========
+        in_dygraph = paddle.in_dynamic_mode()
+        paddle.enable_static()
+
+        # Test 7: Static graph - known dimensions, should check at compile time
+        x = paddle.static.data(name='x', shape=[3, 3], dtype='float32')
+        y = paddle.static.data(name='y', shape=[3], dtype='int32')
+        # This should trigger InferMeta check during graph construction
+        # if dimensions are known at compile time
+        # Note: Actual check happens at compile time for static graph
+        # The error message might differ from dynamic graph
+
+        # Test 8: Static graph - unknown dimensions (-1), should NOT check at compile time
+        # Dimensions with -1 are deferred to runtime
+        x = paddle.static.data(name='x', shape=[-1, 3], dtype='float32')
+        y = paddle.static.data(name='y', shape=[-1], dtype='int32')
+        # Should NOT trigger InferMeta check during graph construction
+        # because contain_unknown_dim will be true
+        # Check happens at runtime when executor runs
+
+        if in_dygraph:
+            paddle.disable_static()
 
 
 if __name__ == '__main__':

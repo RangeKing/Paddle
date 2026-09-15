@@ -21,8 +21,6 @@ limitations under the License. */
 
 namespace phi::distributed {
 
-using phi::distributed::auto_parallel::str_join;
-
 void BuildEinsumNotation(const size_t x_ndim,
                          std::vector<int> perm,
                          std::string* p_x_axes,
@@ -49,10 +47,11 @@ void BuildEinsumNotation(const size_t x_ndim,
 SpmdInfo TransposeInferSpmd(const DistMetaTensor& x,
                             const std::vector<int>& perm) {
   // Step0: Verify input args based on transpose logic
-  std::vector<int64_t> x_shape = common::vectorize(x.dims());
+  std::vector<int64_t> x_shape = vectorize(x.dims());
   size_t x_ndim = x_shape.size();
   const TensorDistAttr& x_dist_attr_src = x.dist_attr();
-  std::vector<int64_t> x_dims_mapping = x_dist_attr_src.dims_mapping();
+  std::vector<std::vector<int64_t>> x_dims_mapping =
+      x_dist_attr_src.multi_dims_mapping();
   PADDLE_ENFORCE_EQ(
       x_ndim,
       x_dims_mapping.size(),
@@ -76,13 +75,15 @@ SpmdInfo TransposeInferSpmd(const DistMetaTensor& x,
 
   // Step2: Sharding Propagation
   // Step2.1: Merge input shardings
-  std::pair<std::string, std::vector<int64_t>> x_sharding_info(
+  std::pair<std::string, std::vector<std::vector<int64_t>>> x_sharding_info(
       {x_axes, x_dims_mapping});
-  std::unordered_map<std::string, int64_t> axis_to_dim_map =
-      ShardingMergeForTensors({x_sharding_info});
+  const auto& axes_size = GetAxesSizes({{x_axes, x_shape}});
+  const auto& mesh_shape = x_dist_attr_src.process_mesh().shape();
+  std::unordered_map<std::string, std::vector<int64_t>> axis_to_dim_map =
+      ShardingMergeForTensors({x_sharding_info}, axes_size, mesh_shape);
 
   // Step2.2: Infer output dims mapping from merged input dims mapping
-  std::vector<int64_t> out_dims_mapping =
+  std::vector<std::vector<int64_t>> out_dims_mapping =
       GetDimsMappingForAxes(out_axes, axis_to_dim_map);
 
   auto x_dist_attr_dst = CopyTensorDistAttrForOutput(x_dist_attr_src);
@@ -109,12 +110,13 @@ SpmdInfo TransposeInferSpmdReverse(const DistMetaTensor& x,
                                    const DistMetaTensor& out,
                                    const std::vector<int>& perm) {
   // Step0: Verify input args based on transpose logic
-  const std::vector<int64_t> x_shape = common::vectorize(x.dims());
-  const std::vector<int64_t> out_shape = common::vectorize(out.dims());
+  const std::vector<int64_t> x_shape = vectorize(x.dims());
+  const std::vector<int64_t> out_shape = vectorize(out.dims());
   int x_ndim = static_cast<int>(x_shape.size());
   int out_ndim = static_cast<int>(out_shape.size());
   TensorDistAttr out_dist_attr_src = out.dist_attr();
-  std::vector<int64_t> out_dims_mapping = out_dist_attr_src.dims_mapping();
+  std::vector<std::vector<int64_t>> out_dims_mapping =
+      out_dist_attr_src.multi_dims_mapping();
   PADDLE_ENFORCE_EQ(
       out_ndim,
       out_dims_mapping.size(),
@@ -145,13 +147,15 @@ SpmdInfo TransposeInferSpmdReverse(const DistMetaTensor& x,
 
   // Step2: Sharding Propagation
   // Step2.1: merge input shardings
-  std::pair<std::string, std::vector<int64_t>> out_sharding_info(
+  std::pair<std::string, std::vector<std::vector<int64_t>>> out_sharding_info(
       {out_axes, out_dims_mapping});
-  std::unordered_map<std::string, int64_t> axis_to_dim_map =
-      ShardingMergeForTensors({out_sharding_info});
+  const auto& axes_size = GetAxesSizes({{out_axes, out_shape}});
+  const auto& mesh_shape = out_dist_attr_src.process_mesh().shape();
+  std::unordered_map<std::string, std::vector<int64_t>> axis_to_dim_map =
+      ShardingMergeForTensors({out_sharding_info}, axes_size, mesh_shape);
 
   // step2.2: infer input dims mapping from merged output dims mapping
-  std::vector<int64_t> x_dims_mapping =
+  std::vector<std::vector<int64_t>> x_dims_mapping =
       GetDimsMappingForAxes(x_axes, axis_to_dim_map);
 
   // initialize output dist_attr's process_mesh, batch_dim and dynamic dims with
@@ -176,11 +180,10 @@ SpmdInfo TransposeInferSpmdReverse(const DistMetaTensor& x,
 
 SpmdInfo TransposeGradInferSpmd(const DistMetaTensor& out_grad,
                                 const std::vector<int>& perm) {
-  const std::vector<int64_t> out_grad_shape =
-      common::vectorize(out_grad.dims());
+  const std::vector<int64_t> out_grad_shape = vectorize(out_grad.dims());
   size_t out_grad_ndim = out_grad_shape.size();
-  const std::vector<int64_t> out_grad_dims_mapping =
-      out_grad.dist_attr().dims_mapping();
+  const std::vector<std::vector<int64_t>> out_grad_dims_mapping =
+      out_grad.dist_attr().multi_dims_mapping();
   size_t out_grad_dims_mapping_size = out_grad_dims_mapping.size();
   PADDLE_ENFORCE_EQ(out_grad_ndim,
                     out_grad_dims_mapping_size,
@@ -197,7 +200,8 @@ SpmdInfo TransposeGradInferSpmd(const DistMetaTensor& out_grad,
                         "[%d] are not matched.",
                         out_grad_ndim,
                         perm_size));
-  std::vector<int64_t> x_dims_mapping(out_grad_ndim, -1);
+  std::vector<std::vector<int64_t>> x_dims_mapping(out_grad_ndim,
+                                                   std::vector<int64_t>({}));
   for (size_t i = 0; i < perm.size(); ++i) {
     int origin_index = perm[i] >= 0 ? perm[i] : out_grad_ndim + perm[i];
     x_dims_mapping[origin_index] = out_grad_dims_mapping[i];

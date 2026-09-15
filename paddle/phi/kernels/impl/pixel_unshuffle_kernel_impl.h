@@ -30,6 +30,9 @@ void PixelUnshuffleKernel(const Context& dev_ctx,
                           DenseTensor* out) {
   auto* in = &x;
   dev_ctx.template Alloc<T>(out);
+  if (out && out->numel() == 0) {
+    return;
+  }
   int factor = downscale_factor;
   bool channel_last = (data_format == "NHWC");
   const auto& in_dims = in->dims();
@@ -49,7 +52,7 @@ void PixelUnshuffleKernel(const Context& dev_ctx,
   } else {
     o.Resize({in_dims[0], o_dims[1], o_dims[2], in_dims[3], factor, factor});
   }
-  phi::funcs::Transpose<Context, T, 6> trans;
+  funcs::Transpose<Context, T, 6> trans;
   trans(dev_ctx, t, &o, axis);
   out->Resize(o_dims);
 }

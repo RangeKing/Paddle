@@ -117,8 +117,8 @@ class CacheGradOpSymbolShapeCodeGen:
     def gen_cpp_file_code(self, cpp_file_path):
         cache_func_code = ""
         original_attr_map_items_code = ""
-        get_op_name_with_dialect = (
-            lambda op_name: self.dialect_name + "." + op_name
+        get_op_name_with_dialect = lambda op_name: (
+            self.dialect_name + "." + op_name
         )
         for op_info_item in self.op_info_maps.values():
             if op_info_item.backward_name is None:
@@ -205,7 +205,9 @@ class CacheGradOpSymbolShapeCodeGen:
                     assert (
                         mutable_attribute_name
                         in op_info_item.mutable_attribute_name_list
-                    ), f"{mutable_attribute_name} is not found in {op_info_item.backward_name}'s mutable_attribute name list."
+                    ), (
+                        f"{mutable_attribute_name} is not found in {op_info_item.backward_name}'s mutable_attribute name list."
+                    )
                     index = len(
                         op_info_item.input_name_list
                     ) + op_info_item.mutable_attribute_name_list.index(

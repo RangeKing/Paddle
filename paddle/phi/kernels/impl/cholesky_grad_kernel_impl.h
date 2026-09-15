@@ -119,7 +119,8 @@ struct MatrixSetDiagFunctor {
     // Upper-bound checks for diagonals shorter than max_diag_len.
     // y_index and x_index are nonnegative by construction.
     if (y_index < m_ && x_index < n_) {
-      const int out_index = batch * m_ * n_ + y_index * n_ + x_index;
+      const int64_t out_index =
+          static_cast<int64_t>(batch) * m_ * n_ + y_index * n_ + x_index;
       output_[out_index] = diag_[index];
     }
   }
@@ -242,15 +243,21 @@ void CholeskyGradKernel(const Context& dev_ctx,
                         const DenseTensor& out_grad,
                         bool upper,
                         DenseTensor* x_grad) {
-  auto* x_grad_data = dev_ctx.template Alloc<T>(x_grad);
+  if (x_grad->numel() == 0) {
+    dev_ctx.template Alloc<T>(x_grad);
+    return;
+  }
 
+  auto* x_grad_data = dev_ctx.template Alloc<T>(x_grad);
   auto& dims = out.dims();
-  int batch_count = 1;
+  int64_t batch_count = 1;
   for (int i = 0; i < dims.size() - 2; i++) {
     batch_count *= dims[i];
   }
-  auto m = dims[dims.size() - 1];
-  int tensor_size = batch_count * m * m;
+  const int64_t m_64 = dims[dims.size() - 1];
+  PADDLE_ENFORCE_LE_INT_MAX(m_64, "CholeskyGrad TRSM matrix dimension");
+  const int m = static_cast<int>(m_64);
+  int64_t tensor_size = batch_count * m * m;
 
   std::vector<int> axis(dims.size() - 2);
   std::iota(axis.begin(), axis.end(), 0);
@@ -280,7 +287,7 @@ void CholeskyGradKernel(const Context& dev_ctx,
   blas.MatMul(l, trans_desc, l_grad, no_trans_desc, T(1), &middle, T(0));
 
   /*! phi.tril_().diagonal(0, -2, -1).mul_(0.5) */
-  phi::funcs::ForRange<Context> for_range(dev_ctx, tensor_size);
+  funcs::ForRange<Context> for_range(dev_ctx, tensor_size);
   MatrixBandPartScaleEndFunctor<T> matrix_band_part_scale_end_functor(
       m,
       m,
@@ -299,7 +306,8 @@ void CholeskyGradKernel(const Context& dev_ctx,
   EyeFunctor<T> eye_functor(m, m, identity_data);
   for_range(eye_functor);
   // TODO(guosheng): use trsmBatched for GPU
-  for (int i = 0; i < batch_count; i++) {
+  for (int64_t i = 0; i < batch_count; i++) {
+    int64_t offset = static_cast<int64_t>(i) * m * m;
     blas.TRSM(/*side*/ CblasLeft,
               /*uplo*/ CblasLower,
               /*trans*/ CblasNoTrans,
@@ -307,9 +315,9 @@ void CholeskyGradKernel(const Context& dev_ctx,
               /*m*/ m,
               /*n*/ m,
               /*alpha*/ T(1),
-              l_data + i * m * m,
+              l_data + offset,
               /*lda*/ m,
-              identity_data + i * m * m,
+              identity_data + offset,
               /*ldb*/ m);
   }
   DenseTensor& l_inverse = identity;

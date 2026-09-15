@@ -46,6 +46,10 @@
 #include "paddle/phi/core/cuda_stream.h"
 #endif
 
+#if defined(PADDLE_WITH_CUDA)
+#include "paddle/fluid/pybind/cuda_multiprocess_helper.h"
+#endif
+
 #ifdef PADDLE_WITH_ONNXRUNTIME
 #include "paddle/fluid/inference/api/onnxruntime_predictor.h"
 #endif
@@ -61,10 +65,10 @@ constexpr int NPY_FLOAT16_ = 23;
 constexpr int NPY_UINT16_ = 4;
 
 // Note: Since float16 is not a builtin type in C++, we register
-// phi::dtype::float16 as numpy.float16.
+// phi::float16 as numpy.float16.
 // Ref: https://github.com/pybind/pybind11/issues/1776
 template <>
-struct npy_format_descriptor<phi::dtype::float16> {
+struct npy_format_descriptor<phi::float16> {
   static py::dtype dtype() {
     handle ptr = npy_api::get().PyArray_DescrFromType_(NPY_FLOAT16_);
     return reinterpret_borrow<py::dtype>(ptr);
@@ -175,10 +179,10 @@ py::dtype PaddleDTypeToNumpyDType(PaddleDType dtype) {
       dt = py::dtype::of<float>();
       break;
     case PaddleDType::FLOAT16:
-      dt = py::dtype::of<phi::dtype::float16>();
+      dt = py::dtype::of<phi::float16>();
       break;
     case PaddleDType::BFLOAT16:
-      dt = py::dtype::of<phi::dtype::bfloat16>();
+      dt = py::dtype::of<phi::bfloat16>();
       break;
     case PaddleDType::UINT8:
       dt = py::dtype::of<uint8_t>();
@@ -248,43 +252,94 @@ paddle_infer::PlaceType ToPaddleInferPlace(
   }
 }
 
+void PaddleInferShareExternalDataByPtrName(
+    paddle_infer::Tensor &tensor,  // NOLINT
+    const std::string &shm_name,
+    const std::vector<int> &shape,
+    int dtype,
+    int place) {
+#if defined(PADDLE_WITH_CUDA)
+  phi::AllocationType place_ = static_cast<phi::AllocationType>(place);
+  paddle_infer::PlaceType place_type = ToPaddleInferPlace(place_);
+
+  volatile shmStruct *shm = NULL;
+  sharedMemoryInfo info;
+  if (sharedMemoryOpen(shm_name.c_str(), sizeof(shmStruct), &info) != 0) {
+    PADDLE_THROW(common::errors::Fatal("Failed to create shared memory slab."));
+  }
+  shm = (volatile shmStruct *)info.addr;
+  void *ptr = nullptr;
+  PADDLE_ENFORCE_GPU_SUCCESS(
+      cudaIpcOpenMemHandle(&ptr,
+                           *(cudaIpcMemHandle_t *)&shm->memHandle,  // NOLINT
+                           cudaIpcMemLazyEnablePeerAccess));
+
+  // NOTE(Zhenyu Li): Unable to enter the correct branch when using enum
+  if (dtype == 22) {
+    phi::bfloat16 *data_ptr = reinterpret_cast<phi::bfloat16 *>(ptr);
+    tensor.ShareExternalData(data_ptr, shape, place_type);
+  } else if (dtype == 10) {
+    float *data_ptr = reinterpret_cast<float *>(ptr);
+    tensor.ShareExternalData(data_ptr, shape, place_type);
+  } else if (dtype == 15) {
+    phi::float16 *data_ptr = reinterpret_cast<phi::float16 *>(ptr);
+    tensor.ShareExternalData(data_ptr, shape, place_type);
+  } else if (dtype == 3) {
+    int8_t *data_ptr = reinterpret_cast<int8_t *>(ptr);
+    tensor.ShareExternalData(data_ptr, shape, place_type);
+  } else if (dtype == 2) {
+    uint8_t *data_ptr = reinterpret_cast<uint8_t *>(ptr);
+    tensor.ShareExternalData(data_ptr, shape, place_type);
+  } else {
+    PADDLE_THROW(common::errors::Unimplemented(
+        "Unsupported data type. Now share_external_data_by_ptr only supports "
+        "UINT8, INT8, FLOAT32, BFLOAT16 and FLOAT16, but got %d.",
+        dtype));
+  }
+  sharedMemoryClose(&info);
+#else
+  PADDLE_THROW(common::errors::Unimplemented(
+      "share_external_data_by_ptr_name only supports CUDA device."));
+#endif
+}
+
 void PaddleInferShareExternalData(paddle_infer::Tensor &tensor,  // NOLINT
-                                  phi::DenseTensor input_tensor) {
+                                  DenseTensor input_tensor) {
   std::vector<int> shape;
   for (int i = 0; i < input_tensor.dims().size(); ++i) {
     shape.push_back(input_tensor.dims()[i]);  // NOLINT
   }
-  if (input_tensor.dtype() == phi::DataType::FLOAT64) {
+  if (input_tensor.dtype() == DataType::FLOAT64) {
     tensor.ShareExternalData(
         static_cast<double *>(input_tensor.data()),
         shape,
         ToPaddleInferPlace(input_tensor.place().GetType()));
-  } else if (input_tensor.dtype() == phi::DataType::FLOAT32) {
+  } else if (input_tensor.dtype() == DataType::FLOAT32) {
     tensor.ShareExternalData(
         static_cast<float *>(input_tensor.data()),
         shape,
         ToPaddleInferPlace(input_tensor.place().GetType()));
-  } else if (input_tensor.dtype() == phi::DataType::FLOAT16) {
+  } else if (input_tensor.dtype() == DataType::FLOAT16) {
     tensor.ShareExternalData(
-        static_cast<phi::dtype::float16 *>(input_tensor.data()),
+        static_cast<phi::float16 *>(input_tensor.data()),
         shape,
         ToPaddleInferPlace(input_tensor.place().GetType()));
-  } else if (input_tensor.dtype() == phi::DataType::BFLOAT16) {
+  } else if (input_tensor.dtype() == DataType::BFLOAT16) {
     tensor.ShareExternalData(
         static_cast<bfloat16 *>(input_tensor.data()),
         shape,
         ToPaddleInferPlace(input_tensor.place().GetType()));
-  } else if (input_tensor.dtype() == phi::DataType::BOOL) {
+  } else if (input_tensor.dtype() == DataType::BOOL) {
     tensor.ShareExternalData(
         static_cast<bool *>(input_tensor.data()),
         shape,
         ToPaddleInferPlace(input_tensor.place().GetType()));
-  } else if (input_tensor.dtype() == phi::DataType::INT32) {
+  } else if (input_tensor.dtype() == DataType::INT32) {
     tensor.ShareExternalData(
         static_cast<int32_t *>(input_tensor.data()),
         shape,
         ToPaddleInferPlace(input_tensor.place().GetType()));
-  } else if (input_tensor.dtype() == phi::DataType::INT64) {
+  } else if (input_tensor.dtype() == DataType::INT64) {
     tensor.ShareExternalData(
         static_cast<int64_t *>(input_tensor.data()),
         shape,
@@ -296,58 +351,62 @@ void PaddleInferShareExternalData(paddle_infer::Tensor &tensor,  // NOLINT
   }
 }
 
-void PaddleTensorShareExternalData(paddle_infer::Tensor &tensor,     // NOLINT
-                                   paddle::Tensor &paddle_tensor) {  // NOLINT
+void PaddleTensorShareExternalData(paddle_infer::Tensor &tensor,  // NOLINT
+                                   Tensor &paddle_tensor) {       // NOLINT
   std::vector<int> shape;
   for (int i = 0; i < paddle_tensor.dims().size(); ++i) {
     shape.push_back(paddle_tensor.dims()[i]);  // NOLINT
   }
 
-  if (paddle_tensor.dtype() == phi::DataType::FLOAT64) {
+  if (paddle_tensor.dtype() == DataType::FLOAT64) {
     tensor.ShareExternalData(
         static_cast<double *>(paddle_tensor.data<double>()),
         shape,
         ToPaddleInferPlace(paddle_tensor.place().GetType()));
-  } else if (paddle_tensor.dtype() == phi::DataType::FLOAT32) {
+  } else if (paddle_tensor.dtype() == DataType::FLOAT32) {
     tensor.ShareExternalData(
         static_cast<float *>(paddle_tensor.data<float>()),
         shape,
         ToPaddleInferPlace(paddle_tensor.place().GetType()));
-  } else if (paddle_tensor.dtype() == phi::DataType::FLOAT16) {
+  } else if (paddle_tensor.dtype() == DataType::FLOAT16) {
     tensor.ShareExternalData(
-        static_cast<phi::dtype::float16 *>(
-            paddle_tensor.data<phi::dtype::float16>()),
+        static_cast<phi::float16 *>(paddle_tensor.data<phi::float16>()),
         shape,
         ToPaddleInferPlace(paddle_tensor.place().GetType()));
-  } else if (paddle_tensor.dtype() == phi::DataType::BFLOAT16) {
+  } else if (paddle_tensor.dtype() == DataType::BFLOAT16) {
     tensor.ShareExternalData(
         static_cast<bfloat16 *>(paddle_tensor.data<bfloat16>()),
         shape,
         ToPaddleInferPlace(paddle_tensor.place().GetType()));
-  } else if (paddle_tensor.dtype() == phi::DataType::BOOL) {
+  } else if (paddle_tensor.dtype() == DataType::BOOL) {
     tensor.ShareExternalData(
         static_cast<bool *>(paddle_tensor.data<bool>()),
         shape,
         ToPaddleInferPlace(paddle_tensor.place().GetType()));
-  } else if (paddle_tensor.dtype() == phi::DataType::INT32) {
+  } else if (paddle_tensor.dtype() == DataType::INT32) {
     tensor.ShareExternalData(
         static_cast<int32_t *>(paddle_tensor.data<int32_t>()),
         shape,
         ToPaddleInferPlace(paddle_tensor.place().GetType()));
-  } else if (paddle_tensor.dtype() == phi::DataType::INT64) {
+  } else if (paddle_tensor.dtype() == DataType::INT64) {
     tensor.ShareExternalData(
         static_cast<int64_t *>(paddle_tensor.data<int64_t>()),
         shape,
         ToPaddleInferPlace(paddle_tensor.place().GetType()));
-  } else if (paddle_tensor.dtype() == phi::DataType::UINT8) {
+  } else if (paddle_tensor.dtype() == DataType::UINT8) {
     tensor.ShareExternalData(
         static_cast<uint8_t *>(paddle_tensor.data()),
+        shape,
+        ToPaddleInferPlace(paddle_tensor.place().GetType()));
+  } else if (paddle_tensor.dtype() == DataType::INT8) {
+    tensor.ShareExternalData(
+        static_cast<int8_t *>(paddle_tensor.data()),
         shape,
         ToPaddleInferPlace(paddle_tensor.place().GetType()));
   } else {
     PADDLE_THROW(common::errors::Unimplemented(
         "Unsupported data type. Now share_external_data only supports INT32, "
-        "INT64, UINT8, FLOAT32, FLOAT16, BFLOAT16 and BOOL."));
+        "INT64, UINT8, INT8, FLOAT32, FLOAT16, BFLOAT16 and BOOL."));
   }
 }
 
@@ -380,10 +439,10 @@ size_t PaddleGetDTypeSize(PaddleDType dt) {
       size = sizeof(float);
       break;
     case PaddleDType::FLOAT16:
-      size = sizeof(phi::dtype::float16);
+      size = sizeof(phi::float16);
       break;
     case PaddleDType::BFLOAT16:
-      size = sizeof(phi::dtype::bfloat16);
+      size = sizeof(phi::bfloat16);
       break;
     case PaddleDType::INT8:
       size = sizeof(int8_t);
@@ -422,12 +481,12 @@ py::array ZeroCopyTensorToNumpy(ZeroCopyTensor &tensor) {  // NOLINT
       tensor.copy_to_cpu<float>(static_cast<float *>(array.mutable_data()));
       break;
     case PaddleDType::FLOAT16:
-      tensor.copy_to_cpu<phi::dtype::float16>(
-          static_cast<phi::dtype::float16 *>(array.mutable_data()));
+      tensor.copy_to_cpu<phi::float16>(
+          static_cast<phi::float16 *>(array.mutable_data()));
       break;
     case PaddleDType::BFLOAT16:
-      tensor.copy_to_cpu<phi::dtype::bfloat16>(
-          static_cast<phi::dtype::bfloat16 *>(array.mutable_data()));
+      tensor.copy_to_cpu<phi::bfloat16>(
+          static_cast<phi::bfloat16 *>(array.mutable_data()));
       break;
     case PaddleDType::UINT8:
       tensor.copy_to_cpu<uint8_t>(static_cast<uint8_t *>(array.mutable_data()));
@@ -466,12 +525,12 @@ py::array PaddleInferTensorToNumpy(paddle_infer::Tensor &tensor) {  // NOLINT
       tensor.CopyToCpu<float>(static_cast<float *>(array.mutable_data()));
       break;
     case PaddleDType::FLOAT16:
-      tensor.CopyToCpu<phi::dtype::float16>(
-          static_cast<phi::dtype::float16 *>(array.mutable_data()));
+      tensor.CopyToCpu<phi::float16>(
+          static_cast<phi::float16 *>(array.mutable_data()));
       break;
     case PaddleDType::BFLOAT16:
-      tensor.CopyToCpu<phi::dtype::bfloat16>(
-          static_cast<phi::dtype::bfloat16 *>(array.mutable_data()));
+      tensor.CopyToCpu<phi::bfloat16>(
+          static_cast<phi::bfloat16 *>(array.mutable_data()));
       break;
     case PaddleDType::UINT8:
       tensor.CopyToCpu(static_cast<uint8_t *>(array.mutable_data()));
@@ -530,6 +589,9 @@ void BindInferenceApi(py::module *m) {
   m->def("create_predictor",
          [](const paddle_infer::Config &config)
              -> std::unique_ptr<paddle_infer::Predictor> {
+#ifndef PADDLE_NO_PYTHON
+           pybind11::gil_scoped_release release;
+#endif
            auto pred = std::make_unique<paddle_infer::Predictor>(config);
            return pred;
          });
@@ -682,20 +744,40 @@ void BindPaddlePredictor(py::module *m) {
   paddle_predictor
       .def("run",
            [](PaddlePredictor &self, const std::vector<PaddleTensor> &inputs) {
-#if defined(PADDLE_WITH_CUSTOM_DEVICE) && !defined(PADDLE_NO_PYTHON)
-             pybind11::gil_scoped_release release;
-#endif
-             std::vector<PaddleTensor> outputs;
-             self.Run(inputs, &outputs);
-             return outputs;
+             auto device_types = phi::DeviceManager::GetAllCustomDeviceTypes();
+             std::string release_gil_device = "npu";
+             if (std::find(device_types.begin(),
+                           device_types.end(),
+                           release_gil_device) != device_types.end()) {
+               pybind11::gil_scoped_release release;
+               std::vector<PaddleTensor> outputs;
+               self.Run(inputs, &outputs);
+               return outputs;
+             } else {
+               std::vector<PaddleTensor> outputs;
+               self.Run(inputs, &outputs);
+               return outputs;
+             }
            })
       .def("get_input_tensor", &PaddlePredictor::GetInputTensor)
       .def("get_output_tensor", &PaddlePredictor::GetOutputTensor)
       .def("get_input_names", &PaddlePredictor::GetInputNames)
       .def("get_output_names", &PaddlePredictor::GetOutputNames)
-      .def("zero_copy_run",
-           &PaddlePredictor::ZeroCopyRun,
-           py::arg("switch_stream") = false)
+      .def(
+          "zero_copy_run",
+          [](PaddlePredictor &self, bool switch_stream) {
+            auto device_types = phi::DeviceManager::GetAllCustomDeviceTypes();
+            std::string release_gil_device = "npu";
+            if (std::find(device_types.begin(),
+                          device_types.end(),
+                          release_gil_device) != device_types.end()) {
+              pybind11::gil_scoped_release release;
+              return self.ZeroCopyRun(switch_stream);
+            } else {
+              return self.ZeroCopyRun(switch_stream);
+            }
+          },
+          py::arg("switch_stream") = false)
       .def("clone", [](PaddlePredictor &self) { return self.Clone(nullptr); })
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
       .def("clone",
@@ -735,18 +817,38 @@ void BindNativePredictor(py::module *m) {
       .def("run",
            [](NativePaddlePredictor &self,
               const std::vector<PaddleTensor> &inputs) {
-#if defined(PADDLE_WITH_CUSTOM_DEVICE) && !defined(PADDLE_NO_PYTHON)
-             pybind11::gil_scoped_release release;
-#endif
-             std::vector<PaddleTensor> outputs;
-             self.Run(inputs, &outputs);
-             return outputs;
+             auto device_types = phi::DeviceManager::GetAllCustomDeviceTypes();
+             std::string release_gil_device = "npu";
+             if (std::find(device_types.begin(),
+                           device_types.end(),
+                           release_gil_device) != device_types.end()) {
+               pybind11::gil_scoped_release release;
+               std::vector<PaddleTensor> outputs;
+               self.Run(inputs, &outputs);
+               return outputs;
+             } else {
+               std::vector<PaddleTensor> outputs;
+               self.Run(inputs, &outputs);
+               return outputs;
+             }
            })
       .def("get_input_tensor", &NativePaddlePredictor::GetInputTensor)
       .def("get_output_tensor", &NativePaddlePredictor::GetOutputTensor)
-      .def("zero_copy_run",
-           &NativePaddlePredictor::ZeroCopyRun,
-           py::arg("switch_stream") = false)
+      .def(
+          "zero_copy_run",
+          [](NativePaddlePredictor &self, bool switch_stream) {
+            auto device_types = phi::DeviceManager::GetAllCustomDeviceTypes();
+            std::string release_gil_device = "npu";
+            if (std::find(device_types.begin(),
+                          device_types.end(),
+                          release_gil_device) != device_types.end()) {
+              pybind11::gil_scoped_release release;
+              return self.ZeroCopyRun(switch_stream);
+            } else {
+              return self.ZeroCopyRun(switch_stream);
+            }
+          },
+          py::arg("switch_stream") = false)
       .def("clone",
            [](NativePaddlePredictor &self) { return self.Clone(nullptr); })
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
@@ -796,6 +898,10 @@ void BindAnalysisConfig(py::module *m) {
            &AnalysisConfig::Exp_DisableMixedPrecisionOps)
       .def("exp_enable_mixed_precision_ops",
            &AnalysisConfig::Exp_EnableMixedPrecisionOps)
+      .def("exp_sparse_conv_using_buffer",
+           &AnalysisConfig::Exp_SparseConvUsingBuffer,
+           py::arg("kernels"),
+           py::arg("strides"))
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
       .def("set_exec_stream",
            [](AnalysisConfig &self, phi::CUDAStream &stream) {
@@ -969,44 +1075,75 @@ void BindAnalysisConfig(py::module *m) {
            &AnalysisConfig::SwitchIrDebug,
            py::arg("x") = true,
            py::arg("passes") = std::vector<std::string>())
-      .def("enable_mkldnn", &AnalysisConfig::EnableMKLDNN)
-      .def("disable_mkldnn", &AnalysisConfig::DisableMKLDNN)
-      .def("mkldnn_enabled", &AnalysisConfig::mkldnn_enabled)
+      .def("enable_mkldnn", &AnalysisConfig::EnableONEDNN)     // deprecated
+      .def("disable_mkldnn", &AnalysisConfig::DisableONEDNN)   // deprecated
+      .def("mkldnn_enabled", &AnalysisConfig::onednn_enabled)  // deprecated
+      .def("enable_onednn", &AnalysisConfig::EnableONEDNN)
+      .def("disable_onednn", &AnalysisConfig::DisableONEDNN)
+      .def("onednn_enabled", &AnalysisConfig::onednn_enabled)
       .def("enable_cinn", &AnalysisConfig::EnableCINN)
       .def("set_cpu_math_library_num_threads",
            &AnalysisConfig::SetCpuMathLibraryNumThreads)
       .def("cpu_math_library_num_threads",
            &AnalysisConfig::cpu_math_library_num_threads)
       .def("to_native_config", &AnalysisConfig::ToNativeConfig)
-      .def("enable_mkldnn_bfloat16", &AnalysisConfig::EnableMkldnnBfloat16)
+      .def("enable_mkldnn_bfloat16",
+           &AnalysisConfig::EnableOnednnBfloat16)  // deprecated
+      .def("enable_onednn_bfloat16", &AnalysisConfig::EnableOnednnBfloat16)
 #ifdef PADDLE_WITH_DNNL
       .def("set_mkldnn_cache_capacity",
-           &AnalysisConfig::SetMkldnnCacheCapacity,
+           &AnalysisConfig::SetOnednnCacheCapacity,
+           py::arg("capacity") = 0)  // deprecated
+      .def("set_onednn_cache_capacity",
+           &AnalysisConfig::SetOnednnCacheCapacity,
            py::arg("capacity") = 0)
       .def("set_bfloat16_op", &AnalysisConfig::SetBfloat16Op)
       .def("enable_mkldnn_int8",
-           &AnalysisConfig::EnableMkldnnInt8,
+           &AnalysisConfig::EnableOnednnInt8,
            py::arg("mkldnn_int8_enabled_op_types") =
-               std::unordered_set<std::string>({}))
-      .def("mkldnn_int8_enabled", &AnalysisConfig::mkldnn_int8_enabled)
+               std::unordered_set<std::string>({}))  // deprecated
+      .def("mkldnn_int8_enabled",
+           &AnalysisConfig::onednn_int8_enabled)  // deprecated
       .def("disable_mkldnn_fc_passes",
-           &AnalysisConfig::DisableMkldnnFcPasses,
+           &AnalysisConfig::DisableOnednnFcPasses,
            R"DOC(
             Disable Mkldnn FC
             Returns:
                 None.
 
             Examples:
-                .. code-block:: python
+                .. code-block:: pycon
 
                     >>> from paddle.inference import Config
 
                     >>> config = Config("")
                     >>> config.enable_mkldnn()
                     >>> config.disable_mkldnn_fc_passes()
+            )DOC")  // deprecated
+      .def("enable_onednn_int8",
+           &AnalysisConfig::EnableOnednnInt8,
+           py::arg("onednn_int8_enabled_op_types") =
+               std::unordered_set<std::string>({}))
+      .def("onednn_int8_enabled", &AnalysisConfig::onednn_int8_enabled)
+      .def("disable_onednn_fc_passes",
+           &AnalysisConfig::DisableOnednnFcPasses,
+           R"DOC(
+            Disable Onednn FC
+            Returns:
+                None.
+
+            Examples:
+                .. code-block:: pycon
+
+                    >>> from paddle.inference import Config
+
+                    >>> config = Config("")
+                    >>> config.enable_onednn()
+                    >>> config.disable_onednn_fc_passes()
             )DOC")
 #endif
-      .def("set_mkldnn_op", &AnalysisConfig::SetMKLDNNOp)
+      .def("set_mkldnn_op", &AnalysisConfig::SetONEDNNOp)  // deprecated
+      .def("set_onednn_op", &AnalysisConfig::SetONEDNNOp)
       .def("set_model_buffer", &AnalysisConfig::SetModelBuffer)
       .def("model_from_memory", &AnalysisConfig::model_from_memory)
       .def("delete_pass", &AnalysisConfig::DeletePass)
@@ -1066,21 +1203,41 @@ void BindAnalysisPredictor(py::module *m) {
       .def(
           "run",
           [](AnalysisPredictor &self, const std::vector<PaddleTensor> &inputs) {
-#if defined(PADDLE_WITH_CUSTOM_DEVICE) && !defined(PADDLE_NO_PYTHON)
-            pybind11::gil_scoped_release release;
-#endif
-            std::vector<PaddleTensor> outputs;
-            self.Run(inputs, &outputs);
-            return outputs;
+            auto device_types = phi::DeviceManager::GetAllCustomDeviceTypes();
+            std::string release_gil_device = "npu";
+            if (std::find(device_types.begin(),
+                          device_types.end(),
+                          release_gil_device) != device_types.end()) {
+              pybind11::gil_scoped_release release;
+              std::vector<PaddleTensor> outputs;
+              self.Run(inputs, &outputs);
+              return outputs;
+            } else {
+              std::vector<PaddleTensor> outputs;
+              self.Run(inputs, &outputs);
+              return outputs;
+            }
           })
       .def("get_input_tensor", &AnalysisPredictor::GetInputTensor)
       .def("get_output_tensor", &AnalysisPredictor::GetOutputTensor)
       .def("get_input_names", &AnalysisPredictor::GetInputNames)
       .def("get_output_names", &AnalysisPredictor::GetOutputNames)
       .def("get_input_tensor_shape", &AnalysisPredictor::GetInputTensorShape)
-      .def("zero_copy_run",
-           &AnalysisPredictor::ZeroCopyRun,
-           py::arg("switch_stream") = false)
+      .def(
+          "zero_copy_run",
+          [](AnalysisPredictor &self, bool switch_stream) {
+            auto device_types = phi::DeviceManager::GetAllCustomDeviceTypes();
+            std::string release_gil_device = "npu";
+            if (std::find(device_types.begin(),
+                          device_types.end(),
+                          release_gil_device) != device_types.end()) {
+              pybind11::gil_scoped_release release;
+              return self.ZeroCopyRun(switch_stream);
+            } else {
+              return self.ZeroCopyRun(switch_stream);
+            }
+          },
+          py::arg("switch_stream") = false)
       .def("clear_intermediate_tensor",
            &AnalysisPredictor::ClearIntermediateTensor)
       .def("try_shrink_memory", &AnalysisPredictor::TryShrinkMemory)
@@ -1118,21 +1275,35 @@ void BindPaddleInferPredictor(py::module *m) {
       .def(
           "run",
           [](paddle_infer::Predictor &self,
-             const std::vector<paddle::Tensor> &in_tensor_list) {
-#if defined(PADDLE_WITH_CUSTOM_DEVICE) && !defined(PADDLE_NO_PYTHON)
-            pybind11::gil_scoped_release release;
-#endif
-            std::vector<paddle::Tensor> outputs;
-            self.Run(in_tensor_list, &outputs);
-            return outputs;
+             const std::vector<Tensor> &in_tensor_list) {
+            auto device_types = phi::DeviceManager::GetAllCustomDeviceTypes();
+            std::string release_gil_device = "npu";
+            if (std::find(device_types.begin(),
+                          device_types.end(),
+                          release_gil_device) != device_types.end()) {
+              pybind11::gil_scoped_release release;
+              std::vector<Tensor> outputs;
+              self.Run(in_tensor_list, &outputs);
+              return outputs;
+            } else {
+              std::vector<Tensor> outputs;
+              self.Run(in_tensor_list, &outputs);
+              return outputs;
+            }
           },
           py::arg("inputs"))
       .def("run",
            [](paddle_infer::Predictor &self) {
-#if defined(PADDLE_WITH_CUSTOM_DEVICE) && !defined(PADDLE_NO_PYTHON)
-             pybind11::gil_scoped_release release;
-#endif
-             self.Run();
+             auto device_types = phi::DeviceManager::GetAllCustomDeviceTypes();
+             std::string release_gil_device = "npu";
+             if (std::find(device_types.begin(),
+                           device_types.end(),
+                           release_gil_device) != device_types.end()) {
+               pybind11::gil_scoped_release release;
+               self.Run();
+             } else {
+               self.Run();
+             }
            })
       .def("clone",
            [](paddle_infer::Predictor &self) { return self.Clone(nullptr); })
@@ -1162,7 +1333,7 @@ void BindZeroCopyTensor(py::module *m) {
       .def("copy_from_cpu", &ZeroCopyTensorCreate<int32_t>)
       .def("copy_from_cpu", &ZeroCopyTensorCreate<int64_t>)
       .def("copy_from_cpu", &ZeroCopyTensorCreate<float>)
-      .def("copy_from_cpu", &ZeroCopyTensorCreate<phi::dtype::float16>)
+      .def("copy_from_cpu", &ZeroCopyTensorCreate<phi::float16>)
       // NOTE(liuyuanle): double must be bound after float.
       .def("copy_from_cpu", &ZeroCopyTensorCreate<double>)
       .def("copy_from_cpu", &ZeroCopyTensorCreate<bool>)
@@ -1187,11 +1358,13 @@ void BindPaddleInferTensor(py::module *m) {
       .def("_copy_from_cpu_bind", &PaddleInferTensorCreate<int32_t>)
       .def("_copy_from_cpu_bind", &PaddleInferTensorCreate<int64_t>)
       .def("_copy_from_cpu_bind", &PaddleInferTensorCreate<float>)
-      .def("_copy_from_cpu_bind", &PaddleInferTensorCreate<phi::dtype::float16>)
+      .def("_copy_from_cpu_bind", &PaddleInferTensorCreate<phi::float16>)
       // NOTE(liuyuanle): double must be bound after float.
       .def("_copy_from_cpu_bind", &PaddleInferTensorCreate<double>)
       .def("_copy_from_cpu_bind", &PaddleInferTensorCreate<bool>)
       .def("_copy_from_cpu_bind", &PaddleInferStringTensorCreate)
+      .def("_share_external_data_by_ptr_name_bind",
+           &PaddleInferShareExternalDataByPtrName)
       .def("_share_external_data_bind", &PaddleInferShareExternalData)
       .def("_share_external_data_paddle_tensor_bind",
            [](paddle_infer::Tensor &self, const py::handle &input) {
@@ -1240,23 +1413,32 @@ void BindPaddlePassBuilder(py::module *m) {
   py::class_<PassStrategy, PaddlePassBuilder>(*m, "PassStrategy")
       .def(py::init<const std::vector<std::string> &>())
       .def("enable_cudnn", &PassStrategy::EnableCUDNN)
-      .def("enable_mkldnn", &PassStrategy::EnableMKLDNN)
-      .def("enable_mkldnn_bfloat16", &PassStrategy::EnableMkldnnBfloat16)
+      .def("enable_mkldnn", &PassStrategy::EnableONEDNN)  // deprecated
+      .def("enable_mkldnn_bfloat16",
+           &PassStrategy::EnableMkldnnBfloat16)  // deprecated
+      .def("enable_onednn", &PassStrategy::EnableONEDNN)
+      .def("enable_onednn_bfloat16", &PassStrategy::EnableOnednnBfloat16)
       .def("use_gpu", &PassStrategy::use_gpu);
 
   py::class_<CpuPassStrategy, PassStrategy>(*m, "CpuPassStrategy")
       .def(py::init<>())
       .def(py::init<const CpuPassStrategy &>())
       .def("enable_cudnn", &CpuPassStrategy::EnableCUDNN)
-      .def("enable_mkldnn", &CpuPassStrategy::EnableMKLDNN)
-      .def("enable_mkldnn_bfloat16", &CpuPassStrategy::EnableMkldnnBfloat16);
+      .def("enable_mkldnn", &CpuPassStrategy::EnableONEDNN)  // deprecated
+      .def("enable_mkldnn_bfloat16",
+           &CpuPassStrategy::EnableMkldnnBfloat16)  // deprecated
+      .def("enable_onednn", &CpuPassStrategy::EnableONEDNN)
+      .def("enable_onednn_bfloat16", &CpuPassStrategy::EnableOnednnBfloat16);
 
   py::class_<GpuPassStrategy, PassStrategy>(*m, "GpuPassStrategy")
       .def(py::init<>())
       .def(py::init<const GpuPassStrategy &>())
       .def("enable_cudnn", &GpuPassStrategy::EnableCUDNN)
-      .def("enable_mkldnn", &GpuPassStrategy::EnableMKLDNN)
-      .def("enable_mkldnn_bfloat16", &GpuPassStrategy::EnableMkldnnBfloat16);
+      .def("enable_mkldnn", &GpuPassStrategy::EnableONEDNN)  // deprecated
+      .def("enable_mkldnn_bfloat16",
+           &GpuPassStrategy::EnableMkldnnBfloat16)  // deprecated
+      .def("enable_onednn", &GpuPassStrategy::EnableONEDNN)
+      .def("enable_onednn_bfloat16", &GpuPassStrategy::EnableOnednnBfloat16);
 }
 
 void BindInternalUtils(py::module *m) {

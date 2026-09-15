@@ -30,6 +30,9 @@ void ChannelShuffleKernel(const Context& dev_ctx,
                           DenseTensor* out) {
   auto* in = &x;
   dev_ctx.template Alloc<T>(out);
+  if (out && out->numel() == 0) {
+    return;
+  }
   bool channel_last = (data_format == "NHWC");
   const auto& in_dims = in->dims();
   const auto& o_dims = out->dims();
@@ -49,7 +52,7 @@ void ChannelShuffleKernel(const Context& dev_ctx,
   } else {
     o.Resize({in_dims[0], in_dims[1], in_dims[2], in_dims[3] / groups, groups});
   }
-  phi::funcs::Transpose<Context, T, 5> trans;
+  funcs::Transpose<Context, T, 5> trans;
   trans(dev_ctx, t, &o, axis);
   out->Resize(o_dims);
 }

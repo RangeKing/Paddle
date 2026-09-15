@@ -42,46 +42,46 @@ struct GRUMetaGrad {
 
 template <typename DeviceContext, typename T>
 struct GRUUnitFunctor {
-  static void compute(const DeviceContext &context,
+  static void compute(const DeviceContext &dev_ctx,
                       GRUMetaValue<T> value,
                       int frame_size,
                       int batch_size,
-                      const phi::funcs::detail::ActivationType active_node,
-                      const phi::funcs::detail::ActivationType active_gate,
+                      const funcs::detail::ActivationType active_node,
+                      const funcs::detail::ActivationType active_gate,
                       bool origin_mode);
 };
 
 template <typename DeviceContext, typename T>
 struct GRUUnitGradFunctor {
-  static void compute(const DeviceContext &context,
+  static void compute(const DeviceContext &dev_ctx,
                       GRUMetaValue<T> value,
                       GRUMetaGrad<T> grad,
                       int frame_size,
                       int batch_size,
-                      const phi::funcs::detail::ActivationType active_node,
-                      const phi::funcs::detail::ActivationType active_gate,
+                      const funcs::detail::ActivationType active_node,
+                      const funcs::detail::ActivationType active_gate,
                       bool origin_mode);
 };
 
 template <typename DeviceContext, typename T>
 struct GRUUnitFunctorV2 {
-  static void compute(const DeviceContext &context,
+  static void compute(const DeviceContext &dev_ctx,
                       GRUMetaValue<T> value,
                       int frame_size,
                       int batch_size,
-                      const phi::funcs::detail::ActivationType active_node,
-                      const phi::funcs::detail::ActivationType active_gate);
+                      const funcs::detail::ActivationType active_node,
+                      const funcs::detail::ActivationType active_gate);
 };
 
 template <typename DeviceContext, typename T>
 struct GRUUnitGradFunctorV2 {
-  static void compute(const DeviceContext &context,
+  static void compute(const DeviceContext &dev_ctx,
                       GRUMetaValue<T> value,
                       GRUMetaGrad<T> grad,
                       int frame_size,
                       int batch_size,
-                      const phi::funcs::detail::ActivationType active_node,
-                      const phi::funcs::detail::ActivationType active_gate);
+                      const funcs::detail::ActivationType active_node,
+                      const funcs::detail::ActivationType active_gate);
 };
 
 }  // namespace funcs

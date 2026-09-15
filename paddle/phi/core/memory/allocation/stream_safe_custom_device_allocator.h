@@ -36,6 +36,7 @@ class StreamSafeCustomDeviceAllocation : public Allocation {
                                    StreamSafeCustomDeviceAllocator *allocator);
 
   bool RecordStream(phi::stream::stream_t stream);
+  void EraseStream(phi::stream::stream_t stream);
   bool CanBeFreed();
   phi::stream::stream_t GetOwningStream() const;
   void SetOwningStream(phi::stream::stream_t s);
@@ -57,7 +58,7 @@ class StreamSafeCustomDeviceAllocator
  public:
   StreamSafeCustomDeviceAllocator(
       std::shared_ptr<Allocator> underlying_allocator,
-      phi::CustomPlace place,
+      CustomPlace place,
       phi::stream::stream_t default_stream);
   ~StreamSafeCustomDeviceAllocator();
 
@@ -68,18 +69,18 @@ class StreamSafeCustomDeviceAllocator
  protected:
   phi::Allocation *AllocateImpl(size_t size) override;
   void FreeImpl(phi::Allocation *allocation) override;
-  uint64_t ReleaseImpl(const phi::Place &place) override;
+  uint64_t ReleaseImpl(const Place &place) override;
 
  private:
   void ProcessUnfreedAllocations();
   uint64_t ProcessUnfreedAllocationsAndRelease();
 
-  static std::map<phi::Place, std::vector<StreamSafeCustomDeviceAllocator *>>
+  static std::map<Place, std::vector<StreamSafeCustomDeviceAllocator *>>
       allocator_map_;
   static SpinLock allocator_map_lock_;
 
   std::shared_ptr<Allocator> underlying_allocator_;
-  phi::CustomPlace place_;
+  CustomPlace place_;
   phi::stream::stream_t default_stream_;
   std::list<StreamSafeCustomDeviceAllocation *> unfreed_allocations_;
   SpinLock unfreed_allocation_lock_;

@@ -46,19 +46,21 @@ using ExecutionConfig = interpreter::ExecutionConfig;
 class IfInstruction;
 class WhileInstruction;
 class PyLayerInstruction;
+class CustomEngineInstruction;
 class ValueExecutionInfo {
  public:
   friend class IfInstruction;
   friend class WhileInstruction;
+  friend class CudaGraphInstruction;
   friend class PyLayerInstruction;
-
+  friend class CustomEngineInstruction;
   explicit ValueExecutionInfo(Scope* scope) : scope_(scope) {}
 
   const ValueExecutionInfo* Parent() const { return parent_; }
 
   Scope* GetScope() const { return scope_; }
 
-  void Add(::pir::Value value, const std::string& var_name);
+  void Add(pir::Value value, const std::string& var_name);
 
   void Rename(const std::string& new_name, const std::string& orig_name);
 
@@ -68,11 +70,13 @@ class ValueExecutionInfo {
 
   Variable* GetVarByValue(pir::Value value) const;
 
-  const std::unordered_map<::pir::Value, std::string>& GetValue2VarName() const;
+  pir::Value GetValueByVar(const Variable* var) const;
 
-  void AddValue2VarName(::pir::Value value, const std::string& var_name);
+  const std::unordered_map<pir::Value, std::string>& GetValue2VarName() const;
 
-  void UpdateValue2VarName(::pir::Value value, const std::string& var_name);
+  void AddValue2VarName(pir::Value value, const std::string& var_name);
+
+  void UpdateValue2VarName(pir::Value value, const std::string& var_name);
 
   const std::unordered_map<const paddle::framework::Variable*, std::string>&
   GetVar2VarName() const;
@@ -87,13 +91,13 @@ class ValueExecutionInfo {
 
   bool HasVar(const std::string& var_name) const;
 
-  bool HasValue(::pir::Value value) const;
+  bool HasValue(pir::Value value) const;
 
-  std::string GetVarName(::pir::Value value) const;
+  std::string GetVarName(pir::Value value) const;
 
   std::string GetVarName(const Variable* var) const;
 
-  int GetVarId(::pir::Value value) const;
+  int GetVarId(pir::Value value) const;
 
   int GetVarId(const Variable* var) const;
 
@@ -104,7 +108,7 @@ class ValueExecutionInfo {
 
   Scope* scope_{nullptr};  // not owned
 
-  std::unordered_map<::pir::Value, std::string> value_2_var_name_;
+  std::unordered_map<pir::Value, std::string> value_2_var_name_;
 
   std::unordered_map<const Variable*, std::string> var_2_var_name_;
 
@@ -191,7 +195,7 @@ void BuildPhiContext(pir::Operation* op,
         optional_inputs.emplace_back(InType());
         ctx->EmplaceBackInputs(optional_inputs);
       } else {
-        phi::DenseTensor* temp = nullptr;
+        DenseTensor* temp = nullptr;
         InType optional_input(temp);
         ctx->EmplaceBackInput(optional_input);
       }
@@ -206,8 +210,8 @@ void BuildPhiContext(pir::Operation* op,
                             common::errors::PreconditionNotMet(
                                 "can not find var[%s] in scope", in_var_name));
     auto var = inner_scope->FindVar(in_var_name);
-    if (var->IsType<phi::DenseTensor>()) {
-      const phi::TensorBase* tensor_in = &(var->Get<phi::DenseTensor>());
+    if (var->IsType<DenseTensor>()) {
+      const phi::TensorBase* tensor_in = &(var->Get<DenseTensor>());
       ctx->EmplaceBackInput(InType(tensor_in));
     } else if (var->IsType<phi::TensorArray>()) {
       const phi::TensorBase* tensor_in = &(var->Get<phi::TensorArray>());
@@ -216,9 +220,9 @@ void BuildPhiContext(pir::Operation* op,
       InListType inputs;
       auto& variable_array = var->Get<VariableRefArray>();
       for (size_t i = 0; i < variable_array.size(); ++i) {
-        if (variable_array[i]->IsType<phi::DenseTensor>()) {
-          inputs.emplace_back(InType(const_cast<phi::DenseTensor*>(
-              &(variable_array[i]->Get<phi::DenseTensor>()))));
+        if (variable_array[i]->IsType<DenseTensor>()) {
+          inputs.emplace_back(InType(const_cast<DenseTensor*>(
+              &(variable_array[i]->Get<DenseTensor>()))));
         } else if (variable_array[i]->IsType<phi::SelectedRows>()) {
           inputs.emplace_back(InType(const_cast<phi::SelectedRows*>(
               &(variable_array[i]->Get<phi::SelectedRows>()))));
@@ -263,20 +267,20 @@ void BuildPhiContext(pir::Operation* op,
       if (tensor_attr_type == "paddle::dialect::IntArrayAttribute") {
         if (ptr.type().isa<paddle::dialect::AllocatedDenseTensorType>()) {
           phi::Attribute attr = phi::TensorRef(
-              &(inner_scope->FindVar(in_var_name)->Get<phi::DenseTensor>()));
+              &(inner_scope->FindVar(in_var_name)->Get<DenseTensor>()));
           ctx->EmplaceBackAttr(attr);
         } else if (ptr.type().isa<pir::VectorType>()) {
           auto& tensor_array =
               inner_scope->FindVar(in_var_name)->Get<VariableRefArray>();
           if (tensor_array.size() == 1) {
             phi::Attribute attr =
-                phi::TensorRef(&(tensor_array[0]->Get<phi::DenseTensor>()));
+                phi::TensorRef(&(tensor_array[0]->Get<DenseTensor>()));
             ctx->EmplaceBackAttr(attr);
           } else {
             std::vector<phi::TensorRef> vec_ref;
             for (size_t i = 0; i < tensor_array.size(); ++i) {
               vec_ref.emplace_back(
-                  phi::TensorRef(&(tensor_array[i]->Get<phi::DenseTensor>())));
+                  phi::TensorRef(&(tensor_array[i]->Get<DenseTensor>())));
             }
             ctx->EmplaceBackAttr(vec_ref);
           }
@@ -287,7 +291,7 @@ void BuildPhiContext(pir::Operation* op,
         }
       } else if (tensor_attr_type == "paddle::dialect::ScalarAttribute") {
         phi::Attribute attr = phi::TensorRef(
-            &(inner_scope->FindVar(in_var_name)->Get<phi::DenseTensor>()));
+            &(inner_scope->FindVar(in_var_name)->Get<DenseTensor>()));
 
         ctx->EmplaceBackAttr(attr);
       } else {
@@ -371,6 +375,21 @@ void BuildPhiContext(pir::Operation* op,
         }
       }
       ctx->EmplaceBackAttr(vec_res);
+    } else if (attr_type_name == "pir::ArrayAttribute<pir::DoubleAttribute>") {
+      auto array_list = attr_map[t].dyn_cast<pir::ArrayAttribute>().AsVector();
+      std::vector<double> vec_res;
+      if (array_list.size() > 0) {
+        if (array_list[0].isa<pir::DoubleAttribute>()) {
+          for (size_t i = 0; i < array_list.size(); ++i) {
+            vec_res.push_back(
+                array_list[i].dyn_cast<pir::DoubleAttribute>().data());
+          }
+        } else {
+          PADDLE_THROW(common::errors::Unimplemented(
+              "attr type not support [%s] ", attr_type_name));
+        }
+      }
+      ctx->EmplaceBackAttr(vec_res);
     } else if (attr_type_name == "pir::ArrayAttribute<pir::Int64Attribute>") {
       auto array_list = attr_map[t].dyn_cast<pir::ArrayAttribute>().AsVector();
 
@@ -448,7 +467,7 @@ void BuildPhiContext(pir::Operation* op,
         OutListType optional_outputs;
         ctx->EmplaceBackOutputs(optional_outputs);
       } else {
-        phi::DenseTensor* temp = nullptr;
+        DenseTensor* temp = nullptr;
         OutType optional_input(temp);
         ctx->EmplaceBackOutput(optional_input);
       }
@@ -457,9 +476,9 @@ void BuildPhiContext(pir::Operation* op,
     }
 
     if (out_ptr.type().isa<paddle::dialect::AllocatedDenseTensorType>()) {
-      ctx->EmplaceBackOutput(OutType(const_cast<phi::DenseTensor*>(
+      ctx->EmplaceBackOutput(OutType(const_cast<DenseTensor*>(
           &(inner_scope->FindVar(value_exec_info.GetVarName(out_ptr))
-                ->Get<phi::DenseTensor>()))));
+                ->Get<DenseTensor>()))));
       VLOG(8) << "ctx->EmplaceBackOutput DenseTensor: "
               << value_exec_info.GetVarName(out_ptr);
     } else if (out_ptr.type()
@@ -496,9 +515,9 @@ void BuildPhiContext(pir::Operation* op,
           inner_scope->FindVar(value_exec_info.GetVarName(out_ptr))
               ->Get<VariableRefArray>();
       for (size_t i = 0; i < variable_array.size(); ++i) {
-        if (variable_array[i]->IsType<phi::DenseTensor>()) {
-          outputs.emplace_back(OutType(const_cast<phi::DenseTensor*>(
-              &(variable_array[i]->Get<phi::DenseTensor>()))));
+        if (variable_array[i]->IsType<DenseTensor>()) {
+          outputs.emplace_back(OutType(const_cast<DenseTensor*>(
+              &(variable_array[i]->Get<DenseTensor>()))));
         } else if (variable_array[i]->IsType<phi::SelectedRows>()) {
           outputs.emplace_back(OutType(const_cast<phi::SelectedRows*>(
               &(variable_array[i]->Get<phi::SelectedRows>()))));

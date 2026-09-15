@@ -22,12 +22,15 @@ import paddle
 from paddle import _C_ops
 from paddle.base.data_feeder import check_type, check_variable_and_dtype
 from paddle.base.framework import (
-    convert_np_dtype_to_dtype_,
+    convert_nptype_to_datatype_or_vartype,
     core,
     in_dynamic_or_pir_mode,
 )
 from paddle.common_ops_import import Variable
 from paddle.framework import LayerHelper
+from paddle.utils.decorator_utils import (
+    param_one_alias,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -38,12 +41,12 @@ if TYPE_CHECKING:
 __all__ = []
 
 _int_dtype_ = [
-    core.VarDesc.VarType.UINT8,
-    core.VarDesc.VarType.INT8,
-    core.VarDesc.VarType.INT16,
-    core.VarDesc.VarType.INT32,
-    core.VarDesc.VarType.INT64,
-    core.VarDesc.VarType.BOOL,
+    core.DataType.UINT8,
+    core.DataType.INT8,
+    core.DataType.INT16,
+    core.DataType.INT32,
+    core.DataType.INT64,
+    core.DataType.BOOL,
 ]
 
 
@@ -64,21 +67,21 @@ def sin(x: Tensor, name: str | None = None) -> Tensor:
         A Sparse Tensor with the same data type and shape as ``x`` .
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
-            >>> dense_x = paddle.to_tensor([-2., 0., 1.])
+            >>> dense_x = paddle.to_tensor([-2.0, 0.0, 1.0])
             >>> sparse_x = dense_x.to_sparse_coo(1)
             >>> out = paddle.sparse.sin(sparse_x)
             >>> out
             Tensor(shape=[3], dtype=paddle.float32, place=Place(cpu), stop_gradient=True,
-                indices=[[0, 2]],
-                values=[-0.90929741,  0.84147102])
+                    indices=[[0, 2]],
+                    values=[-0.90929741,  0.84147096])
     """
-    assert (
-        in_dynamic_or_pir_mode()
-    ), "Currently, Sparse API only support dynamic mode or pir mode."
+    assert in_dynamic_or_pir_mode(), (
+        "Currently, Sparse API only support dynamic mode or pir mode."
+    )
     return _C_ops.sparse_sin(x)
 
 
@@ -99,11 +102,11 @@ def tan(x: Tensor, name: str | None = None) -> Tensor:
         A Sparse Tensor with the same data type and shape as ``x`` .
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
-            >>> dense_x = paddle.to_tensor([-2., 0., 1.])
+            >>> dense_x = paddle.to_tensor([-2.0, 0.0, 1.0])
             >>> sparse_x = dense_x.to_sparse_coo(1)
             >>> out = paddle.sparse.tan(sparse_x)
             >>> out
@@ -111,9 +114,9 @@ def tan(x: Tensor, name: str | None = None) -> Tensor:
                 indices=[[0, 2]],
                 values=[2.18503976, 1.55740774])
     """
-    assert (
-        in_dynamic_or_pir_mode()
-    ), "Currently, Sparse API only support dynamic mode or pir mode."
+    assert in_dynamic_or_pir_mode(), (
+        "Currently, Sparse API only support dynamic mode or pir mode."
+    )
     return _C_ops.sparse_tan(x)
 
 
@@ -134,21 +137,21 @@ def asin(x: Tensor, name: str | None = None) -> Tensor:
         A Sparse Tensor with the same data type and shape as ``x`` .
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
-            >>> dense_x = paddle.to_tensor([-2., 0., 1.])
+            >>> dense_x = paddle.to_tensor([-2.0, 0.0, 1.0])
             >>> sparse_x = dense_x.to_sparse_coo(1)
             >>> out = paddle.sparse.asin(sparse_x)
             >>> out
             Tensor(shape=[3], dtype=paddle.float32, place=Place(cpu), stop_gradient=True,
                 indices=[[0, 2]],
-                values=[nan       , 1.57079625])
+                values=[nan       , 1.57079637])
     """
-    assert (
-        in_dynamic_or_pir_mode()
-    ), "Currently, Sparse API only support dynamic mode or pir mode."
+    assert in_dynamic_or_pir_mode(), (
+        "Currently, Sparse API only support dynamic mode or pir mode."
+    )
     return _C_ops.sparse_asin(x)
 
 
@@ -172,13 +175,13 @@ def transpose(
         A transposed Sparse Tensor with the same data type as ``x``.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +SKIP('indices overflow')
             >>> # doctest: +REQUIRES(env:GPU)
             >>> import paddle
 
-            >>> dense_x = paddle.to_tensor([[-2., 0.], [1., 2.]])
+            >>> dense_x = paddle.to_tensor([[-2.0, 0.0], [1.0, 2.0]])
             >>> sparse_x = dense_x.to_sparse_coo(1)
             >>> out = paddle.sparse.transpose(sparse_x, [1, 0])
             >>> out
@@ -188,9 +191,9 @@ def transpose(
                         [ 1.,  2.]])
 
     """
-    assert (
-        in_dynamic_or_pir_mode()
-    ), "Currently, Sparse API only support dynamic mode or pir mode."
+    assert in_dynamic_or_pir_mode(), (
+        "Currently, Sparse API only support dynamic mode or pir mode."
+    )
     return _C_ops.sparse_transpose(x, perm)
 
 
@@ -225,11 +228,11 @@ def sum(
         otherwise it's data type is the same as `x`.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
-            >>> dense_x = paddle.to_tensor([[-2., 0.], [1., 2.]])
+            >>> dense_x = paddle.to_tensor([[-2.0, 0.0], [1.0, 2.0]])
             >>> sparse_x = dense_x.to_sparse_coo(1)
             >>> out1 = paddle.sparse.sum(sparse_x)
             >>> out1
@@ -256,7 +259,7 @@ def sum(
     dtype_flag = False
     if dtype is not None:
         dtype_flag = True
-        dtype = convert_np_dtype_to_dtype_(dtype)
+        dtype = convert_nptype_to_datatype_or_vartype(dtype)
 
     if in_dynamic_or_pir_mode():
         return _C_ops.sparse_sum(x, axis, dtype, keepdim)
@@ -319,11 +322,11 @@ def atan(x: Tensor, name: str | None = None) -> Tensor:
         A Sparse Tensor with the same data type and shape as ``x`` .
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
-            >>> dense_x = paddle.to_tensor([-2., 0., 1.])
+            >>> dense_x = paddle.to_tensor([-2.0, 0.0, 1.0])
             >>> sparse_x = dense_x.to_sparse_coo(1)
             >>> out = paddle.sparse.atan(sparse_x)
             >>> out
@@ -331,9 +334,9 @@ def atan(x: Tensor, name: str | None = None) -> Tensor:
                 indices=[[0, 2]],
                 values=[-1.10714877,  0.78539819])
     """
-    assert (
-        in_dynamic_or_pir_mode()
-    ), "Currently, Sparse API only support dynamic mode or pir mode."
+    assert in_dynamic_or_pir_mode(), (
+        "Currently, Sparse API only support dynamic mode or pir mode."
+    )
     return _C_ops.sparse_atan(x)
 
 
@@ -354,11 +357,11 @@ def sinh(x: Tensor, name: str | None = None) -> Tensor:
         A Sparse Tensor with the same data type and shape as ``x`` .
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
-            >>> dense_x = paddle.to_tensor([-2., 0., 1.])
+            >>> dense_x = paddle.to_tensor([-2.0, 0.0, 1.0])
             >>> sparse_x = dense_x.to_sparse_coo(1)
             >>> out = paddle.sparse.sinh(sparse_x)
             >>> out
@@ -366,9 +369,9 @@ def sinh(x: Tensor, name: str | None = None) -> Tensor:
                 indices=[[0, 2]],
                 values=[-3.62686038,  1.17520118])
     """
-    assert (
-        in_dynamic_or_pir_mode()
-    ), "Currently, Sparse API only support dynamic mode or pir mode."
+    assert in_dynamic_or_pir_mode(), (
+        "Currently, Sparse API only support dynamic mode or pir mode."
+    )
     return _C_ops.sparse_sinh(x)
 
 
@@ -389,11 +392,11 @@ def asinh(x: Tensor, name: str | None = None) -> Tensor:
         A Sparse Tensor with the same data type and shape as ``x`` .
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
-            >>> dense_x = paddle.to_tensor([-2., 0., 1.])
+            >>> dense_x = paddle.to_tensor([-2.0, 0.0, 1.0])
             >>> sparse_x = dense_x.to_sparse_coo(1)
             >>> out = paddle.sparse.asinh(sparse_x)
             >>> out
@@ -401,9 +404,9 @@ def asinh(x: Tensor, name: str | None = None) -> Tensor:
                 indices=[[0, 2]],
                 values=[-1.44363546,  0.88137358])
     """
-    assert (
-        in_dynamic_or_pir_mode()
-    ), "Currently, Sparse API only support dynamic mode or pir mode."
+    assert in_dynamic_or_pir_mode(), (
+        "Currently, Sparse API only support dynamic mode or pir mode."
+    )
     return _C_ops.sparse_asinh(x)
 
 
@@ -424,11 +427,11 @@ def atanh(x: Tensor, name: str | None = None) -> Tensor:
         A Sparse Tensor with the same data type and shape as ``x`` .
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
-            >>> dense_x = paddle.to_tensor([-2., 0., 1.])
+            >>> dense_x = paddle.to_tensor([-2.0, 0.0, 1.0])
             >>> sparse_x = dense_x.to_sparse_coo(1)
             >>> out = paddle.sparse.atanh(sparse_x)
             >>> out
@@ -436,9 +439,9 @@ def atanh(x: Tensor, name: str | None = None) -> Tensor:
                 indices=[[0, 2]],
                 values=[nan , inf.])
     """
-    assert (
-        in_dynamic_or_pir_mode()
-    ), "Currently, Sparse API only support dynamic mode or pir mode."
+    assert in_dynamic_or_pir_mode(), (
+        "Currently, Sparse API only support dynamic mode or pir mode."
+    )
     return _C_ops.sparse_atanh(x)
 
 
@@ -459,11 +462,11 @@ def tanh(x: Tensor, name: str | None = None) -> Tensor:
         A Sparse Tensor with the same data type and shape as ``x`` .
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
-            >>> dense_x = paddle.to_tensor([-2., 0., 1.])
+            >>> dense_x = paddle.to_tensor([-2.0, 0.0, 1.0])
             >>> sparse_x = dense_x.to_sparse_coo(1)
             >>> out = paddle.sparse.tanh(sparse_x)
             >>> out
@@ -471,9 +474,9 @@ def tanh(x: Tensor, name: str | None = None) -> Tensor:
                 indices=[[0, 2]],
                 values=[-0.96402758,  0.76159418])
     """
-    assert (
-        in_dynamic_or_pir_mode()
-    ), "Currently, Sparse API only support dynamic mode or pir mode."
+    assert in_dynamic_or_pir_mode(), (
+        "Currently, Sparse API only support dynamic mode or pir mode."
+    )
     return _C_ops.sparse_tanh(x)
 
 
@@ -494,11 +497,11 @@ def square(x: Tensor, name: str | None = None) -> Tensor:
         A Sparse Tensor with the same data type and shape as ``x`` .
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
-            >>> dense_x = paddle.to_tensor([-2., 0., 1.])
+            >>> dense_x = paddle.to_tensor([-2.0, 0.0, 1.0])
             >>> sparse_x = dense_x.to_sparse_coo(1)
             >>> out = paddle.sparse.square(sparse_x)
             >>> out
@@ -506,9 +509,9 @@ def square(x: Tensor, name: str | None = None) -> Tensor:
                 indices=[[0, 2]],
                 values=[4., 1.])
     """
-    assert (
-        in_dynamic_or_pir_mode()
-    ), "Currently, Sparse API only support dynamic mode or pir mode."
+    assert in_dynamic_or_pir_mode(), (
+        "Currently, Sparse API only support dynamic mode or pir mode."
+    )
     return _C_ops.sparse_square(x)
 
 
@@ -529,11 +532,11 @@ def sqrt(x: Tensor, name: str | None = None) -> Tensor:
         A Sparse Tensor with the same data type and shape as ``x`` .
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
-            >>> dense_x = paddle.to_tensor([-2., 0., 1.])
+            >>> dense_x = paddle.to_tensor([-2.0, 0.0, 1.0])
             >>> sparse_x = dense_x.to_sparse_coo(1)
             >>> out = paddle.sparse.sqrt(sparse_x)
             >>> out
@@ -541,9 +544,9 @@ def sqrt(x: Tensor, name: str | None = None) -> Tensor:
                 indices=[[0, 2]],
                 values=[nan, 1. ])
     """
-    assert (
-        in_dynamic_or_pir_mode()
-    ), "Currently, Sparse API only support dynamic mode or pir mode."
+    assert in_dynamic_or_pir_mode(), (
+        "Currently, Sparse API only support dynamic mode or pir mode."
+    )
     return _C_ops.sparse_sqrt(x)
 
 
@@ -564,7 +567,7 @@ def log1p(x: Tensor, name: str | None = None) -> Tensor:
         A Sparse Tensor with the same data type and shape as ``x`` .
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -576,9 +579,9 @@ def log1p(x: Tensor, name: str | None = None) -> Tensor:
                 indices=[[0, 2]],
                 values=[nan       , 0.69314718])
     """
-    assert (
-        in_dynamic_or_pir_mode()
-    ), "Currently, Sparse API only support dynamic mode or pir mode."
+    assert in_dynamic_or_pir_mode(), (
+        "Currently, Sparse API only support dynamic mode or pir mode."
+    )
     return _C_ops.sparse_log1p(x)
 
 
@@ -598,14 +601,14 @@ def cast(
             or crows/cols of SparseCsrTensor. Can be uint8, int8, int16, int32, int64.
         value_dtype (np.dtype|str, optional): Data type of the value of SparseCooTensor,
             SparseCsrTensor. Can be bool, float16, float32, float64, int8, int32, int64, uint8.
-        name (str|None, optional): Name for the operation (optional, default is None).
+        name (str|core.VarDesc.VarType|core.DataType|None, optional): Name for the operation (optional, default is None).
             For more information, please refer to :ref:`api_guide_Name`.
 
     Returns:
         A Sparse Tensor with the same data type and shape as ``x`` .
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -617,13 +620,17 @@ def cast(
                 indices=[[0, 2]],
                 values=[-2.,  1.])
     """
-    assert (
-        in_dynamic_or_pir_mode()
-    ), "Currently, Sparse API only support dynamic mode or pir mode."
-    if index_dtype and not isinstance(index_dtype, core.VarDesc.VarType):
-        index_dtype = convert_np_dtype_to_dtype_(index_dtype)
-    if value_dtype and not isinstance(value_dtype, core.VarDesc.VarType):
-        value_dtype = convert_np_dtype_to_dtype_(value_dtype)
+    assert in_dynamic_or_pir_mode(), (
+        "Currently, Sparse API only support dynamic mode or pir mode."
+    )
+    if index_dtype and not isinstance(
+        index_dtype, (core.VarDesc.VarType, core.DataType)
+    ):
+        index_dtype = convert_nptype_to_datatype_or_vartype(index_dtype)
+    if value_dtype and not isinstance(
+        value_dtype, (core.VarDesc.VarType, core.DataType)
+    ):
+        value_dtype = convert_nptype_to_datatype_or_vartype(value_dtype)
     return _C_ops.sparse_cast(x, index_dtype, value_dtype)
 
 
@@ -645,7 +652,7 @@ def pow(x: Tensor, factor: float, name: str | None = None) -> Tensor:
         A Sparse Tensor with the same data type and shape as ``x`` .
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -657,9 +664,9 @@ def pow(x: Tensor, factor: float, name: str | None = None) -> Tensor:
                 indices=[[0, 2]],
                 values=[4., 9.])
     """
-    assert (
-        in_dynamic_or_pir_mode()
-    ), "Currently, Sparse API only support dynamic mode or pir mode."
+    assert in_dynamic_or_pir_mode(), (
+        "Currently, Sparse API only support dynamic mode or pir mode."
+    )
     return _C_ops.sparse_pow(x, float(factor))
 
 
@@ -680,7 +687,7 @@ def neg(x: Tensor, name: str | None = None) -> Tensor:
         A Sparse Tensor with the same data type and shape as ``x`` .
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -692,9 +699,9 @@ def neg(x: Tensor, name: str | None = None) -> Tensor:
                 indices=[[0, 2]],
                 values=[ 2., -3.])
     """
-    assert (
-        in_dynamic_or_pir_mode()
-    ), "Currently, Sparse API only support dynamic mode or pir mode."
+    assert in_dynamic_or_pir_mode(), (
+        "Currently, Sparse API only support dynamic mode or pir mode."
+    )
     return _C_ops.sparse_scale(x, -1.0, 0.0, True)
 
 
@@ -715,7 +722,7 @@ def abs(x: Tensor, name: str | None = None) -> Tensor:
         A Sparse Tensor with the same data type and shape as ``x`` .
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -727,9 +734,9 @@ def abs(x: Tensor, name: str | None = None) -> Tensor:
                 indices=[[0, 2]],
                 values=[2., 3.])
     """
-    assert (
-        in_dynamic_or_pir_mode()
-    ), "Currently, Sparse API only support dynamic mode or pir mode."
+    assert in_dynamic_or_pir_mode(), (
+        "Currently, Sparse API only support dynamic mode or pir mode."
+    )
     return _C_ops.sparse_abs(x)
 
 
@@ -746,7 +753,7 @@ def coalesce(x: Tensor, name: str | None = None) -> Tensor:
         Tensor: return the SparseCooTensor after coalesced.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -762,9 +769,9 @@ def coalesce(x: Tensor, name: str | None = None) -> Tensor:
             Tensor(shape=[2], dtype=float32, place=Place(cpu), stop_gradient=True,
             [3., 3.])
     """
-    assert (
-        in_dynamic_or_pir_mode()
-    ), "Currently, Sparse API only support dynamic mode or pir mode."
+    assert in_dynamic_or_pir_mode(), (
+        "Currently, Sparse API only support dynamic mode or pir mode."
+    )
     return _C_ops.sparse_coalesce(x)
 
 
@@ -786,11 +793,11 @@ def rad2deg(x: Tensor, name: str | None = None) -> Tensor:
         A Sparse Tensor with the same data type and shape as ``x`` .
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
-            >>> dense_x = paddle.to_tensor([3.142, 0., -3.142])
+            >>> dense_x = paddle.to_tensor([3.142, 0.0, -3.142])
             >>> sparse_x = dense_x.to_sparse_coo(1)
             >>> out = paddle.sparse.rad2deg(sparse_x)
             >>> out
@@ -798,11 +805,11 @@ def rad2deg(x: Tensor, name: str | None = None) -> Tensor:
                 indices=[[0, 2]],
                 values=[ 180.02334595, -180.02334595])
     """
-    assert (
-        in_dynamic_or_pir_mode()
-    ), "Currently, Sparse API only support dynamic mode or pir mode."
+    assert in_dynamic_or_pir_mode(), (
+        "Currently, Sparse API only support dynamic mode or pir mode."
+    )
     if x.dtype in _int_dtype_:
-        x = _C_ops.sparse_cast(x, None, core.VarDesc.VarType.FP32)
+        x = _C_ops.sparse_cast(x, None, core.DataType.FLOAT32)
     return _C_ops.sparse_scale(x, 180.0 / np.pi, 0.0, True)
 
 
@@ -824,7 +831,7 @@ def deg2rad(x: Tensor, name: str | None = None) -> Tensor:
         A Sparse Tensor with the same data type and shape as ``x`` .
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -836,11 +843,11 @@ def deg2rad(x: Tensor, name: str | None = None) -> Tensor:
                 indices=[[0, 2]],
                 values=[-3.14159274,  3.14159274])
     """
-    assert (
-        in_dynamic_or_pir_mode()
-    ), "Currently, Sparse API only support dynamic mode or pir mode."
+    assert in_dynamic_or_pir_mode(), (
+        "Currently, Sparse API only support dynamic mode or pir mode."
+    )
     if x.dtype in _int_dtype_:
-        x = _C_ops.sparse_cast(x, None, core.VarDesc.VarType.FP32)
+        x = _C_ops.sparse_cast(x, None, core.DataType.FLOAT32)
     return _C_ops.sparse_scale(x, np.pi / 180.0, 0.0, True)
 
 
@@ -861,24 +868,25 @@ def expm1(x: Tensor, name: str | None = None) -> Tensor:
         A Sparse Tensor with the same data type and shape as ``x`` .
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
-            >>> dense_x = paddle.to_tensor([-2., 0., 1.])
+            >>> dense_x = paddle.to_tensor([-2.0, 0.0, 1.0])
             >>> sparse_x = dense_x.to_sparse_coo(1)
             >>> out = paddle.sparse.expm1(sparse_x)
             >>> out
             Tensor(shape=[3], dtype=paddle.float32, place=Place(cpu), stop_gradient=True,
                 indices=[[0, 2]],
-                values=[-0.86466473,  1.71828187])
+                values=[-0.86466473,  1.71828175])
     """
-    assert (
-        in_dynamic_or_pir_mode()
-    ), "Currently, Sparse API only support dynamic mode or pir mode."
+    assert in_dynamic_or_pir_mode(), (
+        "Currently, Sparse API only support dynamic mode or pir mode."
+    )
     return _C_ops.sparse_expm1(x)
 
 
+@param_one_alias(["x", "input"])
 def reshape(x: Tensor, shape: ShapeLike, name: str | None = None) -> Tensor:
     """
     Changes the shape of ``x`` without changing its value, requiring x to be a SparseCooTensor or SparseCsrTensor.
@@ -901,6 +909,10 @@ def reshape(x: Tensor, shape: ShapeLike, name: str | None = None) -> Tensor:
 
         - 3. Given a 3-D tensor x with a shape [2, 4, 6], and the target shape is [-1, 0, 3, 2], the reshape operator will transform x into a 4-D tensor with shape [2, 4, 3, 2] and leaving x's data unchanged. In this case, besides -1, 0 means the actual dimension value is going to be copied from the corresponding dimension of x.
 
+    .. note::
+        Alias Support: The parameter name ``input`` can be used as an alias for ``x``.
+        For example, ``reshape(input=tensor_x, ...)`` is equivalent to ``reshape(x=tensor_x, ...)``.
+
     Args:
         x (Tensor): The input sparse tensor with data type ``float32``, ``float64``, ``int32``, ``int64`` or ``bool``.
         shape (list|tuple): Define the target shape. At most one dimension of the target shape can be -1.
@@ -912,7 +924,7 @@ def reshape(x: Tensor, shape: ShapeLike, name: str | None = None) -> Tensor:
         Tensor: A reshaped Tensor with the same data type as ``x``.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -929,7 +941,7 @@ def reshape(x: Tensor, shape: ShapeLike, name: str | None = None) -> Tensor:
             >>> sp_out = paddle.sparse.reshape(sp_x, new_shape)
 
             >>> print(sp_out.shape)
-            [1, 2, 2, 3, 3]
+            paddle.Size([1, 2, 2, 3, 3])
 
     """
     if in_dynamic_or_pir_mode():
@@ -979,13 +991,13 @@ def isnan(x: Tensor, name: str | None = None) -> Tensor:
         A Sparse Tensor with the same shape as ``x``,  the bool result which shows every element of `x` whether it is `NaN` or not.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> import numpy as np
 
             >>> format = "coo"
-            >>> np_x = np.asarray([[[0., 0], [1., 2.]], [[0., 0], [3., float('nan')]]])
+            >>> np_x = np.asarray([[[0.0, 0.0], [1.0, 2.0]], [[0.0, 0.0], [3.0, float('nan')]]])
             >>> dense_x = paddle.to_tensor(np_x)
 
             >>> if format == "coo":
@@ -995,7 +1007,7 @@ def isnan(x: Tensor, name: str | None = None) -> Tensor:
             ...
             >>> sparse_out = paddle.sparse.isnan(sparse_x)
             >>> print(sparse_out)
-            Tensor(shape=[2, 2, 2], dtype=paddle.bool, place=Place(gpu:0), stop_gradient=True,
+            Tensor(shape=[2, 2, 2], dtype=paddle.bool, place=Place(cpu), stop_gradient=True,
                    indices=[[0, 0, 1, 1],
                             [1, 1, 1, 1],
                             [0, 1, 0, 1]],
@@ -1049,7 +1061,7 @@ def slice(
         A Sparse Tensor. The data type is same as ``x``.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> import numpy as np
@@ -1138,7 +1150,7 @@ def pca_lowrank(
         tuple (U, S, V): which is the nearly optimal approximation of a singular value decomposition of a centered matrix :math:`X`.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env:GPU)
             >>> import paddle
@@ -1193,7 +1205,7 @@ def pca_lowrank(
     def transpose(x):
         shape = x.shape
         perm = list(range(0, len(shape)))
-        perm = perm[:-2] + [perm[-1]] + [perm[-2]]
+        perm = [*perm[:-2], perm[-1], perm[-2]]
         if x.is_sparse():
             return paddle.sparse.transpose(x, perm)
         return paddle.transpose(x, perm)
@@ -1310,6 +1322,6 @@ def pca_lowrank(
         indices, c.values(), (n, 1), dtype=dtype, place=x.place
     )
 
-    ones_m1_t = paddle.ones(x.shape[:-2] + [1, m], dtype=dtype)
+    ones_m1_t = paddle.ones([*x.shape[:-2], 1, m], dtype=dtype)
     M = transpose(paddle.matmul(C_t.to_dense(), ones_m1_t))
     return svd_lowrank(x, q, niter=niter, M=M)

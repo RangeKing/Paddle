@@ -20,18 +20,18 @@
 namespace phi {
 
 template <typename T, typename Context>
-void FusedAdamKernel(
+PADDLE_API void FusedAdamKernel(
     const Context &dev_ctx,
     const std::vector<const DenseTensor *> &params,
     const std::vector<const DenseTensor *> &grads,
     const DenseTensor &learning_rate,
     const std::vector<const DenseTensor *> &moments1,
     const std::vector<const DenseTensor *> &moments2,
-    const paddle::optional<std::vector<const DenseTensor *>> &moments2_max,
+    const optional<std::vector<const DenseTensor *>> &moments2_max,
     const std::vector<const DenseTensor *> &beta1_pows,
     const std::vector<const DenseTensor *> &beta2_pows,
-    const paddle::optional<std::vector<const DenseTensor *>> &master_params,
-    const paddle::optional<DenseTensor> &skip_update,
+    const optional<std::vector<const DenseTensor *>> &master_params,
+    const optional<DenseTensor> &skip_update,
     const Scalar &beta1,
     const Scalar &beta2,
     const Scalar &epsilon,

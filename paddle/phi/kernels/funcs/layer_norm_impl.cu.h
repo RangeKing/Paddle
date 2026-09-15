@@ -14,25 +14,18 @@ limitations under the License. */
 
 #pragma once
 
-#ifdef __NVCC__
-#include "cub/cub.cuh"
-#endif
-#ifdef __HIPCC__
-#include <hipcub/hipcub.hpp>
-namespace cub = hipcub;
-#endif
-
 #include <iostream>
 
 #include "glog/logging.h"
-
 #include "paddle/common/ddim.h"
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/backends/gpu/gpu_device_function.h"
 #include "paddle/phi/backends/gpu/gpu_dnn.h"
 #include "paddle/phi/common/memory_utils.h"
 #include "paddle/phi/kernels/funcs/aligned_vector.h"
+#include "paddle/phi/kernels/funcs/cub.h"
 #include "paddle/phi/kernels/funcs/fake_quantize_functor.h"
+#include "paddle/phi/kernels/funcs/fast_ln_v1.h"
 
 namespace phi {
 namespace funcs {
@@ -50,6 +43,20 @@ inline static int GetDesiredBlockDim(int64_t block_dim) {
   const int lwarpSize = 32;
 #endif
   return block_dim >= kMaxBlockDim ? kMaxBlockDim : lwarpSize;
+}
+
+static dim3 GetDesiredGridDim(int64_t grid_size) {
+  dim3 grid_dim(1, 1);
+  int64_t grid_x = grid_size > 1 ? grid_size : 1;
+  int64_t grid_y = 1;
+  if (grid_x > 2147483648LL) {
+    grid_y = 1024;
+    grid_x = (grid_x + grid_y - 1) / grid_y;
+    PADDLE_ENFORCE_LE_INT_MAX(grid_x, "grid_x");
+  }
+  grid_dim.x = static_cast<uint32_t>(grid_x);
+  grid_dim.y = static_cast<uint32_t>(grid_y);
+  return grid_dim;
 }
 
 template <typename U>
@@ -174,184 +181,7 @@ __inline__ __device__ half rsqrt_(const half val) {
 }
 #endif
 
-#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
-template <typename T,
-          typename U,
-          typename ScaleT = U,
-          int VecSize = 8,
-          int WARPS_M = 4,
-          int WARPS_N = 1,
-          int BYTES_PER_LDG = 16,
-          int ELTS_PER_ROW = 1024,
-          int THREADS_PER_WARP = 32,
-          int THREADS_PER_ROW = WARPS_N *THREADS_PER_WARP,
-          int THREADS_PER_CTA = WARPS_M *THREADS_PER_ROW,
-          int ROWS_PER_CTA = WARPS_M,
-          int ELTS_PER_ROW_PER_CTA = THREADS_PER_ROW *VecSize,
-          int LDGS = ELTS_PER_ROW / ELTS_PER_ROW_PER_CTA>
-__global__ __launch_bounds__(THREADS_PER_CTA) void fast_ln_fwd_kernel(
-    int rows,
-    int cols,
-    const float epsilon,
-    const T *__restrict__ x_ptr,
-    const ScaleT *__restrict__ gamma_ptr,
-    const ScaleT *__restrict__ beta_ptr,
-    U *__restrict__ mean_out_ptr,
-    U *__restrict__ var_out_ptr,
-    T *__restrict__ y_ptr) {
-  __shared__ U smem[WARPS_M * WARPS_N];
-  using Vec = phi::AlignedVector<T, VecSize>;
-  using Vec_scale = phi::AlignedVector<ScaleT, VecSize>;
-
-  const int tidx = threadIdx.x;
-  const int bidx = blockIdx.x;
-  const int lane = tidx % THREADS_PER_WARP;  // 0, 1, ..., 31
-  const int warp = tidx / THREADS_PER_WARP;  // 0, 1, 2, 3
-  const int warp_n = warp % WARPS_N;         // 0
-  const int warp_m = warp / WARPS_N;         // 0, 1, 2, 3
-
-  const int c = warp_n * THREADS_PER_WARP + lane;  // lane
-  const int r = bidx * ROWS_PER_CTA + warp_m;      // row id
-
-  Vec_scale gamma[LDGS];
-  Vec_scale beta[LDGS];
-#pragma unroll
-  for (int it = 0, col = c; it < LDGS; it++) {
-    if (col < cols) {
-      phi::Load<ScaleT, VecSize>(gamma_ptr + col * VecSize, &gamma[it]);
-      phi::Load<ScaleT, VecSize>(beta_ptr + col * VecSize, &beta[it]);
-    } else {
-      gamma[it] = Vec_scale{};
-      beta[it] = Vec_scale{};
-    }
-    col += THREADS_PER_ROW;
-  }
-
-  constexpr U rn = 1.f / U(ELTS_PER_ROW);
-  for (int row = r; row < rows; row += gridDim.x * ROWS_PER_CTA) {
-    Vec x[LDGS];
-#pragma unroll
-    for (int it = 0, col = c; it < LDGS; it++) {
-      if (col < cols) {
-        phi::Load<T, VecSize>(x_ptr + row * ELTS_PER_ROW + col * VecSize,
-                              &x[it]);
-      } else {
-        x[it] = Vec{};
-      }
-      col += THREADS_PER_ROW;
-    }
-    U xf[LDGS * VecSize];
-
-    U mu_local = 0.f;
-
-#pragma unroll
-    for (int it = 0; it < LDGS; it++) {
-#pragma unroll
-      for (int jt = 0; jt < VecSize; jt++) {
-        xf[it * VecSize + jt] = U(x[it][jt]);
-        mu_local += xf[it * VecSize + jt];
-      }
-    }
-
-#pragma unroll
-    for (int it = 1; it < THREADS_PER_WARP; it *= 2) {
-#ifdef PADDLE_WITH_HIP
-      mu_local += __shfl_xor(mu_local, it);
-#else
-      mu_local += __shfl_xor_sync(uint32_t(-1), mu_local, it);
-#endif
-    }
-    if (WARPS_N > 1) {
-      if (lane == 0) {
-        smem[warp_m * WARPS_N + warp_n] = mu_local;
-      }
-      __syncthreads();
-      if (tidx % THREADS_PER_ROW == 0) {
-        mu_local = 0.f;
-#pragma unroll
-        for (int it = 0; it < WARPS_N; ++it) {
-          mu_local += smem[warp_m * WARPS_N + it];
-        }
-        smem[warp_m * WARPS_N] = mu_local;
-      }
-      __syncthreads();
-      mu_local = smem[warp_m * WARPS_N];
-    }
-
-    mu_local *= rn;
-    if (lane == 0) {
-      mean_out_ptr[row] = mu_local;
-    }
-    U var_local = 0.f;
-
-#pragma unroll
-    for (int it = 0; it < LDGS; it++) {
-#pragma unroll
-      for (int jt = 0; jt < VecSize; jt++) {
-        U diff = xf[it * VecSize + jt] - mu_local;
-        var_local += diff * diff;
-      }
-    }
-
-#pragma unroll
-    for (int it = 1; it < THREADS_PER_WARP; it *= 2) {
-#ifdef PADDLE_WITH_HIP
-      var_local += __shfl_xor(var_local, it);
-#else
-      var_local += __shfl_xor_sync(uint32_t(-1), var_local, it);
-#endif
-    }
-
-    if (WARPS_N > 1) {
-      __syncthreads();
-      if (lane == 0) {
-        smem[warp_m * WARPS_N + warp_n] = var_local;
-      }
-      __syncthreads();
-      if (tidx % THREADS_PER_ROW == 0) {
-        var_local = 0.f;
-#pragma unroll
-        for (int it = 0; it < WARPS_N; ++it) {
-          var_local += smem[warp_m * WARPS_N + it];
-        }
-        smem[warp_m * WARPS_N] = var_local;
-      }
-      __syncthreads();
-      var_local = smem[warp_m * WARPS_N];
-    }
-
-    // Note: to assure if it is right for double
-    U rsigma = rsqrtf(var_local * rn + epsilon);
-    if (lane == 0) {
-      var_out_ptr[row] = var_local * rn;
-    }
-
-#pragma unroll
-    for (int it = 0; it < LDGS; it++) {
-#pragma unroll
-      for (int jt = 0; jt < VecSize; jt++) {
-        // use fp16 to compute
-        // ScaleT tmp = static_cast<ScaleT>(rsigma * (xf[it * VecSize + jt] -
-        // mu_local));
-        // x[it][jt] = gamma[it][jt] *  tmp + beta[it][jt];
-        // cast to fp32 to compute
-        U tmp = (rsigma * (static_cast<U>(xf[it * VecSize + jt]) - mu_local));
-        x[it][jt] = static_cast<T>(static_cast<U>(gamma[it][jt]) * tmp +
-                                   static_cast<U>(beta[it][jt]));
-      }
-    }
-
-#pragma unroll
-    for (int it = 0, col = c; it < LDGS; it++) {
-      if (col < cols) {
-        phi::Store<T, VecSize>(x[it],
-                               y_ptr + row * ELTS_PER_ROW + col * VecSize);
-      }
-      col += THREADS_PER_ROW;
-    }
-  }
-}
-#endif
+// fast_ln_v1_fwd_kernel is moved to paddle/phi/kernels/funcs/fast_ln_v1.h
 
 template <typename T>
 __forceinline__ __device__ int8_t quant_helper(const T input,
@@ -402,8 +232,13 @@ __global__ void LayerNormForward(
                                  // warpSize <= 1024/32 = 32;
   __shared__ U shared_var[32];
 
-  int64_t beg_idx = blockIdx.x * feature_size + threadIdx.x;
-  int64_t end_idx = (blockIdx.x + 1) * feature_size;
+  int64_t beg_idx =
+      (static_cast<int64_t>(blockIdx.x) * gridDim.y + blockIdx.y) *
+          feature_size +
+      threadIdx.x;
+  int64_t end_idx =
+      (static_cast<int64_t>(blockIdx.x) * gridDim.y + blockIdx.y + 1) *
+      feature_size;
 
   // Step 1: Reduce to calculate mean and var
   U mean_val = 0;
@@ -530,7 +365,9 @@ __inline__ __device__ void cuLoadAddStridedInputs(const int64_t i1_block,
   for (int k = 0; k < VPT; ++k) {
     const int i2 = i2_off + k;
     const int64_t load_idx = i1 * n2 + i2;
-    const int write_idx = thr_load_row_off * row_stride + thr_load_col_off + k;
+    const int64_t write_idx =
+        static_cast<int64_t>(thr_load_row_off) * row_stride + thr_load_col_off +
+        k;
     if (i2 < n2) {
       U curr_input = static_cast<U>(input[load_idx]);
       U curr_dout = static_cast<U>(dout[load_idx]);
@@ -577,20 +414,20 @@ __global__ __launch_bounds__(THREADS_PER_CTA) void fused_ln_bwd_fast_kernel(
       !IsFusedDropoutResidualLn || NeedDDropoutSrcPtr,
       "When IsFusedDropoutResidualLn = true, NeedDDropoutSrcPtr must be true.");
 
-  using Vec = phi::AlignedVector<T, VecSize>;
-  using Vec_scale = phi::AlignedVector<ScaleT, VecSize>;
-  using MaskLoadT = phi::AlignedVector<MaskType, VecSize>;
+  using Vec = AlignedVector<T, VecSize>;
+  using Vec_scale = AlignedVector<ScaleT, VecSize>;
+  using MaskLoadT = AlignedVector<MaskType, VecSize>;
 
-  const int tidx = threadIdx.x;
-  const int bidx = blockIdx.x;
-  const int lane = tidx % THREADS_PER_WARP;            // 0, 1, ..., 31
-  const int warp = tidx / THREADS_PER_WARP;            // 0, 1, 2, 3
-  const int warp_m = warp / WARPS_N;                   // 0, 1, 2, 3
-  const int warp_n = warp % WARPS_N;                   // 0
-  const int tid_r = warp_n * THREADS_PER_WARP + lane;  // 0, 1, ..., 31
+  const int64_t tidx = threadIdx.x;
+  const int64_t bidx = blockIdx.x;
+  const int64_t lane = tidx % THREADS_PER_WARP;            // 0, 1, ..., 31
+  const int64_t warp = tidx / THREADS_PER_WARP;            // 0, 1, 2, 3
+  const int64_t warp_m = warp / WARPS_N;                   // 0, 1, 2, 3
+  const int64_t warp_n = warp % WARPS_N;                   // 0
+  const int64_t tid_r = warp_n * THREADS_PER_WARP + lane;  // 0, 1, ..., 31
 
-  const int r = bidx * ROWS_PER_CTA + warp_m;
-  const int c = warp_n * THREADS_PER_WARP + lane;
+  const int64_t r = bidx * ROWS_PER_CTA + warp_m;
+  const int64_t c = warp_n * THREADS_PER_WARP + lane;
 
   static_assert(ELTS_PER_ROW == THREADS_PER_ROW * LDGS * VecSize, "");
 
@@ -612,22 +449,22 @@ __global__ __launch_bounds__(THREADS_PER_CTA) void fused_ln_bwd_fast_kernel(
   // step-1: compute dx and local results of dscale and dbias
   constexpr float rn = 1.f / static_cast<float>(ELTS_PER_ROW);
   Vec_scale gamma[LDGS];
-  int col = c;
+  int64_t col = c;
 #pragma unroll
-  for (int it = 0; it < LDGS; it++) {
+  for (int64_t it = 0; it < LDGS; it++) {
     phi::Load<ScaleT, VecSize>(gamma_ptr + col * VecSize, &gamma[it]);
     col += THREADS_PER_ROW;
   }
 
 #pragma unroll 1
-  for (int row = r; row < rows; row += gridDim.x * ROWS_PER_CTA) {
+  for (int64_t row = r; row < rows; row += gridDim.x * ROWS_PER_CTA) {
     const U mean_cur_row = mean_ptr[row];
     const U var_cur_row = rsqrt_<U>(var_ptr[row] + epsilon);
     Vec dout[LDGS], x[LDGS];
     MaskLoadT mask_vec[LDGS];
-    int col = c;
+    int64_t col = c;
 #pragma unroll
-    for (int it = 0; it < LDGS; it++) {
+    for (int64_t it = 0; it < LDGS; it++) {
       phi::Load<T, VecSize>(dout_ptr + row * ELTS_PER_ROW + col * VecSize,
                             &dout[it]);
       phi::Load<T, VecSize>(x_ptr + row * ELTS_PER_ROW + col * VecSize, &x[it]);
@@ -728,7 +565,12 @@ __global__ __launch_bounds__(THREADS_PER_CTA) void fused_ln_bwd_fast_kernel(
         // Note: reuse x and dout vec register to store dx and d_dropout_src.
         x[it][jt] = static_cast<T>(dx_tmp);
         if (IsFusedDropoutResidualLn) {
-          dout[it][jt] = x[it][jt] * static_cast<T>(mask_vec[it][jt]) * factor;
+          if (factor == static_cast<T>(1.0f)) {  // no dropout
+            dout[it][jt] = x[it][jt] * factor;
+          } else {
+            dout[it][jt] =
+                x[it][jt] * static_cast<T>(mask_vec[it][jt]) * factor;
+          }
         }
       }
     }
@@ -838,7 +680,7 @@ __global__ __launch_bounds__(THREADS_PER_CTA) void ln_bwd_fast_final_kernel(
     U *__restrict__ db_part_,
     ScaleT *__restrict__ dg_,
     ScaleT *__restrict__ db_) {
-  using Vec = phi::AlignedVector<U, VecSize>;
+  using Vec = AlignedVector<U, VecSize>;
   static_assert(VEC_COLS == ELTS_PER_ROW / VecSize, "");
 
   const int tidx = threadIdx.x;
@@ -854,7 +696,7 @@ __global__ __launch_bounds__(THREADS_PER_CTA) void ln_bwd_fast_final_kernel(
 
   __shared__ U smem_space[(WARPS_M - 1) * THREADS_PER_ROW * VecSize];
 
-  for (int col = c; col < VEC_COLS; col += gridDim.x * THREADS_PER_ROW) {
+  for (int64_t col = c; col < VEC_COLS; col += gridDim.x * THREADS_PER_ROW) {
     const U *dg_part_ptr = (dg_part_) + r * ELTS_PER_ROW + col * VecSize;
     const U *db_part_ptr = (db_part_) + r * ELTS_PER_ROW + col * VecSize;
 
@@ -863,7 +705,7 @@ __global__ __launch_bounds__(THREADS_PER_CTA) void ln_bwd_fast_final_kernel(
     memset(dg_sum, 0, sizeof(U) * VecSize);
     memset(db_sum, 0, sizeof(U) * VecSize);
 #pragma unroll
-    for (int row = r; row < rows; row += ROWS_PER_CTA) {
+    for (int64_t row = r; row < rows; row += ROWS_PER_CTA) {
       Vec dg;
       Vec db;
       phi::Load<U, VecSize>(dg_part_ptr, &dg);
@@ -961,9 +803,9 @@ template <typename T,
           typename U,
           typename ScaleT = U,
           typename MaskType = uint8_t>
-void ln_bwd_fast_kernel_driver(const phi::GPUContext &dev_ctx,
-                               const int rows,
-                               const int cols,
+void ln_bwd_fast_kernel_driver(const GPUContext &dev_ctx,
+                               const int64_t rows,
+                               const int64_t cols,
                                float epsilon,
                                const T *x_ptr,
                                const ScaleT *scale_ptr,
@@ -979,7 +821,7 @@ void ln_bwd_fast_kernel_driver(const phi::GPUContext &dev_ctx,
   auto stream = dev_ctx.stream();
   if (cols == 1024 || cols == 384 || cols == 256) {
     // step-1: compute dx and reduced part results of dscale and dbias.
-    const int WARPS_M = 4;  // how many rows delt in a cta.
+    const int WARPS_M = 4;  // how many rows deal in a cta.
     const int WARPS_N = 1;  // how many warps to deal with a row.
     const int BYTES_PER_LDG = 16;
     const int VecSize = BYTES_PER_LDG / sizeof(T);
@@ -996,12 +838,12 @@ void ln_bwd_fast_kernel_driver(const phi::GPUContext &dev_ctx,
     const int gridx = 2 * dev_ctx.GetSMCount();
 
     // get temp space for dscale and dbias.
-    phi::DenseTensor dscale_temp;
+    DenseTensor dscale_temp;
     dscale_temp.Resize({gridx, cols});
     dev_ctx.template Alloc<U>(&dscale_temp);
     U *dscale_temp_ptr = dscale_temp.data<U>();
 
-    phi::DenseTensor dbias_temp;
+    DenseTensor dbias_temp;
     dbias_temp.Resize({gridx, cols});
     dev_ctx.template Alloc<U>(&dbias_temp);
     U *dbias_temp_ptr = dbias_temp.data<U>();
@@ -1195,7 +1037,8 @@ __global__ void LayerNormBackwardPartGradGammaBeta(const T *__restrict__ dout,
   }
   __syncthreads();
 
-  for (int64_t i1_block = blockIdx.y * BDIMY * VPTX; i1_block < n1;
+  for (int64_t i1_block = static_cast<int64_t>(blockIdx.y) * BDIMY * VPTX;
+       i1_block < n1;
        i1_block += VPTX_MUL_BDIMY * gridDim.y) {
     cuLoadAddStridedInputs<T, U, VPTX>(i1_block,
                                        thr_load_row_off,
@@ -1241,7 +1084,7 @@ __global__ void LayerNormBackwardPartGradGammaBeta(const T *__restrict__ dout,
     }
     __syncthreads();
   }
-  int64_t i2 = blockIdx.x * BDIMX + threadIdx.x;
+  int64_t i2 = static_cast<int64_t>(blockIdx.x) * BDIMX + threadIdx.x;
   if (threadIdx.y == 0 && i2 < n2) {
     int row1 = threadIdx.y;
     int row2 = threadIdx.y + 1;
@@ -1256,13 +1099,13 @@ template <typename T, typename U, int BDIMX, int BDIMY, typename ScaleT>
 __global__ void LayerNormBackwardSumGradGammaBeta(const U *part_grad_gamma,
                                                   const U *part_grad_beta,
                                                   const int part_size,
-                                                  const int n1,
-                                                  const int n2,
+                                                  const int64_t n1,
+                                                  const int64_t n2,
                                                   ScaleT *grad_gamma,
                                                   ScaleT *grad_beta) {
   // sum partial gradients for gamma and beta
   __shared__ U buf[BDIMX * BDIMY];
-  int64_t i2 = blockIdx.x * BDIMX + threadIdx.x;
+  int64_t i2 = static_cast<int64_t>(blockIdx.x) * BDIMX + threadIdx.x;
   if (i2 < n2) {
     // each warp does sequential reductions until reduced part_size is num_warps
     int num_warp_reductions = part_size / BDIMY;
@@ -1306,8 +1149,8 @@ __global__ void LayerNormBackwardSumGradGammaBeta(const U *part_grad_gamma,
 template <typename T, typename U, int BDIMX, int BDIMY, typename ScaleT>
 __global__ void LayerNormBackwardComputeGradInput(const T *__restrict__ dout,
                                                   const T *__restrict__ input,
-                                                  const int n1,
-                                                  const int n2,
+                                                  const int64_t n1,
+                                                  const int64_t n2,
                                                   const U *__restrict__ mean,
                                                   const U *__restrict__ var,
                                                   const float epsilon,
@@ -1327,7 +1170,7 @@ __global__ void LayerNormBackwardComputeGradInput(const T *__restrict__ dout,
     constexpr int numx = BDIMX * BDIMY;
     const int thrx = threadIdx.x + threadIdx.y * BDIMX;
     if (gamma != NULL) {
-      int l = 4 * thrx;
+      int64_t l = 4 * thrx;
       for (; l + 3 < n2; l += 4 * numx) {
         for (int k = 0; k < 4; ++k) {
           const U c_h = static_cast<U>(k_input[l + k]);
@@ -1345,7 +1188,7 @@ __global__ void LayerNormBackwardComputeGradInput(const T *__restrict__ dout,
             c_loss * static_cast<U>(gamma[l]) * (c_h - c_mean) * c_invvar;
       }
     } else {
-      int l = 4 * thrx;
+      int64_t l = 4 * thrx;
       for (; l + 3 < n2; l += 4 * numx) {
         for (int k = 0; k < 4; ++k) {
           const U c_h = static_cast<U>(k_input[l + k]);
@@ -1408,7 +1251,7 @@ __global__ void LayerNormBackwardComputeGradInput(const T *__restrict__ dout,
     U term1 = (U(1) / fH) * c_invvar;
     T *k_grad_input = grad_input + i1 * n2;
     if (gamma != NULL) {
-      for (int l = thrx; l < n2; l += numx) {
+      for (int64_t l = thrx; l < n2; l += numx) {
         const U c_h = static_cast<U>(k_input[l]);
         const U c_loss = static_cast<U>(k_dout[l]);
         U f_grad_input = fH * c_loss * static_cast<U>(gamma[l]);
@@ -1418,7 +1261,7 @@ __global__ void LayerNormBackwardComputeGradInput(const T *__restrict__ dout,
         k_grad_input[l] = static_cast<T>(f_grad_input);
       }
     } else {
-      for (int l = thrx; l < n2; l += numx) {
+      for (int64_t l = thrx; l < n2; l += numx) {
         const U c_h = static_cast<U>(k_input[l]);
         const U c_loss = static_cast<U>(k_dout[l]);
         U f_grad_input = fH * c_loss;
@@ -1453,9 +1296,9 @@ __global__ void LayerNormBackwardComputeGradInputWithSmallFeatureSize(
     const U c_mean = mean[bid];
     const U c_invvar = rsqrt_<U>(var[bid] + epsilon);
 
-    const int main_vec_n2 = n2 / DataPerTid;
-    const int tid_num = WarpSize * blockDim.y;
-    const int thrx = threadIdx.x + threadIdx.y * WarpSize;
+    const int64_t main_vec_n2 = n2 / DataPerTid;
+    const int64_t tid_num = WarpSize * blockDim.y;
+    const int64_t thrx = threadIdx.x + threadIdx.y * WarpSize;
 
     // One feature-size per block.
     const T *__restrict__ k_dout = dout + bid * n2;
@@ -1463,8 +1306,8 @@ __global__ void LayerNormBackwardComputeGradInputWithSmallFeatureSize(
     T *k_grad_input = grad_input + bid * n2;
 
     // Data storage location in local register.
-    using VecT = phi::AlignedVector<T, DataPerTid>;
-    using VecScaleT = phi::AlignedVector<ScaleT, DataPerTid>;
+    using VecT = AlignedVector<T, DataPerTid>;
+    using VecScaleT = AlignedVector<ScaleT, DataPerTid>;
 
     const VecT *__restrict__ v_k_dout =
         reinterpret_cast<const VecT *__restrict__>(k_dout);
@@ -1480,14 +1323,14 @@ __global__ void LayerNormBackwardComputeGradInputWithSmallFeatureSize(
     U gamma_data[8];
 
     if (gamma != NULL) {
-      int tid = thrx;
-      for (int i = 0; tid < main_vec_n2; tid += tid_num, ++i) {
+      int64_t tid = thrx;
+      for (int64_t i = 0; tid < main_vec_n2; tid += tid_num, ++i) {
         VecT v_tmp_dout = v_k_dout[tid];
         VecT v_tmp_input = v_k_input[tid];
         VecScaleT v_tmp_gamma = v_gamma[tid];
 #pragma unroll
-        for (int k = 0; k < DataPerTid; ++k) {
-          const int idx = k + i * DataPerTid;
+        for (int64_t k = 0; k < DataPerTid; ++k) {
+          const int64_t idx = k + i * DataPerTid;
           dout_data[idx] = static_cast<U>(v_tmp_dout[k]);
           input_data[idx] = static_cast<U>(v_tmp_input[k]);
           gamma_data[idx] = static_cast<U>(v_tmp_gamma[k]);
@@ -1497,13 +1340,13 @@ __global__ void LayerNormBackwardComputeGradInputWithSmallFeatureSize(
         }
       }
     } else {
-      int tid = thrx;
-      for (int i = 0; tid < main_vec_n2; tid += tid_num, ++i) {
+      int64_t tid = thrx;
+      for (int64_t i = 0; tid < main_vec_n2; tid += tid_num, ++i) {
         VecT v_tmp_dout = v_k_dout[tid];
         VecT v_tmp_input = v_k_input[tid];
 #pragma unroll
-        for (int k = 0; k < DataPerTid; ++k) {
-          const int idx = k + i * DataPerTid;
+        for (int64_t k = 0; k < DataPerTid; ++k) {
+          const int64_t idx = k + i * DataPerTid;
           dout_data[idx] = static_cast<U>(v_tmp_dout[k]);
           input_data[idx] = static_cast<U>(v_tmp_input[k]);
           sum_loss1 += dout_data[idx];
@@ -1559,8 +1402,8 @@ __global__ void LayerNormBackwardComputeGradInputWithSmallFeatureSize(
     U fH = static_cast<U>(n2);
     U ratio_term = (static_cast<U>(1) / fH) * c_invvar;
     if (gamma != NULL) {
-      int tid = thrx;
-      for (int i = 0; tid < main_vec_n2; tid += tid_num, ++i) {
+      int64_t tid = thrx;
+      for (int64_t i = 0; tid < main_vec_n2; tid += tid_num, ++i) {
         VecT temp_grad;
 #pragma unroll
         for (int k = 0; k < DataPerTid; ++k) {
@@ -1574,8 +1417,8 @@ __global__ void LayerNormBackwardComputeGradInputWithSmallFeatureSize(
         v_grad[tid] = temp_grad;
       }
     } else {
-      int tid = thrx;
-      for (int i = 0; tid < main_vec_n2; tid += tid_num, ++i) {
+      int64_t tid = thrx;
+      for (int64_t i = 0; tid < main_vec_n2; tid += tid_num, ++i) {
         VecT temp_grad;
 #pragma unroll
         for (int k = 0; k < DataPerTid; ++k) {
@@ -1613,8 +1456,10 @@ __global__ void LayerNormBackwardGradientAll(
     int64_t feature_size,
     int64_t col_offset) {
   using ScaleBiasT = LayerNormScaleBiasT<T, U, ScaleBiasWithSameTypeX>;
-  int64_t beg_idx = threadIdx.x * feature_size + (blockIdx.x + col_offset);
-  int64_t end_idx = batch_size * feature_size + (blockIdx.x + col_offset);
+  int64_t beg_idx = static_cast<int64_t>(threadIdx.x) * feature_size +
+                    (static_cast<int64_t>(blockIdx.x) + col_offset);
+  int64_t end_idx = batch_size * feature_size +
+                    (static_cast<int64_t>(blockIdx.x) + col_offset);
   int64_t stride = BlockDim * feature_size;
 
   U d_scale_partial = static_cast<U>(0), d_bias_partial = static_cast<U>(0);
@@ -1669,9 +1514,11 @@ __global__ void LayerNormBackwardGradientScaleOrBias(
   using ScaleBiasT = LayerNormScaleBiasT<T, U, ScaleBiasWithSameTypeX>;
   using BlockReduce = cub::BlockReduce<U, BlockDim>;
   __shared__ typename BlockReduce::TempStorage temp_storage;
-  int64_t beg_idx = threadIdx.x * feature_size + blockIdx.x + col_offset;
-  int64_t end_idx = batch_size * feature_size + blockIdx.x + col_offset;
-  int stride = BlockDim * feature_size;
+  int64_t beg_idx = static_cast<int64_t>(threadIdx.x) * feature_size +
+                    static_cast<int64_t>(blockIdx.x) + col_offset;
+  int64_t end_idx =
+      batch_size * feature_size + static_cast<int64_t>(blockIdx.x) + col_offset;
+  int64_t stride = BlockDim * feature_size;
   U d_scale_or_d_bias_partial = static_cast<U>(0);
 
   for (int64_t i = beg_idx; i < end_idx; i += stride) {
@@ -1723,8 +1570,9 @@ __global__ void LayerNormBackwardPostProcessToCalculateDX(
   __shared__ typename BlockReduce::TempStorage temp_storage;
   __shared__ U d_x_reduce_tmp[2];
 
-  int64_t beg_idx = blockIdx.x * feature_size + threadIdx.x;
-  int64_t end_idx = (blockIdx.x + 1) * feature_size;
+  int64_t beg_idx = static_cast<int64_t>(blockIdx.x) * feature_size +
+                    static_cast<int64_t>(threadIdx.x);
+  int64_t end_idx = (static_cast<int64_t>(blockIdx.x) + 1) * feature_size;
 
   U block_mean = mean[blockIdx.x];
   U block_var = var[blockIdx.x];
@@ -1773,8 +1621,9 @@ __global__ void LayerNormBackwardGradientOnlyDX(
   __shared__ typename BlockReduce::TempStorage temp_storage;
   __shared__ U d_x_reduce_tmp[2];
 
-  int64_t beg_idx = blockIdx.x * feature_size + threadIdx.x;
-  int64_t end_idx = (blockIdx.x + 1) * feature_size;
+  int64_t beg_idx = static_cast<int64_t>(blockIdx.x) * feature_size +
+                    static_cast<int64_t>(threadIdx.x);
+  int64_t end_idx = (static_cast<int64_t>(blockIdx.x) + 1) * feature_size;
 
   U block_mean = mean[blockIdx.x], block_var = var[blockIdx.x];
   U d_x_mean_partial = static_cast<U>(0), d_x_var_partial = static_cast<U>(0);
@@ -1827,7 +1676,9 @@ __global__ void LayerNormBackwardWhenBatchSizeIsOne(
     const LayerNormScaleBiasT<T, U, ScaleBiasWithSameTypeX> *scale,
     float epsilon,
     int64_t feature_size) {
-  int64_t idx = threadIdx.x + blockIdx.x * blockDim.x;
+  int64_t idx =
+      static_cast<int64_t>(threadIdx.x) +
+      static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x);
   using ScaleBiasT = LayerNormScaleBiasT<T, U, ScaleBiasWithSameTypeX>;
   if (idx < feature_size) {
     auto var_val = static_cast<U>(rsqrt_(static_cast<float>(var[0]) + epsilon));
@@ -1877,16 +1728,21 @@ static void LayerNormBackward(
     float epsilon,
     int64_t batch_size,
     int64_t feature_size,
-    const phi::GPUContext &dev_ctx) {
+    const GPUContext &dev_ctx) {
   auto stream = dev_ctx.stream();
   const int kMaxBlockDim = 512;
   const int kMaxBlockNum = 128;
+  // TODO(large-tensor): generic backward kernel launch uses int32 grid dim
+  PADDLE_ENFORCE_LE_INT_MAX(batch_size, "batch_size");
   int gradient_flag = ((d_x != nullptr ? 1 : 0) << 2) |
                       ((d_scale != nullptr ? 1 : 0) << 1) |
                       ((d_bias != nullptr ? 1 : 0));
   if (gradient_flag == 0) return;
-
   if (batch_size == 1) {
+    // TODO(large-tensor): batch_size==1 path uses int32 grid dim
+    PADDLE_ENFORCE_LE_INT_MAX(
+        (feature_size + kMaxBlockDim - 1) / kMaxBlockDim,
+        "(feature_size + kMaxBlockDim - 1) / kMaxBlockDim");
     LayerNormBackwardWhenBatchSizeIsOne<T, U, ScaleBiasWithSameTypeX>
         <<<(feature_size + kMaxBlockDim - 1) / kMaxBlockDim,
            kMaxBlockDim,
@@ -2136,7 +1992,8 @@ static void LayerNormBackward(
         uint64_t addr = reinterpret_cast<uint64_t>(d_y) |
                         reinterpret_cast<uint64_t>(x) |
                         reinterpret_cast<uint64_t>(d_x);
-        int vec_size = phi::GetVectorizedSize<T>(reinterpret_cast<T *>(addr));
+        int vec_size =
+            std::min(4, phi::GetVectorizedSize<T>(reinterpret_cast<T *>(addr)));
         int real_vec = VecSizeJudgeForeGradInput(feature_size, vec_size);
 
         if (feature_size <= 2048) {

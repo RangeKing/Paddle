@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "paddle/phi/common/bfloat16.h"
+#include "paddle/phi/kernels/fusion/gpu/masked_multihead_attention_kernel.h"
+#include "paddle/common/enforce.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/funcs/aligned_vector.h"
 #include "paddle/phi/kernels/fusion/gpu/mmha_util.cu.h"
@@ -371,7 +372,7 @@ __global__ void masked_multihead_attention_kernel(
     qk = block_sum<WARPS_PER_RED>(&red_smem[WARPS_PER_RED], qk);
   }
 
-  // Let only the last cuda TheradBlock compute the final q*k.
+  // Let only the last cuda ThreadBlock compute the final q*k.
   if (tid == 0 && is_last_block) {
     // NOTE(wangxi): mask must be 0.0
     // T mask = params.attn_mask[
@@ -724,33 +725,36 @@ inline size_t smem_size_in_bytes(
   return max(qk_sz, red_sz);
 }
 
-#define MMHA_LAUNCH_KERNEL(T,                                             \
-                           Dh,                                            \
-                           Dh_MAX,                                        \
-                           THDS_PER_KEY,                                  \
-                           THDS_PER_VALUE,                                \
-                           THDS_PER_BLOCK,                                \
-                           stream,                                        \
-                           load_func,                                     \
-                           store_func)                                    \
-  size_t smem_sz = smem_size_in_bytes<T, SPLIT>(                          \
-      params, Dh, THDS_PER_VALUE, THDS_PER_BLOCK);                        \
-  constexpr auto kernel_fn =                                              \
-      masked_multihead_attention_kernel<T,                                \
-                                        Dh,                               \
-                                        Dh_MAX,                           \
-                                        THDS_PER_KEY,                     \
-                                        THDS_PER_VALUE,                   \
-                                        THDS_PER_BLOCK,                   \
-                                        decltype(load_func),              \
-                                        decltype(store_func),             \
-                                        SPLIT>;                           \
-  if (smem_sz > 0xc000) {                                                 \
-    cudaFuncSetAttribute(                                                 \
-        kernel_fn, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_sz); \
-  }                                                                       \
-  dim3 grid(params.split_seq, params.num_head, params.batch_size);        \
-  kernel_fn<<<grid, THDS_PER_BLOCK, smem_sz, stream>>>(                   \
+#define MMHA_LAUNCH_KERNEL(T,                                                 \
+                           Dh,                                                \
+                           Dh_MAX,                                            \
+                           THDS_PER_KEY,                                      \
+                           THDS_PER_VALUE,                                    \
+                           THDS_PER_BLOCK,                                    \
+                           stream,                                            \
+                           load_func,                                         \
+                           store_func)                                        \
+  size_t smem_sz_size = smem_size_in_bytes<T, SPLIT>(                         \
+      params, Dh, THDS_PER_VALUE, THDS_PER_BLOCK);                            \
+  PADDLE_ENFORCE_LE_INT_MAX(smem_sz_size,                                     \
+                            "masked_multihead_attention shared memory size"); \
+  int smem_sz = static_cast<int>(smem_sz_size);                               \
+  constexpr auto kernel_fn =                                                  \
+      masked_multihead_attention_kernel<T,                                    \
+                                        Dh,                                   \
+                                        Dh_MAX,                               \
+                                        THDS_PER_KEY,                         \
+                                        THDS_PER_VALUE,                       \
+                                        THDS_PER_BLOCK,                       \
+                                        decltype(load_func),                  \
+                                        decltype(store_func),                 \
+                                        SPLIT>;                               \
+  if (smem_sz > 0xc000) {                                                     \
+    cudaFuncSetAttribute(                                                     \
+        kernel_fn, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_sz);     \
+  }                                                                           \
+  dim3 grid(params.split_seq, params.num_head, params.batch_size);            \
+  kernel_fn<<<grid, THDS_PER_BLOCK, smem_sz, stream>>>(                       \
       params, load_func, store_func)
 
 template <typename T,
@@ -840,7 +844,7 @@ void fmha_launch_kernel(const Masked_multihead_attention_params<T> &params,
     break;
 
 template <typename T, typename LoadFunc, typename StoreFunc, bool SPLIT>
-void fmha_impl(const phi::GPUContext &dev_ctx,
+void fmha_impl(const GPUContext &dev_ctx,
                const Masked_multihead_attention_params<T> &params,
                int dim_head,
                LoadFunc load_func,
@@ -857,19 +861,19 @@ void fmha_impl(const phi::GPUContext &dev_ctx,
     FMHA_LAUNCH_KERNEL(128, 128, stream)
     FMHA_LAUNCH_KERNEL(192, 256, stream)
     default:
-      PADDLE_THROW(common::errors::Unimplemented("Dim_head = %d is unsupport!",
-                                                 dim_head));
+      PADDLE_THROW(common::errors::Unimplemented(
+          "Dim_head = %d is unsupported!", dim_head));
   }
 }
 
 template <typename T, bool SPLIT = false>
-void DispatchFMHA(const phi::GPUContext &dev_ctx,
-                  const phi::DenseTensor &qkv_tensor,
+void DispatchFMHA(const GPUContext &dev_ctx,
+                  const DenseTensor &qkv_tensor,
                   const Masked_multihead_attention_params<T> &params,
                   int num_head,
                   int dim_head,
-                  phi::DenseTensor *out_tensor,
-                  const phi::DenseTensor *dequant_qkv_scales = nullptr,
+                  DenseTensor *out_tensor,
+                  const DenseTensor *dequant_qkv_scales = nullptr,
                   const float quant_fmha_out_scale = -1,
                   const int quant_round_type = 1,
                   const float quant_max_bound = 127.0f,
@@ -910,15 +914,15 @@ void DispatchFMHA(const phi::GPUContext &dev_ctx,
 }
 
 template <typename T, bool SPLIT = false>
-void DispatchFMHA(const phi::GPUContext &dev_ctx,
-                  const phi::DenseTensor &qkv_tensor,
-                  const phi::DenseTensor &shift,
-                  const phi::DenseTensor &smooth,
+void DispatchFMHA(const GPUContext &dev_ctx,
+                  const DenseTensor &qkv_tensor,
+                  const DenseTensor &shift,
+                  const DenseTensor &smooth,
                   const Masked_multihead_attention_params<T> &params,
                   int num_head,
                   int dim_head,
-                  phi::DenseTensor *out_tensor,
-                  const phi::DenseTensor *dequant_qkv_scales = nullptr,
+                  DenseTensor *out_tensor,
+                  const DenseTensor *dequant_qkv_scales = nullptr,
                   const float quant_fmha_out_scale = -1,
                   const int quant_round_type = 1,
                   const float quant_max_bound = 127.0f,
@@ -987,15 +991,15 @@ template <typename T, typename Context>
 void DispatchWithDtype(const Context &dev_ctx,
                        const DenseTensor &x,
                        const DenseTensor &cache_kv,
-                       const paddle::optional<DenseTensor> &bias,
-                       const paddle::optional<DenseTensor> &src_mask,
-                       const paddle::optional<DenseTensor> &cum_offsets,
-                       const paddle::optional<DenseTensor> &sequence_lengths,
-                       const paddle::optional<DenseTensor> &rotary_tensor,
-                       const paddle::optional<DenseTensor> &beam_cache_offset,
-                       const paddle::optional<DenseTensor> &qkv_out_scale,
-                       const paddle::optional<DenseTensor> &out_shift,
-                       const paddle::optional<DenseTensor> &out_smooth,
+                       const optional<DenseTensor> &bias,
+                       const optional<DenseTensor> &src_mask,
+                       const optional<DenseTensor> &cum_offsets,
+                       const optional<DenseTensor> &sequence_lengths,
+                       const optional<DenseTensor> &rotary_tensor,
+                       const optional<DenseTensor> &beam_cache_offset,
+                       const optional<DenseTensor> &qkv_out_scale,
+                       const optional<DenseTensor> &out_shift,
+                       const optional<DenseTensor> &out_smooth,
                        int seq_len,
                        int rotary_emb_dims,
                        const bool use_neox_rotary_style,
@@ -1009,13 +1013,21 @@ void DispatchWithDtype(const Context &dev_ctx,
                        NormalVersion) {
   const auto &x_dims = x.dims();
   int bsz = x_dims[0];
-  int cache_bsz = cache_kv.dims()[1];
-  int max_seq_len = cache_kv.dims()[3];
-  int dim_head = cache_kv.dims()[4];
+  int64_t cache_bsz = cache_kv.dims()[1];
+  // TODO(large-tensor): downstream functors may still use int
+
+  int64_t max_seq_len = cache_kv.dims()[3];
+  // TODO(large-tensor): downstream functors may still use int
+
+  int64_t dim_head = cache_kv.dims()[4];
+  // TODO(large-tensor): downstream functors may still use int
+
   int timestep = max_seq_len;
   float inv_sqrt_dh = 1. / sqrt(dim_head);
 
-  int k_num_head = cache_kv.dims()[2];
+  int64_t k_num_head = cache_kv.dims()[2];
+  // TODO(large-tensor): downstream functors may still use int
+
   int v_num_head = k_num_head;
   // this num_head means query's head
   int num_head =
@@ -1086,7 +1098,7 @@ void DispatchWithDtype(const Context &dev_ctx,
   params.inv_sqrt_dh = inv_sqrt_dh;
   params.rotary_emb_dims = rotary_emb_dims;
 
-  params.steps_per_block = timestep;  // if not SPLIT, this is unuseful.
+  params.steps_per_block = timestep;  // if not SPLIT, this is useless.
   params.split_seq = 1;               // if not SPLIT, grid.x==1
 
   bool SPLIT = false;
@@ -1099,15 +1111,15 @@ void DispatchWithDtype(const Context &dev_ctx,
     params.split_seq = (timestep - 1) / steps_per_block + 1;
     int split_seq = params.split_seq;
 
-    phi::DenseTensor qk_sum_max_split_seq;
+    DenseTensor qk_sum_max_split_seq;
     // 2 means sum and max.
-    qk_sum_max_split_seq.Resize({{bsz, num_head, split_seq, 2}});
+    qk_sum_max_split_seq.Resize({bsz, num_head, split_seq, 2});
     dev_ctx.template Alloc<float>(&qk_sum_max_split_seq,
                                   qk_sum_max_split_seq.numel() * sizeof(float));
     params.qk_sum_max_split_seq = qk_sum_max_split_seq.data<float>();
 
-    phi::DenseTensor split_out;
-    split_out.Resize({{bsz, num_head, split_seq, dim_head}});
+    DenseTensor split_out;
+    split_out.Resize({bsz, num_head, split_seq, dim_head});
     dev_ctx.template Alloc<float>(&split_out,
                                   split_out.numel() * sizeof(float));
     params.split_out = split_out.data<float>();
@@ -1174,15 +1186,15 @@ template <typename T, typename Context>
 void DispatchWithDtype(const Context &dev_ctx,
                        const DenseTensor &x,
                        const DenseTensor &cache_kv,
-                       const paddle::optional<DenseTensor> &bias,
-                       const paddle::optional<DenseTensor> &src_mask,
-                       const paddle::optional<DenseTensor> &cum_offsets,
-                       const paddle::optional<DenseTensor> &sequence_lengths,
-                       const paddle::optional<DenseTensor> &rotary_tensor,
-                       const paddle::optional<DenseTensor> &beam_cache_offset,
-                       const paddle::optional<DenseTensor> &qkv_out_scale,
-                       const paddle::optional<DenseTensor> &out_shift,
-                       const paddle::optional<DenseTensor> &out_smooth,
+                       const optional<DenseTensor> &bias,
+                       const optional<DenseTensor> &src_mask,
+                       const optional<DenseTensor> &cum_offsets,
+                       const optional<DenseTensor> &sequence_lengths,
+                       const optional<DenseTensor> &rotary_tensor,
+                       const optional<DenseTensor> &beam_cache_offset,
+                       const optional<DenseTensor> &qkv_out_scale,
+                       const optional<DenseTensor> &out_shift,
+                       const optional<DenseTensor> &out_smooth,
                        int seq_len,
                        int rotary_emb_dims,
                        const bool use_neox_rotary_style,
@@ -1201,15 +1213,15 @@ template <typename T, typename Context>
 void MMHAKernel(const Context &dev_ctx,
                 const DenseTensor &x,
                 const DenseTensor &cache_kv,
-                const paddle::optional<DenseTensor> &bias,
-                const paddle::optional<DenseTensor> &src_mask,
-                const paddle::optional<DenseTensor> &cum_offsets,
-                const paddle::optional<DenseTensor> &sequence_lengths,
-                const paddle::optional<DenseTensor> &rotary_tensor,
-                const paddle::optional<DenseTensor> &beam_cache_offset,
-                const paddle::optional<DenseTensor> &qkv_out_scale,
-                const paddle::optional<DenseTensor> &out_shift,
-                const paddle::optional<DenseTensor> &out_smooth,
+                const optional<DenseTensor> &bias,
+                const optional<DenseTensor> &src_mask,
+                const optional<DenseTensor> &cum_offsets,
+                const optional<DenseTensor> &sequence_lengths,
+                const optional<DenseTensor> &rotary_tensor,
+                const optional<DenseTensor> &beam_cache_offset,
+                const optional<DenseTensor> &qkv_out_scale,
+                const optional<DenseTensor> &out_shift,
+                const optional<DenseTensor> &out_smooth,
                 int seq_len,
                 int rotary_emb_dims,
                 const bool use_neox_rotary_style,
@@ -1225,7 +1237,7 @@ void MMHAKernel(const Context &dev_ctx,
   if (x.dtype() == phi::DataType::INT32) {
     switch (str2int(compute_dtype.c_str())) {
       case str2int("fp16"):
-        DispatchWithDtype<phi::dtype::float16, Context>(
+        DispatchWithDtype<phi::float16, Context>(
             dev_ctx,
             x,
             cache_kv,
@@ -1248,11 +1260,11 @@ void MMHAKernel(const Context &dev_ctx,
             out,
             cache_kv_out,
             beam_cache_offset_out,
-            typename DispatchDtypeTrait<phi::dtype::float16>::FuncVersion{});
+            typename DispatchDtypeTrait<phi::float16>::FuncVersion{});
         break;
 #if CUDA_VERSION >= 11000
       case str2int("bf16"):
-        DispatchWithDtype<phi::dtype::bfloat16, Context>(
+        DispatchWithDtype<phi::bfloat16, Context>(
             dev_ctx,
             x,
             cache_kv,
@@ -1275,7 +1287,7 @@ void MMHAKernel(const Context &dev_ctx,
             out,
             cache_kv_out,
             beam_cache_offset_out,
-            typename DispatchDtypeTrait<phi::dtype::bfloat16>::FuncVersion{});
+            typename DispatchDtypeTrait<phi::bfloat16>::FuncVersion{});
         break;
 #endif
       case str2int("fp32"):
@@ -1349,8 +1361,8 @@ PD_REGISTER_KERNEL(masked_multihead_attention,
                    ALL_LAYOUT,
                    phi::fusion::MMHAKernel,
                    float,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
+                   phi::float16,
+                   phi::bfloat16,
                    int32_t) {}
 #else
 PD_REGISTER_KERNEL(masked_multihead_attention,
@@ -1358,6 +1370,6 @@ PD_REGISTER_KERNEL(masked_multihead_attention,
                    ALL_LAYOUT,
                    phi::fusion::MMHAKernel,
                    float,
-                   phi::dtype::float16,
+                   phi::float16,
                    int32_t) {}
 #endif

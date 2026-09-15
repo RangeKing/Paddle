@@ -17,6 +17,9 @@
 
 #include "paddle/fluid/framework/infershape_utils.h"
 #include "paddle/fluid/framework/op_registry.h"
+#ifdef PADDLE_WITH_DNNL
+#include "paddle/phi/backends/onednn/onednn_context.h"
+#endif
 #include "paddle/phi/core/infermeta_utils.h"
 #include "paddle/phi/infermeta/binary.h"
 
@@ -29,8 +32,8 @@ static std::vector<int64_t> GetInputShape(phi::DDim dim,
   PADDLE_ENFORCE_GT(dim.size(),
                     0,
                     common::errors::InvalidArgument(
-                        "The Input(%s) has not been initialized properly. The "
-                        "shape of Input(%s) = [%s].",
+                        "The Input has not been initialized properly. The "
+                        "shape of Input = [%s].",
                         dim));
 
   auto is_input_fused = (!shape.empty() && !axis.empty());
@@ -129,18 +132,18 @@ class FusedMatmulOp : public framework::OperatorWithKernel {
       const phi::DenseTensor& tensor,
       const phi::KernelKey& expected_kernel_type) const override {
     if (framework::IsComplexType(expected_kernel_type.dtype())) {
-      // only promote inputs’s types when contains complex input
+      // only promote inputs's types when contains complex input
       return phi::KernelKey(tensor.place(), tensor.layout(), tensor.dtype());
     } else {
 #ifdef PADDLE_WITH_DNNL
-      // When matmul_v2 is first oneDNN op in a chain (there was some non oneDNN
+      // When matmul_v2 is first ONEDNN op in a chain (there was some non ONEDNN
       // op previously) then we also need to rotate shape NHWC -> NCWH
       if ((expected_kernel_type.layout() == phi::DataLayout::ONEDNN) &&
           (tensor.layout() != phi::DataLayout::ONEDNN) &&
           phi::OneDNNContext::tls().get_cur_paddle_data_layout() ==
-              phi::DataLayout::kNHWC) {
+              phi::DataLayout::NHWC) {
         return phi::KernelKey(tensor.place(),
-                              phi::DataLayout::kNHWC,
+                              phi::DataLayout::NHWC,
                               expected_kernel_type.dtype());
       }
 #endif

@@ -16,12 +16,14 @@
 #include "paddle/fluid/framework/new_executor/instruction/instruction_util.h"
 #include "paddle/fluid/framework/new_executor/new_executor_defs.h"
 
+COMMON_DECLARE_bool(check_cuda_error);
+
 namespace paddle::framework {
 
 BuiltinCombineInstruction::BuiltinCombineInstruction(
     size_t id,
-    const phi::Place& place,
-    ::pir::Operation* op,
+    const Place& place,
+    pir::Operation* op,
     ValueExecutionInfo* value_exe_info)
     : InstructionBase(id, place) {
   op_ = op;

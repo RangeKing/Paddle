@@ -170,7 +170,7 @@ def scatter(
         This API only supports the dygraph mode now.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env: DISTRIBUTED)
             >>> import paddle
@@ -232,9 +232,9 @@ def scatter(
                 use_calc_stream,
             )
     else:
-        assert (
-            group is None
-        ), "Group can not be used in static graph mode for now."
+        assert group is None, (
+            "Group can not be used in static graph mode for now."
+        )
 
         return _scatter_in_static_mode(
             tensor,

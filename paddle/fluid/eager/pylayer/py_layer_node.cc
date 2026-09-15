@@ -17,15 +17,19 @@
 #include "glog/logging.h"
 #include "paddle/common/errors.h"
 #include "paddle/fluid/eager/eager_tensor.h"
+#include "paddle/fluid/eager/utils.h"
 #include "paddle/fluid/platform/enforce.h"
 #include "paddle/fluid/pybind/eager.h"
 #include "paddle/fluid/pybind/eager_utils.h"
+#include "paddle/fluid/pybind/mem_py_stack.h"
 #include "paddle/phi/api/all.h"
 #include "paddle/phi/core/dense_tensor.h"
 #include "paddle/phi/core/platform/device_context.h"
 #pragma GCC diagnostic ignored "-Wattributes"
 #include "pybind11/pytypes.h"
 
+COMMON_DECLARE_bool(check_cuda_error);
+COMMON_DECLARE_int32(call_stack_level);
 namespace egr {
 GradNodePyLayer::~GradNodePyLayer() {  // NOLINT
   pybind11::gil_scoped_acquire gil;
@@ -38,8 +42,20 @@ GradNodePyLayer::operator()(
                          kSlotSmallVectorSize>& grads,  // NOLINT
     bool create_graph,
     bool is_new_grad) {
+  if (FLAGS_check_cuda_error) [[unlikely]] {
+    egr::CUDAErrorCheck("GradNodePyLayer begin");
+  }
   pybind11::gil_scoped_acquire gil;
+  // Capture the Python stack (GIL held) so allocations during this PyLayer
+  // backward that don't flow through an eager _C_ops dispatch are attributed to
+  // the backward call site; inner _C_ops push/pop finer stacks on top.
+  paddle::memory::MemStackGuard __mem_stack_guard(
+      paddle::pybind::CaptureCurrentPyStack());
+  if (VLOG_IS_ON(2)) egr::LogIndent::Instance().IncreaseIndentLevel();
   VLOG(3) << "Running Eager Backward Node: " << name();
+  if (FLAGS_call_stack_level == 3) {
+    VLOG(3) << "PyLayer forward call stack: " << this->GetForwardTrace();
+  }
 
   paddle::small_vector<std::vector<paddle::Tensor>, kSlotSmallVectorSize>
       hooked_grads = GradNodePyLayer::ApplyGradientHooks(grads);
@@ -61,7 +77,7 @@ GradNodePyLayer::operator()(
     if (ctx->forward_output_tensor_is_duplicable[i]) {
       PyObject* pylist = PyList_New((Py_ssize_t)grads[i].size());
       for (size_t j = 0; j < grads[i].size(); j++) {
-        if (ctx->materialize_grads && !grads[i][j].initialized()) {
+        if (ctx->materialize_grads && !grads[i][j].has_allocation()) {
           if (forward_outputs_is_dist_meta_[i][j]) {
             paddle::Tensor dist_tensor;
             dist_tensor.set_impl(std::make_shared<phi::distributed::DistTensor>(
@@ -103,7 +119,7 @@ GradNodePyLayer::operator()(
       }
       PyTuple_SET_ITEM(backward_args, i, pylist);
     } else {
-      if (ctx->materialize_grads && !grads[i][0].initialized()) {
+      if (ctx->materialize_grads && !grads[i][0].has_allocation()) {
         if (forward_outputs_is_dist_meta_[i][0]) {
           paddle::Tensor dist_tensor;
           dist_tensor.set_impl(std::make_shared<phi::distributed::DistTensor>(
@@ -149,16 +165,22 @@ GradNodePyLayer::operator()(
   auto backward_fn =
       PyObject_GetAttrString(reinterpret_cast<PyObject*>(ctx), "backward");
   if (!backward_fn) {
-    PADDLE_THROW(
-        common::errors::InvalidArgument("Get backward function failed."));
+    PADDLE_THROW(common::errors::InvalidArgument(
+        "%s:Get backward function failed.", name()));
   }
   bool need_grad_tmp = egr::Controller::Instance().HasGrad();
   egr::Controller::Instance().SetHasGrad(create_graph && need_grad_tmp);
+#ifdef PADDLE_WITH_CUDA
+  for (auto& functor : ctx->reload_functors) {
+    functor.Reload();
+  }
+#endif
   auto outputs = PyObject_CallObject(backward_fn, backward_args);
   egr::Controller::Instance().SetHasGrad(need_grad_tmp);
   if (!outputs) {
-    PADDLE_THROW(
-        common::errors::External(pybind11::detail::error_string().c_str()));
+    std::string err_msg =
+        FormatPyLayerBackwardErrorMsg(this, pybind11::detail::error_string());
+    PADDLE_THROW(common::errors::External(err_msg.c_str()));
   }
 
   VLOG(6) << "PyLayer backward function finish...";
@@ -173,11 +195,14 @@ GradNodePyLayer::operator()(
   }
 
   size_t outputs_size = PyTuple_GET_SIZE(outputs_tuple);
-
+  VLOG(6) << "Pylayer backward output size " << outputs_size;
+  VLOG(6) << "Pylayer forward duplicable input size"
+          << ctx->forward_input_tensor_is_duplicable.size();
   if (outputs_size > ctx->forward_input_tensor_is_duplicable.size()) {
     PADDLE_THROW(common::errors::InvalidArgument(
-        "The number of outputs of `PyLayer.backward` should be %d, but "
+        "%s : The number of outputs of `PyLayer.backward` should be %d, but "
         "received %d.",
+        name(),
         ctx->forward_input_tensor_is_duplicable.size(),
         outputs_size));
   }
@@ -186,6 +211,8 @@ GradNodePyLayer::operator()(
       grad_out;
   grad_out.reserve(ctx->forward_input_tensor_is_duplicable.size());
   for (size_t i = 0; i < ctx->forward_input_tensor_is_duplicable.size(); i++) {
+    VLOG(8) << "forward_input_tensor_is_duplicable[" << i
+            << "] = " << ctx->forward_input_tensor_is_duplicable[i];
     if (i < outputs_size) {
       PyObject* obj = PyTuple_GET_ITEM(outputs_tuple, i);
       if (this->OutputMeta()[i][0].IsStopGradient()) {
@@ -211,8 +238,9 @@ GradNodePyLayer::operator()(
             grad_out.push_back({paddle::Tensor()});
           } else {
             PADDLE_THROW(common::errors::InvalidArgument(
-                "We can only support Tensor or None for backward output, "
+                "%s : We can only support Tensor or None for backward output, "
                 ", but got %s, please check your PyLayer code and make it fits",
+                name(),
                 reinterpret_cast<PyTypeObject*>(obj->ob_type)->tp_name));
           }
         }
@@ -237,6 +265,11 @@ GradNodePyLayer::operator()(
   Py_XDECREF(outputs);
   Py_XDECREF(ctx_);
   ctx_ = nullptr;
+  if (VLOG_IS_ON(2)) egr::LogIndent::Instance().DecreaseIndentLevel();
+
+  if (FLAGS_check_cuda_error) [[unlikely]] {
+    egr::CUDAErrorCheck("GradNodePyLayer finish");
+  }
 
   return grad_out;
 }

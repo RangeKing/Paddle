@@ -47,8 +47,8 @@ inline const char* miopenGetErrorString(miopenStatus_t status) {
       return "MIOPEN_STATUS_NOT_INITIALIZED";
     case miopenStatusInvalidValue:
       return "MIOPEN_STATUS_INVALID_VALUE";
-    case miopenStatusBadParm:
-      return "MIOPEN_STATUS_BAD_PARAM";
+    case miopenStatusBadParm:            // typos: disable-line
+      return "MIOPEN_STATUS_BAD_PARAM";  // typos: disable-line
     case miopenStatusAllocFailed:
       return "MIOPEN_STATUS_ALLOC_FAILED";
     case miopenStatusInternalError:
@@ -186,12 +186,5 @@ MIOPEN_DNN_ROUTINE_EACH_R6(DECLARE_DYNAMIC_LOAD_MIOPEN_WRAP)
   __macro(miopenCTCLoss);
 MIOPEN_DNN_ROUTINE_EACH_R7(DECLARE_DYNAMIC_LOAD_MIOPEN_WRAP)
 
-#define MIOPEN_DNN_ROUTINE_EACH_AFTER_R7(__macro)                    \
-/*__macro(cudnnGetBatchNormalizationForwardTrainingExWorkspaceSize); \
-__macro(cudnnBatchNormalizationForwardTrainingEx);                   \
-__macro(cudnnGetBatchNormalizationBackwardExWorkspaceSize);          \
-__macro(cudnnBatchNormalizationBackwardEx);                          \
-__macro(cudnnGetBatchNormalizationTrainingExReserveSpaceSize);*/
-MIOPEN_DNN_ROUTINE_EACH_AFTER_R7(DECLARE_DYNAMIC_LOAD_MIOPEN_WRAP)
 }  // namespace dynload
 }  // namespace phi

@@ -15,12 +15,15 @@
 from ..base.dygraph.base import (  # noqa: F401
     enable_grad,
     grad,
+    inference_mode,
     is_grad_enabled,
     no_grad_ as no_grad,
     set_grad_enabled,
 )
 from . import (  # noqa: F401
     backward_mode,
+    function,
+    grad_mode,
     ir_backward,
 )
 from .autograd import hessian, jacobian
@@ -28,11 +31,14 @@ from .backward_mode import backward
 from .py_layer import PyLayer, PyLayerContext
 from .saved_tensors_hooks import saved_tensors_hooks
 
+Function = PyLayer
+
 __all__ = [
     'jacobian',
     'hessian',
     'backward',
     'PyLayer',
+    'Function',
     'PyLayerContext',
     'saved_tensors_hooks',
 ]

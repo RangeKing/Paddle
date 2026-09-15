@@ -69,7 +69,7 @@ def attention(
         4D tensor with shape: [batch_size, num_heads, seq_len, head_dim]. dtype is same with input.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +REQUIRES(env:GPU)
             >>> import paddle
@@ -97,9 +97,9 @@ def attention(
             >>> output = paddle.sparse.nn.functional.attention(query, key, value, sp_mask, kp_mask, attn_mask)
             >>> output.backward()
     """
-    assert (
-        in_dynamic_or_pir_mode()
-    ), "Currently, Sparse API only support dynamic mode or pir mode."
+    assert in_dynamic_or_pir_mode(), (
+        "Currently, Sparse API only support dynamic mode or pir mode."
+    )
     return _C_ops.sparse_fused_attention(
         query, key, value, sparse_mask, key_padding_mask, attn_mask
     )

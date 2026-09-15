@@ -26,7 +26,7 @@ void ExecuteSqueeze(const Context& dev_ctx,
                     const DDim& x_dims,
                     const DDim& out_dims,
                     DenseTensor* out) {
-  auto x_vec_dims = common::vectorize(x_dims);
+  auto x_vec_dims = vectorize(x_dims);
 
   funcs::ReorderOneDNNHandler reorder_handler(
       x_vec_dims,
@@ -35,7 +35,7 @@ void ExecuteSqueeze(const Context& dev_ctx,
       dev_ctx.GetEngine());
 
   auto reorder_src_memory_p = reorder_handler.AcquireSrcMemory(
-      x.mem_desc(), funcs::to_void_cast(x.data<T>()));
+      phi::funcs::GetOneDNNMemDesc(x), funcs::to_void_cast(x.data<T>()));
   out->Resize(x_dims);  // to match x numel, format is changed later
   // reorder is done into a plain tag to allow usage with blocked formats
   auto reorder_dst_memory_p = reorder_handler.AcquireDstMemory(
@@ -48,9 +48,10 @@ void ExecuteSqueeze(const Context& dev_ctx,
 
   out->Resize(out_dims);
 
-  auto reshape_dims = out_dims.size() != 0 ? common::vectorize(out_dims)
-                                           : std::vector<int64_t>{1};
-  out->set_mem_desc(reorder_dst_memory_p->get_desc().reshape(reshape_dims));
+  auto reshape_dims =
+      out_dims.size() != 0 ? vectorize(out_dims) : std::vector<int64_t>{1};
+  phi::funcs::SetOneDNNMemDesc(
+      out, reorder_dst_memory_p->get_desc().reshape(reshape_dims));
 }
 
 template <typename T, typename Context>
@@ -65,10 +66,8 @@ void SqueezeKernel(const Context& dev_ctx,
   // Currently there is only transformation for tensors, while attr axes still
   // follows default dtype instead of oneDNN dtype, so here manually change it
   if ((x_dims_tz >= 3) &&
-      (phi::OneDNNContext::tls().get_cur_paddle_data_layout() ==
-           phi::DataLayout::NDHWC ||
-       phi::OneDNNContext::tls().get_cur_paddle_data_layout() ==
-           phi::DataLayout::NHWC)) {
+      (OneDNNContext::tls().get_cur_paddle_data_layout() == DataLayout::NDHWC ||
+       OneDNNContext::tls().get_cur_paddle_data_layout() == DataLayout::NHWC)) {
     int axes_size = tmp.size();
     for (int i = 0; i < axes_size; i++) {
       if (tmp[i] < 0) {
@@ -103,11 +102,11 @@ void SqueezeWithXShapeKernel(const Context& dev_ctx,
 }  // namespace phi
 
 PD_REGISTER_KERNEL(
-    squeeze, OneDNN, ONEDNN, phi::SqueezeKernel, float, phi::dtype::bfloat16) {}
+    squeeze, OneDNN, ONEDNN, phi::SqueezeKernel, float, phi::bfloat16) {}
 
 PD_REGISTER_KERNEL(squeeze_with_xshape,
                    OneDNN,
                    ONEDNN,
                    phi::SqueezeWithXShapeKernel,
                    float,
-                   phi::dtype::bfloat16) {}
+                   phi::bfloat16) {}

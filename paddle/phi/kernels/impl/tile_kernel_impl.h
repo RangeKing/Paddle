@@ -29,6 +29,10 @@ void Tile(const Context& dev_ctx,
           DenseTensor* out) {
   auto x_dims = x.dims();
   for (size_t i = 0; i < repeat_times.size(); ++i) {
+    if (repeat_times[i] == 0) {
+      dev_ctx.template Alloc<T>(out);
+      return;
+    }
     PADDLE_ENFORCE_GT(
         repeat_times[i],
         0,
@@ -37,7 +41,7 @@ void Tile(const Context& dev_ctx,
             "be positive integers, but the value received is %d.",
             repeat_times[i]));
   }
-  auto vec_x_dims = common::vectorize<int>(x_dims);
+  auto vec_x_dims = vectorize<int64_t>(x_dims);
   if (repeat_times.size() < vec_x_dims.size()) {
     int diff = vec_x_dims.size() - repeat_times.size();
     repeat_times.insert(repeat_times.begin(), diff, 1);
@@ -55,15 +59,15 @@ void Tile(const Context& dev_ctx,
           repeat_times.size()));
 
   if (Rank == 0) {
-    phi::Copy<DeviceContext>(dev_ctx, x, dev_ctx.GetPlace(), false, out);
+    Copy(dev_ctx, x, dev_ctx.GetPlace(), false, out);
     return;
   }
-  Eigen::DSizes<Eigen::DenseIndex, Rank> bcast_dims;
+  Eigen::DSizes<int64_t, Rank> bcast_dims;
   for (size_t i = 0; i < repeat_times.size(); ++i) {
     bcast_dims[i] = repeat_times[i];
   }
 
-  DDim new_x_dims = common::make_ddim(vec_x_dims);
+  DDim new_x_dims = make_ddim(vec_x_dims);
   DDim out_dims(new_x_dims);
   for (size_t i = 0; i < repeat_times.size(); ++i) {
     out_dims[i] *= repeat_times[i];
@@ -76,15 +80,8 @@ void Tile(const Context& dev_ctx,
   auto eigen_out = EigenTensor<T, Rank>::From(*out, out_dims);
   auto& place = *dev_ctx.eigen_device();
 
-  // use 32-bit index to speed up
-  bool use_32bit_index = eigen_out.size() < Eigen::NumTraits<int>::highest();
-  if (use_32bit_index) {
-    funcs::EigenBroadcast<std::decay_t<decltype(place)>, T, Rank>::Eval(
-        place, To32BitIndex(eigen_out), To32BitIndex(eigen_x), bcast_dims);
-  } else {
-    funcs::EigenBroadcast<std::decay_t<decltype(place)>, T, Rank>::Eval(
-        place, eigen_out, eigen_x, bcast_dims);
-  }
+  funcs::EigenBroadcast<std::decay_t<decltype(place)>, T, Rank>::Eval(
+      place, eigen_out, eigen_x, bcast_dims);
 }
 
 template <typename T, typename Context>
@@ -92,6 +89,10 @@ void TileKernel(const Context& dev_ctx,
                 const DenseTensor& x,
                 const IntArray& repeat_times,
                 DenseTensor* out) {
+  if (x.numel() == 0) {
+    dev_ctx.template Alloc<T>(out);
+    return;
+  }
   auto rank = x.dims().size();
   auto& repeat_times_data = repeat_times.GetData();
   int repeat_times_size = repeat_times_data.size();
@@ -119,6 +120,14 @@ void TileKernel(const Context& dev_ctx,
     case 6:
       Tile<Context, T, 6>(dev_ctx, x, repeat_times_data, out);
       break;
+    case 7:
+      Tile<Context, T, 7>(dev_ctx, x, repeat_times_data, out);
+      break;
+    default:
+      PADDLE_THROW(errors::InvalidArgument(
+          "Only support tensor with rank being between 0 and 7. But "
+          "received tensor's rank = %d.",
+          rank));
   }
 }
 

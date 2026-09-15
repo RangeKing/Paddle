@@ -15,7 +15,6 @@
 #pragma once
 
 #include "paddle/phi/backends/xpu/enforce_xpu.h"
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/core/scope_guard.h"
 #include "paddle/phi/kernels/xpu/xpu_api_wrapper.h"
@@ -25,20 +24,20 @@ namespace phi {
 namespace funcs {
 
 template <typename T>
-void ComputeFusedGemmEpilogueBackwardXPU(const phi::XPUContext& dev_ctx,
-                                         const phi::DenseTensor* dout,
-                                         const phi::DenseTensor* x,
-                                         const phi::DenseTensor* y,
-                                         const phi::DenseTensor* reserve_space,
+void ComputeFusedGemmEpilogueBackwardXPU(const XPUContext& dev_ctx,
+                                         const DenseTensor* dout,
+                                         const DenseTensor* x,
+                                         const DenseTensor* y,
+                                         const DenseTensor* reserve_space,
                                          int64_t M,
                                          int64_t N,
                                          int64_t K,
                                          bool trans_x,
                                          bool trans_y,
                                          const std::string& activation_grad,
-                                         phi::DenseTensor* dx,
-                                         phi::DenseTensor* dy,
-                                         phi::DenseTensor* dbias,
+                                         DenseTensor* dx,
+                                         DenseTensor* dy,
+                                         DenseTensor* dbias,
                                          bool use_addto_dx = false,
                                          bool use_addto_dy = false) {
   using XPUType = typename XPUTypeTrait<T>::Type;
@@ -63,20 +62,18 @@ void ComputeFusedGemmEpilogueBackwardXPU(const phi::XPUContext& dev_ctx,
   // 1. act_grad  2. fc_grad 3. dbias
   int r = 0;
   if (activation_grad == "relu") {
-    r = xpu::relu_grad(xpu_ctx,
-                       reserve_space_ptr,
-                       reserve_space_ptr,
-                       dout_ptr,
-                       d_act_input_ptr,
-                       dout->numel());
+    r = xpu::relu_grad(
+        xpu_ctx, reserve_space_ptr, dout_ptr, d_act_input_ptr, dout->numel());
     PADDLE_ENFORCE_XDNN_SUCCESS(r, "relu_grad");
   } else if (activation_grad == "gelu") {
+    // int gelu_grad(Context* dev_ctx, const T* x, const T* dy, T* dx, int64_t
+    // len, bool approximate);
     r = xpu::gelu_grad(xpu_ctx,
-                       reserve_space_ptr,
                        reserve_space_ptr,
                        dout_ptr,
                        d_act_input_ptr,
-                       dout->numel());
+                       dout->numel(),
+                       false);
     PADDLE_ENFORCE_XDNN_SUCCESS(r, "gelu_grad");
   } else if (activation_grad == "none") {
     // pass
@@ -90,7 +87,7 @@ void ComputeFusedGemmEpilogueBackwardXPU(const phi::XPUContext& dev_ctx,
       common::flatten_to_2d(x->dims(), trans_x ? 1 : x->dims().size() - 1);
   phi::XpuFcInfo info_forward;
   phi::GetFCInfo(
-      x_mat_dims, common::make_ddim({K, N}), trans_x, trans_y, &info_forward);
+      x_mat_dims, make_ddim({K, N}), trans_x, trans_y, &info_forward);
 
   // 2. fc_grad
   const XPUType* a_1 = reinterpret_cast<const XPUType*>(NULL);
@@ -143,8 +140,11 @@ void ComputeFusedGemmEpilogueBackwardXPU(const phi::XPUContext& dev_ctx,
     XPUType* dbias_ptr;
     auto* dbias_tmp_ptr = dev_ctx.template Alloc<T>(dbias);
     dbias_ptr = reinterpret_cast<XPUType*>(dbias_tmp_ptr);
-    r = xpu::reduce_sum(
-        xpu_ctx, dout_fc_ptr, dbias_ptr, {info_forward.m, info_forward.n}, {0});
+    r = xpu::reduce_sum(xpu_ctx,
+                        dout_fc_ptr,
+                        dbias_ptr,
+                        {(int64_t)info_forward.m, (int64_t)info_forward.n},
+                        {0LL});
     PADDLE_ENFORCE_XDNN_SUCCESS(r, "reduce_sum");
   }
 }

@@ -22,72 +22,118 @@
 #include "paddle/common/layout.h"
 #include "paddle/phi/backends/xpu/enforce_xpu.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/full_kernel.h"
 
 namespace phi {
 
 template <typename T, typename Context>
 void GroupNormKernel(const Context& dev_ctx,
                      const DenseTensor& x,
-                     const paddle::optional<DenseTensor>& scale,
-                     const paddle::optional<DenseTensor>& bias,
-                     float epsilon,
+                     const optional<DenseTensor>& scale,
+                     const optional<DenseTensor>& bias,
+                     double epsilon,
                      int groups,
                      const std::string& data_layout_str,
                      DenseTensor* y,
                      DenseTensor* mean,
                      DenseTensor* var) {
+  if (y && y->numel() == 0) {
+    dev_ctx.template Alloc<T>(y);
+    if (mean) {
+      Full<T, Context>(dev_ctx, mean->dims(), 0, mean);
+    }
+    if (var) {
+      Full<T, Context>(dev_ctx, var->dims(), 0, var);
+    }
+    return;
+  }
   using XPUType = typename XPUTypeTrait<T>::Type;
 
-  const DataLayout data_layout = common::StringToDataLayout(data_layout_str);
+  const DataLayout data_layout = StringToDataLayout(data_layout_str);
   const auto scale_ptr = scale.get_ptr();
   const auto bias_ptr = bias.get_ptr();
 
-  const auto x_dims = common::vectorize<int>(x.dims());
-  const int N = x_dims[0];
+  const auto x_dims = vectorize<int64_t>(x.dims());
+  const int64_t N = x_dims[0];
   const bool channel_first =
-      data_layout == DataLayout::kNCHW || data_layout == DataLayout::kNCDHW;
-  const int C = (channel_first ? x_dims[1] : x_dims[x_dims.size() - 1]);
-  const int L =
-      (channel_first
-           ? std::accumulate(
-                 x_dims.begin() + 2, x_dims.end(), 1, std::multiplies<int>())
-           : std::accumulate(x_dims.begin() + 1,
-                             x_dims.end() - 1,
-                             1,
-                             std::multiplies<int>()));
+      data_layout == DataLayout::NCHW || data_layout == DataLayout::NCDHW;
+  const int64_t C = (channel_first ? x_dims[1] : x_dims[x_dims.size() - 1]);
+  const int64_t L =
+      (channel_first ? std::accumulate(x_dims.begin() + 2,
+                                       x_dims.end(),
+                                       1,
+                                       std::multiplies<int64_t>())
+                     : std::accumulate(x_dims.begin() + 1,
+                                       x_dims.end() - 1,
+                                       1,
+                                       std::multiplies<int64_t>()));
 
   dev_ctx.template Alloc<T>(y);
-  dev_ctx.template Alloc<T>(mean);
-  dev_ctx.template Alloc<T>(var);
+  dev_ctx.template Alloc<float>(mean);
+  dev_ctx.template Alloc<float>(var);
 
   auto* x_data = x.data<T>();
   auto* y_data = y->data<T>();
-  auto* mean_data = mean->data<T>();
-  auto* var_data = var->data<T>();
+  auto* mean_data = mean->data<float>();
+  auto* var_data = var->data<float>();
 
-  const T* scale_data = nullptr;
-  if (scale_ptr) scale_data = scale_ptr->data<T>();
-  const T* bias_data = nullptr;
-  if (bias_ptr) bias_data = bias_ptr->data<T>();
+  xpu::ctx_guard RAII_GUARD(dev_ctx.x_context());
+  const float* scale_data = nullptr;
+  if (scale_ptr) {
+    if (std::is_same<T, float>::value) {
+      scale_data = scale_ptr->data<float>();
+    } else {
+      float* scale_fp32 = RAII_GUARD.alloc_l3_or_gm<float>(scale_ptr->numel());
+      int r = xpu::cast<XPUType, float>(
+          dev_ctx.x_context(),
+          reinterpret_cast<const XPUType*>(scale_ptr->data<T>()),
+          scale_fp32,
+          scale_ptr->numel());
+      PADDLE_ENFORCE_XDNN_SUCCESS(r, "cast");
+      scale_data = scale_fp32;
+    }
+  }
 
-  auto r =
-      xpu::group_norm<XPUType>(dev_ctx.x_context(),
-                               reinterpret_cast<const XPUType*>(x_data),
-                               reinterpret_cast<XPUType*>(y_data),
-                               N,
-                               C,
-                               L,
-                               1,
-                               groups,
-                               static_cast<XPUType>(epsilon),
-                               reinterpret_cast<const XPUType*>(scale_data),
-                               reinterpret_cast<const XPUType*>(bias_data),
-                               reinterpret_cast<XPUType*>(mean_data),
-                               reinterpret_cast<XPUType*>(var_data),
-                               channel_first);
+  const float* bias_data = nullptr;
+  if (bias_ptr) {
+    if (std::is_same<T, float>::value) {
+      bias_data = bias_ptr->data<float>();
+    } else {
+      float* bias_fp32 = RAII_GUARD.alloc_l3_or_gm<float>(bias_ptr->numel());
+      int r = xpu::cast<XPUType, float>(
+          dev_ctx.x_context(),
+          reinterpret_cast<const XPUType*>(bias_ptr->data<T>()),
+          bias_fp32,
+          bias_ptr->numel());
+      PADDLE_ENFORCE_XDNN_SUCCESS(r, "cast");
+      bias_data = bias_fp32;
+    }
+  }
+
+  int r = xpu::group_norm<XPUType>(dev_ctx.x_context(),
+                                   reinterpret_cast<const XPUType*>(x_data),
+                                   reinterpret_cast<XPUType*>(y_data),
+                                   N,
+                                   C,
+                                   L,
+                                   1,
+                                   groups,
+                                   epsilon,
+                                   scale_data,
+                                   bias_data,
+                                   mean_data,
+                                   var_data,
+                                   channel_first,  // is_nchw
+                                   false);         // is_rstd
   PADDLE_ENFORCE_XDNN_SUCCESS(r, "group_norm");
 }
 
 }  // namespace phi
 
-PD_REGISTER_KERNEL(group_norm, XPU, ALL_LAYOUT, phi::GroupNormKernel, float) {}
+PD_REGISTER_KERNEL(group_norm,
+                   XPU,
+                   ALL_LAYOUT,
+                   phi::GroupNormKernel,
+                   float,
+                   phi::float16,
+                   phi::bfloat16) {}

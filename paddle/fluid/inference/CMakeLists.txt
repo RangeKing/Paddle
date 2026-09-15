@@ -22,7 +22,7 @@ cc_library(
 # otherwise, there would be undefined reference to them in static library.
 add_subdirectory(analysis)
 add_subdirectory(utils)
-if(TENSORRT_FOUND)
+if(TENSORRT_FOUND AND WITH_GPU)
   add_subdirectory(tensorrt)
 endif()
 
@@ -55,6 +55,11 @@ set(KERNEL_LIST
 
 # shared inference library deps
 list(REMOVE_DUPLICATES fluid_modules)
+# Drop Python-only or otherwise inference-unsafe fluid targets before creating
+# both static and shared inference libraries.
+if(not_infer_modules)
+  list(REMOVE_ITEM fluid_modules ${not_infer_modules})
+endif()
 # windows static library（both CPU and GPU）over the limit, so no longer create_static_lib,
 # and cc_library is dummy
 if(WIN32)
@@ -91,14 +96,24 @@ set(SHARED_INFERENCE_SRCS
 # NOTE(Aurelius84): For inference library, some DEPS is useless
 # such as non-infer operator related targets et.al.
 list(REMOVE_ITEM fluid_modules cinn_op_dialect)
-# NOTE(Aurelisu84): Remove pir dialect related target DEPS for inference
-# shared library to prune library size.
-# list(REMOVE_ITEM fluid_modules ${not_infer_modules})
 
-set(SHARED_INFERENCE_DEPS phi phi_core common ${fluid_modules}
-                          analysis_predictor ${utils_modules})
+if(WIN32)
+  set(SHARED_INFERENCE_DEPS phi dynload_common common ${fluid_modules}
+                            analysis_predictor ${utils_modules})
+else()
+  set(SHARED_INFERENCE_DEPS phi phi_core common ${fluid_modules}
+                            analysis_predictor ${utils_modules})
+endif()
 if(WITH_GPU OR WITH_ROCM)
-  list(APPEND SHARED_INFERENCE_DEPS phi_gpu)
+  if(WIN32)
+    list(APPEND SHARED_INFERENCE_DEPS dynload_cuda cuda_graph_lib dynload_cudnn
+         dynload_cublas)
+    if(TENSORRT_FOUND)
+      list(APPEND SHARED_INFERENCE_DEPS dynload_tensorrt)
+    endif()
+  else()
+    list(APPEND SHARED_INFERENCE_DEPS phi_gpu phi_core)
+  endif()
 endif()
 if(NOT WIN32)
   list(APPEND SHARED_INFERENCE_DEPS ${ir_targets})
@@ -106,10 +121,6 @@ endif()
 
 if(WITH_CRYPTO)
   set(SHARED_INFERENCE_DEPS ${SHARED_INFERENCE_DEPS} framework_io)
-endif()
-
-if(WITH_PSCORE)
-  set(SHARED_INFERENCE_DEPS ${SHARED_INFERENCE_DEPS} fleet ps_service)
 endif()
 
 if(WITH_ONNXRUNTIME)
@@ -131,9 +142,12 @@ if(WIN32)
                PROPERTY WINDOWS_EXPORT_ALL_SYMBOLS ON)
   target_link_libraries(paddle_inference_shared phi common)
 endif()
-set(INFERENCE_SHARED_LINKFLAGS "-Wl,-rpath,'$ORIGIN'")
-set_target_properties(paddle_inference_shared
-                      PROPERTIES LINK_FLAGS "${INFERENCE_SHARED_LINKFLAGS}")
+set(INFERENCE_SHARED_LINKFLAGS "")
+if(NOT WIN32)
+  set(INFERENCE_SHARED_LINKFLAGS "-Wl,-rpath,'$ORIGIN'")
+  set_target_properties(paddle_inference_shared
+                        PROPERTIES LINK_FLAGS "${INFERENCE_SHARED_LINKFLAGS}")
+endif()
 set_target_properties(paddle_inference_shared PROPERTIES OUTPUT_NAME
                                                          paddle_inference)
 if(NOT APPLE

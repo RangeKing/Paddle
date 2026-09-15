@@ -21,8 +21,6 @@
 
 namespace phi {
 
-using phi::PADDLE_CUDA_NUM_THREADS;
-
 template <typename T, typename Context>
 void DiagonalGradKernel(const Context& dev_ctx,
                         const DenseTensor& x,
@@ -31,15 +29,18 @@ void DiagonalGradKernel(const Context& dev_ctx,
                         int axis1,
                         int axis2,
                         DenseTensor* in_grad) {
+  if (in_grad->numel() == 0) {
+    dev_ctx.template Alloc<T>(in_grad);
+    return;
+  }
   const auto* dout = &out_grad;
   const auto* dout_data = dout->data<T>();
   auto dout_dim = dout->dims().Get();
   auto dout_dim_size = dout->dims().size();
 
-  std::vector<int64_t> res_dout =
-      common::vectorize(common::stride(dout->dims()));
+  std::vector<int64_t> res_dout = vectorize(common::stride(dout->dims()));
   DenseTensor dout_stride_tensor;
-  phi::TensorFromVector<int64_t>(res_dout, dev_ctx, &dout_stride_tensor);
+  TensorFromVector<int64_t>(res_dout, dev_ctx, &dout_stride_tensor);
   int64_t* dout_stride = dout_stride_tensor.data<int64_t>();
 
   auto* dx = in_grad;
@@ -47,9 +48,9 @@ void DiagonalGradKernel(const Context& dev_ctx,
   auto dx_dim = dx->dims().Get();
   auto dx_dim_size = dx->dims().size();
 
-  std::vector<int64_t> res_dx = common::vectorize(common::stride(dx->dims()));
+  std::vector<int64_t> res_dx = vectorize(common::stride(dx->dims()));
   DenseTensor dx_stride_tensor;
-  phi::TensorFromVector<int64_t>(res_dx, dev_ctx, &dx_stride_tensor);
+  TensorFromVector<int64_t>(res_dx, dev_ctx, &dx_stride_tensor);
   int64_t* dx_stride = dx_stride_tensor.data<int64_t>();
 
   const int64_t offset_ = offset;
@@ -59,10 +60,11 @@ void DiagonalGradKernel(const Context& dev_ctx,
   int64_t numel = dx->numel();
 
   int threads = PADDLE_CUDA_NUM_THREADS;
-  int blocks = (numel + threads - 1) / threads;
+  int64_t blocks_max = dev_ctx.GetCUDAMaxGridDimSize()[0];
+  int blocks = std::min((numel + threads - 1) / threads, blocks_max);
 
   int64_t dout_numel = out_grad.numel();
-  phi::backends::gpu::GpuMemsetAsync(
+  backends::gpu::GpuMemsetAsync(
       dx_data, 0, numel * sizeof(T), dev_ctx.stream());
 
   switch (dx_dim_size) {
@@ -164,7 +166,7 @@ void DiagonalGradKernel(const Context& dev_ctx,
       break;
     default:
       PADDLE_THROW(errors::InvalidArgument(
-          "The rank of output(input@Grad) should be less than 10, but "
+          "The rank of output(input@GRAD) should be less than 10, but "
           "received %d.",
           dx_dim_size));
   }
@@ -179,7 +181,7 @@ PD_REGISTER_KERNEL(diagonal_grad,
                    int,
                    int64_t,
                    bool,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::complex64,
+                   phi::complex128) {}

@@ -21,38 +21,53 @@
 namespace phi {
 
 template <typename T, typename Context>
-void TrilTriuKernel(const Context& ctx,
+void TrilTriuKernel(const Context& dev_ctx,
                     const DenseTensor& x,
                     int diagonal,
                     bool lower,
                     DenseTensor* out) {
-  const auto* x_data = x.data<T>();
-  auto* out_data = ctx.template Alloc<T>(out);
+  auto* out_data = dev_ctx.template Alloc<T>(out);
 
+  // Early return for empty tensor to avoid invalid CUDA kernel launch
+  if (x.numel() == 0) {
+    return;
+  }
+
+  const auto* x_data = x.data<T>();
   const auto& dims = x.dims();
   const auto H = dims[dims.size() - 2];
   const auto W = dims[dims.size() - 1];
-  phi::funcs::ForRange<Context> for_range(ctx, static_cast<size_t>(x.numel()));
+  funcs::ForRange<Context> for_range(dev_ctx, static_cast<size_t>(x.numel()));
 
-  phi::funcs::TrilTriuCompute<T> tril_triu_computer(
+  funcs::TrilTriuCompute<T> tril_triu_computer(
       x_data, diagonal, lower, H, W, out_data);
   for_range(tril_triu_computer);
 }
 
 template <typename T, typename Context>
-void TrilKernel(const Context& ctx,
+void TrilKernel(const Context& dev_ctx,
                 const DenseTensor& x,
                 int diagonal,
                 DenseTensor* out) {
-  TrilTriuKernel<T, Context>(ctx, x, diagonal, true, out);
+  if (out && out->numel() == 0) {
+    dev_ctx.template Alloc<T>(out);
+    return;
+  }
+
+  TrilTriuKernel<T, Context>(dev_ctx, x, diagonal, true, out);
 }
 
 template <typename T, typename Context>
-void TriuKernel(const Context& ctx,
+void TriuKernel(const Context& dev_ctx,
                 const DenseTensor& x,
                 int diagonal,
                 DenseTensor* out) {
-  TrilTriuKernel<T, Context>(ctx, x, diagonal, false, out);
+  if (out && out->numel() == 0) {
+    dev_ctx.template Alloc<T>(out);
+    return;
+  }
+
+  TrilTriuKernel<T, Context>(dev_ctx, x, diagonal, false, out);
 }
 
 }  // namespace phi

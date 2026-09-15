@@ -31,17 +31,19 @@
 #include "paddle/phi/core/sparse_coo_tensor.h"
 #include "paddle/phi/core/sparse_csr_tensor.h"
 
+COMMON_DECLARE_bool(enable_unique_name);
+
 /**
- * Implementation of GradNodeBase, Edge and GradTensorHolder.
+ * Implementation of GradNodeBase and Edge.
  **/
 namespace egr {
 
 static void CheckTensor(const paddle::Tensor& pre, const paddle::Tensor& post) {
-  if (!pre.initialized() && post.initialized()) {
+  if (!pre.has_allocation() && post.has_allocation()) {
     PADDLE_THROW(common::errors::PermissionDenied(
         "The tensor in before and after hook are not consistent"));
   }
-  if (pre.initialized() && post.initialized()) {
+  if (pre.has_allocation() && post.has_allocation()) {
     VLOG(7) << phi::DataTypeToString(pre.dtype()) << " "
             << phi::DataTypeToString(post.dtype());
     PADDLE_ENFORCE_EQ(
@@ -84,6 +86,10 @@ GradNodeBase::MutableOutputMeta() {
   return bwd_out_meta_;
 }
 
+paddle::small_vector<std::vector<GradSlotMeta>, kSlotSmallVectorSize>&
+GradNodeBase::MutableInputMeta() {
+  return bwd_in_meta_;
+}
 void GradNodeBase::SetGradInMeta(const paddle::Tensor& fwd_out,
                                  size_t slot_rank) {
   VLOG(7) << "Set GradSlotMeta for Grad Inputs";
@@ -105,14 +111,14 @@ void GradNodeBase::SetGradInMeta(const paddle::Tensor& fwd_out,
     meta.SetStopGradient(fwd_out_meta->StopGradient());
   }
 
-  if (!fwd_out.initialized()) {
+  if (!fwd_out.has_allocation()) {
     if (fwd_out.defined() && fwd_out.is_dist_tensor() &&
         phi::distributed::NeedComputationClipForPP(fwd_out.impl())) {
-      VLOG(3) << "Tensor " << fwd_out.name() << " is DistTensor,"
+      VLOG(5) << "Tensor " << fwd_out.name() << " is DistTensor,"
               << " and needs computation clip for pipeline parallel."
               << " Still SetGradInMeta for it.";
     } else {
-      VLOG(7)
+      VLOG(6)
           << "Skip Configuring GradSlotMeta for uninitialized GradInput Tensor";
       return;
     }
@@ -143,8 +149,9 @@ void GradNodeBase::SetGradInMeta(const paddle::Tensor& fwd_out,
             ->dims());
     SetIsRunAutoParallel(true);
   } else {
-    VLOG(7) << "Unable to initialize the DenseTensorMeta of GradSlotMeta with "
+    VLOG(5) << "Unable to initialize the DenseTensorMeta of GradSlotMeta with "
                "non-DenseTensor argument.";
+    return;
   }
   PADDLE_ENFORCE_NE(
       dense_tensor->meta().dtype,
@@ -195,14 +202,14 @@ void GradNodeBase::SetGradInMeta(const std::vector<paddle::Tensor>& fwd_out,
       meta.SetStopGradient(fwd_out_meta->StopGradient());
     }
 
-    if (!fwd_out_tensor.initialized()) {
+    if (!fwd_out_tensor.has_allocation()) {
       if (fwd_out_tensor.defined() && fwd_out_tensor.is_dist_tensor() &&
           phi::distributed::NeedComputationClipForPP(fwd_out_tensor.impl())) {
         VLOG(3) << "Tensor " << fwd_out_tensor.name() << " is DistTensor,"
                 << " and needs computation clip for pipeline parallel."
                 << " Still SetGradInMeta for it.";
       } else {
-        VLOG(7) << "Skip Configuring GradSlotMeta for uninitialized GradInput "
+        VLOG(6) << "Skip Configuring GradSlotMeta for uninitialized GradInput "
                    "Tensor";
         return;
       }
@@ -295,7 +302,7 @@ void GradNodeBase::SetGradInMeta(const std::vector<paddle::Tensor*>& fwd_out,
       meta.SetStopGradient(fwd_out_meta->StopGradient());
     }
 
-    if (!fwd_out_tensor.initialized()) {
+    if (!fwd_out_tensor.has_allocation()) {
       if (fwd_out_tensor.defined() && fwd_out_tensor.is_dist_tensor() &&
           phi::distributed::NeedComputationClipForPP(fwd_out_tensor.impl())) {
         VLOG(3) << "Tensor " << fwd_out_tensor.name() << " is DistTensor,"
@@ -356,7 +363,7 @@ void GradNodeBase::SetGradInMeta(const std::vector<paddle::Tensor*>& fwd_out,
         need_complex_to_real_ = true;
       }
     } else {
-      VLOG(7) << "Unable to initialize the DenseTensorMeta of GradSlotMeta "
+      VLOG(5) << "Unable to initialize the DenseTensorMeta of GradSlotMeta "
                  "with non-DenseTensor argument.";
     }
   }
@@ -378,6 +385,11 @@ void GradNodeBase::SetGradOutMeta(const paddle::Tensor& fwd_in,
     metas.resize(1);
   }
   auto& meta = metas[0];
+  if (VLOG_IS_ON(6) || FLAGS_enable_unique_name) {
+    // Record the forward input tensor name
+    meta.SetForwardTensorName(fwd_in.name());
+  }
+
   // Set Stop_gradient
   if (fwd_in_meta) {
     meta.SetStopGradient(fwd_in_meta->StopGradient());
@@ -389,12 +401,12 @@ void GradNodeBase::SetGradOutMeta(const paddle::Tensor& fwd_in,
     auto node = fwd_in_meta->GetMutableGradNode();
     if (!node || !node.get()) {
       fwd_in_meta->SetGradNode(
-          std::make_shared<egr::GradNodeAccumulation>(fwd_in_meta));
+          std::make_shared<egr::GradNodeAccumulation>(fwd_in));
     }
-    VLOG(3) << "Add Edges for slot: " << slot_rank << ", the Edge is from "
-            << this->name() << " (addr: " << this << ") "
-            << " to " << fwd_in_meta->GetMutableGradNode()->name()
-            << " (addr: " << fwd_in_meta->GetMutableGradNode().get() << ")";
+    VLOG(5) << "Add Edges for slot: " << slot_rank << ", the Edge is from "
+            << this->name() << "(" << this << ")"
+            << " to " << fwd_in_meta->GetMutableGradNode()->name() << "("
+            << fwd_in_meta->GetMutableGradNode().get() << ")";
 
     meta.SetEdge(fwd_in_meta->GetMutableGradNode(), fwd_in_meta->OutRankInfo());
   }
@@ -468,7 +480,7 @@ void GradNodeBase::SetGradOutMeta(const paddle::Tensor& fwd_in,
              "non-DenseTensor argument.";
     }
   } else {
-    VLOG(7) << "Unable to initialize the DenseTensorMeta because the Tensor "
+    VLOG(5) << "Unable to initialize the DenseTensorMeta because the Tensor "
                "is not initialized.";
   }
 }
@@ -495,6 +507,10 @@ void GradNodeBase::SetGradOutMeta(const paddle::Tensor& fwd_in,
     metas.resize(1);
   }
   auto& meta = metas[0];
+  if (VLOG_IS_ON(6) || FLAGS_enable_unique_name) {
+    // Record the forward input tensor name
+    meta.SetForwardTensorName(fwd_in.name());
+  }
   // Set Stop_gradient
   if (fwd_in_meta && !fwd_in_meta->StopGradient() && fwd_out_meta) {
     meta.SetStopGradient(false);
@@ -506,12 +522,12 @@ void GradNodeBase::SetGradOutMeta(const paddle::Tensor& fwd_in,
     auto node = fwd_in_meta->GetMutableGradNode();
     if (!node || !node.get()) {
       fwd_in_meta->SetGradNode(
-          std::make_shared<egr::GradNodeAccumulation>(fwd_in_meta));
+          std::make_shared<egr::GradNodeAccumulation>(fwd_in));
     }
-    VLOG(3) << "Add Edges for slot: " << slot_rank << ", the Edge is from "
-            << this->name() << " (addr: " << this << ") "
-            << " to " << fwd_in_meta->GetMutableGradNode()->name()
-            << " (addr: " << fwd_in_meta->GetMutableGradNode().get() << ")";
+    VLOG(5) << "Add Edges for slot: " << slot_rank << ", the Edge is from "
+            << this->name() << "(" << this << ")"
+            << " to " << fwd_in_meta->GetMutableGradNode()->name() << "("
+            << fwd_in_meta->GetMutableGradNode().get() << ")";
 
     meta.SetEdge(fwd_in_meta->GetMutableGradNode(), fwd_in_meta->OutRankInfo());
   }
@@ -551,8 +567,91 @@ void GradNodeBase::SetGradOutMeta(const paddle::Tensor& fwd_in,
       meta.SetPlace(fwd_in.place());
     }
   } else {
-    VLOG(7) << "Unable to initialize the DenseTensorMeta of GradSlotMeta with "
+    VLOG(5) << "Unable to initialize the DenseTensorMeta of GradSlotMeta with "
                "non-DenseTensor argument.";
+  }
+}
+
+/*
+Special func for inplace ops in auto parallel. For now, this func is only used
+in reshape_.
+*/
+void GradNodeBase::SetGradOutMeta(
+    const paddle::Tensor& fwd_in,
+    size_t slot_rank,
+    const phi::distributed::TensorDistAttr& fwd_in_dist_attr,
+    const phi::DDim& fwd_in_dims) {
+  auto* fwd_in_meta = egr::EagerUtils::nullable_autograd_meta(fwd_in);
+  PADDLE_ENFORCE_LE(
+      (slot_rank + 1),
+      bwd_out_meta_.size(),
+      common::errors::InvalidArgument(
+          "Slot Rank should less equal than bwd_out_meta_ size, "
+          "since bwd_out_meta_ is designed to hold as same num as "
+          "backward outputs."));
+  auto& metas = bwd_out_meta_.at(slot_rank);
+  // Init stop gradient vector before use to avoid push back
+  if (metas.empty()) {
+    metas.resize(1);
+  }
+  auto& meta = metas[0];
+  if (VLOG_IS_ON(6) || FLAGS_enable_unique_name) {
+    meta.SetForwardTensorName(fwd_in.name());
+  }
+  // Set Stop_gradient
+  if (fwd_in_meta) {
+    meta.SetStopGradient(fwd_in_meta->StopGradient());
+  } else {
+    meta.SetStopGradient(true);
+  }
+  // Set Adj Edges
+  if (fwd_in_meta && !fwd_in_meta->StopGradient()) {
+    auto node = fwd_in_meta->GetMutableGradNode();
+    if (!node || !node.get()) {
+      fwd_in_meta->SetGradNode(
+          std::make_shared<egr::GradNodeAccumulation>(fwd_in));
+    }
+    VLOG(5) << "Add Edges for slot: " << slot_rank << ", the Edge is from "
+            << this->name() << "(" << this << ")"
+            << " to " << fwd_in_meta->GetMutableGradNode()->name() << "("
+            << fwd_in_meta->GetMutableGradNode().get() << ")";
+
+    meta.SetEdge(fwd_in_meta->GetMutableGradNode(), fwd_in_meta->OutRankInfo());
+  }
+  // Record TensorMeta
+  if (fwd_in.impl() && fwd_in.impl().get()) {
+    if (phi::distributed::DistTensor::classof(fwd_in.impl().get())) {
+      const phi::distributed::DistTensor* dist_tensor =
+          static_cast<phi::distributed::DistTensor*>(fwd_in.impl().get());
+      const phi::DenseTensor& dense_tensor = dist_tensor->value();
+      PADDLE_ENFORCE_NE(
+          dense_tensor.meta().dtype,
+          phi::DataType::UNDEFINED,
+          common::errors::Fatal("Attempting to copy DenseTensorMeta "
+                                "with phi::DataType::UNDEFINED,"
+                                "which is illegal."));
+      meta.SetTensorMeta(dense_tensor.meta());
+      meta.SetPlace(fwd_in.place());
+      // Set DistAttr
+      // Forward input DistTensor could be uninitialized.
+      PADDLE_ENFORCE_NE(
+          dist_tensor->dist_attr().empty(),
+          true,
+          common::errors::InvalidArgument(
+              "The forward input DistTensor's dist attr is empty."));
+      auto dist_attr = fwd_in_dist_attr;
+      dist_attr.clean_partial_status();
+      meta.SetDistAttr(dist_attr);
+      meta.SetDistTensorGlobalDims(fwd_in_dims);
+      SetIsRunAutoParallel(true);
+    } else {
+      VLOG(7)
+          << "Unable to initialize the DenseTensorMeta of GradSlotMeta with "
+             "non-DistTensor argument.";
+    }
+  } else {
+    VLOG(7) << "Unable to initialize the DenseTensorMeta because the Tensor "
+               "is not initialized.";
   }
 }
 
@@ -574,6 +673,9 @@ void GradNodeBase::SetGradOutMeta(const std::vector<paddle::Tensor>& fwd_in,
   for (size_t i = 0; i < slot_size; i++) {
     const auto& fwd_in_tensor = fwd_in[i];
     auto& meta = metas[i];
+    if (VLOG_IS_ON(6) || FLAGS_enable_unique_name) {
+      meta.SetForwardTensorName(fwd_in_tensor.name());
+    }
     auto* fwd_in_meta = egr::EagerUtils::nullable_autograd_meta(fwd_in_tensor);
     // Set Stop_gradient
     if (fwd_in_meta) {
@@ -584,12 +686,12 @@ void GradNodeBase::SetGradOutMeta(const std::vector<paddle::Tensor>& fwd_in,
       auto node = fwd_in_meta->GetMutableGradNode();
       if (!node || !node.get()) {
         fwd_in_meta->SetGradNode(
-            std::make_shared<egr::GradNodeAccumulation>(fwd_in_meta));
+            std::make_shared<egr::GradNodeAccumulation>(fwd_in_tensor));
       }
-      VLOG(3) << "Add Edges for slot: " << slot_rank << ", the Edge is from "
-              << this->name() << " (addr: " << this << ") "
-              << " to " << fwd_in_meta->GetMutableGradNode()->name()
-              << " (addr: " << fwd_in_meta->GetMutableGradNode().get() << ")";
+      VLOG(5) << "Add Edges for slot: " << slot_rank << ", the Edge is from "
+              << this->name() << "(" << this << ")"
+              << " to " << fwd_in_meta->GetMutableGradNode()->name() << "("
+              << fwd_in_meta->GetMutableGradNode().get() << ")";
 
       meta.SetEdge(fwd_in_meta->GetMutableGradNode(),
                    fwd_in_meta->OutRankInfo());
@@ -654,6 +756,9 @@ void GradNodeBase::SetGradOutMeta(
   for (size_t i = 0; i < slot_size; i++) {
     const auto& fwd_in_tensor = (*fwd_in[i]);
     auto& meta = metas[i];
+    if (VLOG_IS_ON(6) || FLAGS_enable_unique_name) {
+      meta.SetForwardTensorName(fwd_in_tensor.name());
+    }
     auto* fwd_in_meta = egr::EagerUtils::nullable_autograd_meta(fwd_in_tensor);
     // Set Stop_gradient
     if (fwd_in_meta) {
@@ -664,12 +769,12 @@ void GradNodeBase::SetGradOutMeta(
       auto node = fwd_in_meta->GetMutableGradNode();
       if (!node || !node.get()) {
         fwd_in_meta->SetGradNode(
-            std::make_shared<egr::GradNodeAccumulation>(fwd_in_meta));
+            std::make_shared<egr::GradNodeAccumulation>(fwd_in_tensor));
       }
-      VLOG(3) << "Add Edges for slot: " << slot_rank << ", the Edge is from "
-              << this->name() << " (addr: " << this << ") "
-              << " to " << fwd_in_meta->GetMutableGradNode()->name()
-              << " (addr: " << fwd_in_meta->GetMutableGradNode().get() << ")";
+      VLOG(5) << "Add Edges for slot: " << slot_rank << ", the Edge is from "
+              << this->name() << "(" << this << ")"
+              << " to " << fwd_in_meta->GetMutableGradNode()->name() << "("
+              << fwd_in_meta->GetMutableGradNode().get() << ")";
 
       meta.SetEdge(fwd_in_meta->GetMutableGradNode(),
                    fwd_in_meta->OutRankInfo());
@@ -762,7 +867,7 @@ GradNodeBase::ApplyGradientHooks(
     std::vector<paddle::Tensor>& slot_out = outs[slot_id];
     slot_out.resize(tensors[slot_id].size());
     paddle::Tensor& out = slot_out[rank];
-    if (!out.defined() || !out.initialized()) {
+    if (!out.defined() || !out.has_allocation()) {
       out = (*hook)(tensors[slot_id][rank]);
     } else {
       // If more than one hook is registered, the input to the next hook func
@@ -865,6 +970,60 @@ std::vector<std::shared_ptr<GradNodeBase>> GradNodeBase::NextFunctions() {
 
 uintptr_t GradNodeBase::GetPtr() const {
   return reinterpret_cast<uintptr_t>(this);
+}
+
+int64_t GradNodeBase::RegisterNodePostHook(
+    std::shared_ptr<NodePostHookBase>&& hook) {
+  post_hooks_.emplace(next_post_hook_id_, std::move(hook));
+  return next_post_hook_id_++;
+}
+
+bool GradNodeBase::RemoveNodePostHook(int64_t hook_id) {
+  auto remove_cnt = post_hooks_.erase(hook_id);
+  if (remove_cnt == 0) {
+    return false;
+  }
+  return true;
+}
+
+bool GradNodeBase::HasNodePostHook() { return !post_hooks_.empty(); }
+
+paddle::small_vector<std::vector<paddle::Tensor>, egr::kSlotSmallVectorSize>
+GradNodeBase::ApplyNodePostHooks(
+    const paddle::small_vector<std::vector<paddle::Tensor>,
+                               egr::kSlotSmallVectorSize>& grad_outputs,
+    const paddle::small_vector<std::vector<paddle::Tensor>,
+                               egr::kSlotSmallVectorSize>& grad_inputs) {
+  paddle::small_vector<std::vector<paddle::Tensor>, kSlotSmallVectorSize> outs =
+      grad_outputs;
+  for (auto& iter : post_hooks_) {
+    auto hook = iter.second;
+    outs = (*hook)(outs, grad_inputs);
+  }
+
+  for (size_t i = 0; i < outs.size(); i++) {
+    if (outs[i].empty() && (!grad_outputs[i].empty())) {
+      outs[i].resize(grad_outputs[i].size());
+    }
+
+    for (size_t j = 0; j < outs[i].size(); j++) {
+      if (!outs[i][j].defined() || !outs[i][j].initialized()) {
+        outs[i][j] = grad_outputs[i][j];
+      } else {
+        CheckTensor(grad_outputs[i][j], outs[i][j]);
+      }
+    }
+  }
+
+  return outs;
+}
+
+void Edge::SetGradNode(const std::shared_ptr<GradNodeBase>& node) {
+  VLOG(7) << "Resetting Edge(" << this << ")'s Grad Node"
+          << " from " << (grad_node_ ? grad_node_->name() : "nullptr") << "("
+          << grad_node_.get() << ") to " << (node ? node->name() : "nullptr")
+          << "(" << node.get() << ")";
+  grad_node_ = node;
 }
 
 }  // namespace egr

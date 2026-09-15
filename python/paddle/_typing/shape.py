@@ -13,9 +13,8 @@
 # limitations under the License.
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List, Sequence, Tuple, Union
-
-from typing_extensions import TypeAlias
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, TypeAlias, Union
 
 if TYPE_CHECKING:
     from .. import Tensor
@@ -31,13 +30,13 @@ _StaticShapeLike: TypeAlias = Union[
     "Tensor",
 ]
 
-ShapeLike: TypeAlias = Union[_DynamicShapeLike, _StaticShapeLike]
+ShapeLike: TypeAlias = _DynamicShapeLike | _StaticShapeLike
 
 # for size parameters, eg, kernel_size, stride ...
-Size1: TypeAlias = Union[int, Tuple[int], List[int]]
-Size2: TypeAlias = Union[int, Tuple[int, int], List[int]]
-Size3: TypeAlias = Union[int, Tuple[int, int, int], List[int]]
-Size4: TypeAlias = Union[int, Tuple[int, int, int, int], List[int]]
-Size5: TypeAlias = Union[int, Tuple[int, int, int, int, int], List[int]]
-Size6: TypeAlias = Union[int, Tuple[int, int, int, int, int, int], List[int]]
-SizeN: TypeAlias = Union[int, Tuple[int, ...], List[int]]
+Size1: TypeAlias = int | tuple[int] | list[int]
+Size2: TypeAlias = int | tuple[int, int] | list[int]
+Size3: TypeAlias = int | tuple[int, int, int] | list[int]
+Size4: TypeAlias = int | tuple[int, int, int, int] | list[int]
+Size5: TypeAlias = int | tuple[int, int, int, int, int] | list[int]
+Size6: TypeAlias = int | tuple[int, int, int, int, int, int] | list[int]
+SizeN: TypeAlias = int | tuple[int, ...] | list[int]

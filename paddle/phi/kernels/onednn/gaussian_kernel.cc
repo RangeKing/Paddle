@@ -20,31 +20,31 @@
 namespace phi {
 
 template <typename T, typename Context>
-void GaussianKernel(const Context& ctx,
+void GaussianKernel(const Context& dev_ctx,
                     const IntArray& shape,
-                    float mean,
-                    float std,
+                    double mean,
+                    double std,
                     int seed,
                     DataType dtype,
                     DenseTensor* out) {
-  std::normal_distribution<T> dist(mean, std);
+  std::normal_distribution<T> dist(static_cast<T>(mean), static_cast<T>(std));
   std::shared_ptr<std::mt19937_64> engine;
   if (seed) {
     engine = std::make_shared<std::mt19937_64>();
     engine->seed(seed);
   } else {
-    engine = ctx.GetGenerator()->GetCPUEngine();
+    engine = dev_ctx.GetGenerator()->GetCPUEngine();
   }
 
-  T* data = ctx.template Alloc<T>(out);
+  T* data = dev_ctx.template Alloc<T>(out);
   for (int64_t i = 0; i < out->numel(); ++i) {
     data[i] = dist(*engine);
   }
 
-  out->Resize(common::make_ddim(shape.GetData()));
+  out->Resize(shape.GetData());
   dnnl::memory::desc out_mem_desc =
-      phi::funcs::make_memory_desc(*out, DataLayout::NCHW);
-  out->set_mem_desc(out_mem_desc);
+      funcs::make_memory_desc(*out, DataLayout::NCHW);
+  phi::funcs::SetOneDNNMemDesc(out, out_mem_desc);
 }
 
 }  // namespace phi

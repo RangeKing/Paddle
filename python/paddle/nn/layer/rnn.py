@@ -17,7 +17,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from functools import partial, reduce
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, overload
 
 import numpy as np
 from typing_extensions import Self
@@ -38,6 +38,7 @@ from paddle.nn import (
     initializer as I,
 )
 from paddle.tensor.manipulation import tensor_array_to_tensor
+from paddle.utils.decorator_utils import gru_decorator
 
 from .container import LayerList
 from .layers import Layer
@@ -109,7 +110,7 @@ def rnn(
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -120,9 +121,9 @@ def rnn(
             >>> rnn = paddle.nn.RNN(cell)
             >>> outputs, final_states = rnn(inputs, prev_h)
             >>> print(outputs.shape)
-            [4, 23, 32]
+            paddle.Size([4, 23, 32])
             >>> print(final_states.shape)
-            [4, 32]
+            paddle.Size([4, 32])
 
     """
 
@@ -344,7 +345,7 @@ def _rnn_static_graph(
             #     pre_state, new_states
             # )
             new_states = paddle.utils.map_structure(
-                lambda x, y: (x * step_mask + y * (1.0 - step_mask)),
+                lambda x, y: x * step_mask + y * (1.0 - step_mask),
                 new_states,
                 pre_state,
             )
@@ -433,7 +434,7 @@ def birnn(
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -443,9 +444,9 @@ def birnn(
             >>> inputs = paddle.rand((2, 23, 16))
             >>> outputs, final_states = rnn(inputs)
             >>> print(outputs.shape)
-            [2, 23, 64]
+            paddle.Size([2, 23, 64])
             >>> print(final_states[0][0].shape)
-            [2, 32]
+            paddle.Size([2, 32])
 
     """
 
@@ -527,6 +528,10 @@ def split_states(
         hidden size of the RNN cell.
     """
     if state_components == 1:
+        # For state_components == 1 (GRU/SimpleRNN), states should be a tensor
+        # If it's a tuple/list with one element, extract it
+        if isinstance(states, (tuple, list)) and len(states) == 1:
+            states = states[0]
         states = paddle.unstack(states)
         if not bidirectional:
             return states
@@ -791,7 +796,7 @@ class SimpleRNNCell(RNNCellBase):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -801,7 +806,7 @@ class SimpleRNNCell(RNNCellBase):
             >>> cell = paddle.nn.SimpleRNNCell(16, 32)
             >>> y, h = cell(x, prev_h)
             >>> print(y.shape)
-            [4, 32]
+            paddle.Size([4, 32])
 
     """
 
@@ -964,6 +969,9 @@ class LSTMCell(RNNCellBase):
         proj_size (int, optional): If specified, the output hidden state
             will be projected to `proj_size`. `proj_size` must be smaller than
             `hidden_size`. Default: None.
+        bias (bool, optional): If False, then the layer does not use bias weights `bias_ih` and `bias_hh`. Default: True.
+        device (str, optional): The device to execute the layer. Default: None.
+        dtype (str, optional): The data type of the layer. Default: None.
         name (str|None, optional): Name for the operation (optional, default is
             None). For more information, please refer to :ref:`api_guide_Name`.
 
@@ -990,7 +998,7 @@ class LSTMCell(RNNCellBase):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -1002,11 +1010,11 @@ class LSTMCell(RNNCellBase):
             >>> y, (h, c) = cell(x, (prev_h, prev_c))
 
             >>> print(y.shape)
-            [4, 32]
+            paddle.Size([4, 32])
             >>> print(h.shape)
-            [4, 32]
+            paddle.Size([4, 32])
             >>> print(c.shape)
-            [4, 32]
+            paddle.Size([4, 32])
 
     """
 
@@ -1014,13 +1022,21 @@ class LSTMCell(RNNCellBase):
         self,
         input_size: int,
         hidden_size: int,
+        *,
         weight_ih_attr: ParamAttrLike | None = None,
         weight_hh_attr: ParamAttrLike | None = None,
         bias_ih_attr: ParamAttrLike | None = None,
         bias_hh_attr: ParamAttrLike | None = None,
         proj_size: int = 0,
+        bias: bool = True,
+        device=None,
+        dtype=None,
         name: str | None = None,
     ) -> None:
+        if not bias:
+            bias_ih_attr = False
+            bias_hh_attr = False
+
         super().__init__()
         if hidden_size <= 0:
             raise ValueError(
@@ -1040,12 +1056,16 @@ class LSTMCell(RNNCellBase):
                 (4 * hidden_size, input_size),
                 weight_ih_attr,
                 default_initializer=I.Uniform(-std, std),
+                dtype=dtype,
+                device=device,
             )
         else:
             self.weight_ih = self.create_parameter(
                 (4 * hidden_size, input_size),
                 None,
                 default_initializer=I.Constant(1.0),
+                dtype=dtype,
+                device=device,
             )
             self.weight_ih.stop_gradient = True
         if weight_hh_attr is not False:
@@ -1053,12 +1073,16 @@ class LSTMCell(RNNCellBase):
                 (4 * hidden_size, proj_size or hidden_size),
                 weight_hh_attr,
                 default_initializer=I.Uniform(-std, std),
+                dtype=dtype,
+                device=device,
             )
         else:
             self.weight_hh = self.create_parameter(
                 (4 * hidden_size, proj_size or hidden_size),
                 None,
                 default_initializer=I.Constant(1.0),
+                dtype=dtype,
+                device=device,
             )
             self.weight_hh.stop_gradient = True
         if bias_ih_attr is not False:
@@ -1067,30 +1091,18 @@ class LSTMCell(RNNCellBase):
                 bias_ih_attr,
                 is_bias=True,
                 default_initializer=I.Uniform(-std, std),
+                dtype=dtype,
+                device=device,
             )
-        else:
-            self.bias_ih = self.create_parameter(
-                (4 * hidden_size,),
-                None,
-                is_bias=True,
-                default_initializer=I.Constant(0.0),
-            )
-            self.bias_ih.stop_gradient = True
         if bias_hh_attr is not False:
             self.bias_hh = self.create_parameter(
                 (4 * hidden_size,),
                 bias_hh_attr,
                 is_bias=True,
                 default_initializer=I.Uniform(-std, std),
+                dtype=dtype,
+                device=device,
             )
-        else:
-            self.bias_hh = self.create_parameter(
-                (4 * hidden_size,),
-                None,
-                is_bias=True,
-                default_initializer=I.Constant(0.0),
-            )
-            self.bias_hh.stop_gradient = True
 
         self.proj_size = proj_size
         if proj_size > 0:
@@ -1098,6 +1110,8 @@ class LSTMCell(RNNCellBase):
                 (hidden_size, proj_size),
                 weight_hh_attr,
                 default_initializer=I.Uniform(-std, std),
+                dtype=dtype,
+                device=device,
             )
 
         self.hidden_size = hidden_size
@@ -1110,11 +1124,16 @@ class LSTMCell(RNNCellBase):
             states = self.get_initial_states(inputs, self.state_shape)
         pre_hidden, pre_cell = states
         gates = paddle.matmul(inputs, self.weight_ih, transpose_y=True)
-        if self.bias_ih is not None:
-            gates = gates + self.bias_ih
+
+        bias_ih = getattr(self, 'bias_ih', None)
+        if bias_ih is not None:
+            gates = gates + bias_ih
+
         gates += paddle.matmul(pre_hidden, self.weight_hh, transpose_y=True)
-        if self.bias_hh is not None:
-            gates = gates + self.bias_hh
+
+        bias_hh = getattr(self, 'bias_hh', None)
+        if bias_hh is not None:
+            gates = gates + bias_hh
 
         chunked_gates = paddle.split(gates, num_or_sections=4, axis=-1)
 
@@ -1202,7 +1221,7 @@ class GRUCell(RNNCellBase):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -1213,9 +1232,9 @@ class GRUCell(RNNCellBase):
             >>> y, h = cell(x, prev_h)
 
             >>> print(y.shape)
-            [4, 32]
+            paddle.Size([4, 32])
             >>> print(h.shape)
-            [4, 32]
+            paddle.Size([4, 32])
 
 
     """
@@ -1271,13 +1290,7 @@ class GRUCell(RNNCellBase):
                 default_initializer=I.Uniform(-std, std),
             )
         else:
-            self.bias_ih = self.create_parameter(
-                (3 * hidden_size,),
-                None,
-                is_bias=True,
-                default_initializer=I.Constant(0.0),
-            )
-            self.bias_ih.stop_gradient = True
+            self.bias_ih = None
 
         if bias_hh_attr is not False:
             self.bias_hh = self.create_parameter(
@@ -1287,13 +1300,7 @@ class GRUCell(RNNCellBase):
                 default_initializer=I.Uniform(-std, std),
             )
         else:
-            self.bias_hh = self.create_parameter(
-                (3 * hidden_size,),
-                None,
-                is_bias=True,
-                default_initializer=I.Constant(0.0),
-            )
-            self.bias_hh.stop_gradient = True
+            self.bias_hh = None
 
         self.hidden_size = hidden_size
         self.input_size = input_size
@@ -1368,7 +1375,7 @@ class RNN(Layer):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -1380,9 +1387,9 @@ class RNN(Layer):
             >>> outputs, final_states = rnn(inputs, prev_h)
 
             >>> print(outputs.shape)
-            [4, 23, 32]
+            paddle.Size([4, 23, 32])
             >>> print(final_states.shape)
-            [4, 32]
+            paddle.Size([4, 32])
 
     """
 
@@ -1450,7 +1457,7 @@ class BiRNN(Layer):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -1462,9 +1469,13 @@ class BiRNN(Layer):
             >>> outputs, final_states = rnn(inputs)
 
             >>> print(outputs.shape)
-            [2, 23, 64]
-            >>> print(final_states[0][0].shape,len(final_states),len(final_states[0]))
-            [2, 32] 2 2
+            paddle.Size([2, 23, 64])
+            >>> print(
+            ...     final_states[0][0].shape,
+            ...     len(final_states),
+            ...     len(final_states[0]),
+            ... )
+            paddle.Size([2, 32]) 2 2
 
     """
 
@@ -1496,9 +1507,9 @@ class BiRNN(Layer):
         **kwargs: Any,
     ) -> tuple[Tensor, tuple[Tensor, Tensor]]:
         if isinstance(initial_states, (list, tuple)):
-            assert (
-                len(initial_states) == 2
-            ), "length of initial_states should be 2 when it is a list/tuple"
+            assert len(initial_states) == 2, (
+                "length of initial_states should be 2 when it is a list/tuple"
+            )
 
         outputs, final_states = birnn(
             self.cell_fw,
@@ -1532,6 +1543,8 @@ class RNNBase(LayerList):
         bias_ih_attr: ParamAttrLike | None = None,
         bias_hh_attr: ParamAttrLike | None = None,
         proj_size: int = 0,
+        device=None,
+        dtype=None,
     ) -> None:
         super().__init__()
         bidirectional_list: list[str] = ["bidirectional", "bidirect"]
@@ -1558,6 +1571,8 @@ class RNNBase(LayerList):
         if mode == "LSTM":
             rnn_cls = LSTMCell
             kwargs["proj_size"] = proj_size
+            kwargs["device"] = device
+            kwargs["dtype"] = dtype
         elif mode == "GRU":
             rnn_cls = GRUCell
         elif mode == "RNN_RELU":
@@ -1593,8 +1608,8 @@ class RNNBase(LayerList):
             )
 
         self.could_use_cudnn = True
-        self.could_use_cudnn &= len(self.parameters()) == num_layers * 4 * (
-            2 if direction in bidirectional_list else 1
+        self.could_use_cudnn &= (
+            len(self.parameters()) == 4 * num_layers * self.num_directions
         )
 
         # Expose params as RNN's attribute, which can make it compatible when
@@ -1649,7 +1664,7 @@ class RNNBase(LayerList):
                     default_initializer=I.Constant(0.0),
                 )
             ]
-            # dropout state may also can be hided and avoid saving
+            # dropout state may also can be hid and avoid saving
             # should dropout state be persistable for static-graph
             if in_pir_mode():
                 self._dropout_state = paddle.pir.core.create_parameter(
@@ -1669,9 +1684,7 @@ class RNNBase(LayerList):
                 with paddle.no_grad():
                     dtype = params[0].dtype
                     if isinstance(dtype, core.DataType):
-                        dtype = paddle.base.framework.paddle_type_to_proto_type[
-                            dtype
-                        ]
+                        dtype = paddle.base.framework.datatype_to_vartype[dtype]
                     _legacy_C_ops.coalesce_tensor(
                         self._all_weights,
                         self._all_weights,
@@ -1685,38 +1698,40 @@ class RNNBase(LayerList):
                     )
                     return
             # for static-graph, append coalesce_tensor into startup program
-            with program_guard(
-                default_startup_program(), default_startup_program()
+            with (
+                program_guard(
+                    default_startup_program(), default_startup_program()
+                ),
+                paddle.no_grad(),
             ):
-                with paddle.no_grad():
-                    if in_pir_mode():
-                        _C_ops.coalesce_tensor(
-                            self._all_weights,
-                            params[0].dtype,
-                            True,
-                            False,
-                            False,
-                            0.0,
-                            False,
-                            -1,
-                            -1,
-                            [],
-                            [],
-                        )
-                    else:
-                        self._helper.append_op(
-                            type="coalesce_tensor",
-                            inputs={"Input": self._all_weights},
-                            outputs={
-                                "Output": self._all_weights,
-                                "FusedOutput": self._flat_weight,
-                            },
-                            attrs={
-                                "copy_data": True,
-                                "use_align": False,
-                                "dtype": params[0].dtype,
-                            },
-                        )
+                if in_pir_mode():
+                    _C_ops.coalesce_tensor(
+                        self._all_weights,
+                        params[0].dtype,
+                        True,
+                        False,
+                        False,
+                        0.0,
+                        False,
+                        -1,
+                        -1,
+                        [],
+                        [],
+                    )
+                else:
+                    self._helper.append_op(
+                        type="coalesce_tensor",
+                        inputs={"Input": self._all_weights},
+                        outputs={
+                            "Output": self._all_weights,
+                            "FusedOutput": self._flat_weight,
+                        },
+                        attrs={
+                            "copy_data": True,
+                            "use_align": False,
+                            "dtype": params[0].dtype,
+                        },
+                    )
 
     def _cudnn_impl(
         self,
@@ -1924,7 +1939,7 @@ class SimpleRNN(RNNBase):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -1935,9 +1950,9 @@ class SimpleRNN(RNNBase):
             >>> y, h = rnn(x, prev_h)
 
             >>> print(y.shape)
-            [4, 23, 32]
+            paddle.Size([4, 23, 32])
             >>> print(h.shape)
-            [2, 4, 32]
+            paddle.Size([2, 4, 32])
 
 
     """
@@ -2043,13 +2058,16 @@ class LSTM(RNNBase):
         proj_size (int, optional): If specified, the output hidden state of each layer
             will be projected to `proj_size`. `proj_size` must be smaller than `hidden_size`.
             Default: 0.
+        bias (bool, optional): If False, then the layer does not use bias weights `bias_ih` and `bias_hh`. Default: True.
+        device (str, optional): The device to execute the layer. Default: None.
+        dtype (str, optional): The data type of the layer. Default: None.
         name (str|None, optional): Name for the operation (optional, default is
             None). For more information, please refer to :ref:`api_guide_Name`.
 
     Inputs:
         - **inputs** (Tensor): the input sequence. If `time_major` is True, the shape is `[time_steps, batch_size, input_size]`, else, the shape is `[batch_size, time_steps, input_size]`. `time_steps` means the length of the input sequence.
         - **initial_states** (list|tuple, optional): the initial state, a list/tuple of (h, c), the shape of each is `[num_layers * num_directions, batch_size, hidden_size]`. If initial_state is not given, zero initial states are used.
-        - **sequence_length** (Tensor, optional): shape `[batch_size]`, dtype: int64 or int32. The valid lengths of input sequences. Defaults to None. If `sequence_length` is not None, the inputs are treated as padded sequences. In each input sequence, elements whos time step index are not less than the valid length are treated as paddings.
+        - **sequence_length** (Tensor, optional): shape `[batch_size]`, dtype: int64 or int32. The valid lengths of input sequences. Defaults to None. If `sequence_length` is not None, the inputs are treated as padded sequences. In each input sequence, elements whose time step index are not less than the valid length are treated as paddings.
 
     Returns:
 
@@ -2065,7 +2083,7 @@ class LSTM(RNNBase):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -2077,11 +2095,11 @@ class LSTM(RNNBase):
             >>> y, (h, c) = rnn(x, (prev_h, prev_c))
 
             >>> print(y.shape)
-            [4, 23, 32]
+            paddle.Size([4, 23, 32])
             >>> print(h.shape)
-            [2, 4, 32]
+            paddle.Size([2, 4, 32])
             >>> print(c.shape)
-            [2, 4, 32]
+            paddle.Size([2, 4, 32])
 
 
     """
@@ -2091,6 +2109,7 @@ class LSTM(RNNBase):
         input_size: int,
         hidden_size: int,
         num_layers: int = 1,
+        *,
         direction: _DirectionType | str = "forward",
         time_major: bool = False,
         dropout: float = 0.0,
@@ -2099,8 +2118,15 @@ class LSTM(RNNBase):
         bias_ih_attr: ParamAttrLike | None = None,
         bias_hh_attr: ParamAttrLike | None = None,
         proj_size: int = 0,
+        bias: bool = True,
+        device=None,
+        dtype=None,
         name: str | None = None,
     ) -> None:
+        if not bias:
+            bias_ih_attr = False
+            bias_hh_attr = False
+
         super().__init__(
             "LSTM",
             input_size,
@@ -2114,6 +2140,8 @@ class LSTM(RNNBase):
             bias_ih_attr,
             bias_hh_attr,
             proj_size,
+            device=device,
+            dtype=dtype,
         )
 
 
@@ -2167,13 +2195,16 @@ class GRU(RNNBase):
             `bias_ih` of each cells. Default: None.
         bias_hh_attr (ParamAttr|None, optional): The parameter attribute for the
             `bias_hh` of each cells. Default: None.
-        name (str|None, optional): Name for the operation (optional, default is
-            None). For more information, please refer to :ref:`api_guide_Name`.
+
+    Keyword Args:
+        bias (bool, optional): If False, then the layer does not use bias weights `bias_ih` and `bias_hh`. Default: True.
+        device (str, optional): The device to execute the layer. Default: None.
+        dtype (str, optional): The data type of the layer. Default: None.
 
     Inputs:
         - **inputs** (Tensor): the input sequence. If `time_major` is True, the shape is `[time_steps, batch_size, input_size]`, else, the shape is `[batch_size, time_steps, input_size]`. `time_steps` means the length of the input sequence.
         - **initial_states** (Tensor, optional): the initial state. The shape is `[num_layers * num_directions, batch_size, hidden_size]`. If initial_state is not given, zero initial states are used. Defaults to None.
-        - **sequence_length** (Tensor, optional): shape `[batch_size]`, dtype: int64 or int32. The valid lengths of input sequences. Defaults to None. If `sequence_length` is not None, the inputs are treated as padded sequences. In each input sequence, elements whos time step index are not less than the valid length are treated as paddings.
+        - **sequence_length** (Tensor, optional): shape `[batch_size]`, dtype: int64 or int32. The valid lengths of input sequences. Defaults to None. If `sequence_length` is not None, the inputs are treated as padded sequences. In each input sequence, elements whose time step index are not less than the valid length are treated as paddings.
 
     Returns:
 
@@ -2189,7 +2220,7 @@ class GRU(RNNBase):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
 
@@ -2200,13 +2231,14 @@ class GRU(RNNBase):
             >>> y, h = rnn(x, prev_h)
 
             >>> print(y.shape)
-            [4, 23, 32]
+            paddle.Size([4, 23, 32])
             >>> print(h.shape)
-            [2, 4, 32]
+            paddle.Size([2, 4, 32])
 
 
     """
 
+    @overload
     def __init__(
         self,
         input_size: int,
@@ -2219,8 +2251,48 @@ class GRU(RNNBase):
         weight_hh_attr: ParamAttrLike | None = None,
         bias_ih_attr: ParamAttrLike | None = None,
         bias_hh_attr: ParamAttrLike | None = None,
-        name: str | None = None,
+        *,
+        bias: bool = True,
+        device=None,
+        dtype=None,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self,
+        input_size: int,
+        hidden_size: int,
+        num_layers: int,
+        bias: bool,
+        batch_first: bool,
+        dropout: float = 0.0,
+        bidirectional: bool = False,
+        device=None,
+        dtype=None,
+    ) -> None: ...
+
+    @gru_decorator
+    def __init__(
+        self,
+        input_size: int,
+        hidden_size: int,
+        num_layers: int = 1,
+        direction: _DirectionType | str = "forward",
+        time_major: bool = False,
+        dropout: float = 0.0,
+        weight_ih_attr: ParamAttrLike | None = None,
+        weight_hh_attr: ParamAttrLike | None = None,
+        bias_ih_attr: ParamAttrLike | None = None,
+        bias_hh_attr: ParamAttrLike | None = None,
+        *,
+        bias: bool = True,
+        device=None,
+        dtype=None,
     ) -> None:
+        if not bias:
+            bias_ih_attr = False
+            bias_hh_attr = False
+
         super().__init__(
             "GRU",
             input_size,
@@ -2234,4 +2306,6 @@ class GRU(RNNBase):
             bias_ih_attr,
             bias_hh_attr,
             0,  # proj_size
+            device=device,
+            dtype=dtype,
         )

@@ -13,18 +13,29 @@
 // limitations under the License.
 
 #pragma once
+#include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
-#include "glog/logging.h"
+#include "paddle/common/enforce.h"
 #include "paddle/common/flags.h"
-#include "paddle/fluid/framework/inlined_vector.h"
 #include "paddle/phi/common/place.h"
 #include "paddle/phi/core/allocator.h"
 #include "paddle/phi/core/enforce.h"
+#include "paddle/phi/core/memory/allocation/inlined_vector.h"
+#include "paddle/phi/core/memory/allocation/memory_history_recorder.h"
+#include "paddle/phi/core/memory/allocation/spin_lock.h"
+#include "paddle/phi/core/platform/device/gpu/gpu_types.h"
+
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
+#include "paddle/phi/backends/gpu/gpu_context.h"
+#include "paddle/phi/core/cuda_stream.h"
+#endif
 
 #ifdef PADDLE_WITH_NCCL
 #include <nccl.h>
@@ -34,15 +45,17 @@
 COMMON_DECLARE_string(allocator_strategy);
 COMMON_DECLARE_bool(sync_after_alloc);
 COMMON_DECLARE_int64(alloc_fill_value);
+COMMON_DECLARE_bool(record_alloc_event);
 
 namespace paddle {
 namespace memory {
+class AllocatorVisitor;
 namespace allocation {
 
 // Exception when `Alloc`/`AllocShared` failed
 struct BadAlloc : public std::exception {
   inline explicit BadAlloc(std::string err_msg, const char* file, int line)
-      : err_str_(platform::GetCompleteTraceBackString(
+      : err_str_(phi::enforce::GetCompleteTraceBackString(
             std::move(err_msg), file, line)) {}
 
   const char* what() const noexcept override { return err_str_.c_str(); }
@@ -96,9 +109,9 @@ class Allocator;
  */
 class Allocation : public phi::Allocation {
  public:
-  Allocation(void* ptr, size_t size, phi::Place place)
+  Allocation(void* ptr, size_t size, Place place)
       : phi::Allocation(ptr, size, place), base_ptr_(ptr) {}
-  Allocation(void* ptr, void* base_ptr, size_t size, const phi::Place& place)
+  Allocation(void* ptr, void* base_ptr, size_t size, const Place& place)
       : phi::Allocation(ptr, size, place), base_ptr_(base_ptr) {}
 
   void* base_ptr() const { return base_ptr_; }
@@ -128,11 +141,12 @@ class Allocation : public phi::Allocation {
    */
   static constexpr size_t kReserveAllocatorNum = 8;
   using DecoratedAllocatorStack =
-      framework::InlinedVector<Allocator*, kReserveAllocatorNum>;
+      InlinedVector<Allocator*, kReserveAllocatorNum>;
 
   DecoratedAllocatorStack decorated_allocators_;
 
   friend class Allocator;
+  friend class MultiScalePoolAllocator;
 };
 
 using AllocationPtr = phi::Allocator::AllocationPtr;
@@ -149,15 +163,20 @@ static T&& FillValue(T&& allocation) {
         PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
       }
       if (FLAGS_alloc_fill_value >= 0) {
-        VLOG(10) << "Set " << FLAGS_alloc_fill_value << " on "
-                 << allocation->ptr() << " " << allocation->place() << " "
-                 << allocation->size();
+        PADDLE_ENFORCE_LE(FLAGS_alloc_fill_value,
+                          255,
+                          common::errors::InvalidArgument(
+                              "The value of FLAGS_alloc_fill_value must be in "
+                              "range [0, 255]. Expected 0 <= "
+                              "FLAGS_alloc_fill_value <= 255, but received "
+                              "FLAGS_alloc_fill_value = %ld.",
+                              FLAGS_alloc_fill_value));
+        const int fill_value = static_cast<int>(FLAGS_alloc_fill_value);
         if (phi::is_gpu_place(allocation->place())) {
-          PADDLE_ENFORCE_GPU_SUCCESS(cudaMemset(
-              allocation->ptr(), FLAGS_alloc_fill_value, allocation->size()));
+          PADDLE_ENFORCE_GPU_SUCCESS(
+              cudaMemset(allocation->ptr(), fill_value, allocation->size()));
         } else {
-          std::memset(
-              allocation->ptr(), FLAGS_alloc_fill_value, allocation->size());
+          std::memset(allocation->ptr(), fill_value, allocation->size());
         }
         if (need_sync) {
           PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
@@ -170,7 +189,7 @@ static T&& FillValue(T&& allocation) {
 }
 
 // Base interface class of memory Allocator.
-class Allocator : public phi::Allocator {
+class PADDLE_API Allocator : public phi::Allocator {
  public:
   static void AllocationDeleter(phi::Allocation* allocation) {
     Allocator* allocator =
@@ -183,22 +202,29 @@ class Allocator : public phi::Allocator {
   // in each Allocator. So we handle size == 0 inside AllocatorFacade
   // in our design.
   AllocationPtr Allocate(size_t size) override {
-    auto ptr = AllocateImpl(size);
+    auto* ptr = AllocateImpl(size);
     static_cast<Allocation*>(ptr)->RegisterDecoratedAllocator(this);
     return FillValue(AllocationPtr(ptr, AllocationDeleter));
   }
 
-  void Free(phi::Allocation* allocation) {
+  void Free(phi::Allocation* allocation) override {
     static_cast<Allocation*>(allocation)->PopDecoratedAllocator();
     FreeImpl(allocation);
   }
 
-  uint64_t Release(const phi::Place& place) { return ReleaseImpl(place); }
+  uint64_t Release(const Place& place) { return ReleaseImpl(place); }
+  size_t Compact(const Place& place) { return CompactImpl(place); }
+
+  virtual void Accept(AllocatorVisitor* visitor);
 
  protected:
   virtual phi::Allocation* AllocateImpl(size_t size) = 0;
   virtual void FreeImpl(phi::Allocation* allocation);
-  virtual uint64_t ReleaseImpl(const phi::Place& place UNUSED) { return 0; }
+  virtual uint64_t ReleaseImpl(const Place& place UNUSED) { return 0; }
+  virtual size_t CompactImpl(const Place& place UNUSED) {
+    PADDLE_THROW(phi::errors::Unimplemented("Compact is not supported"));
+    return 0;
+  }
 };
 
 inline size_t AlignedSize(size_t size, size_t alignment) {
@@ -219,6 +245,113 @@ decltype(auto) static_unique_ptr_cast(std::unique_ptr<Base, BaseDel>&& p) {
   auto d = static_cast<Derived*>(p.release());
   return std::unique_ptr<Derived, BaseDel>(d, p.get_deleter());
 }
+
+/**
+ * \brief MultiScalePoolAllocator is a decorator of Allocator.
+ * It allocates small request from small_allocator and large request from
+ * large_allocator.
+ */
+
+class PADDLE_API MultiScalePoolAllocator : public Allocator {
+ public:
+  MultiScalePoolAllocator(const std::shared_ptr<Allocator>& small_allocator,
+                          const std::shared_ptr<Allocator>& large_allocator,
+                          size_t alignment,
+                          const GPUPlace& place)
+      : small_allocator_(small_allocator),
+        large_allocator_(large_allocator),
+        alignment_(alignment),
+        place_(place) {}
+
+  // Allocate an allocation from small_allocator or large_allocator according to
+  // size.
+  AllocationPtr Allocate(size_t size) override {
+    auto allocation = IsSmallRequest(size) ? small_allocator_->Allocate(size)
+                                           : large_allocator_->Allocate(size);
+    static_cast<Allocation*>(allocation.get())
+        ->RegisterDecoratedAllocator(this);
+    if (FLAGS_record_alloc_event) {
+      uint64_t id = global_seq_counter_.fetch_add(1, std::memory_order_relaxed);
+      uintptr_t allocator_instance = reinterpret_cast<uintptr_t>(this);
+      RecordAlloc(allocator_instance, id, size);
+      allocation->set_id(id);
+    }
+    if (MemHistoryEnabled()) {
+      // Record the actual block size (rounded up to alignment_, 256B on GPU),
+      // not the request: kFreeRequested / kFreeCompleted report the same, so
+      // using `size` here would make a pair disagree (alloc=1 vs free=256).
+      RecordMemHistory(MemHistoryAction::kAlloc,
+                       place_.GetDeviceId(),
+                       reinterpret_cast<uintptr_t>(allocation->ptr()),
+                       allocation->size(),
+                       allocation->id(),
+                       0);
+    }
+    return allocation;
+  };
+  // Free an allocation from small_allocator or large_allocator.
+  void Free(phi::Allocation* allocation) override {
+    if (FLAGS_record_alloc_event) {
+      uint64_t id = allocation->id();
+      uintptr_t allocator_instance = reinterpret_cast<uintptr_t>(this);
+      RecordFree(allocator_instance, id, allocation->size());
+    }
+    if (MemHistoryEnabled()) {
+      RecordMemHistory(MemHistoryAction::kFreeCompleted,
+                       place_.GetDeviceId(),
+                       reinterpret_cast<uintptr_t>(allocation->ptr()),
+                       allocation->size(),
+                       allocation->id(),
+                       0);
+    }
+    auto* decorated_allocation = static_cast<Allocation*>(allocation);
+    decorated_allocation->PopDecoratedAllocator();
+    Allocator* underlying_allocator =
+        decorated_allocation->TopDecoratedAllocator();
+    PADDLE_ENFORCE_EQ(
+        underlying_allocator == small_allocator_.get() ||
+            underlying_allocator == large_allocator_.get(),
+        true,
+        common::errors::InvalidArgument(
+            "MultiScalePoolAllocator found an unexpected underlying "
+            "allocator when freeing allocation %p.",
+            allocation->ptr()));
+    underlying_allocator->Free(allocation);
+  };
+  // Get allocate event when start FLAGS_record_alloc_event.
+  std::vector<std::tuple<uintptr_t, bool, uint64_t, size_t, int64_t, int64_t>>
+  GetEvents() {
+    std::lock_guard<SpinLock> lock(spinlock_);
+    return allocation_records_;
+  }
+  // Get small_allocator_ and large_allocator_.
+  std::shared_ptr<Allocator>& GetSmallAllocator() { return small_allocator_; }
+  std::shared_ptr<Allocator>& GetLargeAllocator() { return large_allocator_; }
+  virtual bool IsSmallRequest(size_t size) = 0;
+
+ private:
+  phi::Allocation* AllocateImpl(size_t UNUSED) override { return nullptr; }
+  std::shared_ptr<Allocator> small_allocator_;
+  std::shared_ptr<Allocator> large_allocator_;
+  size_t alignment_;
+  Place place_;
+
+  // Record allocate event into `allocation_records_` when
+  // `FLAGS_record_alloc_event` is True.
+  void RecordAlloc(uintptr_t allocator, uint64_t id, size_t size);
+
+  // Record free event into `allocation_records_` when
+  // `FLAGS_record_alloc_event` is True.
+  void RecordFree(uintptr_t allocator, uint64_t id, size_t size);
+
+  // Return tuple is <allocator_instance, is_allocate, id, allocate_size,
+  // cur_allocated, max_reserved>, if more fields are added later, consider
+  // using a struct to combine them.
+  std::vector<std::tuple<uintptr_t, bool, uint64_t, size_t, int64_t, int64_t>>
+      allocation_records_;
+  SpinLock spinlock_;
+  static inline std::atomic<uint64_t> global_seq_counter_{0};
+};
 
 }  // namespace allocation
 }  // namespace memory

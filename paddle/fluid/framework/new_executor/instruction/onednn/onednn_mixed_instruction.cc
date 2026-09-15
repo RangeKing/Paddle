@@ -40,11 +40,13 @@
 #include "paddle/phi/backends/onednn/onednn_helper.h"
 #include "paddle/phi/kernels/funcs/data_layout_transform.h"
 
+COMMON_DECLARE_bool(check_cuda_error);
+
 namespace paddle::framework {
 
 OneDNNMixedPhiKernelInstruction::OneDNNMixedPhiKernelInstruction(
     size_t id,
-    const phi::Place& place,
+    const Place& place,
     pir::Operation* op,
     const ValueExecutionInfo* value_exec_info)
     : OneDNNPhiKernelInstruction(id, place, op, value_exec_info) {
@@ -57,7 +59,12 @@ OneDNNMixedPhiKernelInstruction::OneDNNMixedPhiKernelInstruction(
 }
 
 void OneDNNMixedPhiKernelInstruction::Run() {
-  std::vector<std::shared_ptr<phi::DenseTensor>> tmp_holders;
+  if (FLAGS_check_cuda_error) [[unlikely]] {
+    CUDAErrorCheck("OneDNNMixedPhiKernelInstruction " + phi_op_name_ +
+                   " begin");
+  }
+
+  std::vector<std::shared_ptr<DenseTensor>> tmp_holders;
   // Step1. Mixed Dynamic Choose Kernel
   if (!has_choose_kernel_) {
     has_choose_kernel_ = true;
@@ -79,29 +86,29 @@ void OneDNNMixedPhiKernelInstruction::Run() {
     auto tmp_kernel_context = kernel_context_;
     auto tmp_infer_meta_context_ = infer_meta_context_;
     // TransLayout first
-    auto inputs = tmp_kernel_context.InputsBetween<phi::DenseTensor>(
+    auto inputs = tmp_kernel_context.InputsBetween<DenseTensor>(
         size_t(0), tmp_kernel_context.InputsSize());
 
     for (size_t i = 0; i < inputs.size(); ++i) {
       auto input = inputs[i];
-      if (input->layout() == phi::DataLayout::ONEDNN) {
+      if (input->layout() == DataLayout::ONEDNN) {
         DataLayout tmp_layout =
             phi::OneDNNContext::tls().get_cur_paddle_data_layout();
 
         // NOTE(zhiqiu): to handle the special case in ApplyDataTransform() in
         // data_transfer.cc
         if (!input->IsInitialized() && tmp_layout == DataLayout::NHWC) {
-          tmp_holders.emplace_back(std::make_shared<phi::DenseTensor>(*input));
+          tmp_holders.emplace_back(std::make_shared<DenseTensor>(*input));
           auto transed_tensor = tmp_holders.back().get();
           transed_tensor->set_layout(tmp_layout);
           phi::funcs::MatchShapeToLayout(
-              transed_tensor, phi::DataLayout::ONEDNN, tmp_layout);
+              transed_tensor, DataLayout::ONEDNN, tmp_layout);
           dnnl::memory::desc out_mem_desc =
               phi::funcs::make_memory_desc(*transed_tensor, tmp_layout);
-          transed_tensor->set_mem_desc(out_mem_desc);
+          phi::funcs::SetOneDNNMemDesc(transed_tensor, out_mem_desc);
           tmp_kernel_context.UpdataInput(i, transed_tensor);
-          auto meta_tensor = phi::MetaTensor(transed_tensor);
-          auto input_meta_tensor = phi::MetaTensor(input);
+          auto meta_tensor = MetaTensor(transed_tensor);
+          auto input_meta_tensor = MetaTensor(input);
           if (tmp_infer_meta_context_.InputsSize() > i &&
               tmp_infer_meta_context_.InputAt(i).is_same_tensor(
                   input_meta_tensor)) {
@@ -116,17 +123,17 @@ void OneDNNMixedPhiKernelInstruction::Run() {
             }
           }
         } else {
-          tmp_holders.emplace_back(std::make_shared<phi::DenseTensor>());
+          tmp_holders.emplace_back(std::make_shared<DenseTensor>());
           auto transed_tensor = tmp_holders.back().get();
           transed_tensor->set_meta(input->meta());
-          phi::funcs::TransDataLayoutFromOneDNN(phi::DataLayout::ONEDNN,
+          phi::funcs::TransDataLayoutFromOneDNN(DataLayout::ONEDNN,
                                                 tmp_layout,
                                                 *input,
                                                 transed_tensor,
-                                                phi::CPUPlace());
+                                                CPUPlace());
           tmp_kernel_context.UpdataInput(i, transed_tensor);
-          auto meta_tensor = phi::MetaTensor(transed_tensor);
-          auto input_meta_tensor = phi::MetaTensor(input);
+          auto meta_tensor = MetaTensor(transed_tensor);
+          auto input_meta_tensor = MetaTensor(input);
           if (tmp_infer_meta_context_.InputsSize() > i &&
               tmp_infer_meta_context_.InputAt(i).is_same_tensor(
                   input_meta_tensor)) {
@@ -152,6 +159,11 @@ void OneDNNMixedPhiKernelInstruction::Run() {
     VLOG(6) << "Begin run op " << phi_op_name_ << " kernel.";
     (*(phi_kernel_))(&(tmp_kernel_context));
     VLOG(6) << "End run op " << phi_op_name_ << " kernel.";
+  }
+
+  if (FLAGS_check_cuda_error) [[unlikely]] {
+    CUDAErrorCheck("OneDNNMixedPhiKernelInstruction " + phi_op_name_ +
+                   " finish");
   }
 }
 

@@ -118,7 +118,7 @@ class Movielens(Dataset):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +TIMEOUT(75)
             >>> import paddle
@@ -143,17 +143,16 @@ class Movielens(Dataset):
             ...     model = SimpleNet()
             ...     category, title, rating = model(category, title, rating)
             ...     print(category.shape, title.shape, rating.shape)
-            [] [] []
-            [] [] []
-            [] [] []
-            [] [] []
-            [] [] []
-            [] [] []
-            [] [] []
-            [] [] []
-            [] [] []
-            [] [] []
-
+            paddle.Size([]) paddle.Size([]) paddle.Size([])
+            paddle.Size([]) paddle.Size([]) paddle.Size([])
+            paddle.Size([]) paddle.Size([]) paddle.Size([])
+            paddle.Size([]) paddle.Size([]) paddle.Size([])
+            paddle.Size([]) paddle.Size([]) paddle.Size([])
+            paddle.Size([]) paddle.Size([]) paddle.Size([])
+            paddle.Size([]) paddle.Size([]) paddle.Size([])
+            paddle.Size([]) paddle.Size([]) paddle.Size([])
+            paddle.Size([]) paddle.Size([]) paddle.Size([])
+            paddle.Size([]) paddle.Size([]) paddle.Size([])
     """
 
     mode: _MovieLensDataSetMode
@@ -182,9 +181,9 @@ class Movielens(Dataset):
 
         self.data_file = data_file
         if self.data_file is None:
-            assert (
-                download
-            ), "data_file is not set and downloading automatically is disabled"
+            assert download, (
+                "data_file is not set and downloading automatically is disabled"
+            )
             self.data_file = _check_exists_and_download(
                 data_file, URL, MD5, 'sentiment', download
             )
@@ -238,25 +237,25 @@ class Movielens(Dataset):
     def _load_data(self) -> None:
         self.data = []
         is_test = self.mode == 'test'
-        with zipfile.ZipFile(self.data_file) as package:
-            with package.open('ml-1m/ratings.dat') as rating:
-                for line in rating:
-                    line = line.decode(encoding='latin')
-                    if (np.random.random() < self.test_ratio) == is_test:
-                        uid, mov_id, rating, _ = line.strip().split("::")
-                        uid = int(uid)
-                        mov_id = int(mov_id)
-                        rating = float(rating) * 2 - 5.0
+        with (
+            zipfile.ZipFile(self.data_file) as package,
+            package.open('ml-1m/ratings.dat') as rating,
+        ):
+            for line in rating:
+                line = line.decode(encoding='latin')
+                if (np.random.random() < self.test_ratio) == is_test:
+                    uid, mov_id, rating, _ = line.strip().split("::")
+                    uid = int(uid)
+                    mov_id = int(mov_id)
+                    rating = float(rating) * 2 - 5.0
 
-                        mov = self.movie_info[mov_id]
-                        usr = self.user_info[uid]
-                        self.data.append(
-                            usr.value()
-                            + mov.value(
-                                self.categories_dict, self.movie_title_dict
-                            )
-                            + [[rating]]
-                        )
+                    mov = self.movie_info[mov_id]
+                    usr = self.user_info[uid]
+                    self.data.append(
+                        usr.value()
+                        + mov.value(self.categories_dict, self.movie_title_dict)
+                        + [[rating]]
+                    )
 
     def __getitem__(self, idx: int) -> tuple[npt.NDArray[Any], ...]:
         data = self.data[idx]

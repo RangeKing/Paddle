@@ -28,47 +28,45 @@ limitations under the License. */
 
 namespace phi {
 
-#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
-void SetAllowTF32Cublas(bool active);
-/*Get the global variable allow_tf32_cublas value*/
-bool AllowTF32Cublas();
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP) || \
+    defined(PADDLE_WITH_CUSTOM_DEVICE)
 extern bool allow_tf32_cudnn;
 /*Set the value of the global variable allow_tf32_cudnn*/
-void SetAllowTF32Cudnn(bool active);
+PADDLE_API void SetAllowTF32Cudnn(bool active);
 /*Get the global variable allow_tf32_cudnn value*/
-bool AllowTF32Cudnn();
+PADDLE_API bool AllowTF32Cudnn();
 #endif  // PADDLE_WITH_CUDA
 
 template <typename Place>
 struct DefaultDeviceContextType;
 
 template <>
-struct DefaultDeviceContextType<phi::CPUPlace> {
-  using TYPE = phi::CPUContext;
+struct DefaultDeviceContextType<CPUPlace> {
+  using TYPE = CPUContext;
 };
 
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
 template <>
-struct DefaultDeviceContextType<phi::GPUPlace> {
-  using TYPE = phi::GPUContext;
+struct DefaultDeviceContextType<GPUPlace> {
+  using TYPE = GPUContext;
 };
 #endif
 
 #ifdef PADDLE_WITH_XPU
 template <>
-struct DefaultDeviceContextType<phi::XPUPlace> {
-  using TYPE = phi::XPUContext;
+struct DefaultDeviceContextType<XPUPlace> {
+  using TYPE = XPUContext;
 };
 #endif
 
 #ifdef PADDLE_WITH_CUSTOM_DEVICE
 template <>
-struct DefaultDeviceContextType<phi::CustomPlace> {
-  using TYPE = phi::CustomContext;
+struct DefaultDeviceContextType<CustomPlace> {
+  using TYPE = CustomContext;
 };
 #else
 template <>
-struct DefaultDeviceContextType<phi::CustomPlace> {
+struct DefaultDeviceContextType<CustomPlace> {
   using TYPE = DeviceContext;
 };
 #endif
@@ -76,18 +74,17 @@ struct DefaultDeviceContextType<phi::CustomPlace> {
 /*! \brief device context pool singleton */
 class DeviceContextPool {
  public:
-  TEST_API static DeviceContextPool& Instance();
+  PADDLE_API static DeviceContextPool& Instance();
 
   /*! \brief  Create should only called by Init function */
-  TEST_API static DeviceContextPool& Init(
-      const std::vector<phi::Place>& places);
+  PADDLE_API static DeviceContextPool& Init(const std::vector<Place>& places);
 
-  TEST_API static bool IsInitialized();
+  PADDLE_API static bool IsInitialized();
 
-  TEST_API static void SetPool(DeviceContextPool* dev_pool);
+  PADDLE_API static void SetPool(DeviceContextPool* dev_pool);
 
   /*! \brief  Return handle of single device context. */
-  TEST_API phi::DeviceContext* Get(const phi::Place& place);
+  PADDLE_API DeviceContext* Get(const Place& place);
 
   template <typename Place>
   const typename DefaultDeviceContextType<Place>::TYPE* GetByPlace(
@@ -96,18 +93,18 @@ class DeviceContextPool {
         const typename DefaultDeviceContextType<Place>::TYPE*>(Get(place));
   }
 
-  TEST_API size_t Size() const;
+  PADDLE_API size_t Size() const;
 
-  TEST_API const
+  PADDLE_API const
       std::map<Place, std::shared_future<std::unique_ptr<DeviceContext>>>&
       device_contexts() const;
 
-  TEST_API static void SetDeviceContexts(
+  PADDLE_API static void SetDeviceContexts(
       const std::map<Place,
                      std::shared_future<std::unique_ptr<DeviceContext>>>*);
 
  private:
-  explicit DeviceContextPool(const std::vector<phi::Place>& places);
+  explicit DeviceContextPool(const std::vector<Place>& places);
 
   std::map<Place, std::shared_future<std::unique_ptr<DeviceContext>>>
       device_contexts_;

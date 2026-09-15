@@ -48,29 +48,29 @@ struct LstmMetaGrad {
 template <typename DeviceContext, typename T>
 class LstmUnitFunctor {
  public:
-  static void compute(const DeviceContext &context,
+  static void compute(const DeviceContext &dev_ctx,
                       LstmMetaValue<T> value,
                       int frame_size,
                       int batch_size,
                       T cell_clip,
-                      const phi::funcs::detail::ActivationType &gate_act,
-                      const phi::funcs::detail::ActivationType &cell_act,
-                      const phi::funcs::detail::ActivationType &cand_act,
+                      const funcs::detail::ActivationType &gate_act,
+                      const funcs::detail::ActivationType &cell_act,
+                      const funcs::detail::ActivationType &cand_act,
                       bool old_api_version = true);
 };
 
 template <typename DeviceContext, typename T>
 class LstmUnitGradFunctor {
  public:
-  static void compute(const DeviceContext &context,
+  static void compute(const DeviceContext &dev_ctx,
                       LstmMetaValue<T> value,
                       LstmMetaGrad<T> grad,
                       int frame_size,
                       int batch_size,
                       T cell_clip,
-                      const phi::funcs::detail::ActivationType &gate_act,
-                      const phi::funcs::detail::ActivationType &cell_act,
-                      const phi::funcs::detail::ActivationType &cand_act,
+                      const funcs::detail::ActivationType &gate_act,
+                      const funcs::detail::ActivationType &cell_act,
+                      const funcs::detail::ActivationType &cand_act,
                       bool old_api_version = true);
 };
 

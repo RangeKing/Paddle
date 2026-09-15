@@ -86,7 +86,9 @@ class UniformInitializer(Initializer):
         """
         assert not (
             isinstance(var, framework.EagerParamBase) and var.is_dist()
-        ), "Currently, uniform initializer not support lazy init for dist param."
+        ), (
+            "Currently, uniform initializer not support lazy init for dist param."
+        )
         block = self._check_block(block)
 
         assert isinstance(block, (framework.Block, pir.Block))
@@ -124,7 +126,7 @@ class UniformInitializer(Initializer):
                 self._low,
                 self._high,
                 self._seed,
-                _current_expected_place(),
+                var.place if var.place._type() else _current_expected_place(),
             )
             if var.dtype == core.VarDesc.VarType.FP16:
                 var_tmp = _C_ops.cast(out_var, var.dtype)
@@ -193,17 +195,19 @@ class Uniform(UniformInitializer):
         A parameter initialized by uniform distribution.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> paddle.seed(1)
             >>> data = paddle.ones(shape=[3, 1, 2], dtype='float32')
             >>> weight_attr = paddle.framework.ParamAttr(
             ...     name="linear_weight",
-            ...     initializer=paddle.nn.initializer.Uniform(low=-0.5, high=0.5))
+            ...     initializer=paddle.nn.initializer.Uniform(low=-0.5, high=0.5),
+            ... )
             >>> bias_attr = paddle.framework.ParamAttr(
             ...     name="linear_bias",
-            ...     initializer=paddle.nn.initializer.Uniform(low=-0.5, high=0.5))
+            ...     initializer=paddle.nn.initializer.Uniform(low=-0.5, high=0.5),
+            ... )
             >>> linear = paddle.nn.Linear(2, 2, weight_attr=weight_attr, bias_attr=bias_attr)
             >>> print(linear.weight)
             Parameter containing:

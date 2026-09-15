@@ -1,0 +1,97 @@
+/* Copyright (c) 2025 PaddlePaddle Authors. All Rights Reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License. */
+#pragma once
+
+#include <algorithm>
+#include <vector>
+
+#include "paddle/common/enforce.h"
+#include "paddle/phi/backends/gpu/gpu_context.h"
+#include "paddle/phi/common/data_type.h"
+#include "paddle/phi/common/memory_utils.h"
+#include "paddle/phi/kernels/funcs/blas/blas.h"
+#include "paddle/phi/kernels/funcs/math_function.h"
+
+namespace phi {
+namespace funcs {
+// template struct ColwiseSum<GPUContext, double>;
+// The ColwiseSum<GPUContext, double> failed in debug
+// mode,
+// and only failed for this case. So reimplemented it.
+template <>
+void ColwiseSum<GPUContext, double>::operator()(const GPUContext& dev_ctx,
+                                                const DenseTensor& input,
+                                                DenseTensor* vector) {
+  auto in_dims = input.dims();
+  auto size = input.numel() / in_dims[0];
+  PADDLE_ENFORCE_EQ(vector->numel(),
+                    size,
+                    common::errors::InvalidArgument(
+                        "The size of input vector"
+                        " should be equal to the size of input tensor column"
+                        " dimension. Expected vector size=%d, but received %d",
+                        size,
+                        vector->numel()));
+  DenseTensor one;
+  one.Resize({in_dims[0]});
+  dev_ctx.template Alloc<double>(&one);
+
+  SetConstant<GPUContext, double> set;
+  set(dev_ctx, &one, static_cast<double>(1.0));
+  funcs::GetBlas<GPUContext, double>(dev_ctx).GEMV(true,
+                                                   in_dims[0],
+                                                   in_dims[1],
+                                                   1.0,
+                                                   input.data<double>(),
+                                                   one.data<double>(),
+                                                   0.0,
+                                                   vector->data<double>());
+}
+
+// template struct RowwiseSum<GPUContext, double>;
+// TODO(zcd): Following ColwiseSum format, need to confirm.
+// The RowwiseSum<GPUContext, double> failed in debug
+// mode,
+template <>
+void RowwiseSum<GPUContext, double>::operator()(const GPUContext& dev_ctx,
+                                                const DenseTensor& input,
+                                                DenseTensor* vector) {
+  auto in_dims = input.dims();
+  auto size = input.numel() / in_dims[0];
+  PADDLE_ENFORCE_EQ(vector->numel(),
+                    in_dims[0],
+                    common::errors::InvalidArgument(
+                        "The size of input vector"
+                        " should be equal to the size of input tensor row"
+                        " dimension. Expected vector size=%d, but received %d",
+                        in_dims[0],
+                        vector->numel()));
+  DenseTensor one;
+  one.Resize({size});
+  dev_ctx.template Alloc<double>(&one);
+
+  SetConstant<GPUContext, double> set;
+  set(dev_ctx, &one, static_cast<double>(1.0));
+  funcs::GetBlas<GPUContext, double>(dev_ctx).GEMV(true,
+                                                   in_dims[1],
+                                                   in_dims[0],
+                                                   1.0,
+                                                   one.data<double>(),
+                                                   input.data<double>(),
+                                                   0.0,
+                                                   vector->data<double>());
+}
+
+}  // namespace funcs
+}  // namespace phi

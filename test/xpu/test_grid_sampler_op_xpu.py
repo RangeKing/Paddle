@@ -23,6 +23,7 @@ from get_test_cover_info import (
 from op_test_xpu import XPUOpTest
 
 import paddle
+from paddle.base import core
 
 paddle.enable_static()
 
@@ -484,6 +485,10 @@ class XPUTestGridSamplerOP(XPUOpTestWrapper):
             self.mode = "bilinear"
 
     # 3d grid_sample_grad is not supported yet
+    @unittest.skipIf(
+        core.get_xpu_device_version(0) == core.XPUVersion.XPU3,
+        "grid_sample3d for XPU3 is not supported",
+    )
     class TestGridSample3DBilinear(TestXPUGridSamplerOp):
         def initTestCase(self):
             self.x_shape = (2, 3, 5, 6, 7)
@@ -495,6 +500,10 @@ class XPUTestGridSamplerOP(XPUOpTestWrapper):
 
             self.no_need_check_grad = True
 
+    @unittest.skipIf(
+        core.get_xpu_device_version(0) == core.XPUVersion.XPU3,
+        "grid_sample3d for XPU3 is not supported",
+    )
     class TestGridSample3DNearest(TestXPUGridSamplerOp):
         def initTestCase(self):
             self.x_shape = (2, 3, 5, 6, 7)
@@ -506,6 +515,10 @@ class XPUTestGridSamplerOP(XPUOpTestWrapper):
 
             self.no_need_check_grad = True
 
+    @unittest.skipIf(
+        core.get_xpu_device_version(0) == core.XPUVersion.XPU3,
+        "grid_sample3d for XPU3 is not supported",
+    )
     class TestGridSample3DBorder(TestXPUGridSamplerOp):
         def initTestCase(self):
             self.x_shape = (2, 3, 5, 6, 7)
@@ -517,6 +530,10 @@ class XPUTestGridSamplerOP(XPUOpTestWrapper):
 
             self.no_need_check_grad = True
 
+    @unittest.skipIf(
+        core.get_xpu_device_version(0) == core.XPUVersion.XPU3,
+        "grid_sample3d for XPU3 is not supported",
+    )
     class TestGridSample3DReflection(TestXPUGridSamplerOp):
         def initTestCase(self):
             self.x_shape = (2, 3, 5, 6, 7)
@@ -528,6 +545,10 @@ class XPUTestGridSamplerOP(XPUOpTestWrapper):
 
             self.no_need_check_grad = True
 
+    @unittest.skipIf(
+        core.get_xpu_device_version(0) == core.XPUVersion.XPU3,
+        "grid_sample3d for XPU3 is not supported",
+    )
     class TestGridSample3DAlignCornersFalse(TestXPUGridSamplerOp):
         def initTestCase(self):
             self.x_shape = (2, 3, 5, 6, 7)
@@ -538,6 +559,37 @@ class XPUTestGridSamplerOP(XPUOpTestWrapper):
             self.mode = "bilinear"
 
             self.no_need_check_grad = True
+
+
+class TestGridSampleGrad5DZeroBatchXPU(unittest.TestCase):
+    def setUp(self):
+        self.place = paddle.XPUPlace(0)
+        self.dtype = 'float32'
+
+    def test_grad_5d_zero_batch(self):
+        paddle.disable_static(paddle.XPUPlace(0))
+        x = paddle.to_tensor(
+            np.random.random([0, 64, 80, 94, 311]).astype(self.dtype),
+            place=self.place,
+            stop_gradient=False,
+        )
+        grid = paddle.to_tensor(
+            np.random.random([0, 280, 376, 25, 3]).astype(self.dtype),
+            place=self.place,
+            stop_gradient=False,
+        )
+
+        out = paddle.nn.functional.grid_sample(
+            x=x,
+            grid=grid,
+            mode='bilinear',
+            padding_mode='zeros',
+            align_corners=False,
+        )
+        out.sum().backward()
+        self.assertEqual(list(x.grad.shape), [0, 64, 80, 94, 311])
+        self.assertEqual(list(grid.grad.shape), [0, 280, 376, 25, 3])
+        paddle.enable_static()
 
 
 support_types = get_xpu_op_support_types('grid_sampler')

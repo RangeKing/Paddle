@@ -21,41 +21,39 @@ limitations under the License. */
 
 namespace phi::funcs {
 
-using Tensor = DenseTensor;
-
 template <typename T, typename IndexT>
-class SegmentPoolFunctor<phi::CPUContext, T, IndexT> {
+class SegmentPoolFunctor<CPUContext, T, IndexT> {
  public:
-  void operator()(const phi::CPUContext& dev_ctx,
+  void operator()(const CPUContext& dev_ctx,
                   const DenseTensor& input,
                   const DenseTensor& segments,
                   DenseTensor* output,
                   DenseTensor* index UNUSED,
                   const std::string pooltype = "SUM") {
     const IndexT* segment_ids = segments.data<IndexT>();
-    auto curent_id = segment_ids[0];
+    auto current_id = segment_ids[0];
     int64_t last_idx = 0;
     int64_t w = input.numel() / input.dims()[0];
     auto& place = *dev_ctx.eigen_device();
     for (int64_t idx = 1; idx <= segments.numel(); ++idx) {
       if (idx < segments.numel()) {
-        if (segment_ids[idx] == curent_id) continue;
+        if (segment_ids[idx] == current_id) continue;
         PADDLE_ENFORCE_GE(segment_ids[idx],
-                          curent_id,
+                          current_id,
                           common::errors::InvalidArgument(
                               "The segment ids should be sorted, but got "
                               "segment_ids[%d]:%d > segment_ids[%d]:%d.",
                               idx - 1,
-                              curent_id,
+                              current_id,
                               idx,
                               segment_ids[idx]));
       }
 
-      Tensor out_t = output->Slice(curent_id, curent_id + 1);
-      Tensor in_t = input.Slice(last_idx, idx);
+      DenseTensor out_t = output->Slice(current_id, current_id + 1);
+      DenseTensor in_t = input.Slice(last_idx, idx);
 
       int64_t h = idx - last_idx;
-      auto in_e = EigenMatrix<T>::From(in_t, common::make_ddim({h, w}));
+      auto in_e = EigenMatrix<T>::From(in_t, make_ddim({h, w}));
       auto out_e = EigenVector<T>::Flatten(out_t);
 
       auto reduce_dim = Eigen::array<int, 1>({{0}});
@@ -75,43 +73,43 @@ class SegmentPoolFunctor<phi::CPUContext, T, IndexT> {
       }
 
       last_idx = idx;
-      if (idx < segments.numel()) curent_id = segment_ids[idx];
+      if (idx < segments.numel()) current_id = segment_ids[idx];
     }
   }
 };
 
 template <typename T, typename IndexT>
-class SegmentPoolGradFunctor<phi::CPUContext, T, IndexT> {
+class SegmentPoolGradFunctor<CPUContext, T, IndexT> {
  public:
-  void operator()(const phi::CPUContext& dev_ctx,
+  void operator()(const CPUContext& dev_ctx,
                   const DenseTensor& input,
                   const DenseTensor& output,
                   const DenseTensor& out_grad,
                   const DenseTensor& segments,
                   DenseTensor* in_grad,
-                  const paddle::optional<DenseTensor>& index UNUSED,
+                  const optional<DenseTensor>& index UNUSED,
                   const std::string pooltype = "SUM") {
     const IndexT* segment_ids = segments.data<IndexT>();
     auto& place = *dev_ctx.eigen_device();
-    auto curent_id = segment_ids[0];
+    auto current_id = segment_ids[0];
     int64_t last_idx = 0;
     int64_t w = in_grad->numel() / in_grad->dims()[0];
     for (int64_t idx = 1; idx <= segments.numel(); ++idx) {
       if (idx < segments.numel()) {
-        if (segment_ids[idx] == curent_id) continue;
+        if (segment_ids[idx] == current_id) continue;
         PADDLE_ENFORCE_GE(segment_ids[idx],
-                          curent_id,
+                          current_id,
                           common::errors::InvalidArgument(
                               "The segment ids should be sorted, but got "
                               "segment_ids[%d]:%d > segment_ids[%d]:%d.",
                               idx - 1,
-                              curent_id,
+                              current_id,
                               idx,
                               segment_ids[idx]));
       }
 
-      Tensor out_g_t = out_grad.Slice(curent_id, curent_id + 1);
-      Tensor in_g_t = in_grad->Slice(last_idx, idx);
+      DenseTensor out_g_t = out_grad.Slice(current_id, current_id + 1);
+      DenseTensor in_g_t = in_grad->Slice(last_idx, idx);
 
       int64_t h = idx - last_idx;
       auto in_g_e = EigenMatrix<T>::From(in_g_t, {h, w});
@@ -123,8 +121,8 @@ class SegmentPoolGradFunctor<phi::CPUContext, T, IndexT> {
       } else if (pooltype == "SUM") {
         in_g_e.device(place) = out_g_e.broadcast(bcast);
       } else if (pooltype == "MAX" || pooltype == "MIN") {
-        Tensor out_t = output.Slice(curent_id, curent_id + 1);
-        Tensor in_t = input.Slice(last_idx, idx);
+        DenseTensor out_t = output.Slice(current_id, current_id + 1);
+        DenseTensor in_t = input.Slice(last_idx, idx);
         auto in_e = EigenMatrix<T>::From(in_t, {h, w});
         auto out_e = EigenMatrix<T>::From(out_t, {1, w});
         in_g_e.device(place) =
@@ -138,13 +136,12 @@ class SegmentPoolGradFunctor<phi::CPUContext, T, IndexT> {
       }
 
       last_idx = idx;
-      if (idx < segments.numel()) curent_id = segment_ids[idx];
+      if (idx < segments.numel()) current_id = segment_ids[idx];
     }
   }
 };
 
-using CPU = phi::CPUContext;
-using float16 = phi::dtype::float16;
+using CPU = CPUContext;
 template class SegmentPoolFunctor<CPU, float, int>;
 template class SegmentPoolFunctor<CPU, float, int64_t>;
 template class SegmentPoolFunctor<CPU, double, int>;

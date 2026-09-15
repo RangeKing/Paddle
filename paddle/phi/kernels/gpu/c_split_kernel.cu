@@ -50,13 +50,13 @@ __global__ void SplitFromRank(const T* input,
 }
 
 template <typename T, typename Context>
-void CSplitKernel(const Context& ctx,
+void CSplitKernel(const Context& dev_ctx,
                   const DenseTensor& x,
                   int rank,
                   int nranks,
                   bool use_model_parallel,
                   DenseTensor* out) {
-  auto place = ctx.GetPlace();
+  auto place = dev_ctx.GetPlace();
 
   PADDLE_ENFORCE_GE(rank,
                     0,
@@ -84,7 +84,7 @@ void CSplitKernel(const Context& ctx,
   int64_t end_size = dims[dims_size - 1];
 
   // remain dim
-  auto remain_ddim = common::slice_ddim(dims, 0, dims_size - 1);
+  auto remain_ddim = slice_ddim(dims, 0, dims_size - 1);
   int64_t remain_numel = common::product(remain_ddim);
 
   int64_t limit = x.numel();
@@ -93,16 +93,14 @@ void CSplitKernel(const Context& ctx,
 
   dims[dims_size - 1] /= nranks;
   out->Resize(dims);
-  ctx.template Alloc<T>(out);
+  dev_ctx.template Alloc<T>(out);
 
-  SplitFromRank<T><<<blocks, threads, 0, ctx.stream()>>>(
+  SplitFromRank<T><<<blocks, threads, 0, dev_ctx.stream()>>>(
       x.data<T>(), out->data<T>(), remain_numel, end_size, rank, nranks, limit);
 }
 
 }  // namespace phi
 
-#if (NCCL_VERSION_CODE >= 21000 && CUDA_VERSION >= 11000) || \
-    defined(PADDLE_WITH_HIP)
 PD_REGISTER_KERNEL(c_split,
                    GPU,
                    ALL_LAYOUT,
@@ -111,16 +109,5 @@ PD_REGISTER_KERNEL(c_split,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::bfloat16,
-                   phi::dtype::float16) {}
-#else
-PD_REGISTER_KERNEL(c_split,
-                   GPU,
-                   ALL_LAYOUT,
-                   phi::CSplitKernel,
-                   float,
-                   double,
-                   int,
-                   int64_t,
-                   phi::dtype::float16) {}
-#endif
+                   phi::bfloat16,
+                   phi::float16) {}

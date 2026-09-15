@@ -37,7 +37,7 @@ PHI_DEFINE_EXPORTED_bool(new_executor_use_local_scope,
 
 namespace paddle::framework {
 
-InterpreterCore::InterpreterCore(const phi::Place& place,
+InterpreterCore::InterpreterCore(const Place& place,
                                  const BlockDesc& block,
                                  framework::Scope* scope,
                                  const ExecutionConfig& execution_config)
@@ -48,9 +48,9 @@ InterpreterCore::InterpreterCore(const phi::Place& place,
 }
 
 InterpreterCore::InterpreterCore(
-    const phi::Place& place,
+    const Place& place,
     const std::vector<std::string>& fetch_var_names,
-    const ::pir::Block* ir_block,
+    const pir::Block* ir_block,
     framework::Scope* scope,
     const ExecutionConfig& execution_config)
     : impl_(nullptr), fetch_var_names_() {
@@ -64,12 +64,11 @@ InterpreterCore::~InterpreterCore() {
   impl_.reset(nullptr);
 }
 
-FetchList InterpreterCore::Run(
-    const std::vector<std::string>& feed_names,
-    const std::vector<phi::DenseTensor>& feed_tensors,
-    bool need_fetch,
-    bool enable_job_schedule_profiler,
-    bool switch_stream) {
+FetchList InterpreterCore::Run(const std::vector<std::string>& feed_names,
+                               const std::vector<DenseTensor>& feed_tensors,
+                               bool need_fetch,
+                               bool enable_job_schedule_profiler,
+                               bool switch_stream) {
   return impl_->Run(feed_names,
                     feed_tensors,
                     need_fetch,
@@ -128,9 +127,7 @@ const Scope* InterpreterCore::local_scope() const {
   return impl_->local_scope();
 }
 
-const phi::Place& InterpreterCore::GetPlace() const {
-  return impl_->GetPlace();
-}
+const Place& InterpreterCore::GetPlace() const { return impl_->GetPlace(); }
 
 void InterpreterCore::SetInputHooks(const std::vector<HookFunc>& hookfuncs) {
   impl_->SetInputHooks(hookfuncs);
@@ -156,6 +153,10 @@ void InterpreterCore::Build(
 }
 
 bool InterpreterCore::IsStaticBuild() const { return impl_->IsStaticBuild(); }
+
+void InterpreterCore::SetCUDAGraphState(uint8_t cuda_graph_state) {
+  impl_->SetCUDAGraphState(cuda_graph_state);
+}
 
 std::tuple<double, double> InterpreterCore::InterpreterRunTime() {
   return impl_->InterpreterRunTime();

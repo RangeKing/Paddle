@@ -76,12 +76,12 @@ class InternalStorage:
         """
         Move the underlying buffer
         """
-        assert (
-            self.buffer is not None
-        ), "Cannot move a collapsed bucket, please rebuild it"
-        assert (
-            dtype == Type.fp32.value or Type.fp16.value
-        ), "Conversion type is not supported now"
+        assert self.buffer is not None, (
+            "Cannot move a collapsed bucket, please rebuild it"
+        )
+        assert dtype == Type.fp32.value or Type.fp16.value, (
+            "Conversion type is not supported now"
+        )
 
         if self._device != device:
             if device in paddle.device.get_all_custom_device_type():
@@ -171,9 +171,9 @@ class ParamStorage(InternalStorage):
 
     @paddle.autograd.no_grad()
     def _add_param_as_view(self, param, align, convert_gpu=True):
-        assert (
-            param.dtype == self.buffer.dtype
-        ), f"Different types for the InternalStorage and the param, cannot proceed: {param.dtype} - {self.buffer.dtype}"
+        assert param.dtype == self.buffer.dtype, (
+            f"Different types for the InternalStorage and the param, cannot proceed: {param.dtype} - {self.buffer.dtype}"
+        )
 
         var_end = self._fill + param._numel()
         offset = var_end + align
@@ -234,7 +234,7 @@ class GradStorage(InternalStorage):
     """
 
     def __init__(
-        self, size, dtype, device, destination, parm2align, convert_cpu=False
+        self, size, dtype, device, destination, param2align, convert_cpu=False
     ):
         if isinstance(size, np.int64):
             size = size.tolist()
@@ -245,7 +245,7 @@ class GradStorage(InternalStorage):
 
         self.params_checked_in = 0
         self.destination = destination
-        self._parm2align = parm2align
+        self._param2align = param2align
         self.sent = False
 
     def reset_checked_in(self):
@@ -283,9 +283,9 @@ class GradStorage(InternalStorage):
         Add a new parameter gradient to the InternalStorage. Param.grad becomes a view of this InternalStorage buffer.
         """
 
-        assert (
-            id(param) not in self._param_ids
-        ), "The same gradients cannot be checked in twice"
+        assert id(param) not in self._param_ids, (
+            "The same gradients cannot be checked in twice"
+        )
 
         self._add_grad_as_view(param, align)
         self._params.append(param)
@@ -320,7 +320,7 @@ class GradStorage(InternalStorage):
             self.buffer = paddle.zeros([self._max_size], dtype=self._dtype)
 
             for p in self._params:
-                self._add_grad_as_view(p, self._parm2align[p.name])
+                self._add_grad_as_view(p, self._param2align[p.name])
 
             self._release = False
 
@@ -332,13 +332,13 @@ class GradStorage(InternalStorage):
         if len(self._params) > 0:
             self._fill = 0
             for p in self._params:
-                self._add_grad_as_view(p, self._parm2align[p.name])
+                self._add_grad_as_view(p, self._param2align[p.name])
 
     @paddle.autograd.no_grad()
     def _add_grad_as_view(self, param, align):
-        assert (
-            param._numel() > 0
-        ), "Cannot add a gradient to a released InternalStorage, please rebuild"
+        assert param._numel() > 0, (
+            "Cannot add a gradient to a released InternalStorage, please rebuild"
+        )
 
         use_main_grad = hasattr(param, "main_grad")
         if use_main_grad:

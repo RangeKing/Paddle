@@ -63,7 +63,7 @@ PHI_DEFINE_EXPORTED_int32(paddle_num_threads,
  */
 PHI_DEFINE_EXPORTED_int32(low_precision_op_list,
                           0,
-                          "Setting the level of low precision op"
+                          "Setting the level of low precision op "
                           "list printing. It will be return the "
                           "low precision op list of current module.");
 
@@ -104,6 +104,19 @@ PHI_DEFINE_EXPORTED_int32(
 
 /**
  * Operator related FLAG
+ * Name: FLAGS_check_nan_inf_blacklist
+ * Since Version:
+ * Value Range: string, default=""
+ * Example: FLAGS_check_nan_inf_blacklist="op1,op2,op3"
+ * Note: Blacklist of ops to skip when checking NAN/INF
+ */
+PHI_DEFINE_EXPORTED_string(
+    check_nan_inf_blacklist,
+    "",
+    "Blacklist of ops to skip when checking NAN/INF, split by ','");
+
+/**
+ * Operator related FLAG
  * Name: FLAGS_check_nan_inf
  * Since Version: 0.13.0
  * Value Range: bool, default=false
@@ -119,25 +132,6 @@ PHI_DEFINE_EXPORTED_bool(
 // NOTE(zhiqiu): better to share the flags, otherwise we will have too many
 // flags.
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
-
-/**
- * CUDA related related FLAG
- * Name: FLAGS_enable_cublas_tensor_op_math
- * Since Version: 1.2.0
- * Value Range: bool, default=false
- * Example:
- * Note: whether to use Tensor Core, faster but it may loss precision.
- */
-PHI_DEFINE_EXPORTED_bool(
-    enable_cublas_tensor_op_math,
-    false,
-    "The enable_cublas_tensor_op_math indicate whether to use Tensor Core, "
-    "but it may loss precision. Currently, There are two CUDA libraries that"
-    " use Tensor Cores, cuBLAS and cuDNN. cuBLAS uses Tensor Cores to speed up"
-    " GEMM computations(the matrices must be either half precision or single "
-    "precision); cuDNN uses Tensor Cores to speed up both convolutions(the "
-    "input and output must be half precision) and recurrent neural networks "
-    "(RNNs).");
 
 /**
  * CUDA related related FLAG
@@ -171,8 +165,8 @@ PHI_DEFINE_EXPORTED_string(
     "This option is useful when doing multi process training and "
     "each process have only one device (GPU). If you want to use "
     "all visible devices, set this to empty string. NOTE: the "
-    "reason of doing this is that we want to use P2P communication"
-    "between GPU devices, use CUDA_VISIBLE_DEVICES can only use"
+    "reason of doing this is that we want to use P2P communication "
+    "between GPU devices, use CUDA_VISIBLE_DEVICES can only use "
     "share-memory only.");
 #endif
 
@@ -231,6 +225,36 @@ PHI_DEFINE_EXPORTED_bool(
     "true, the algorithm is deterministic.");
 
 /**
+ * GPU RNG related FLAG
+ * Name: FLAGS_deterministic_rng
+ * Since Version: 3.4
+ * Value Range: bool, default=false
+ * Example: paddle.set_flags({'FLAGS_deterministic_rng': True})
+ * Note: Fix RNG kernel launch config so same seed gives same results
+ *       across GPU types.
+ */
+PHI_DEFINE_EXPORTED_bool(
+    deterministic_rng,
+    false,
+    "Enable cross-device RNG consistency by fixing GPU kernel launch "
+    "configuration. When true, RNG kernels use a fixed grid/block size "
+    "so that the same seed produces identical results across GPU types.");
+
+/**
+ * GPU RNG related FLAG
+ * Name: FLAGS_deterministic_rng_grid
+ * Since Version: 3.4
+ * Value Range: int32, default=1024
+ * Example: paddle.set_flags({'FLAGS_deterministic_rng_grid': 4096})
+ * Note: Grid size cap used when FLAGS_deterministic_rng is enabled.
+ *       Cross-device consistency requires the same value on all devices.
+ */
+PHI_DEFINE_EXPORTED_int32(
+    deterministic_rng_grid,
+    1024,
+    "Grid size cap when FLAGS_deterministic_rng is enabled.");
+
+/**
  * CUDA related FLAG
  * Name: FLAGS_embedding_deterministic
  * Since Version: 2.5
@@ -280,6 +304,55 @@ PHI_DEFINE_EXPORTED_int64(cudnn_exhaustive_search_times,
                           -1,
                           "Exhaustive search times for cuDNN convolution, "
                           "default is -1, not exhaustive search");
+
+/**
+ * CUDNN related FLAG
+ * Name: FLAGS_cudnn_allow_tf32
+ * Since Version: 3.3.0
+ * Value Range: bool, default=true
+ * Example:
+ * Note: whether to allow using TensorFloat-32 (TF32) in cudnn convolution.
+ * TF32 is only available on Ampere or newer GPUs.
+ * It provides better performance but lower precision than FP32.
+ */
+PHI_DEFINE_EXPORTED_bool(
+    cudnn_allow_tf32,
+    true,
+    "Whether to allow using TensorFloat-32 (TF32) tensor cores for "
+    "convolution operators in cuDNN on Ampere or newer GPUs. "
+    "Default is true.");
+
+#endif
+
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP) || \
+    defined(PADDLE_WITH_CUSTOM_DEVICE)
+/**
+ * CUBLAS related FLAG
+ * Name: FLAGS_cublas_allow_tf32
+ * Since Version: 3.3.0
+ * Value Range: bool, default=false for CUDA/HIP and true for Custom Device-only
+ * Example:
+ * Note: whether to allow using TensorFloat-32 (TF32) in cublas matmul.
+ * TF32 is only available on Ampere or newer GPUs.
+ * It provides better performance but lower precision than FP32.
+ */
+#if defined(PADDLE_WITH_CUSTOM_DEVICE) && !defined(PADDLE_WITH_CUDA) && \
+    !defined(PADDLE_WITH_HIP)
+constexpr bool kCublasAllowTF32Default = true;
+#else
+constexpr bool kCublasAllowTF32Default = false;
+#endif
+
+PHI_DEFINE_EXPORTED_bool(
+    cublas_allow_tf32,
+    kCublasAllowTF32Default,
+    "Whether to allow using TensorFloat-32 (TF32) tensor cores for "
+    "BLAS matrix multiplication. Default is true for Custom Device-only "
+    "builds and false otherwise.");
+
+#endif
+
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
 
 #ifdef PADDLE_WITH_HIP
 /**
@@ -431,6 +504,24 @@ PHI_DEFINE_EXPORTED_bool(
     true,
     "Fast eager deletion mode. If enabled, memory would release "
     "immediately without waiting GPU kernel ends.");
+
+/**
+ * Memory related FLAG
+ * Name: FLAGS_async_fast_eager_deletion_mode
+ * Since Version: 3.1.1
+ * Value Range: bool, default=false
+ * Example:
+ * Note: Enable async fast garbage collection mode. If enabled, allocation will
+ *       be released asynchronously, which makes the garbage collection process
+ *       faster. This flag is valid when fast_eager_deletion_mode is enabled.
+ */
+PHI_DEFINE_EXPORTED_bool(
+    async_fast_eager_deletion_mode,
+    false,
+    "Enable async fast garbage collection mode. If enabled, allocation will "
+    "be released asynchronously, which make the garbage collection process "
+    "non-blocking. This flag is only valid when FLAGS_fast_eager_deletion_mode "
+    "is true.");
 
 /**
  * Memory related FLAG
@@ -679,6 +770,16 @@ PHI_DEFINE_EXPORTED_bool(
 PHI_DEFINE_EXPORTED_bool(use_mkldnn, false, "Use MKLDNN to run");
 
 /**
+ * ONEDNN related FLAG
+ * Name: use_onednn
+ * Since Version:
+ * Value Range: bool, default=false
+ * Example:
+ * Note:
+ */
+PHI_DEFINE_EXPORTED_bool(use_onednn, false, "Use ONEDNN to run");
+
+/**
  * Debug related FLAG
  * Name: FLAGS_call_stack_level
  * Since Version: 2.0.0
@@ -709,6 +810,100 @@ PHI_DEFINE_EXPORTED_int32(
     "summary will be shown."
     "If FLAGS_call_stack_level == 2, the python stack, c++ stack, and "
     "error message summary will be shown.");
+/**
+ * Debug related FLAG
+ * Name: dump_grad_node_forward_stack_path
+ * Since Version: 3.3
+ * Value Range: string, default=""
+ * Example:
+ * Note: Dump grad node forward call stack to the dir path.
+ */
+PHI_DEFINE_EXPORTED_string(dump_grad_node_forward_stack_path,
+                           "",
+                           "Dump grad node forward call stack to the dir path");
+/**
+ * Debug related FLAG
+ * Name: dump_api_python_stack_path
+ * Since Version: 3.3
+ * Value Range: string, default=""
+ * Example:
+ * Note: Dump api forward python call stack to the dir path.
+ */
+PHI_DEFINE_EXPORTED_string(
+    dump_api_python_stack_path,
+    "",
+    "Dump api forward python call stack to the dir path");
+/**
+ * Debug related FLAG
+ * Name: dump_api_and_gradnode_python_stack_dir
+ * Since Version: 3.3
+ * Value Range: string, default=""
+ * Example:
+ * Note: Dump api and gradnode forward python call stack to the dir path.
+ */
+PHI_DEFINE_EXPORTED_string(
+    dump_api_and_gradnode_python_stack_dir,
+    "",
+    "Dump api and gradnode forward python call stack to the dir path");
+
+/**
+ * Debug related FLAG
+ * Name: tensor_md5_checksum_output_path
+ * Since Version: 3.3
+ * Value Range: string, default=""
+ * Example:
+ * Note: Export all API output tensors to the specified file.
+ * If tensor_md5_checksum_output_path is "", this flag will not take effect.
+ */
+PHI_DEFINE_EXPORTED_string(
+    tensor_md5_checksum_output_path,
+    "",
+    "Export all API output tensors to the specified file.");
+
+/**
+ * Debug related FLAG
+ * Name: enable_unique_name
+ * Since Version: 3.3
+ * Value Range: bool, default=false
+ * Example:
+ * Note: If True,the Tensor, C++ API and GradNode will has unique name,such as
+ * 'matmul2_out_float32_2x10' or 'matmul2_out_float32_2x10@Grad'
+ *
+ */
+PHI_DEFINE_EXPORTED_bool(
+    enable_unique_name,
+    false,
+    "Enable unique name in Eager mode for Tensor, C++ API and GradNode.");
+PHI_DEFINE_EXPORTED_bool(share_tensor_for_grad_tensor_holder,
+                         false,
+                         "CopyValueFromTensor do not deep copy, if true.");
+/**
+ * Debug related FLAG
+ * Name: tensor_md5_checksum_precision
+ * Since Version: 3.3
+ * Value Range: int32, default=3
+ * Example:
+ * Note: The precision of the tensor data used for computing the MD5 checksum
+ * (the number of decimal places after the decimal point).
+ *
+ */
+PHI_DEFINE_EXPORTED_int32(tensor_md5_checksum_precision,
+                          3,
+                          "The precision of tensor md5 checksum.");
+/**
+ * Debug related FLAG
+ * Name: tensor_md5_checksum_use_binary_input
+ * Since Version: 3.3
+ * Value Range: bool, default=false
+ * Example:
+ * Note: The data format used for calculating the md5 checksum. If true, the md5
+ * checksum will be calculated based on the binary format of the stored data.
+ *
+ */
+PHI_DEFINE_EXPORTED_bool(
+    tensor_md5_checksum_use_binary_format,
+    false,
+    "Whether to use binary format when computing tensor md5 checksum.");
 
 /**
  * Debug related FLAG
@@ -737,7 +932,7 @@ PHI_DEFINE_EXPORTED_int32(
     0,
     "The maximum number of inplace grad_add. When doing "
     "gradient accumulation, if the number of gradients need to that "
-    "less FLAGS_max_inplace_grad_add, than it will be use several grad_add"
+    "less FLAGS_max_inplace_grad_add, than it will be use several grad_add "
     "instead of sum. Default is 0.");
 
 /**
@@ -787,6 +982,18 @@ PHI_DEFINE_EXPORTED_string(tracer_onednn_ops_off,
                            "List of OneDNN operation types to be turned off");
 
 /**
+ * Performance related FLAG
+ * Name: engine_serialized_path
+ * Since Version: 2.0.0
+ * Value Range: string, default=./
+ * Example:
+ * Note: Path to directory where engine serialized files are stored.
+ */
+PHI_DEFINE_EXPORTED_string(trt_engine_serialized_path,
+                           "./",
+                           "Path to directory of engine serialized files");
+
+/**
  * Debug related FLAG
  * Name: check_kernel_launch
  * Since Version: 2.1.0
@@ -817,6 +1024,20 @@ PHI_DEFINE_EXPORTED_bool(conv2d_disable_cudnn,
 PHI_DEFINE_EXPORTED_bool(use_fast_math,
                          false,
                          "Whether to use fast math GPU functions.");
+#endif
+
+/**
+ * CUDNN related FLAG
+ * Name: conv3d_disable_cudnn
+ * Since Version:
+ * Value Range: bool, default=false
+ * Example:
+ * Note: Disable cudnn in conv3d.
+ */
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
+PHI_DEFINE_EXPORTED_bool(conv3d_disable_cudnn,
+                         false,
+                         "Disable cudnn in conv3d");
 #endif
 
 /**
@@ -898,7 +1119,7 @@ PHI_DEFINE_EXPORTED_bool(enable_neighbor_list_use_uva,
  */
 PHI_DEFINE_EXPORTED_double(graph_neighbor_size_percent,
                            1.0,
-                           "It controls whether precent of neighbor_size.");
+                           "It controls whether percent of neighbor_size.");
 
 /**
  * Distributed related FLAG
@@ -1038,7 +1259,7 @@ PHI_DEFINE_EXPORTED_string(deny_cinn_ops,
 
 /*
  * CINN related FLAG
- * Name: FLAGS_deny_cinn_ops
+ * Name: FLAGS_enable_cinn_compile_cache
  * Since Version: 3.0 Beta
  * Value Range: bool, default=true
  * Example: FLAGS_enable_cinn_compile_cache=true would reuse cached Kernel
@@ -1050,55 +1271,15 @@ PHI_DEFINE_EXPORTED_bool(
     "It controls whether to enable cinn compilation cache.");
 /*
  * CINN related FLAG
- * Name: FLAGS_deny_cinn_ops
+ * Name: FLAGS_cinn_compile_thread_num
  * Since Version: 3.0 Beta
  * Value Range: bool, default=-1
- * Example: FLAGS_cinn_compile_thread_nume=8
+ * Example: FLAGS_cinn_compile_thread_num=8
  */
 PHI_DEFINE_EXPORTED_int64(
     cinn_compile_thread_num,
     -1,
     "It controls how many thread numbers applying compilation cache.");
-/*
- * CINN related FLAG
- * Name: FLAGS_enable_interpretercore_launch_cinn
- * Since Version: 2.4
- * Value Range: bool, default=true
- * Example: FLAGS_enable_interpretercore_launch_cinn=true would execute the CINN
- * compiled instructions of a paddle graph with InterpreterCore, otherwise with
- * the CINN compiled runtime program in sequential order.
- */
-PHI_DEFINE_EXPORTED_bool(enable_interpretercore_launch_cinn,
-                         true,
-                         "It controls whether to execute cinn compiled "
-                         "program with InterpreterCore");
-
-/*
- * CINN related FLAG
- * Name: FLAGS_enable_cinn_auto_tune
- * Since Version: 2.3
- * Value Range: bool, default=false
- * Example: FLAGS_enable_cinn_auto_tune=true would use CINN with its
- * auto-tune feature enabled
- */
-PHI_DEFINE_EXPORTED_bool(enable_cinn_auto_tune,
-                         false,
-                         "It controls whether to use cinn with "
-                         "its auto-tune feature enabled");
-
-/*
- * CINN related FLAG
- * Name: FLAGS_cinn_subgraph_graphviz_dir
- * Since Version: 2.3
- * Value Range: string, default=""
- * Example: FLAGS_cinn_subgraph_graphviz_dir="./cinn_graph/" will save the
- * CINN sub-graph into "./cinn_graph/", and each sub-graph will save into
- * "fusion_groups_*"" directory
- */
-PHI_DEFINE_EXPORTED_string(cinn_subgraph_graphviz_dir,
-                           "",
-                           "Specify the directory path of dot file of "
-                           "graph, which is used for debug.");
 
 /*
  * CINN related FLAG
@@ -1106,11 +1287,11 @@ PHI_DEFINE_EXPORTED_string(cinn_subgraph_graphviz_dir,
  * Since Version: 3.0 Beta
  * Value Range: bool, default=false
  * Example: FLAGS_cinn_specify_input_dynamic_dim=true will use file set by
- * FLAGS_cinn_input_dynamic_dim_spec_file to specify input dynamic dimention.
+ * FLAGS_cinn_input_dynamic_dim_spec_file to specify input dynamic dimension.
  */
 PHI_DEFINE_EXPORTED_bool(cinn_specify_input_dynamic_dim,
                          false,
-                         "Whether to specify input dynamic dimention.");
+                         "Whether to specify input dynamic dimension.");
 
 /*
  * CINN related FLAG
@@ -1118,13 +1299,24 @@ PHI_DEFINE_EXPORTED_bool(cinn_specify_input_dynamic_dim,
  * Since Version: 3.0 Beta
  * Value Range: string, default=""
  * Example: FLAGS_cinn_input_dynamic_dim_spec_file="./config.json",
- * FLAGS_cinn_specify_input_dynamic_dim=true would use input dynamic dimention
- * predefined in ./config.json to specify input dynamic dimention.
+ * FLAGS_cinn_specify_input_dynamic_dim=true would use input dynamic dimension
+ * predefined in ./config.json to specify input dynamic dimension.
  */
 PHI_DEFINE_EXPORTED_string(
     cinn_input_dynamic_dim_spec_file,
     "",
-    "File path of predefined input dynamic dimention specification.");
+    "File path of predefined input dynamic dimension specification.");
+
+/*
+ * CINN related FLAG
+ * Name: FLAGS_cinn_debug
+ * Since Version: 3.0
+ * Value Range: bool, default=false
+ * Example: FLAGS_cinn_debug=true would enable debug log for CINN.
+ */
+PHI_DEFINE_EXPORTED_bool(cinn_debug,
+                         false,
+                         "Whether to enable debug log for CINN.");
 
 #endif
 
@@ -1189,6 +1381,19 @@ PHI_DEFINE_EXPORTED_bool(
     "When enabling CUDA Graph with CUDAMallocAsyncAllocator, we add "
     "cudaGraphInstantiateFlagAutoFreeOnLaunch so it would automatically "
     "release graph-owned blocks that have not freed before relaunching.");
+
+/*
+ * CUDA Graph related FLAG
+ * Name: FLAGS_cuda_graph_blacklist
+ * Since Version: 3.1
+ * Value Range: string, default=""
+ * Example: FLAGS_cuda_graph_blacklist="op1,op2,op3" would
+ * blacklist op1, op2, op3 from being captured in CUDA Graph.
+ */
+PHI_DEFINE_EXPORTED_string(
+    cuda_graph_blacklist,
+    "",
+    "CUDA Graph blacklist, split by ',', e.g., 'op1,op2,op3'");
 
 /*
  * Executor related FLAG
@@ -1301,10 +1506,40 @@ PHI_DEFINE_EXPORTED_bool(multi_node_sample_use_gpu_table,
 PHI_DEFINE_EXPORTED_bool(nccl_blocking_wait, false, "nccl blocking wait");
 #endif
 
+/**
+ * ProcessGroupFlagCX related FLAG
+ * Name: flagcx_blocking_wait
+ * Since Version:
+ * Value Range: bool, default=false
+ * Example:
+ * Note: nccl blocking wait.
+ * blocks host thread until collective operation completes
+ */
+#if defined(PADDLE_WITH_FLAGCX)
+PHI_DEFINE_EXPORTED_bool(flagcx_blocking_wait, false, "flagcx blocking wait");
+#endif
+
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
 PHI_DEFINE_EXPORTED_bool(benchmark_nccl,
                          false,
                          "enable nccl debug mode to synchronize nccl comm");
+#endif
+
+/**
+ * ProcessGroupNCCL/ProcessGroupBKCL related FLAG
+ * Name: enable_nccl_dynamic_check/enable_bkcl_dynamic_check
+ * Since Version:
+ * Value Range: bool, default=false
+ */
+
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
+PHI_DEFINE_EXPORTED_bool(enable_nccl_dynamic_check,
+                         false,
+                         "enable nccl dynamic checks");
+#elif (defined(PADDLE_WITH_XPU) && defined(PADDLE_WITH_XPU_BKCL))
+PHI_DEFINE_EXPORTED_bool(enable_bkcl_dynamic_check,
+                         false,
+                         "enable bkcl dynamic checks");
 #endif
 
 PHI_DEFINE_EXPORTED_bool(
@@ -1312,12 +1547,20 @@ PHI_DEFINE_EXPORTED_bool(
     false,
     "Doing memory benchmark. It will make deleting scope synchronized, "
     "and add some memory usage logs."
-    "Default cuda is asynchronous device, set to True will"
+    "Default cuda is asynchronous device, set to True will "
     "force op run in synchronous mode.");
 
 PHI_DEFINE_EXPORTED_bool(eager_communication_connection,
                          false,
                          "enable eager to create nccl comm");
+
+PHI_DEFINE_EXPORTED_bool(tcp_store_using_libuv, true, "enable libuv tcp store");
+
+PHI_DEFINE_EXPORTED_int64(
+    tcp_max_syn_backlog,
+    2048,
+    "The maximum length of the queue for completely established sockets "
+    "waiting to be accepted for tcp, default is 2048.");
 
 /**
  * Autotune related FLAG
@@ -1380,37 +1623,14 @@ PHI_DEFINE_EXPORTED_bool(enable_fusion_result_check,
                          "Whether enable fusion result check in cinn.");
 
 /**
- * CINN TransposeItesr transform fusion FLAG
- * Name: FLAGS_enable_transpose_iters_in_fusion
- * Since Version: 3.0 beta
- * Value Range: bool, default=true
+ * CINN all horizontal groups merge FLAG
+ * Name: FLAGS_merge_all_horizontal_groups
+ * Since Version: 3.0
+ * Value Range: bool, default=false
  */
-PHI_DEFINE_EXPORTED_bool(
-    enable_transpose_iters_in_fusion,
-    true,
-    "Whether enable use transpose iters transform in cinn fusion.");
-
-/**
- * CINN ReuseIters transform fusion FLAG
- * Name: FLAGS_enable_reuse_iters_in_fusion
- * Since Version: 3.0 beta
- * Value Range: bool, default=true
- */
-PHI_DEFINE_EXPORTED_bool(
-    enable_reuse_iters_in_fusion,
-    true,
-    "Whether enable use reuse iters transform in cinn fusion.");
-
-/**
- * CINN AppendIters transform fusion FLAG
- * Name: FLAGS_enable_append_iters_in_fusion
- * Since Version: 3.0 beta
- * Value Range: bool, default=true
- */
-PHI_DEFINE_EXPORTED_bool(
-    enable_append_iters_in_fusion,
-    true,
-    "Whether enable use append iters transform in cinn fusion.");
+PHI_DEFINE_EXPORTED_bool(merge_all_horizontal_groups,
+                         false,
+                         "Whether enable merge all horizontal groups in cinn.");
 
 /**
  * Conv Search cache max number related FLAG
@@ -1441,14 +1661,28 @@ PHI_DEFINE_EXPORTED_bool(
  * Performance related FLAG
  * Name: enable_auto_layout_pass
  * Since Version: 3.0.0
- * Value Range: bool, default=false
+ * Value Range: bool, default=true
  * Example:
  * Note: If True, using AutoLayoutInsertPass and AutuLayoutSimplifyPass by
  * default
  */
 PHI_DEFINE_EXPORTED_bool(enable_auto_layout_pass,
-                         false,
+                         true,
                          "Whether enable auto_layout_pass.");
+
+/**
+ * Performance related FLAG
+ * Name: enable_auto_layout_pass_in_inference
+ * Since Version: 3.0.0
+ * Value Range: bool, default=false
+ * Example:
+ * Note: This is a temporary flag, When enabled by default in the inference
+ * process, this flag will be removed and enabled or disabled by the
+ * `enable_auto_layout_pass` flag.
+ */
+PHI_DEFINE_EXPORTED_bool(enable_auto_layout_pass_in_inference,
+                         false,
+                         "Whether enable auto_layout_pass_in_inference.");
 
 /**
  * JitLayer related FLAG
@@ -1480,11 +1714,11 @@ PHI_DEFINE_EXPORTED_bool(npu_storage_format, false, "");
  * CUDNNv8 related FLAG
  * Name: enable_cudnn_frontend
  * Since Version: 2.5.0
- * Value Range: bool, default=false
+ * Value Range: bool, default=true
  * Example:
  * Note: Enable CUDNNv8 Frontend API for CUDNN kernels.
  */
-PHI_DEFINE_EXPORTED_bool(enable_cudnn_frontend, false, "");
+PHI_DEFINE_EXPORTED_bool(enable_cudnn_frontend, true, "");
 
 /**
  * CUDNNv8 related FLAG
@@ -1568,6 +1802,18 @@ PHI_DEFINE_EXPORTED_bool(enable_pir_in_executor,
                          "Enable PIR in executor");
 
 /**
+ * Using PIR API in Python
+ * Name: enable_custom_engine
+ * Since Version: 3.0.0
+ * Value Range: bool, default=false
+ * Example:
+ * Note: If True, CustomDevice can use subgraph engine optimize
+ */
+PHI_DEFINE_EXPORTED_string(enable_custom_engine,
+                           "",
+                           "Set CustomDevice subgraph engine translate pass");
+
+/**
  * Using PIR by translating legacy program to pir program
  * for dy2st mode  FLAG
  * Name: enable_pir_in_executor
@@ -1598,6 +1844,29 @@ PHI_DEFINE_EXPORTED_bool(logging_trunc_pir_py_code,
 PHI_DEFINE_EXPORTED_bool(logging_pir_py_code_dump_symbolic_dims,
                          false,
                          "whether dump symbolic dims into pir py code.");
+
+/**
+ * Enable Abstract Pass
+ * Name: enable_ap
+ * Since Version: 3.0.0
+ * Value Range: bool, default=false
+ * Example:
+ * Note: If True, abstract pass will be enabled to optimize performance.
+ */
+PHI_DEFINE_EXPORTED_bool(enable_ap, false, "whether enable abstract pass.");
+
+/**
+ * Enable Classic fused_gemm_epilogue when Abstract Pass is enabled.
+ * Name: ap_enable_classic_gemm_epilogue
+ * Since Version: 3.0.0
+ * Value Range: bool, default=false
+ * Example:
+ * Note: If True, classic fused_gemm_epilogue will be enabled.
+ */
+PHI_DEFINE_EXPORTED_bool(ap_enable_classic_gemm_epilogue,
+                         false,
+                         "whether enable classic fused_gemm_epilogue when "
+                         "abstract pass is enabled.");
 
 PHI_DEFINE_EXPORTED_bool(
     pir_interpreter_record_stream_for_gc_cache,
@@ -1644,18 +1913,6 @@ PHI_DEFINE_EXPORTED_string(
     ir_inplace_kernel_blacklist,
     "",
     "It controls the ir inplace kernel subset do not use.");
-/**
- * Specify the directory of saving PIR subgraph from @to_static
- * Name: pir_subgraph_saving_dir
- * Since Version: 2.6.0
- * Value Range: str, default=""
- * Example:
- * Note: "/workspace/my_path", it will save into my_path dir;
- */
-PHI_DEFINE_EXPORTED_string(
-    pir_subgraph_saving_dir,
-    "",
-    "Specify the directory of saving PIR subgraph from @to_static.");
 
 PHI_DEFINE_EXPORTED_bool(enable_record_memory, false, "Enable memory recorder");
 
@@ -1680,6 +1937,28 @@ PHI_DEFINE_EXPORTED_int32(
 
 PHI_DEFINE_EXPORTED_bool(print_ir, false, "Whether print ir debug str.");
 
+// Whether to enable CINN kernel cache
+// When enabled, generated files will be saved under:
+// FLAGS_cinn_kernel_cache_save_path/virtual_device_id/HostFuncName__fushionHashKey
+// Files:
+// - cinn_cuda_kernel.fatbin (CUDA kernels)
+// - cinn_cache.so (host modules)
+// This cache can accelerate subsequent CINN compilations
+PHI_DEFINE_EXPORTED_bool(enable_cinn_kernel_cache,
+                         false,
+                         "Whether enable cinn kernel cache.");
+
+// Specify the directory path of generated cinn kernel cache
+PHI_DEFINE_EXPORTED_string(
+    cinn_kernel_cache_save_path,
+    "/tmp/cinn/",
+    "Specify the directory path of generated cinn kernel cache.");
+
+PHI_DEFINE_EXPORTED_bool(
+    comp_skip_default_ops,
+    true,
+    "Whether to skip decomposing comp op in default list (decomp_trans.cc).");
+
 PHI_DEFINE_EXPORTED_bool(
     prim_skip_dynamic,
     true,
@@ -1700,23 +1979,30 @@ PHI_DEFINE_EXPORTED_string(
     prim_forward_blacklist,
     "",
     "It controls the forward blacklist ops not to be decomposed.");
+PHI_DEFINE_EXPORTED_bool(prim_forward, false, "enable prim_forward or not");
+PHI_DEFINE_EXPORTED_bool(prim_backward, false, "enable prim_backward or not");
 
-#if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL) || \
-    defined(PADDLE_WITH_XPU_BKCL) || defined(PADDLE_WITH_CUSTOM_DEVICE)
 /**
- * Communication library related FLAG
- * Name: FLAGS_dynamic_static_unified_comm
- * Since Version: 2.5
- * Value Range: bool, default=true
- * Example:
- * Note: Whether to use new communication library in auto parallel and static
- * mode. If true, it will use unified CommContextManager for communication.
+ * Remove some redundant information when printing the pir program
+ * Name: disable_logging_op_attr_list
+ * Since Version: 3.0.0
+ * Value Range: string, default=""
+ * Example: FLAGS_disable_logging_op_attr_list="op_dist_attr"
+ * Note: If "dtype", "dtype:float32" will be deleted in Pir program
  */
-PHI_DEFINE_EXPORTED_bool(dynamic_static_unified_comm,
-                         true,
-                         "Whether to use new communication library in auto "
-                         "parallel and static mode.");
-#endif  // FLAGS_dynamic_static_unified_comm
+PHI_DEFINE_EXPORTED_string(
+    disable_logging_op_attr_list,
+    "",
+    "Remove some redundant information when printing the pir program");
+
+#ifdef _WIN32
+PHI_DEFINE_EXPORTED_string(
+    flagcx_dir,  // NOLINT
+    "",
+    "Specify path for loading libflagcx.so. For instance, "
+    "For instance, /usr/local/flagcx/lib. If default, "
+    "dlopen will search flagcx from LD_LIBRARY_PATH");
+#endif
 
 /**
  * ProcessGroupNCCL related FLAG
@@ -1747,19 +2033,6 @@ PHI_DEFINE_EXPORTED_int64(alloc_fill_value,
                           "Whether to fill fixed value after allocation. "
                           "This is useful for debugging.");
 
-/**
- * Apply shape optimization pass to PIR FLAG
- * Name: pir_apply_shape_optimization_pass
- * Since Version: 3.0.0
- * Value Range: bool, default=false
- * Example:
- * Note: If True, will apply shape_optimization pass to PIR.
- */
-PHI_DEFINE_EXPORTED_bool(pir_apply_shape_optimization_pass,
-                         false,
-                         "Whether to apply shape_optimization pass "
-                         "to infer symbolic shape");
-
 PHI_DEFINE_EXPORTED_int64(
     pir_broadcast_tree_limit,
     32,
@@ -1769,7 +2042,13 @@ PHI_DEFINE_EXPORTED_string(
     nvidia_package_dir,  // NOLINT
     "",
     "Specify root dir path for nvidia site-package, such as "
-    "python3.9/site-packages/nvidia");
+    "python3.10/site-packages/nvidia");
+
+PHI_DEFINE_EXPORTED_string(
+    cuda_cccl_dir,  // NOLINT
+    "",
+    "Specify root dir path for nv/target, such as "
+    "python3.10/site-packages/nvidia/cuda_cccl/include/");
 
 PHI_DEFINE_EXPORTED_string(
     cudnn_dir,  // NOLINT
@@ -1809,9 +2088,19 @@ PHI_DEFINE_EXPORTED_string(
     "",
     "Specify path for loading libmklml_intel.so.");  // NOLINT
 
+PHI_DEFINE_EXPORTED_string(hml_dir,
+                           "",
+                           "Specify path for loading libhml_rt.so.");  // NOLINT
+
 PHI_DEFINE_EXPORTED_string(lapack_dir,
                            "",
                            "Specify path for loading liblapack.so.");  // NOLINT
+
+#ifdef PADDLE_WITH_MAGMA
+PHI_DEFINE_EXPORTED_string(magma_dir,
+                           "",
+                           "Specify path for loading libmagma.so.");  // NOLINT
+#endif
 
 /**
  * Apply check infer symbolic pass FLAG
@@ -1852,6 +2141,34 @@ PHI_DEFINE_EXPORTED_bool(enable_cse_in_dy2st,
                          "Apply CSE optimize pass in Dy2St");
 
 /**
+ * Run Dy2St in specialized device
+ * Name: specialize_device_in_dy2st
+ * Since Version: 3.1.0 Beta
+ * Value Range: bool, default=false
+ * Example:
+ * Note: If True, will specialize device for DataOp's place based on input
+ * tensor's place before lowering.
+ */
+PHI_DEFINE_EXPORTED_bool(specialize_device_in_dy2st,
+                         false,
+                         "Run Dy2St in specialized device");
+
+/**
+ * Persist parameters in scope to avoid the overhead of
+ * repeated sharing during each execution period.
+ * Name: parameters_persistent_mode_in_dy2st
+ * Since Version: 3.1.1
+ * Value Range: bool, default=false
+ * Example:
+ * Note: If True, will persist parameters in scope to avoid the overhead of
+ * repeated sharing during each execution period.
+ */
+PHI_DEFINE_EXPORTED_bool(parameters_persistent_mode_in_dy2st,
+                         false,
+                         "Persist parameters in scope to avoid the overhead of "
+                         "repeated sharing during each execution period.");
+
+/**
  * Max count of eliminate redundant computation in CSE, for debug usage
  * Name: cse_max_count
  * Since Version: 3.0.0
@@ -1890,7 +2207,7 @@ PHI_DEFINE_EXPORTED_string(cublaslt_device_best_config,
                            "offline in cublaslt gemm.");
 
 /**
- * Wether to use xqa optim in block_multihead_attention kernel (GQA)
+ * Whether to use xqa optim in block_multihead_attention kernel (GQA)
  * Name: use_xqa_optim
  * Since Version: 3.0.0
  * Value Range: bool, default=false
@@ -1902,6 +2219,20 @@ PHI_DEFINE_EXPORTED_bool(
     false,
     "Enable xqa optim in block_multihead_attention kernel (GQA).");
 
+/**
+ * Whether to use FP32 for accumulation of QK output in
+ * block_multihead_attention kernel(fp16)
+ * Name: blha_use_fp32_qk_sum Since Version: 3.0.0
+ * Value Range: bool, default=false
+ * Example:
+ * Note: If TRUE, FP32 will be used for accumulation of the QK output
+ * in block_multihead_attention kernel(fp16) .
+ */
+PHI_DEFINE_EXPORTED_bool(blha_use_fp32_qk_sum,
+                         false,
+                         "use FP32 for accumulation of QK output in "
+                         "block_multihead_attention kernel(fp16).");
+
 PHI_DEFINE_EXPORTED_bool(cuda_core_int8_gemm,
                          false,
                          "Enable speed up int8 gemm calculations when m<=4");
@@ -1910,7 +2241,7 @@ PHI_DEFINE_EXPORTED_string(
     mkl_dir,  // NOLINT
     "",
     "Specify path for loading libmkl_rt.so. "
-    "For insrance, /opt/intel/oneapi/mkl/latest/lib/intel64/."
+    "For instance, /opt/intel/oneapi/mkl/latest/lib/intel64/."
     "If default, "
     "dlopen will search mkl from LD_LIBRARY_PATH");
 
@@ -1993,7 +2324,7 @@ PHI_DEFINE_EXPORTED_int32(
  * Name: enable_auto_parallel_align_mode
  * Since Version: 3.0.0
  * Value Range: bool, default=false
- * Note: Just used for testing. Do not use in model trainning.
+ * Note: Just used for testing. Do not use in model training.
  */
 PHI_DEFINE_EXPORTED_bool(enable_auto_parallel_align_mode,
                          false,
@@ -2020,6 +2351,21 @@ PHI_DEFINE_EXPORTED_bool(save_cf_stack_op,
                          false,
                          "Save cf stack op for higher-order derivatives.");
 
+PHI_DEFINE_EXPORTED_bool(
+    enable_auto_growth_allocator_add_lock,
+    false,
+    "Enable add lock when call AutoGrowthBestFitAllocator::ReleaseImpl");
+
+PHI_DEFINE_EXPORTED_int64(offload_retry_times, -1, "Offload retry times.");
+
+PHI_DEFINE_EXPORTED_bool(offload_inplace_tensor,
+                         true,
+                         "Whether to allow offload inplace tensor.");
+
+PHI_DEFINE_EXPORTED_bool(print_offload_info,
+                         false,
+                         "Whether to print the offload information.");
+
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
 /**
  * FlashAttention related FLAG
@@ -2037,3 +2383,177 @@ PHI_DEFINE_EXPORTED_int32(
     "Version 2 requires Ampere architecture or higher, "
     "while version 3 requires Hopper architecture.");
 #endif
+
+/**
+ * Operator related FLAG
+ * Name: FLAGS_check_cuda_error
+ * Value Range: bool, default=false
+ * Example:
+ * Note: Used to debug. Checking whether CUDA error occurred or not.
+ */
+PHI_DEFINE_EXPORTED_bool(check_cuda_error,
+                         false,
+                         "Checking whether CUDA error occurred or not.");
+
+/**
+ * Stream related FLAG
+ * Name: FLAGS_use_default_stream
+ * Since Version: 3.1.1
+ * Value Range: bool, default=false
+ * Example:
+ * Note: Whether use default stream.
+ */
+PHI_DEFINE_EXPORTED_bool(use_default_stream,
+                         false,
+                         "Whether use default stream.");
+
+/**
+ * Stride_Compute_Kernel related FLAG
+ * Name: FLAGS_use_stride_compute_kernel
+ * Since Version: 3.2
+ * Value Range: bool, default=false
+ * Example:
+ * Note: Whether use Stride_Compute_Kernel.
+ */
+PHI_DEFINE_EXPORTED_bool(use_stride_compute_kernel,
+                         true,
+                         "Whether use Stride_Compute_Kernel.");
+
+/**
+ * Allocator related FLAG
+ * Name: FLAGS_deep_ep_comm_prealloc_in_mb
+ * Since Version: 3.2
+ * Value Range: int64, default=0
+ * Example:
+ * Note: Whether use prealloc for deepep communication.
+ */
+PHI_DEFINE_EXPORTED_int64(deep_ep_comm_prealloc_in_mb,
+                          0,
+                          "Whether use prealloc for deepep communication.");
+
+/**
+ * Stride_Compute_Kernel related FLAG
+ * Name: FLAGS_force_stride_compute_contig_out
+ * Since Version: 3.2.1
+ * Value Range: bool, default=false
+ * Example:
+ * Note: Whether force Stride_Compute_Kernel output contiguous.
+ */
+PHI_DEFINE_EXPORTED_bool(
+    force_stride_compute_contig_out,
+    false,
+    "Whether force Stride_Compute_Kernel output contiguous.");
+
+/**
+ * Torch Compatible related FLAG
+ * Name: FLAGS_use_accuracy_compatible_kernel
+ * Since Version: 3.2.2
+ * Value Range: bool, default=false
+ * Example:
+ * Note: Whether use torch compatible version kernel.
+ */
+PHI_DEFINE_EXPORTED_bool(use_accuracy_compatible_kernel,
+                         false,
+                         "Whether use torch compatible version kernel.");
+
+/**
+ * LayerNorm Apex Compatible related FLAG
+ * Name: FLAGS_use_apex_layer_norm_kernel
+ * Since Version: 3.5.0
+ * Value Range: bool, default=false
+ * Example:
+ * Note: Whether use apex compatible version LayerNorm kernel.
+ */
+PHI_DEFINE_EXPORTED_bool(
+    use_apex_layer_norm_kernel,
+    false,
+    "Whether use apex compatible version LayerNorm kernel.");
+
+/**
+ * Legacy gemm related FLAG
+ * Name: FLAGS_use_legacy_gemm
+ * Since Version: 3.2.2
+ * Value Range: bool, default=false
+ * Example:
+ * Note: Whether use legacy gemm kernel.
+ */
+PHI_DEFINE_EXPORTED_bool(use_legacy_gemm,
+                         false,
+                         "Whether use legacy gemm dispatch logics.");
+
+/**
+ * Legacy gemm related FLAG
+ * Name: FLAGS_use_legacy_linear
+ * Since Version: 3.3.1
+ * Value Range: bool, default=false
+ * Example:
+ * Note: Whether use legacy linear kernel.
+ */
+PHI_DEFINE_EXPORTED_bool(use_legacy_linear,
+                         false,
+                         "Whether use legacy linear dispatch logics.");
+
+/**
+ * Allocator Compact related FLAG
+ * Name: FLAGS_enable_compact_mem
+ * Since Version: 3.3
+ * Value Range: bool, default=false
+ * Example:
+ * Note: whether start compact memory.
+ */
+PHI_DEFINE_EXPORTED_bool(enable_compact_mem,
+                         false,
+                         "whether start compact memory or not.");
+/**
+ * Allocator Compact related FLAG
+ * Name: FLAGS_max_reserved_threshold_in_gb
+ * Since Version: 3.3
+ * Value Range: int64, default=70
+ * Example:
+ * Note: Threshold (GB) used in compact memory. Only reserved_mem greater than
+ * threshold may trigger defragmentation.
+ */
+PHI_DEFINE_EXPORTED_int64(
+    max_reserved_threshold_in_gb,
+    70,
+    "Threshold (GB) used in compact memory. Only reserved_mem greater than "
+    "threshold may trigger defragmentation.");
+
+/**
+ * Allocator Compact related FLAG
+ * Name: FLAGS_cur_allocated_threshold_in_gb
+ * Since Version: 3.3
+ * Value Range: int64, default=70
+ * Example:
+ * Note: Threshold (GB) used in compact memory. Only reserved_mem greater than
+ * threshold may trigger defragmentation.
+ */
+PHI_DEFINE_EXPORTED_int64(
+    cur_allocated_threshold_in_gb,
+    55,
+    "Threshold (GB) used in compact memory. Only reserved_mem greater than "
+    "threshold may trigger defragmentation.");
+
+/**
+ * Allocator Compact related FLAG
+ * Name: FLAGS_try_allocate
+ * Since Version: 3.3
+ * Value Range: bool, default=false
+ * Example:
+ * Note: whether start compact memory.
+ */
+PHI_DEFINE_EXPORTED_bool(try_allocate,
+                         false,
+                         "whether use try allocate in memory compact.");
+
+/**
+ * Allocator Compact related FLAG
+ * Name: FLAGS_record_alloc_event
+ * Since Version: 3.3
+ * Value Range: bool, default=false
+ * Example:
+ * Note: whether record allocate event.
+ */
+PHI_DEFINE_EXPORTED_bool(record_alloc_event,
+                         false,
+                         "whether record allocate event.");

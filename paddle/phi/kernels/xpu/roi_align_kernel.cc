@@ -18,14 +18,14 @@
 #include "paddle/phi/backends/xpu/xpu_context.h"
 #include "paddle/phi/common/memory_utils.h"
 #include "paddle/phi/core/kernel_registry.h"
-
+#include "paddle/phi/kernels/full_kernel.h"
 namespace phi {
 
 template <typename T, typename Context>
 void RoiAlignKernel(const Context& dev_ctx,
                     const DenseTensor& x,
                     const DenseTensor& boxes,
-                    const paddle::optional<DenseTensor>& boxes_num,
+                    const optional<DenseTensor>& boxes_num,
                     int pooled_height,
                     int pooled_width,
                     float spatial_scale,
@@ -40,14 +40,14 @@ void RoiAlignKernel(const Context& dev_ctx,
 
   int rois_num = boxes.dims()[0];
 
-  if (rois_num == 0) {
-    dev_ctx.template Alloc<T>(out);
+  if (x.numel() == 0 || boxes.numel() == 0) {
+    Full<T, Context>(dev_ctx, out->dims(), 0, out);
     return;
   }
 
   DenseTensor roi_batch_id_list;
   roi_batch_id_list.Resize({rois_num});
-  auto cplace = phi::CPUPlace();
+  auto cplace = CPUPlace();
   int* roi_batch_id_data = dev_ctx.template HostAlloc<int>(&roi_batch_id_list);
   auto xplace = dev_ctx.GetPlace();
   int rois_batch_size = 0;
@@ -64,7 +64,7 @@ void RoiAlignKernel(const Context& dev_ctx,
             rois_batch_size,
             batch_size));
 
-    if (boxes_num->dtype() == phi::DataType::INT64) {
+    if (boxes_num->dtype() == DataType::INT64) {
       std::vector<int64_t> rois_num_list(rois_batch_size);
       memory_utils::Copy(cplace,
                          rois_num_list.data(),
@@ -76,7 +76,7 @@ void RoiAlignKernel(const Context& dev_ctx,
       for (int64_t i = 0; i < rois_batch_size; i++) {
         cpu_lod[i + 1] = cpu_lod[i] + rois_num_list[i];
       }
-    } else if (boxes_num->dtype() == phi::DataType::INT32) {
+    } else if (boxes_num->dtype() == DataType::INT32) {
       std::vector<int> rois_num_list(rois_batch_size);
       memory_utils::Copy(cplace,
                          rois_num_list.data(),

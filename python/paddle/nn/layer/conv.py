@@ -14,11 +14,17 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, overload
 
 import numpy as np
 
-from paddle import get_flags
+import paddle
+from paddle import Tensor, get_flags
+from paddle.base.framework import in_dygraph_mode
+from paddle.utils.decorator_utils import (
+    conv_transpose_layer_decorator,
+    param_one_alias,
+)
 
 from ...device import (
     get_cudnn_version,
@@ -40,7 +46,9 @@ if TYPE_CHECKING:
         DataLayout2D,
         DataLayout3D,
         DataLayoutND,
+        DTypeLike,
         ParamAttrLike,
+        PlaceLike,
         Size1,
         Size2,
         Size3,
@@ -49,7 +57,6 @@ if TYPE_CHECKING:
     )
 
     from ..functional.common import _PaddingSizeMode, _PaddingTensorMode
-
 
 __all__ = []
 
@@ -90,17 +97,21 @@ class _ConvNd(Layer):
         weight_attr: ParamAttrLike | None = None,
         bias_attr: ParamAttrLike | None = None,
         data_format: DataLayoutND = "NCHW",
+        device: PlaceLike | None = None,
+        dtype: DTypeLike | None = None,
     ) -> None:
         super().__init__()
-        assert (
-            weight_attr is not False
-        ), "weight_attr should not be False in Conv."
+        assert weight_attr is not False, (
+            "weight_attr should not be False in Conv."
+        )
         self._param_attr = weight_attr
         self._bias_attr = bias_attr
         self._groups = groups
         self._in_channels = in_channels
         self._out_channels = out_channels
         self._data_format = data_format
+        self._device = device
+        self._dtype = dtype
 
         valid_padding_modes = {'zeros', 'reflect', 'replicate', 'circular'}
         if padding_mode not in valid_padding_modes:
@@ -181,12 +192,16 @@ class _ConvNd(Layer):
         self.weight = self.create_parameter(
             shape=filter_shape,
             attr=self._param_attr,
+            dtype=self._dtype,
             default_initializer=_get_default_param_initializer(),
+            device=self._device,
         )
         self.bias = self.create_parameter(
             attr=self._bias_attr,
             shape=[self._out_channels],
             is_bias=True,
+            dtype=self._dtype,
+            device=self._device,
         )
 
         cudnn_version = get_cudnn_version()
@@ -281,7 +296,7 @@ class Conv1D(_ConvNd):
 
         .. math::
 
-            L_{out}&= \frac{(L_{in} + 2 * padding - (dilation * (L_f - 1) + 1))}{stride} + 1
+            L_{out} = \frac{(L_{in} + 2 * padding - (dilation * (K - 1) + 1))}{stride} + 1
 
     Parameters:
         in_channels(int): The number of channels in the input image.
@@ -303,12 +318,16 @@ class Conv1D(_ConvNd):
             the first half of the filters is only connected to the first half
             of the input channels, while the second half of the filters is only
             connected to the second half of the input channels. Default: 1.
+        bias(bool, optional): Whether to learn and add the bias of this layer. If set
+            to False, no bias will be created and :attr:`bias_attr` is ignored. Default: True.
         padding_mode(str, optional): Four modes: 'zeros', 'reflect', 'replicate', 'circular'.
             When in 'zeros' mode, this op uses zeros to pad the input tensor.
             When in 'reflect' mode, uses reflection of the input boundaries to pad the input tensor.
             When in 'replicate' mode, uses input boundaries to pad the input tensor.
             When in 'circular' mode, uses circular input to pad the input tensor.
             Default is 'zeros'.
+        device(PlaceLike, optional): Device where the computation takes place. Default: None
+        dtype(DTypeLike, optional): Data type of the weights and bias. Default: None.
         weight_attr (ParamAttr, optional): The parameter attribute for learnable weights(Parameter)
             of conv1d. If it is set to None or one attribute of ParamAttr, conv1d
             will create ParamAttr as param_attr. If the Initializer of the param_attr
@@ -333,20 +352,36 @@ class Conv1D(_ConvNd):
         - output: 3-D tensor with same shape as input x.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.nn import Conv1D
 
-            >>> x = paddle.to_tensor([[[4, 8, 1, 9],
-            ... [7, 2, 0, 9],
-            ... [6, 9, 2, 6]]], dtype="float32")
-            >>> w = paddle.to_tensor([[[9, 3, 4],
-            ... [0, 0, 7],
-            ... [2, 5, 6]],
-            ... [[0, 3, 4],
-            ... [2, 9, 7],
-            ... [5, 6, 8]]], dtype="float32")
+            >>> x = paddle.to_tensor(
+            ...     [
+            ...         [
+            ...             [4, 8, 1, 9],
+            ...             [7, 2, 0, 9],
+            ...             [6, 9, 2, 6],
+            ...         ]
+            ...     ],
+            ...     dtype="float32",
+            ... )
+            >>> w = paddle.to_tensor(
+            ...     [
+            ...         [
+            ...             [9, 3, 4],
+            ...             [0, 0, 7],
+            ...             [2, 5, 6],
+            ...         ],
+            ...         [
+            ...             [0, 3, 4],
+            ...             [2, 9, 7],
+            ...             [5, 6, 8],
+            ...         ],
+            ...     ],
+            ...     dtype="float32",
+            ... )
 
             >>> conv = Conv1D(3, 2, 3)
             >>> conv.weight.set_value(w)
@@ -366,11 +401,17 @@ class Conv1D(_ConvNd):
         padding: _PaddingSizeMode | Size1 | Size2 | Sequence[Size2] = 0,
         dilation: Size1 = 1,
         groups: int = 1,
+        *,
+        bias: bool = True,
         padding_mode: _PaddingTensorMode = 'zeros',
+        device: PlaceLike | None = None,
+        dtype: DTypeLike | None = None,
         weight_attr: ParamAttrLike | None = None,
         bias_attr: ParamAttrLike | None = None,
         data_format: DataLayout1D = "NCL",
     ) -> None:
+        if bias is False:
+            bias_attr = False
         super().__init__(
             in_channels,
             out_channels,
@@ -385,8 +426,11 @@ class Conv1D(_ConvNd):
             weight_attr=weight_attr,
             bias_attr=bias_attr,
             data_format=data_format,
+            device=device,
+            dtype=dtype,
         )
 
+    @param_one_alias(["x", "input"])
     def forward(self, x: Tensor) -> Tensor:
         padding = 0
         if self._padding_mode != "zeros":
@@ -466,7 +510,22 @@ class Conv1DTranspose(_ConvNd):
         so for conv1d_transpose, when stride > 1, input shape maps multiple output shape.
         If output_size is None, :math:`L_{out} = L^\prime_{out}`;
         else, the :math:`L_{out}` of the output size must between :math:`L^\prime_{out}`
-        and :math:`L^\prime_{out} + stride`.
+            and :math:`L^\prime_{out} + stride`.
+
+    This API has two signatures:
+
+    1. ``Conv1DTranspose(in_channels, out_channels, kernel_size, stride=1, padding=0,
+       output_padding=0, groups=1, dilation=1, weight_attr=None, bias_attr=None,
+       data_format='NCL', *, bias=True, padding_mode='zeros', device=None, dtype=None)``
+       (Paddle-style):
+       Construct a 1-D transposed convolution layer parameterized by ``weight_attr``
+       and ``bias_attr``.
+
+    2. ``Conv1DTranspose(in_channels, out_channels, kernel_size, stride=1, padding=0,
+       output_padding=0, groups=1, bias=True, dilation=1, padding_mode='zeros',
+       device=None, dtype=None)`` (PyTorch-style):
+       Construct a 1-D transposed convolution layer with the same argument order as
+       ``torch.nn.ConvTranspose1d``.
 
     Args:
         in_channels(int): The number of channels in the input image.
@@ -492,7 +551,6 @@ class Conv1DTranspose(_ConvNd):
             first half of the input channels, while the second half of the
             filters is only connected to the second half of the input channels.
             Default: groups = 1.
-        bias(bool, optional): Whether to use bias. Default: True.
         dilation(int|tuple|list, optional): The dilation size. It means the spacing between the kernel points.
             If dilation is a tuple/list, it must contain one integer, (dilation_size).
             Default: dilation = 1.
@@ -505,6 +563,18 @@ class Conv1DTranspose(_ConvNd):
             If it is set to None or one attribute of ParamAttr, conv1d_transpose
             will create ParamAttr as bias_attr. If the Initializer of the bias_attr
             is not set, the bias is initialized zero. Default: None.
+        data_format(str, optional): Data format that specifies the layout of input.
+            It can be "NCL" or "NLC". Default: "NCL".
+
+    Keyword args:
+        bias(bool, optional): Whether to add a learnable bias. When ``False``,
+            ``bias_attr`` is forced to ``False``. Default: True.
+        padding_mode(str, optional): ``'zeros'``, ``'reflect'``, ``'replicate'`` or
+            ``'circular'``. Default: ``'zeros'``.
+        device(str|paddle.CPUPlace()|paddle.CUDAPlace()|paddle.CUDAPinnedPlace()|None, optional):
+            The device on which to create the layer's parameters. Default: None.
+        dtype(str|paddle.dtype|None, optional): The data type of the layer's
+            parameters. Default: None.
 
     Attribute:
         **weight** (Parameter): the learnable weights of filters of this layer.
@@ -519,7 +589,7 @@ class Conv1DTranspose(_ConvNd):
         - output(Tensor): 3-D tensor with same shape as input x.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.nn import Conv1DTranspose
@@ -528,13 +598,13 @@ class Conv1DTranspose(_ConvNd):
             >>> x = paddle.to_tensor([[[4, 0, 9, 7],
             ... [8, 0, 9, 2]]], dtype="float32")
             >>> print(x.shape)
-            [1, 2, 4]
+            paddle.Size([1, 2, 4])
 
             >>> # shape: (2, 1, 2)
             >>> w = paddle.to_tensor([[[7, 0]],
             ... [[4, 2]]], dtype="float32")
             >>> print(w.shape)
-            [2, 1, 2]
+            paddle.Size([2, 1, 2])
 
             >>> conv = Conv1DTranspose(2, 1, 2)
             >>> conv.weight.set_value(w)
@@ -544,6 +614,7 @@ class Conv1DTranspose(_ConvNd):
             [[[60., 16., 99., 75., 4. ]]])
     """
 
+    @overload
     def __init__(
         self,
         in_channels: int,
@@ -557,7 +628,52 @@ class Conv1DTranspose(_ConvNd):
         weight_attr: ParamAttrLike | None = None,
         bias_attr: ParamAttrLike | None = None,
         data_format: DataLayout1D = "NCL",
+        *,
+        bias: bool = True,
+        padding_mode: _PaddingTensorMode = 'zeros',
+        device: PlaceLike | None = None,
+        dtype: DTypeLike | None = None,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: Size1,
+        stride: Size1 = 1,
+        padding: _PaddingSizeMode | Size1 | Size2 | Sequence[Size2] = 0,
+        output_padding: _PaddingSizeMode | Size1 | Size2 | Sequence[Size2] = 0,
+        groups: int = 1,
+        bias: bool = True,
+        dilation: Size1 = 1,
+        padding_mode: _PaddingTensorMode = 'zeros',
+        device: PlaceLike | None = None,
+        dtype: DTypeLike | None = None,
+    ) -> None: ...
+
+    @conv_transpose_layer_decorator
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: Size1,
+        stride: Size1 = 1,
+        padding: _PaddingSizeMode | Size1 | Size2 | Sequence[Size2] = 0,
+        output_padding: _PaddingSizeMode | Size1 | Size2 | Sequence[Size2] = 0,
+        groups: int = 1,
+        dilation: Size1 = 1,
+        weight_attr: ParamAttrLike | None = None,
+        bias_attr: ParamAttrLike | None = None,
+        data_format: DataLayout1D = "NCL",
+        *,
+        bias: bool = True,
+        padding_mode: _PaddingTensorMode = 'zeros',
+        device: PlaceLike | None = None,
+        dtype: DTypeLike | None = None,
     ) -> None:
+        if bias is False:
+            bias_attr = False
         super().__init__(
             in_channels,
             out_channels,
@@ -566,12 +682,15 @@ class Conv1DTranspose(_ConvNd):
             1,
             stride=stride,
             padding=padding,
+            padding_mode=padding_mode,
             dilation=dilation,
             output_padding=output_padding,
             groups=groups,
             weight_attr=weight_attr,
             bias_attr=bias_attr,
             data_format=data_format,
+            device=device,
+            dtype=dtype,
         )
 
     def forward(self, x: Tensor, output_size: Size1 | None = None) -> Tensor:
@@ -630,11 +749,11 @@ class Conv2D(_ConvNd):
         stride(int|list|tuple, optional): The stride size. If stride is a list/tuple, it must
             contain two integers, (stride_H, stride_W). Otherwise, the
             stride_H = stride_W = stride. The default value is 1.
-        padding(int|str|tuple|list, optional): The padding size. Padding coule be in one of the following forms.
+        padding(int|str|tuple|list, optional): The padding size. Padding could be in one of the following forms.
             1. a string in ['valid', 'same'].
-            2. an int, which means each spartial dimension(depth, height, width) is zero paded by size of `padding`
-            3. a list[int] or tuple[int] whose length is the number of spartial dimensions, which contains the amount of padding on each side for each spartial dimension. It has the form [pad_d1, pad_d2, ...].
-            4. a list[int] or tuple[int] whose length is 2 * number of spartial dimensions. It has the form  [pad_before, pad_after, pad_before, pad_after, ...] for all spartial dimensions.
+            2. an int, which means each spatial dimension(depth, height, width) is zero paded by size of `padding`
+            3. a list[int] or tuple[int] whose length is the number of spatial dimensions, which contains the amount of padding on each side for each spatial dimension. It has the form [pad_d1, pad_d2, ...].
+            4. a list[int] or tuple[int] whose length is 2 * number of spatial dimensions. It has the form  [pad_before, pad_after, pad_before, pad_after, ...] for all spatial dimensions.
             5. a list or tuple of pairs of ints. It has the form [[pad_before, pad_after], [pad_before, pad_after], ...]. Note that, the batch dimension and channel dimension are also included. Each pair of integers correspond to the amount of padding for a dimension of the input. Padding in batch dimension and channel dimension should be [0, 0] or (0, 0).
             The default value is 0.
         dilation(int|list|tuple, optional): The dilation size. If dilation is a list/tuple, it must
@@ -645,7 +764,11 @@ class Conv2D(_ConvNd):
             the first half of the filters is only connected to the first half
             of the input channels, while the second half of the filters is only
             connected to the second half of the input channels. The default value is 1.
+        bias(bool, optional): Whether to learn and add the bias of this layer. If set
+            to False, no bias will be created and :attr:`bias_attr` is ignored. Default: True.
         padding_mode(str, optional): ``'zeros'``, ``'reflect'``, ``'replicate'`` or ``'circular'``. Default: ``'zeros'``.
+        device(PlaceLike, optional): Device where the computation takes place. Default: None
+        dtype(DTypeLike, optional): Data type of the weights and bias. Default: None.
         weight_attr(ParamAttr, optional): The parameter attribute for learnable parameters/weights
             of conv2d. If it is set to None or one attribute of ParamAttr, conv2d
             will create ParamAttr as param_attr. If it is set to None, the parameter
@@ -658,7 +781,6 @@ class Conv2D(_ConvNd):
             is not set, the bias is initialized zero. The default value is None.
         data_format(str, optional): Data format that specifies the layout of input.
             It can be "NCHW" or "NHWC". Default: "NCHW".
-
     Attribute:
 
         **weight** (Parameter): the learnable weights of filter of this layer.
@@ -685,19 +807,19 @@ class Conv2D(_ConvNd):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> import paddle.nn as nn
 
             >>> paddle.disable_static()
 
-            >>> x_var = paddle.uniform((2, 4, 8, 8), dtype='float32', min=-1., max=1.)
+            >>> x_var = paddle.uniform((2, 4, 8, 8), dtype='float32', min=-1.0, max=1.0)
 
             >>> conv = nn.Conv2D(4, 6, (3, 3))
             >>> y_var = conv(x_var)
             >>> print(y_var.shape)
-            [2, 6, 6, 6]
+            paddle.Size([2, 6, 6, 6])
     """
 
     def __init__(
@@ -709,11 +831,17 @@ class Conv2D(_ConvNd):
         padding: _PaddingSizeMode | Size2 | Size4 | Sequence[Size2] = 0,
         dilation: Size2 = 1,
         groups: int = 1,
+        *,
+        bias: bool = True,
         padding_mode: _PaddingTensorMode = 'zeros',
+        device: PlaceLike | None = None,
+        dtype: DTypeLike | None = None,
         weight_attr: ParamAttrLike | None = None,
         bias_attr: ParamAttrLike | None = None,
         data_format: DataLayout2D = "NCHW",
     ) -> None:
+        if bias is False:
+            bias_attr = False
         super().__init__(
             in_channels,
             out_channels,
@@ -728,8 +856,11 @@ class Conv2D(_ConvNd):
             weight_attr=weight_attr,
             bias_attr=bias_attr,
             data_format=data_format,
+            device=device,
+            dtype=dtype,
         )
 
+    @param_one_alias(["x", "input"])
     def forward(self, x: Tensor) -> Tensor:
         if self._padding_mode != 'zeros':
             x = F.pad(
@@ -738,6 +869,33 @@ class Conv2D(_ConvNd):
                 mode=self._padding_mode,
                 data_format=self._data_format,
             )
+
+        # Note(luchang): If the input tensor is sharded along the spatial width
+        # dimension (W), this indicates spatially parallel convolution is being used.
+        if (
+            in_dygraph_mode()
+            and x.is_dist()
+            and self._data_format in ["NCHW", "NHWC"]
+        ):
+            if self._data_format == "NCHW":
+                shard_axis = 3
+            elif self._data_format == "NHWC":
+                shard_axis = 2
+
+            for placement in x.placements:
+                if placement == paddle.distributed.Shard(shard_axis):
+                    return paddle.distributed.auto_parallel.ring_conv.RingConv2d.apply(
+                        x,
+                        self.weight,
+                        bias=self.bias,
+                        stride=self._stride,
+                        padding=self._updated_padding,
+                        padding_algorithm=self._padding_algorithm,
+                        dilation=self._dilation,
+                        groups=self._groups,
+                        data_format=self._data_format,
+                        channel_dim=self._channel_dim,
+                    )
 
         out = F.conv._conv_nd(
             x,
@@ -791,6 +949,21 @@ class Conv2DTranspose(_ConvNd):
     Note:
         If output_size is None, :math:`H_{out}` = :math:`H^\prime_{out}` , :math:`W_{out}` = :math:`W^\prime_{out}`. Otherwise, the specified output_size_height (the height of the output feature layer) :math:`H_{out}` should be between :math:`H^\prime_{out}` and :math:`H^\prime_{out} + strides[0]` (excluding :math:`H^\prime_{out} + strides[0]` ).
 
+    This API has two signatures:
+
+    1. ``Conv2DTranspose(in_channels, out_channels, kernel_size, stride=1, padding=0,
+       output_padding=0, groups=1, dilation=1, weight_attr=None, bias_attr=None,
+       data_format='NCHW', *, bias=True, padding_mode='zeros', device=None, dtype=None)``
+       (Paddle-style):
+       Construct a 2-D transposed convolution layer parameterized by ``weight_attr``
+       and ``bias_attr``.
+
+    2. ``Conv2DTranspose(in_channels, out_channels, kernel_size, stride=1, padding=0,
+       output_padding=0, groups=1, bias=True, dilation=1, padding_mode='zeros',
+       device=None, dtype=None)`` (PyTorch-style):
+       Construct a 2-D transposed convolution layer with the same argument order as
+       ``torch.nn.ConvTranspose2d``.
+
     Parameters:
         in_channels(int): The number of channels in the input image.
         out_channels(int): The number of channels produced by the convolution.
@@ -800,24 +973,24 @@ class Conv2DTranspose(_ConvNd):
         stride(int|list|tuple, optional): The stride size. If stride is a list/tuple, it must
             contain two integers, (stride_H, stride_W). Otherwise, the
             stride_H = stride_W = stride. Default: 1.
-        padding(int|str|tuple|list, optional): The padding size. Padding coule be in one of the following forms.
+        padding(int|str|tuple|list, optional): The padding size. Padding could be in one of the following forms.
             1. a string in ['valid', 'same'].
-            2. an int, which means each spartial dimension(depth, height, width) is zero paded by size of `padding` on both sides
-            3. a list[int] or tuple[int] whose length is the number of spartial dimensions, which contains the amount of padding on each side for each spartial dimension. It has the form [pad_d1, pad_d2, ...].
-            4. a list[int] or tuple[int] whose length is 2 * number of spartial dimensions. It has the form  [pad_before, pad_after, pad_before, pad_after, ...] for all spartial dimensions.
+            2. an int, which means each spatial dimension(depth, height, width) is zero paded by size of `padding` on both sides
+            3. a list[int] or tuple[int] whose length is the number of spatial dimensions, which contains the amount of padding on each side for each spatial dimension. It has the form [pad_d1, pad_d2, ...].
+            4. a list[int] or tuple[int] whose length is 2 * number of spatial dimensions. It has the form  [pad_before, pad_after, pad_before, pad_after, ...] for all spatial dimensions.
             5. a list or tuple of pairs of ints. It has the form [[pad_before, pad_after], [pad_before, pad_after], ...]. Note that, the batch dimension and channel dimension are also included. Each pair of integers correspond to the amount of padding for a dimension of the input. Padding in batch dimension and channel dimension should be [0, 0] or (0, 0).
             The default value is 0.
         output_padding(int|list|tuple, optional): Additional size added to one side
             of each dimension in the output shape. Default: 0.
-        dilation(int|list|tuple, optional): The dilation size. If dilation is a list/tuple, it must
-            contain two integers, (dilation_H, dilation_W). Otherwise, the
-            dilation_H = dilation_W = dilation. Default: 1.
         groups(int, optional): The groups number of the Conv2D transpose layer. Inspired by
             grouped convolution in Alex Krizhevsky's Deep CNN paper, in which
             when group=2, the first half of the filters is only connected to the
             first half of the input channels, while the second half of the
             filters is only connected to the second half of the input channels.
             Default: 1.
+        dilation(int|list|tuple, optional): The dilation size. If dilation is a list/tuple, it must
+            contain two integers, (dilation_H, dilation_W). Otherwise, the
+            dilation_H = dilation_W = dilation. Default: 1.
         weight_attr(ParamAttr, optional): The parameter attribute for learnable weights(Parameter)
             of conv2d_transpose. If it is set to None or one attribute of ParamAttr, conv2d_transpose
             will create ParamAttr as param_attr. If the Initializer of the param_attr
@@ -829,6 +1002,16 @@ class Conv2DTranspose(_ConvNd):
             is not set, the bias is initialized zero. Default: None.
         data_format(str, optional): Data format that specifies the layout of input.
             It can be "NCHW" or "NHWC". Default: "NCHW".
+
+    Keyword args:
+        bias(bool, optional): Whether to add a learnable bias. When ``False``,
+            ``bias_attr`` is forced to ``False``. Default: True.
+        padding_mode(str, optional): ``'zeros'``, ``'reflect'``, ``'replicate'`` or
+            ``'circular'``. Default: ``'zeros'``.
+        device(str|paddle.CPUPlace()|paddle.CUDAPlace()|paddle.CUDAPinnedPlace()|None, optional):
+            The device on which to create the layer's parameters. Default: None.
+        dtype(str|paddle.dtype|None, optional): The data type of the layer's
+            parameters. Default: None.
 
     Attribute:
 
@@ -860,21 +1043,22 @@ class Conv2DTranspose(_ConvNd):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> import paddle.nn as nn
 
             >>> paddle.disable_static()
 
-            >>> x_var = paddle.uniform((2, 4, 8, 8), dtype='float32', min=-1., max=1.)
+            >>> x_var = paddle.uniform((2, 4, 8, 8), dtype='float32', min=-1.0, max=1.0)
 
             >>> conv = nn.Conv2DTranspose(4, 6, (3, 3))
             >>> y_var = conv(x_var)
             >>> print(y_var.shape)
-            [2, 6, 10, 10]
+            paddle.Size([2, 6, 10, 10])
     """
 
+    @overload
     def __init__(
         self,
         in_channels: int,
@@ -883,12 +1067,57 @@ class Conv2DTranspose(_ConvNd):
         stride: Size2 = 1,
         padding: _PaddingSizeMode | Size2 | Size4 | Sequence[Size2] = 0,
         output_padding: _PaddingSizeMode | Size2 | Size4 | Sequence[Size2] = 0,
-        dilation: Size2 = 1,
         groups: int = 1,
+        dilation: Size2 = 1,
         weight_attr: ParamAttrLike | None = None,
         bias_attr: ParamAttrLike | None = None,
         data_format: DataLayout2D = "NCHW",
+        *,
+        bias: bool = True,
+        padding_mode: _PaddingTensorMode = 'zeros',
+        device: PlaceLike | None = None,
+        dtype: DTypeLike | None = None,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: Size2,
+        stride: Size2 = 1,
+        padding: _PaddingSizeMode | Size2 | Size4 | Sequence[Size2] = 0,
+        output_padding: _PaddingSizeMode | Size2 | Size4 | Sequence[Size2] = 0,
+        groups: int = 1,
+        bias: bool = True,
+        dilation: Size2 = 1,
+        padding_mode: _PaddingTensorMode = 'zeros',
+        device: PlaceLike | None = None,
+        dtype: DTypeLike | None = None,
+    ) -> None: ...
+
+    @conv_transpose_layer_decorator
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: Size2,
+        stride: Size2 = 1,
+        padding: _PaddingSizeMode | Size2 | Size4 | Sequence[Size2] = 0,
+        output_padding: _PaddingSizeMode | Size2 | Size4 | Sequence[Size2] = 0,
+        groups: int = 1,
+        dilation: Size2 = 1,
+        weight_attr: ParamAttrLike | None = None,
+        bias_attr: ParamAttrLike | None = None,
+        data_format: DataLayout2D = "NCHW",
+        *,
+        bias: bool = True,
+        padding_mode: _PaddingTensorMode = 'zeros',
+        device: PlaceLike | None = None,
+        dtype: DTypeLike | None = None,
     ) -> None:
+        if bias is False:
+            bias_attr = False
         super().__init__(
             in_channels,
             out_channels,
@@ -897,12 +1126,15 @@ class Conv2DTranspose(_ConvNd):
             2,
             stride=stride,
             padding=padding,
+            padding_mode=padding_mode,
             dilation=dilation,
             output_padding=output_padding,
             groups=groups,
             weight_attr=weight_attr,
             bias_attr=bias_attr,
             data_format=data_format,
+            device=device,
+            dtype=dtype,
         )
 
     def forward(self, x: Tensor, output_size: Size2 | None = None) -> Tensor:
@@ -928,13 +1160,13 @@ class Conv2DTranspose(_ConvNd):
 
 class Conv3D(_ConvNd):
     r"""
-    **Convlution3d Layer**
+    **Convolution3d Layer**
     The convolution3d layer calculates the output based on the input, filter
     and strides, paddings, dilations, groups parameters. Input(Input) and
     Output(Output) are multidimensional tensors with a shape of
     :math:`[N, C, D, H, W]` . Where N is batch size, C is the number of
     channels, D is the depth of the feature, H is the height of the feature,
-    and W is the width of the feature. Convlution3D is similar with Convlution2D
+    and W is the width of the feature. Convolution3D is similar with Convolution2D
     but adds one dimension(depth). If bias attribution and activation type are
     provided, bias is added to the output of the convolution, and the
     corresponding activation function is applied to the final result.
@@ -960,11 +1192,11 @@ class Conv3D(_ConvNd):
         stride(int|list|tuple, optional): The stride size. If stride is a list/tuple, it must
             contain three integers, (stride_D, stride_H, stride_W). Otherwise, the
             stride_D = stride_H = stride_W = stride. The default value is 1.
-        padding(int|str|tuple|list, optional): The padding size. Padding coule be in one of the following forms.
+        padding(int|str|tuple|list, optional): The padding size. Padding could be in one of the following forms.
             1. a string in ['valid', 'same'].
-            2. an int, which means each spartial dimension(depth, height, width) is zero paded by size of `padding`
-            3. a list[int] or tuple[int] whose length is the number of spartial dimensions, which contains the amount of padding on each side for each spartial dimension. It has the form [pad_d1, pad_d2, ...].
-            4. a list[int] or tuple[int] whose length is 2 * number of spartial dimensions. It has the form  [pad_before, pad_after, pad_before, pad_after, ...] for all spartial dimensions.
+            2. an int, which means each spatial dimension(depth, height, width) is zero paded by size of `padding`
+            3. a list[int] or tuple[int] whose length is the number of spatial dimensions, which contains the amount of padding on each side for each spatial dimension. It has the form [pad_d1, pad_d2, ...].
+            4. a list[int] or tuple[int] whose length is 2 * number of spatial dimensions. It has the form  [pad_before, pad_after, pad_before, pad_after, ...] for all spatial dimensions.
             5. a list or tuple of pairs of ints. It has the form [[pad_before, pad_after], [pad_before, pad_after], ...]. Note that, the batch dimension and channel dimension are also included. Each pair of integers correspond to the amount of padding for a dimension of the input. Padding in batch dimension and channel dimension should be [0, 0] or (0, 0).
             The default value is 0.
         dilation(int|list|tuple, optional): The dilation size. If dilation is a list/tuple, it must
@@ -975,7 +1207,11 @@ class Conv3D(_ConvNd):
             the first half of the filters is only connected to the first half
             of the input channels, while the second half of the filters is only
             connected to the second half of the input channels. The default value is 1.
+        bias(bool, optional): Whether to learn and add the bias of this layer. If set
+            to False, no bias will be created and :attr:`bias_attr` is ignored. Default: True.
         padding_mode(str, optional): ``'zeros'``, ``'reflect'``, ``'replicate'`` or ``'circular'``. Default: ``'zeros'``.
+        device(PlaceLike, optional): Device where the computation takes place. Default: None
+        dtype(DTypeLike, optional): Data type of the weights and bias. Default: None.
         weight_attr(ParamAttr, optional): The parameter attribute for learnable parameters/weights
             of conv3d. If it is set to None or one attribute of ParamAttr, conv3d
             will create ParamAttr as param_attr. If it is set to None, the parameter
@@ -1017,19 +1253,19 @@ class Conv3D(_ConvNd):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> import paddle.nn as nn
 
             >>> paddle.disable_static()
 
-            >>> x_var = paddle.uniform((2, 4, 8, 8, 8), dtype='float32', min=-1., max=1.)
+            >>> x_var = paddle.uniform((2, 4, 8, 8, 8), dtype='float32', min=-1.0, max=1.0)
 
             >>> conv = nn.Conv3D(4, 6, (3, 3, 3))
             >>> y_var = conv(x_var)
             >>> print(y_var.shape)
-            [2, 6, 6, 6, 6]
+            paddle.Size([2, 6, 6, 6, 6])
     """
 
     def __init__(
@@ -1041,11 +1277,18 @@ class Conv3D(_ConvNd):
         padding: _PaddingSizeMode | Size3 | Size6 | Sequence[Size2] = 0,
         dilation: Size3 = 1,
         groups: int = 1,
+        *,
+        bias: bool = True,
         padding_mode: _PaddingTensorMode = 'zeros',
+        device: PlaceLike | None = None,
+        dtype: DTypeLike | None = None,
         weight_attr: ParamAttrLike | None = None,
         bias_attr: ParamAttrLike | None = None,
         data_format: DataLayout3D = "NCDHW",
     ) -> None:
+        if bias is False:
+            bias_attr = False
+
         super().__init__(
             in_channels,
             out_channels,
@@ -1060,8 +1303,11 @@ class Conv3D(_ConvNd):
             weight_attr=weight_attr,
             bias_attr=bias_attr,
             data_format=data_format,
+            device=device,
+            dtype=dtype,
         )
 
+    @param_one_alias(["x", "input"])
     def forward(self, x: Tensor) -> Tensor:
         if self._padding_mode != 'zeros':
             x = F.pad(
@@ -1090,7 +1336,7 @@ class Conv3D(_ConvNd):
 
 class Conv3DTranspose(_ConvNd):
     r"""
-    **Convlution3D transpose layer**
+    **Convolution3D transpose layer**
     The convolution3D transpose layer calculates the output based on the input,
     filter, and dilations, strides, paddings. Input(Input) and output(Output)
     are in NCDHW format. Where N is batch size, C is the number of channels,
@@ -1128,6 +1374,21 @@ class Conv3DTranspose(_ConvNd):
         :math:`W_{out}` of the output size must between :math:`W^\prime_{out}` and
         :math:`W^\prime_{out} + strides[2]`, conv3d_transpose can compute the kernel size automatically.
 
+    This API has two signatures:
+
+    1. ``Conv3DTranspose(in_channels, out_channels, kernel_size, stride=1, padding=0,
+       output_padding=0, groups=1, dilation=1, weight_attr=None, bias_attr=None,
+       data_format='NCDHW', *, bias=True, padding_mode='zeros', device=None, dtype=None)``
+       (Paddle-style):
+       Construct a 3-D transposed convolution layer parameterized by ``weight_attr``
+       and ``bias_attr``.
+
+    2. ``Conv3DTranspose(in_channels, out_channels, kernel_size, stride=1, padding=0,
+       output_padding=0, groups=1, bias=True, dilation=1, padding_mode='zeros',
+       device=None, dtype=None)`` (PyTorch-style):
+       Construct a 3-D transposed convolution layer with the same argument order as
+       ``torch.nn.ConvTranspose3d``.
+
     Parameters:
         in_channels(int): The number of channels in the input image.
         out_channels(int): The number of channels produced by the convolution.
@@ -1138,24 +1399,24 @@ class Conv3DTranspose(_ConvNd):
             If stride is a list/tuple, it must contain three integers, (stride_depth, stride_height,
             stride_width). Otherwise, stride_depth = stride_height = stride_width = stride.
             Default: 1.
-        padding(int|str|tuple|list, optional): The padding size. Padding coule be in one of the following forms.
+        padding(int|str|tuple|list, optional): The padding size. Padding could be in one of the following forms.
             1. a string in ['valid', 'same'].
-            2. an int, which means each spartial dimension(depth, height, width) is zero paded by size of `padding`
-            3. a list[int] or tuple[int] whose length is the number of spartial dimensions, which contains the amount of padding on each side for each spartial dimension. It has the form [pad_d1, pad_d2, ...].
-            4. a list[int] or tuple[int] whose length is 2 * number of spartial dimensions. It has the form  [pad_before, pad_after, pad_before, pad_after, ...] for all spartial dimensions.
+            2. an int, which means each spatial dimension(depth, height, width) is zero paded by size of `padding`
+            3. a list[int] or tuple[int] whose length is the number of spatial dimensions, which contains the amount of padding on each side for each spatial dimension. It has the form [pad_d1, pad_d2, ...].
+            4. a list[int] or tuple[int] whose length is 2 * number of spatial dimensions. It has the form  [pad_before, pad_after, pad_before, pad_after, ...] for all spatial dimensions.
             5. a list or tuple of pairs of ints. It has the form [[pad_before, pad_after], [pad_before, pad_after], ...]. Note that, the batch dimension and channel dimension are also included. Each pair of integers correspond to the amount of padding for a dimension of the input. Padding in batch dimension and channel dimension should be [0, 0] or (0, 0).
             Default: 0.
         output_padding(int|list|tuple, optional): Additional size added to one side
             of each dimension in the output shape. Default: 0.
-        dilation(int|list|tuple, optional): The dilation size. If dilation is a list/tuple, it must
-            contain three integers, (dilation_D, dilation_H, dilation_W). Otherwise, the
-            dilation_D = dilation_H = dilation_W = dilation. Default: 1.
         groups(int, optional): The groups number of the Conv3D transpose layer. Inspired by
             grouped convolution in `Alex Krizhevsky's Deep CNN paper <https://papers.nips.cc/paper/2012/file/c399862d3b9d6b76c8436e924a68c45b-Paper.pdf>`_, in which
             when groups = 2, the first half of the filters is only connected to the
             first half of the input channels, while the second half of the
             filters is only connected to the second half of the input channels.
             Default: 1.
+        dilation(int|list|tuple, optional): The dilation size. If dilation is a list/tuple, it must
+            contain three integers, (dilation_D, dilation_H, dilation_W). Otherwise, the
+            dilation_D = dilation_H = dilation_W = dilation. Default: 1.
         weight_attr(ParamAttr, optional): The parameter attribute for learnable parameters/weights
             of conv3d_transpose. If it is set to None or one attribute of ParamAttr, conv3d_transpose
             will create ParamAttr as param_attr. If the Initializer of the param_attr
@@ -1167,6 +1428,16 @@ class Conv3DTranspose(_ConvNd):
             is not set, the bias is initialized zero. Default: None.
         data_format(str, optional): Data format that specifies the layout of input.
             It can be "NCDHW" or "NDHWC". Default: "NCDHW".
+
+    Keyword args:
+        bias(bool, optional): Whether to add a learnable bias. When ``False``,
+            ``bias_attr`` is forced to ``False``. Default: True.
+        padding_mode(str, optional): ``'zeros'``, ``'reflect'``, ``'replicate'`` or
+            ``'circular'``. Default: ``'zeros'``.
+        device(str|paddle.CPUPlace()|paddle.CUDAPlace()|paddle.CUDAPinnedPlace()|None, optional):
+            The device on which to create the layer's parameters. Default: None.
+        dtype(str|paddle.dtype|None, optional): The data type of the layer's
+            parameters. Default: None.
 
     Attribute:
 
@@ -1196,21 +1467,22 @@ class Conv3DTranspose(_ConvNd):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> import paddle.nn as nn
 
             >>> paddle.disable_static()
 
-            >>> x_var = paddle.uniform((2, 4, 8, 8, 8), dtype='float32', min=-1., max=1.)
+            >>> x_var = paddle.uniform((2, 4, 8, 8, 8), dtype='float32', min=-1.0, max=1.0)
 
             >>> conv = nn.Conv3DTranspose(4, 6, (3, 3, 3))
             >>> y_var = conv(x_var)
             >>> print(y_var.shape)
-            [2, 6, 10, 10, 10]
+            paddle.Size([2, 6, 10, 10, 10])
     """
 
+    @overload
     def __init__(
         self,
         in_channels: int,
@@ -1219,12 +1491,57 @@ class Conv3DTranspose(_ConvNd):
         stride: Size3 = 1,
         padding: _PaddingSizeMode | Size3 | Size6 | Sequence[Size2] = 0,
         output_padding: _PaddingSizeMode | Size3 | Size6 | Sequence[Size2] = 0,
-        dilation: Size3 = 1,
         groups: int = 1,
+        dilation: Size3 = 1,
         weight_attr: ParamAttrLike | None = None,
         bias_attr: ParamAttrLike | None = None,
         data_format: DataLayout3D = "NCDHW",
+        *,
+        bias: bool = True,
+        padding_mode: _PaddingTensorMode = 'zeros',
+        device: PlaceLike | None = None,
+        dtype: DTypeLike | None = None,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: Size3,
+        stride: Size3 = 1,
+        padding: _PaddingSizeMode | Size3 | Size6 | Sequence[Size2] = 0,
+        output_padding: _PaddingSizeMode | Size3 | Size6 | Sequence[Size2] = 0,
+        groups: int = 1,
+        bias: bool = True,
+        dilation: Size3 = 1,
+        padding_mode: _PaddingTensorMode = 'zeros',
+        device: PlaceLike | None = None,
+        dtype: DTypeLike | None = None,
+    ) -> None: ...
+
+    @conv_transpose_layer_decorator
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: Size3,
+        stride: Size3 = 1,
+        padding: _PaddingSizeMode | Size3 | Size6 | Sequence[Size2] = 0,
+        output_padding: _PaddingSizeMode | Size3 | Size6 | Sequence[Size2] = 0,
+        groups: int = 1,
+        dilation: Size3 = 1,
+        weight_attr: ParamAttrLike | None = None,
+        bias_attr: ParamAttrLike | None = None,
+        data_format: DataLayout3D = "NCDHW",
+        *,
+        bias: bool = True,
+        padding_mode: _PaddingTensorMode = 'zeros',
+        device: PlaceLike | None = None,
+        dtype: DTypeLike | None = None,
     ) -> None:
+        if bias is False:
+            bias_attr = False
         super().__init__(
             in_channels,
             out_channels,
@@ -1233,12 +1550,15 @@ class Conv3DTranspose(_ConvNd):
             3,
             stride=stride,
             padding=padding,
+            padding_mode=padding_mode,
             dilation=dilation,
             output_padding=output_padding,
             groups=groups,
             weight_attr=weight_attr,
             bias_attr=bias_attr,
             data_format=data_format,
+            device=device,
+            dtype=dtype,
         )
 
     def forward(self, x: Tensor, output_size: Size3 | None = None) -> Tensor:

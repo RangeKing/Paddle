@@ -24,8 +24,6 @@ limitations under the License. */
 
 namespace phi::distributed {
 
-using phi::distributed::auto_parallel::str_join;
-
 SpmdInfo UnbindInferSpmd(const DistMetaTensor& x, int axis) {
   EXTRACT_SHAPE_AND_DIST_ATTR(x);
   if (axis < 0) {
@@ -34,7 +32,7 @@ SpmdInfo UnbindInferSpmd(const DistMetaTensor& x, int axis) {
   PADDLE_ENFORCE_LT(
       axis,
       x_ndim,
-      common::errors::InvalidArgument("[%d] [%d] The axis [%d] should be less "
+      common::errors::InvalidArgument("[%s] [%d] The axis [%d] should be less "
                                       "than the rank of input tensor [%d].",
                                       __FILE__,
                                       __LINE__,
@@ -98,7 +96,7 @@ SpmdInfo UnbindInferSpmdReverse(const DistMetaTensor& x,
   int nouts = static_cast<int>(outs.size());
 
   for (int i = 0; i < nouts; i++) {
-    auto shape = common::vectorize(outs[i]->dims());
+    auto shape = vectorize(outs[i]->dims());
     int ndim = static_cast<int>(shape.size());
     auto dist_attr = outs[i]->dist_attr();
     int dims_mapping_size = static_cast<int>(dist_attr.dims_mapping().size());
@@ -138,7 +136,7 @@ SpmdInfo UnbindInferSpmdReverse(const DistMetaTensor& x,
   TensorDistAttr x_dist_attr_dst = CopyTensorDistAttrForOutput(x_dist_attr_src);
   x_dist_attr_dst.set_dims_mapping(x_dims_mapping);
 
-  // step2.3 get new dist attribute for output. the splitted
+  // step2.3 get new dist attribute for output. the split
   // cannot be sharded, if it is sharded, set it to replicated.
   std::vector<TensorDistAttr> out_dist_attrs_dst;
   for (int i = 0; i < nouts; i++) {

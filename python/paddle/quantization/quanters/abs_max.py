@@ -67,7 +67,7 @@ class FakeQuanterWithAbsMaxObserver(QuanterFactory):
             For details, please refer to :ref:`api_guide_Name`. Default is None.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> from paddle.quantization import QuantConfig
             >>> from paddle.quantization.quanters import FakeQuanterWithAbsMaxObserver
@@ -217,7 +217,6 @@ class FakeQuanterWithAbsMaxObserverLayer(BaseQuanter):
         return quant_out
 
     def pir_forward(self, input):
-
         state = self._state if self.training else None
         accum = self._accum if self.training else None
 

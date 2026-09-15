@@ -32,9 +32,9 @@ struct DeconvolutionCache {
   dnnl::memory dst_mem;
 };
 
-inline dnnl::memory::dims GetWeightsTz(const phi::DenseTensor* filter,
+inline dnnl::memory::dims GetWeightsTz(const DenseTensor* filter,
                                        const int groups) {
-  auto weights_tz = common::vectorize(filter->dims());
+  auto weights_tz = vectorize(filter->dims());
   int g = std::max(groups, 1);
   int g_dim = (g > 1) ? 1 : 0;
   funcs::GetGroupConvWeightsTz(weights_tz, g);
@@ -127,11 +127,11 @@ class ConvTransposeOneDNNHandlerT
             "Now we only support 2d oneDNN convolution transpose op"));
 
     const auto x_dims = x->dims();
-    const auto x_data_dims = common::slice_ddim(x_dims, 2, x_dims.size());
+    const auto x_data_dims = slice_ddim(x_dims, 2, x_dims.size());
     const auto filter_dims = filter->dims();
     const auto filter_data_dims =
-        common::slice_ddim(filter_dims, 2, filter_dims.size());
-    const auto ksize = common::vectorize(filter_data_dims);
+        slice_ddim(filter_dims, 2, filter_dims.size());
+    const auto ksize = vectorize(filter_data_dims);
     UpdatePaddingAndDilation(
         &paddings, &dilations, padding_algorithm, x_data_dims, strides, ksize);
 
@@ -140,9 +140,9 @@ class ConvTransposeOneDNNHandlerT
           return i - 1;
         });
 
-    const auto src_tz = common::vectorize(x->dims());
+    const auto src_tz = vectorize(x->dims());
     const auto weights_tz = GetWeightsTz(filter, groups);
-    const auto dst_tz = common::vectorize(out->dims());
+    const auto dst_tz = vectorize(out->dims());
     const auto onednn_paddings = funcs::ToOneDNNPadding(paddings);
 
     /* create memory descriptor for convolution without specified format
@@ -151,13 +151,19 @@ class ConvTransposeOneDNNHandlerT
      */
     auto chosen_memory_format = funcs::OneDNNMemoryFormat::any;
     auto data_type = dnnl::memory::data_type::f32;
-    const bool is_BFLOAT16 =
+    const bool is_bfloat16 =
         dev_ctx.HasDnnAttr("mkldnn_data_type")
             ? PADDLE_GET_CONST(std::string,
                                dev_ctx.GetDnnAttr("mkldnn_data_type")) ==
                   "bfloat16"
             : false;
-    if (is_BFLOAT16 || std::is_same<T_out, dtype::bfloat16>::value) {
+    const bool is_onednn_BFLOAT16 =
+        dev_ctx.HasDnnAttr("onednn_data_type")
+            ? PADDLE_GET_CONST(std::string,
+                               dev_ctx.GetDnnAttr("onednn_data_type")) ==
+                  "bfloat16"
+            : is_bfloat16;
+    if (is_onednn_BFLOAT16 || std::is_same<T_out, dtype::bfloat16>::value) {
       data_type = dnnl::memory::data_type::bf16;
     }
 
@@ -172,7 +178,7 @@ class ConvTransposeOneDNNHandlerT
                                   : dnnl::prop_kind::forward_training;
 
     if (bias) {
-      std::vector<int64_t> bias_tz = common::vectorize(bias->dims());
+      std::vector<int64_t> bias_tz = vectorize(bias->dims());
       const auto bias_md = funcs::OneDNNMemDesc(
           bias_tz, data_type, funcs::OneDNNMemoryFormat::x);
       this->AcquireForwardPrimitiveDescriptor(
@@ -201,10 +207,10 @@ class ConvTransposeOneDNNHandlerT
   }
 
   std::shared_ptr<dnnl::memory> AcquireSrcMemoryWithReorder(
-      const phi::DenseTensor* x) {
+      const DenseTensor* x) {
     const T* input_data = x->data<T>();
     return funcs::OneDNNHandlerNoCachingT<T, dnnl::deconvolution_forward>::
-        AcquireMemoryWithReorder(x->mem_desc(),
+        AcquireMemoryWithReorder(phi::funcs::GetOneDNNMemDesc(*x),
                                  this->fwd_pd_->src_desc(),
                                  funcs::to_void_cast<T>(input_data));
   }
@@ -212,7 +218,7 @@ class ConvTransposeOneDNNHandlerT
   std::shared_ptr<dnnl::memory> AcquireWeightsMemoryWithReorder(
       const OneDNNContext& dev_ctx,
       const std::string& key,
-      const phi::DenseTensor* filter,
+      const DenseTensor* filter,
       const int& groups) {
     const K* filter_data = filter->data<K>();
     auto weights_tz = GetWeightsTz(filter, groups);
@@ -283,7 +289,7 @@ class ConvTransposeOneDNNHandlerT
                                  dnnl::memory::format_tag::x);
           auto scale_data_mem = dnnl::memory(scale_md, this->engine_);
           scale_data_mem.set_data_handle(
-              phi::funcs::to_void_cast(scale_data.data()));
+              funcs::to_void_cast(scale_data.data()));
           reorder_args.insert(
               {DNNL_ARG_ATTR_SCALES | DNNL_ARG_DST, scale_data_mem});
         }
@@ -318,9 +324,9 @@ class ConvTransposeOneDNNHandlerT
   std::shared_ptr<dnnl::memory> AcquireBiasMemoryWithReorder(
       const OneDNNContext& dev_ctx,
       const std::string& key,
-      const phi::DenseTensor* bias) {
+      const DenseTensor* bias) {
     const K* bias_data = bias->data<K>();
-    auto user_bias_md = funcs::OneDNNMemDesc(common::vectorize(bias->dims()),
+    auto user_bias_md = funcs::OneDNNMemDesc(vectorize(bias->dims()),
                                              funcs::OneDNNGetDataType<K>(),
                                              funcs::OneDNNMemoryFormat::x);
     return this->AcquireMemoryWithReorder(dev_ctx,
@@ -337,18 +343,19 @@ template <typename T>
 void PrepareSrcMem(const std::shared_ptr<dnnl::deconvolution_forward>& fc_p
                        UNUSED,
                    const std::shared_ptr<dnnl::memory>& src_mem,
-                   const phi::DenseTensor* x,
+                   const DenseTensor* x,
                    const dnnl::engine& engine) {
-  auto x_md = x->mem_desc().reshape(src_mem->get_desc().get_dims());
+  auto x_md =
+      phi::funcs::GetOneDNNMemDesc(*x).reshape(src_mem->get_desc().get_dims());
   if (x_md != src_mem->get_desc()) {
-    dnnl::memory x_mem(x_md, engine, phi::funcs::to_void_cast<T>(x->data<T>()));
+    dnnl::memory x_mem(x_md, engine, funcs::to_void_cast<T>(x->data<T>()));
     auto reorder_p = dnnl::reorder(x_mem, *src_mem);
 
     auto& astream = OneDNNContext::tls().get_stream();
     reorder_p.execute(astream, x_mem, *src_mem);
     astream.wait();
   } else {
-    src_mem->set_data_handle(phi::funcs::to_void_cast<T>(x->data<T>()));
+    src_mem->set_data_handle(funcs::to_void_cast<T>(x->data<T>()));
   }
 }
 
@@ -370,11 +377,16 @@ void Execute(const OneDNNContext& dev_ctx,
   std::shared_ptr<dnnl::memory> dst_memory_p;
   std::unordered_map<int, dnnl::memory> args;
 
+  // Note(ZKK):
+  // Add thread_id to cache_key
+  // fix issue https://github.com/PaddlePaddle/PaddleOCR/issues/15621
+  // https://github.com/PaddlePaddle/PaddleOCR/issues/15393
   std::string cache_key = funcs::CreateKey(dev_ctx,
+                                           funcs::ThreadIDasStr(),
                                            dev_ctx.GetInputsName("Input")[0],
                                            dev_ctx.GetInputsName("Filter")[0],
-                                           common::vectorize(x->dims()),
-                                           common::vectorize(filter->dims()));
+                                           vectorize(x->dims()),
+                                           vectorize(filter->dims()));
   const auto& onednn_engine = dev_ctx.GetEngine();
 
   auto deconvolution_cache =
@@ -472,7 +484,7 @@ void Execute(const OneDNNContext& dev_ctx,
   auto& astream = OneDNNContext::tls().get_stream();
   conv_p->execute(astream, args);
   astream.wait();
-  out->set_mem_desc(dst_memory_p->get_desc());
+  phi::funcs::SetOneDNNMemDesc(out, dst_memory_p->get_desc());
 }
 
 template <typename T, typename Context>
@@ -488,22 +500,23 @@ void Conv2dTransposeKernel(const Context& dev_ctx,
                            const std::vector<int>& dilations,
                            const std::string& data_format UNUSED,
                            DenseTensor* out) {
-  PADDLE_ENFORCE_EQ(dev_ctx.GetPlace().GetType(),
-                    AllocationType::CPU,
-                    common::errors::PreconditionNotMet(
-                        "Operator oneDNN Conv must use CPUPlace"));
-
-  const bool is_BFLOAT16 =
+  const bool is_bfloat16 =
       dev_ctx.HasDnnAttr("mkldnn_data_type")
           ? PADDLE_GET_CONST(std::string,
                              dev_ctx.GetDnnAttr("mkldnn_data_type")) ==
                 "bfloat16"
           : false;
+  const bool is_onednn_BFLOAT16 =
+      dev_ctx.HasDnnAttr("onednn_data_type")
+          ? PADDLE_GET_CONST(std::string,
+                             dev_ctx.GetDnnAttr("onednn_data_type")) ==
+                "bfloat16"
+          : is_bfloat16;
   const bool force_fp32_output =
       dev_ctx.HasDnnAttr("force_fp32_output")
           ? PADDLE_GET_CONST(bool, dev_ctx.GetDnnAttr("force_fp32_output"))
           : false;
-  const bool use_bfloat16 = (!force_fp32_output && is_BFLOAT16);
+  const bool use_bfloat16 = (!force_fp32_output && is_onednn_BFLOAT16);
 
   if (use_bfloat16) {
     Execute<T, dtype::bfloat16>(dev_ctx,
@@ -534,7 +547,7 @@ template <typename T, typename Context>
 void Conv2dTransposeBiasKernel(const Context& dev_ctx,
                                const DenseTensor& x,
                                const DenseTensor& filter,
-                               const paddle::optional<DenseTensor>& bias,
+                               const optional<DenseTensor>& bias,
                                const std::vector<int>& strides,
                                const std::vector<int>& paddings,
                                const std::vector<int>& output_padding UNUSED,
@@ -544,22 +557,23 @@ void Conv2dTransposeBiasKernel(const Context& dev_ctx,
                                const std::vector<int>& dilations,
                                const std::string& data_format UNUSED,
                                DenseTensor* out) {
-  PADDLE_ENFORCE_EQ(dev_ctx.GetPlace().GetType(),
-                    AllocationType::CPU,
-                    common::errors::PreconditionNotMet(
-                        "Operator oneDNN Conv must use CPUPlace"));
-
-  const bool is_BFLOAT16 =
+  const bool is_bfloat16 =
       dev_ctx.HasDnnAttr("mkldnn_data_type")
           ? PADDLE_GET_CONST(std::string,
                              dev_ctx.GetDnnAttr("mkldnn_data_type")) ==
                 "bfloat16"
           : false;
+  const bool is_one_BFLOAT16 =
+      dev_ctx.HasDnnAttr("onednn_data_type")
+          ? PADDLE_GET_CONST(std::string,
+                             dev_ctx.GetDnnAttr("onednn_data_type")) ==
+                "bfloat16"
+          : is_bfloat16;
   const bool force_fp32_output =
       dev_ctx.HasDnnAttr("force_fp32_output")
           ? PADDLE_GET_CONST(bool, dev_ctx.GetDnnAttr("force_fp32_output"))
           : false;
-  const bool use_bfloat16 = (!force_fp32_output && is_BFLOAT16);
+  const bool use_bfloat16 = (!force_fp32_output && is_one_BFLOAT16);
 
   if (use_bfloat16) {
     Execute<T, dtype::bfloat16>(dev_ctx,
@@ -595,14 +609,14 @@ KernelKey ConvTransposeGetKernelTypeForVar(
   // Only input require reshaping, weights and
   // bias are having shape in NCHW order
   if ((var_name == "Input") &&
-      (expected_kernel_type.layout() == phi::DataLayout::ONEDNN) &&
-      (tensor.layout() != phi::DataLayout::ONEDNN)) {
+      (expected_kernel_type.layout() == DataLayout::ONEDNN) &&
+      (tensor.layout() != DataLayout::ONEDNN)) {
     auto it = attrs.find("data_format");
     const std::string data_format = PADDLE_GET_CONST(std::string, it->second);
-    auto dl = common::StringToDataLayout(data_format);
+    auto dl = StringToDataLayout(data_format);
     // Some models may have intentionally set "AnyLayout" for pool
     // op. Treat this as NCHW (default data_format value)
-    if (dl != phi::DataLayout::kAnyLayout) {
+    if (dl != DataLayout::ANY) {
       return phi::KernelKey(tensor.place(), dl, expected_kernel_type.dtype());
     }
   }
@@ -617,7 +631,7 @@ PD_REGISTER_KERNEL(conv2d_transpose,
                    ONEDNN,
                    phi::Conv2dTransposeKernel,
                    float,
-                   phi::dtype::bfloat16) {
+                   phi::bfloat16) {
   kernel->get_kerneltype_forvar_fn_ = phi::ConvTransposeGetKernelTypeForVar;
 }
 
@@ -626,6 +640,6 @@ PD_REGISTER_KERNEL(conv2d_transpose_bias,
                    ONEDNN,
                    phi::Conv2dTransposeBiasKernel,
                    float,
-                   phi::dtype::bfloat16) {
+                   phi::bfloat16) {
   kernel->get_kerneltype_forvar_fn_ = phi::ConvTransposeGetKernelTypeForVar;
 }

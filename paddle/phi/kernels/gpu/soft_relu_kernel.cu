@@ -14,7 +14,6 @@
 
 #include "paddle/phi/backends/gpu/gpu_device_function.h"
 #include "paddle/phi/common/amp_type_traits.h"
-#include "paddle/phi/common/bfloat16.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/funcs/activation_functor.h"
 #include "paddle/phi/kernels/funcs/elementwise/elementwise_op_impl.cu.h"
@@ -23,8 +22,8 @@ namespace phi {
 
 template <typename T>
 struct CudaSoftReluFunctor {
-  using MPType = typename phi::dtype::MPTypeTrait<T>::Type;
-  MPType one = static_cast<MPType>(1.0f);
+  using MT = typename MPTypeTrait<T>::Type;
+  MT one = static_cast<MT>(1.0f);
   float threshold;
 
   void SetAttrs(float threshold_) { threshold = threshold_; }
@@ -32,10 +31,10 @@ struct CudaSoftReluFunctor {
   // soft_relu(x) = log(1 + exp(max(min(x, threshold), -threshold)))
   // threshold should not be negative
   __device__ __forceinline__ T operator()(const T arg_x) {
-    MPType x = static_cast<MPType>(arg_x);
-    MPType t = static_cast<MPType>(threshold);
-    MPType temp_min = x < t ? x : t;
-    MPType temp_max = temp_min > -t ? temp_min : -t;
+    MT x = static_cast<MT>(arg_x);
+    MT t = static_cast<MT>(threshold);
+    MT temp_min = x < t ? x : t;
+    MT temp_max = temp_min > -t ? temp_min : -t;
     return static_cast<T>(log(one + exp(temp_max)));
   }
 };
@@ -46,12 +45,11 @@ void SoftReluCudaKernel(const Context& dev_ctx,
                         float threshold,
                         DenseTensor* out) {
   dev_ctx.template Alloc<T>(out);
-  std::vector<const phi::DenseTensor*> ins = {&x};
-  std::vector<phi::DenseTensor*> outs = {out};
+  std::vector<const DenseTensor*> ins = {&x};
+  std::vector<DenseTensor*> outs = {out};
   CudaSoftReluFunctor<T> functor;
   functor.SetAttrs(threshold);
-  phi::funcs::LaunchSameDimsElementwiseCudaKernel<T>(
-      dev_ctx, ins, &outs, functor);
+  funcs::LaunchSameDimsElementwiseCudaKernel<T>(dev_ctx, ins, &outs, functor);
 }
 }  // namespace phi
 
@@ -61,5 +59,5 @@ PD_REGISTER_KERNEL(soft_relu,
                    phi::SoftReluCudaKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}

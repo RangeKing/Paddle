@@ -12,19 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "paddle/phi/kernels/soft_relu_grad_kernel.h"
 #include "paddle/phi/backends/gpu/gpu_device_function.h"
 #include "paddle/phi/common/amp_type_traits.h"
-#include "paddle/phi/common/bfloat16.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/funcs/activation_functor.h"
 #include "paddle/phi/kernels/funcs/elementwise/elementwise_op_impl.cu.h"
-
 namespace phi {
 
 template <typename T>
 struct CudaSoftReluGradFunctor {
-  using MPType = typename phi::dtype::MPTypeTrait<T>::Type;
-  MPType one = static_cast<MPType>(1.0f);
+  using MT = typename MPTypeTrait<T>::Type;
+  MT one = static_cast<MT>(1.0f);
   float threshold;
 
   void SetAttrs(float threshold_) { threshold = threshold_; }
@@ -32,9 +31,9 @@ struct CudaSoftReluGradFunctor {
   // dx = (out > -threshold && out < threshold) ? dout * (1 - exp(-out)) : 0
   // threshold should not be negative
   __device__ __forceinline__ T operator()(const T arg_dout, const T arg_out) {
-    MPType dout = static_cast<MPType>(arg_dout);
-    MPType out = static_cast<MPType>(arg_out);
-    MPType t = static_cast<MPType>(threshold);
+    MT dout = static_cast<MT>(arg_dout);
+    MT out = static_cast<MT>(arg_out);
+    MT t = static_cast<MT>(threshold);
     return (out > -t && out < t) ? static_cast<T>(dout * (one - exp(-out)))
                                  : static_cast<T>(0.0f);
   }
@@ -51,13 +50,12 @@ void SoftReluGradCudaKernel(const Context& dev_ctx,
   CudaSoftReluGradFunctor<T> functor;
   functor.SetAttrs(threshold);
 
-  std::vector<const phi::DenseTensor*> ins = {&out_grad};
-  std::vector<phi::DenseTensor*> outs = {x_grad};
+  std::vector<const DenseTensor*> ins = {&out_grad};
+  std::vector<DenseTensor*> outs = {x_grad};
 
   // Only need forward output Out
   ins.push_back(&out_in);
-  phi::funcs::LaunchSameDimsElementwiseCudaKernel<T>(
-      dev_ctx, ins, &outs, functor);
+  funcs::LaunchSameDimsElementwiseCudaKernel<T>(dev_ctx, ins, &outs, functor);
 }
 }  // namespace phi
 
@@ -67,5 +65,5 @@ PD_REGISTER_KERNEL(soft_relu_grad,
                    phi::SoftReluGradCudaKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}

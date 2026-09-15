@@ -18,7 +18,7 @@
 namespace phi {
 namespace math {
 template <typename T>
-__global__ void KernelUnpool2dMax(const int nthreads,
+__global__ void KernelUnpool2dMax(const int64_t nthreads,
                                   const T* input_data,
                                   const int* indices_data,
                                   const int input_height,
@@ -27,9 +27,9 @@ __global__ void KernelUnpool2dMax(const int nthreads,
                                   T* output_data,
                                   const int output_height,
                                   const int output_width) {
-  CUDA_KERNEL_LOOP(linearIndex, nthreads) {
-    int c = (linearIndex / input_width / input_height) % channels;
-    int n = linearIndex / input_width / input_height / channels;
+  CUDA_KERNEL_LOOP_TYPE(linearIndex, nthreads, int64_t) {
+    int64_t c = (linearIndex / input_width / input_height) % channels;
+    int64_t n = linearIndex / input_width / input_height / channels;
     output_data += (n * channels + c) * output_height * output_width;
     int maxind = indices_data[linearIndex];
     output_data[maxind] = input_data[linearIndex];
@@ -37,7 +37,7 @@ __global__ void KernelUnpool2dMax(const int nthreads,
 }
 
 template <typename T>
-__global__ void KernelUnpool2dMaxGrad(const int nthreads,
+__global__ void KernelUnpool2dMaxGrad(const int64_t nthreads,
                                       const T* input_data,
                                       const int* indices_data,
                                       const int input_height,
@@ -48,9 +48,9 @@ __global__ void KernelUnpool2dMaxGrad(const int nthreads,
                                       const int output_height,
                                       const int output_width,
                                       T* input_grad) {
-  CUDA_KERNEL_LOOP(linearIndex, nthreads) {
-    int c = (linearIndex / input_width / input_height) % channels;
-    int n = linearIndex / input_width / input_height / channels;
+  CUDA_KERNEL_LOOP_TYPE(linearIndex, nthreads, int64_t) {
+    int64_t c = (linearIndex / input_width / input_height) % channels;
+    int64_t n = linearIndex / input_width / input_height / channels;
     output_grad += (n * channels + c) * output_height * output_width;
     int maxind = indices_data[linearIndex];
     input_grad[linearIndex] = output_grad[maxind];
@@ -61,7 +61,7 @@ __global__ void KernelUnpool2dMaxGrad(const int nthreads,
  */
 
 template <typename T>
-__global__ void KernelUnpool3dMax(const int nthreads,
+__global__ void KernelUnpool3dMax(const int64_t nthreads,
                                   const T* input_data,
                                   const int* indices_data,
                                   const int input_depth,
@@ -72,9 +72,11 @@ __global__ void KernelUnpool3dMax(const int nthreads,
                                   const int output_depth,
                                   const int output_height,
                                   const int output_width) {
-  CUDA_KERNEL_LOOP(linearIndex, nthreads) {
-    int c = (linearIndex / input_depth / input_width / input_height) % channels;
-    int n = linearIndex / input_depth / input_width / input_height / channels;
+  CUDA_KERNEL_LOOP_TYPE(linearIndex, nthreads, int64_t) {
+    int64_t c =
+        (linearIndex / input_depth / input_width / input_height) % channels;
+    int64_t n =
+        linearIndex / input_depth / input_width / input_height / channels;
     output_data +=
         (n * channels + c) * output_depth * output_height * output_width;
     int maxind = indices_data[linearIndex];
@@ -83,7 +85,7 @@ __global__ void KernelUnpool3dMax(const int nthreads,
 }
 
 template <typename T>
-__global__ void KernelUnpool3dMaxGrad(const int nthreads,
+__global__ void KernelUnpool3dMaxGrad(const int64_t nthreads,
                                       const T* input_data,
                                       const int* indices_data,
                                       const int input_depth,
@@ -96,9 +98,11 @@ __global__ void KernelUnpool3dMaxGrad(const int nthreads,
                                       const int output_height,
                                       const int output_width,
                                       T* input_grad) {
-  CUDA_KERNEL_LOOP(linearIndex, nthreads) {
-    int c = (linearIndex / input_depth / input_width / input_height) % channels;
-    int n = linearIndex / input_depth / input_width / input_height / channels;
+  CUDA_KERNEL_LOOP_TYPE(linearIndex, nthreads, int64_t) {
+    int64_t c =
+        (linearIndex / input_depth / input_width / input_height) % channels;
+    int64_t n =
+        linearIndex / input_depth / input_width / input_height / channels;
     output_grad +=
         (n * channels + c) * output_depth * output_height * output_width;
     int maxind = indices_data[linearIndex];
@@ -110,23 +114,42 @@ __global__ void KernelUnpool3dMaxGrad(const int nthreads,
  */
 
 template <typename T>
-class Unpool2dMaxFunctor<phi::GPUContext, T> {
+class Unpool2dMaxFunctor<GPUContext, T> {
  public:
-  void operator()(const phi::GPUContext& context,
-                  const phi::DenseTensor& input,
-                  const phi::DenseTensor& indices,
-                  phi::DenseTensor* output) {
-    const int batch_size = input.dims()[0];
-    const int input_height = input.dims()[2];
-    const int input_width = input.dims()[3];
-    const int output_channels = output->dims()[1];
-    const int output_height = output->dims()[2];
-    const int output_width = output->dims()[3];
+  void operator()(const GPUContext& context,
+                  const DenseTensor& input,
+                  const DenseTensor& indices,
+                  DenseTensor* output) {
+    // TODO(large-tensor): downstream functors may still use int; guard until
+    // upgraded.
+    int64_t batch_size = input.dims()[0];
+
+    // TODO(large-tensor): downstream functors may still use int; guard until
+    // upgraded.
+    int64_t input_height = input.dims()[2];
+
+    // TODO(large-tensor): downstream functors may still use int; guard until
+    // upgraded.
+    int64_t input_width = input.dims()[3];
+
+    // TODO(large-tensor): downstream functors may still use int; guard until
+    // upgraded.
+    int64_t output_channels = output->dims()[1];
+
+    // TODO(large-tensor): downstream functors may still use int; guard until
+    // upgraded.
+    int64_t output_height = output->dims()[2];
+
+    // TODO(large-tensor): downstream functors may still use int; guard until
+    // upgraded.
+    int64_t output_width = output->dims()[3];
+
     const T* input_data = input.data<T>();
     const int* indices_data = indices.data<int>();
     T* output_data = context.template Alloc<T>(output);
     int threads = 1024;
-    int grid = (input.numel() + threads - 1) / threads;
+    int64_t max_grid = context.GetCUDAMaxGridDimSize()[0];
+    int grid = std::min((input.numel() + threads - 1) / threads, max_grid);
     KernelUnpool2dMax<T>
         <<<grid, threads, 0, context.stream()>>>(input.numel(),
                                                  input_data,
@@ -143,27 +166,46 @@ class Unpool2dMaxFunctor<phi::GPUContext, T> {
  * All tensors are in NCHW format.
  */
 template <typename T>
-class Unpool2dMaxGradFunctor<phi::GPUContext, T> {
+class Unpool2dMaxGradFunctor<GPUContext, T> {
  public:
-  void operator()(const phi::GPUContext& context,
-                  const phi::DenseTensor& input,
-                  const phi::DenseTensor& indices,
-                  const phi::DenseTensor& output,
-                  const phi::DenseTensor& output_grad,
-                  phi::DenseTensor* input_grad) {
-    const int batch_size = input.dims()[0];
-    const int input_height = input.dims()[2];
-    const int input_width = input.dims()[3];
-    const int output_channels = output.dims()[1];
-    const int output_height = output.dims()[2];
-    const int output_width = output.dims()[3];
+  void operator()(const GPUContext& context,
+                  const DenseTensor& input,
+                  const DenseTensor& indices,
+                  const DenseTensor& output,
+                  const DenseTensor& output_grad,
+                  DenseTensor* input_grad) {
+    // TODO(large-tensor): downstream functors may still use int; guard until
+    // upgraded.
+    int64_t batch_size = input.dims()[0];
+
+    // TODO(large-tensor): downstream functors may still use int; guard until
+    // upgraded.
+    int64_t input_height = input.dims()[2];
+
+    // TODO(large-tensor): downstream functors may still use int; guard until
+    // upgraded.
+    int64_t input_width = input.dims()[3];
+
+    // TODO(large-tensor): downstream functors may still use int; guard until
+    // upgraded.
+    int64_t output_channels = output.dims()[1];
+
+    // TODO(large-tensor): downstream functors may still use int; guard until
+    // upgraded.
+    int64_t output_height = output.dims()[2];
+
+    // TODO(large-tensor): downstream functors may still use int; guard until
+    // upgraded.
+    int64_t output_width = output.dims()[3];
+
     const T* input_data = input.data<T>();
     const int* indices_data = indices.data<int>();
     const T* output_data = output.data<T>();
     const T* output_grad_data = output_grad.data<T>();
     T* input_grad_data = context.template Alloc<T>(input_grad);
     int threads = 1024;
-    int grid = (input.numel() + threads - 1) / threads;
+    int64_t max_grid = context.GetCUDAMaxGridDimSize()[0];
+    int grid = std::min((input.numel() + threads - 1) / threads, max_grid);
     KernelUnpool2dMaxGrad<T>
         <<<grid, threads, 0, context.stream()>>>(input.numel(),
                                                  input_data,
@@ -180,25 +222,50 @@ class Unpool2dMaxGradFunctor<phi::GPUContext, T> {
 };
 
 template <typename T>
-class Unpool3dMaxFunctor<phi::GPUContext, T> {
+class Unpool3dMaxFunctor<GPUContext, T> {
  public:
-  void operator()(const phi::GPUContext& context,
-                  const phi::DenseTensor& input,
-                  const phi::DenseTensor& indices,
-                  phi::DenseTensor* output) {
-    const int batch_size = input.dims()[0];
-    const int input_depth = input.dims()[2];
-    const int input_height = input.dims()[3];
-    const int input_width = input.dims()[4];
-    const int output_channels = output->dims()[1];
-    const int output_depth = output->dims()[2];
-    const int output_height = output->dims()[3];
-    const int output_width = output->dims()[4];
+  void operator()(const GPUContext& context,
+                  const DenseTensor& input,
+                  const DenseTensor& indices,
+                  DenseTensor* output) {
+    // TODO(large-tensor): downstream functors may still use int; guard until
+    // upgraded.
+    int64_t batch_size = input.dims()[0];
+
+    // TODO(large-tensor): downstream functors may still use int; guard until
+    // upgraded.
+    int64_t input_depth = input.dims()[2];
+
+    // TODO(large-tensor): downstream functors may still use int; guard until
+    // upgraded.
+    int64_t input_height = input.dims()[3];
+
+    // TODO(large-tensor): downstream functors may still use int; guard until
+    // upgraded.
+    int64_t input_width = input.dims()[4];
+
+    // TODO(large-tensor): downstream functors may still use int; guard until
+    // upgraded.
+    int64_t output_channels = output->dims()[1];
+
+    // TODO(large-tensor): downstream functors may still use int; guard until
+    // upgraded.
+    int64_t output_depth = output->dims()[2];
+
+    // TODO(large-tensor): downstream functors may still use int; guard until
+    // upgraded.
+    int64_t output_height = output->dims()[3];
+
+    // TODO(large-tensor): downstream functors may still use int; guard until
+    // upgraded.
+    int64_t output_width = output->dims()[4];
+
     const T* input_data = input.data<T>();
     const int* indices_data = indices.data<int>();
     T* output_data = context.template Alloc<T>(output);
     int threads = 1024;
-    int grid = (input.numel() + threads - 1) / threads;
+    int64_t max_grid = context.GetCUDAMaxGridDimSize()[0];
+    int grid = std::min((input.numel() + threads - 1) / threads, max_grid);
     KernelUnpool3dMax<T>
         <<<grid, threads, 0, context.stream()>>>(input.numel(),
                                                  input_data,
@@ -217,29 +284,54 @@ class Unpool3dMaxFunctor<phi::GPUContext, T> {
  * All tensors are in NCDHW format.
  */
 template <typename T>
-class Unpool3dMaxGradFunctor<phi::GPUContext, T> {
+class Unpool3dMaxGradFunctor<GPUContext, T> {
  public:
-  void operator()(const phi::GPUContext& context,
-                  const phi::DenseTensor& input,
-                  const phi::DenseTensor& indices,
-                  const phi::DenseTensor& output,
-                  const phi::DenseTensor& output_grad,
-                  phi::DenseTensor* input_grad) {
-    const int batch_size = input.dims()[0];
-    const int input_depth = input.dims()[2];
-    const int input_height = input.dims()[3];
-    const int input_width = input.dims()[4];
-    const int output_channels = output.dims()[1];
-    const int output_depth = output.dims()[2];
-    const int output_height = output.dims()[3];
-    const int output_width = output.dims()[4];
+  void operator()(const GPUContext& context,
+                  const DenseTensor& input,
+                  const DenseTensor& indices,
+                  const DenseTensor& output,
+                  const DenseTensor& output_grad,
+                  DenseTensor* input_grad) {
+    // TODO(large-tensor): downstream functors may still use int; guard until
+    // upgraded.
+    int64_t batch_size = input.dims()[0];
+
+    // TODO(large-tensor): downstream functors may still use int; guard until
+    // upgraded.
+    int64_t input_depth = input.dims()[2];
+
+    // TODO(large-tensor): downstream functors may still use int; guard until
+    // upgraded.
+    int64_t input_height = input.dims()[3];
+
+    // TODO(large-tensor): downstream functors may still use int; guard until
+    // upgraded.
+    int64_t input_width = input.dims()[4];
+
+    // TODO(large-tensor): downstream functors may still use int; guard until
+    // upgraded.
+    int64_t output_channels = output.dims()[1];
+
+    // TODO(large-tensor): downstream functors may still use int; guard until
+    // upgraded.
+    int64_t output_depth = output.dims()[2];
+
+    // TODO(large-tensor): downstream functors may still use int; guard until
+    // upgraded.
+    int64_t output_height = output.dims()[3];
+
+    // TODO(large-tensor): downstream functors may still use int; guard until
+    // upgraded.
+    int64_t output_width = output.dims()[4];
+
     const T* input_data = input.data<T>();
     const int* indices_data = indices.data<int>();
     const T* output_data = output.data<T>();
     const T* output_grad_data = output_grad.data<T>();
     T* input_grad_data = context.template Alloc<T>(input_grad);
     int threads = 1024;
-    int grid = (input.numel() + threads - 1) / threads;
+    int64_t max_grid = context.GetCUDAMaxGridDimSize()[0];
+    int grid = std::min((input.numel() + threads - 1) / threads, max_grid);
     KernelUnpool3dMaxGrad<T>
         <<<grid, threads, 0, context.stream()>>>(input.numel(),
                                                  input_data,
@@ -257,13 +349,13 @@ class Unpool3dMaxGradFunctor<phi::GPUContext, T> {
   }
 };
 
-template class Unpool2dMaxGradFunctor<phi::GPUContext, float>;
-template class Unpool2dMaxGradFunctor<phi::GPUContext, double>;
-template class Unpool2dMaxFunctor<phi::GPUContext, float>;
-template class Unpool2dMaxFunctor<phi::GPUContext, double>;
-template class Unpool3dMaxGradFunctor<phi::GPUContext, float>;
-template class Unpool3dMaxGradFunctor<phi::GPUContext, double>;
-template class Unpool3dMaxFunctor<phi::GPUContext, float>;
-template class Unpool3dMaxFunctor<phi::GPUContext, double>;
+template class Unpool2dMaxGradFunctor<GPUContext, float>;
+template class Unpool2dMaxGradFunctor<GPUContext, double>;
+template class Unpool2dMaxFunctor<GPUContext, float>;
+template class Unpool2dMaxFunctor<GPUContext, double>;
+template class Unpool3dMaxGradFunctor<GPUContext, float>;
+template class Unpool3dMaxGradFunctor<GPUContext, double>;
+template class Unpool3dMaxFunctor<GPUContext, float>;
+template class Unpool3dMaxFunctor<GPUContext, double>;
 }  // namespace math
 }  // namespace phi

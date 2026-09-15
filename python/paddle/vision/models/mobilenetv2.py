@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from typing import (
     TYPE_CHECKING,
-    Callable,
     TypedDict,
 )
 
@@ -30,6 +29,8 @@ from ..ops import ConvNormActivation
 from ._utils import _make_divisible
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from paddle import Tensor
 
     class _MobileNetV2Options(TypedDict):
@@ -111,7 +112,7 @@ class MobileNetV2(nn.Layer):
         :ref:`api_paddle_nn_Layer`. An instance of MobileNetV2 model.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.vision.models import MobileNetV2
@@ -122,7 +123,7 @@ class MobileNetV2(nn.Layer):
             >>> out = model(x)
 
             >>> print(out.shape)
-            [1, 1000]
+            paddle.Size([1, 1000])
     """
 
     num_classes: int
@@ -219,9 +220,9 @@ def _mobilenet(
 ) -> MobileNetV2:
     model = MobileNetV2(**kwargs)
     if pretrained:
-        assert (
-            arch in model_urls
-        ), f"{arch} model do not have a pretrained model now, you should set pretrained=False"
+        assert arch in model_urls, (
+            f"{arch} model do not have a pretrained model now, you should set pretrained=False"
+        )
         weight_path = get_weights_path_from_url(
             model_urls[arch][0], model_urls[arch][1]
         )
@@ -249,7 +250,7 @@ def mobilenet_v2(
         :ref:`api_paddle_nn_Layer`. An instance of MobileNetV2 model.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.vision.models import mobilenet_v2
@@ -267,7 +268,7 @@ def mobilenet_v2(
             >>> out = model(x)
 
             >>> print(out.shape)
-            [1, 1000]
+            paddle.Size([1, 1000])
     """
     model = _mobilenet(
         'mobilenetv2_' + str(scale), pretrained, scale=scale, **kwargs

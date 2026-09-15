@@ -24,17 +24,17 @@ namespace phi {
 template <typename T, typename Context>
 void FusedAttentionKernel(const Context &dev_ctx,
                           const DenseTensor &x,
-                          const paddle::optional<DenseTensor> &ln_scale,
-                          const paddle::optional<DenseTensor> &ln_bias,
+                          const optional<DenseTensor> &ln_scale,
+                          const optional<DenseTensor> &ln_bias,
                           const DenseTensor &qkv_weight,
-                          const paddle::optional<DenseTensor> &qkv_bias,
-                          const paddle::optional<DenseTensor> &cache_kv,
-                          const paddle::optional<DenseTensor> &src_mask,
+                          const optional<DenseTensor> &qkv_bias,
+                          const optional<DenseTensor> &cache_kv,
+                          const optional<DenseTensor> &src_mask,
                           const DenseTensor &out_linear_weight,
-                          const paddle::optional<DenseTensor> &out_linear_bias,
-                          const paddle::optional<DenseTensor> &ln_scale_2,
-                          const paddle::optional<DenseTensor> &ln_bias_2,
-                          int num_heads,
+                          const optional<DenseTensor> &out_linear_bias,
+                          const optional<DenseTensor> &ln_scale_2,
+                          const optional<DenseTensor> &ln_bias_2,
+                          int num_heads_,  // unused
                           bool transpose_qkv_wb,
                           bool pre_layer_norm,
                           float epsilon,
@@ -73,10 +73,10 @@ void FusedAttentionKernel(const Context &dev_ctx,
   using XPUTypeT = typename XPUTypeTrait<T>::Type;
 
   // shape [batch_size, 1, 1, seq_len]
-  const phi::DenseTensor *src_mask_p = src_mask.get_ptr();
+  const DenseTensor *src_mask_p = src_mask.get_ptr();
 
-  const phi::DenseTensor *ln_scale_p = nullptr;
-  const phi::DenseTensor *ln_bias_p = nullptr;
+  const DenseTensor *ln_scale_p = nullptr;
+  const DenseTensor *ln_bias_p = nullptr;
 
   if (pre_layer_norm) {
     ln_scale_p = ln_scale.get_ptr();
@@ -96,7 +96,7 @@ void FusedAttentionKernel(const Context &dev_ctx,
 
   bool is_upscale_in_train_1 =
       (attn_dropout_implementation == "upscale_in_train");
-  const phi::DenseTensor *seed_1 = nullptr;
+  const DenseTensor *seed_1 = nullptr;
 
   phi::XPUDropoutParam attn_dropout_param;
   attn_dropout_param.initXPUDropoutParam(attn_dropout_rate,
@@ -118,11 +118,36 @@ void FusedAttentionKernel(const Context &dev_ctx,
   const auto input_x_dims = x.dims();
   const auto qkv_w_dims = qkv_weight.dims();
 
-  int batch_size = input_x_dims[0];
-  int seq_len = input_x_dims[1];
-  int embed_dims = input_x_dims[2];
-  num_heads = qkv_w_dims[1];
-  int head_dims = qkv_w_dims[2];
+  int64_t batch_size = input_x_dims[0];
+  int64_t seq_len = input_x_dims[1];
+  int64_t embed_dims = input_x_dims[2];
+  int64_t num_heads = qkv_w_dims[1];
+  int64_t head_dims = qkv_w_dims[2];
+
+  if (batch_size == 0 || seq_len == 0) {
+    if (ln_mean) dev_ctx.template Alloc<float>(ln_mean);
+    if (ln_var) dev_ctx.template Alloc<float>(ln_var);
+    if (ln_out) dev_ctx.template Alloc<T>(ln_out);
+    if (qkv_out) dev_ctx.template Alloc<T>(qkv_out);
+    if (qkv_bias_out) dev_ctx.template Alloc<T>(qkv_bias_out);
+    if (transpose_out_2) dev_ctx.template Alloc<T>(transpose_out_2);
+    if (qk_out) dev_ctx.template Alloc<T>(qk_out);
+    if (qktv_out) dev_ctx.template Alloc<T>(qktv_out);
+    if (softmax_out) dev_ctx.template Alloc<T>(softmax_out);
+    if (attn_dropout_mask_out) dev_ctx.template Alloc<T>(attn_dropout_mask_out);
+    if (attn_dropout_out) dev_ctx.template Alloc<T>(attn_dropout_out);
+    if (src_mask_out) dev_ctx.template Alloc<T>(src_mask_out);
+    if (fmha_out) dev_ctx.template Alloc<T>(fmha_out);
+    if (out_linear_out) dev_ctx.template Alloc<T>(out_linear_out);
+    if (dropout_mask_out) dev_ctx.template Alloc<T>(dropout_mask_out);
+    if (ln_mean_2) dev_ctx.template Alloc<float>(ln_mean_2);
+    if (ln_var_2) dev_ctx.template Alloc<float>(ln_var_2);
+    if (bias_dropout_residual_out)
+      dev_ctx.template Alloc<T>(bias_dropout_residual_out);
+    if (cache_kv_out) dev_ctx.template Alloc<T>(cache_kv_out);
+    if (out) dev_ctx.template Alloc<T>(out);
+    return;
+  }
 
   // 输入指针
   const XPUTypeT *input_x_ptr = reinterpret_cast<const XPUTypeT *>(x.data<T>());
@@ -205,14 +230,14 @@ void FusedAttentionKernel(const Context &dev_ctx,
   XPUTypeT *qkv_ptr = NULL;  // qkv[batch_size, num_heads, seq_len, head_dims]
   XPUTypeT *linear_out_ptr = NULL;  // x4, x5 [batch_size, seq_len, embed_dims]
 
-  int temp_size_1 = batch_size * seq_len * 3 * num_heads * head_dims;
-  int temp_size_2 = batch_size * num_heads * seq_len * seq_len;
-  int temp_size_3 = batch_size * num_heads * seq_len * head_dims;
-  int temp_size_4 = batch_size * seq_len * embed_dims;
+  int64_t temp_size_1 = batch_size * seq_len * 3 * num_heads * head_dims;
+  int64_t temp_size_2 = batch_size * num_heads * seq_len * seq_len;
+  int64_t temp_size_3 = batch_size * num_heads * seq_len * head_dims;
+  int64_t temp_size_4 = batch_size * seq_len * embed_dims;
 
-  std::vector<int> temp_vec = {
+  std::vector<int64_t> temp_vec = {
       temp_size_1, temp_size_2, temp_size_3, temp_size_4};
-  std::sort(temp_vec.begin(), temp_vec.end(), std::greater<int>());
+  std::sort(temp_vec.begin(), temp_vec.end(), std::greater<int64_t>());
   XPUTypeT *max_gm_ptr = RAII_GUARD.alloc<XPUTypeT>(temp_vec[0]);
   PADDLE_ENFORCE_XDNN_NOT_NULL(max_gm_ptr);
   qkv_before_transpose_ptr = max_gm_ptr;
@@ -269,12 +294,13 @@ void FusedAttentionKernel(const Context &dev_ctx,
                                    1.0f);
 
   // bias
-  r = xpu::broadcast_add(xpu_ctx,
-                         qkv_before_transpose_ptr,
-                         qkv_bias_ptr,
-                         qkv_before_transpose_ptr,
-                         {batch_size * seq_len, 3 * num_heads * head_dims},
-                         {3 * num_heads * head_dims});
+  r = xpu::broadcast_add(
+      xpu_ctx,
+      qkv_before_transpose_ptr,
+      qkv_bias_ptr,
+      qkv_before_transpose_ptr,
+      {(int64_t)batch_size * seq_len, 3LL * num_heads * head_dims},
+      {3LL * num_heads * head_dims});
   PADDLE_ENFORCE_XDNN_SUCCESS(r, "broadcast_add");
 
   // transpose
@@ -286,16 +312,16 @@ void FusedAttentionKernel(const Context &dev_ctx,
 
   PADDLE_ENFORCE_XDNN_SUCCESS(r, "transpose");
 
-  int qkv_every_size = batch_size * seq_len * num_heads * head_dims;
+  int64_t qkv_every_size = batch_size * seq_len * num_heads * head_dims;
   {
     float alpha = 1.0 / sqrt(head_dims);
-    r = scale(xpu_ctx,
-              qkv_transpose_out_ptr,
-              qkv_transpose_out_ptr,
-              qkv_every_size,
-              false,
-              alpha,
-              0.0f);
+    r = xpu::scale(xpu_ctx,
+                   qkv_transpose_out_ptr,
+                   qkv_transpose_out_ptr,
+                   qkv_every_size,
+                   false,
+                   alpha,
+                   0.0f);
     PADDLE_ENFORCE_XDNN_SUCCESS(r, "scale");
   }
 
@@ -431,4 +457,4 @@ PD_REGISTER_KERNEL(fused_attention,
                    ALL_LAYOUT,
                    phi::FusedAttentionKernel,
                    float,
-                   phi::dtype::float16) {}
+                   phi::float16) {}

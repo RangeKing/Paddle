@@ -15,7 +15,9 @@
 #include "paddle/phi/kernels/reduce_any_kernel.h"
 
 #include "paddle/phi/backends/all_context.h"
+#include "paddle/phi/common/int_array.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/full_kernel.h"
 
 namespace phi {
 
@@ -25,14 +27,27 @@ void AnyKernel(const Context& dev_ctx,
                const std::vector<int64_t>& dims,
                bool keep_dim,
                DenseTensor* out) {
+  if (x.numel() == 0) {
+    dev_ctx.template Alloc<bool>(out);
+    if (out->numel() > 0) {
+      std::vector<int64_t> vec_dims = vectorize(out->dims());
+      phi::Full<bool, Context>(dev_ctx, phi::IntArray(vec_dims), 0, out);
+    }
+    return;
+  }
   bool reduce_all = recompute_reduce_all(x, dims);
   AnyRawKernel<T>(dev_ctx, x, dims, keep_dim, reduce_all, out);
 }
-
+#ifdef _WIN32
+INSTANTIATE_ANY_KERNEL(bool, CPUContext)
+#if defined(PADDLE_WITH_CUDA)
+INSTANTIATE_ANY_KERNEL(bool, GPUContext)
+#endif
+#endif
 }  // namespace phi
 
-using complex64 = ::phi::dtype::complex<float>;
-using complex128 = ::phi::dtype::complex<double>;
+using complex64 = phi::complex64;
+using complex128 = phi::complex128;
 
 PD_REGISTER_KERNEL(any,
                    CPU,
@@ -69,5 +84,8 @@ PD_REGISTER_KERNEL(any, KPS, ALL_LAYOUT, phi::AnyKernel, bool) {}
 #endif
 
 #if defined(PADDLE_WITH_XPU)
-PD_REGISTER_KERNEL(any, XPU, ALL_LAYOUT, phi::AnyKernel, bool) {}
+PD_REGISTER_KERNEL(
+    any, XPU, ALL_LAYOUT, phi::AnyKernel, float, int, int64_t, bool) {
+  kernel->OutputAt(0).SetDataType(phi::DataType::BOOL);
+}
 #endif

@@ -16,12 +16,12 @@ limitations under the License. */
 
 namespace paddle::inference::tensorrt {
 
-template <typename RegistFunc, typename SetDilationFunc>
+template <typename RegisterFunc, typename SetDilationFunc>
 void ConvertConv3d(TensorRTEngine* engine,
                    const framework::proto::OpDesc& op,
                    const framework::Scope& scope,
                    bool test_mode,
-                   RegistFunc fadd_layer,
+                   RegisterFunc fadd_layer,
                    SetDilationFunc fset_dilation,
                    const std::string& name) {
   VLOG(3) << "convert a " << name << " op to tensorrt layer without bias";
@@ -33,7 +33,7 @@ void ConvertConv3d(TensorRTEngine* engine,
   auto* Y_v = scope.FindVar(filter_var_name);
   PADDLE_ENFORCE_NOT_NULL(
       Y_v,
-      common::errors::NotFound("Can not find %s presistable var in scope.",
+      common::errors::NotFound("Can not find %s persistable var in scope.",
                                filter_var_name));
   auto* Y_t = Y_v->GetMutable<phi::DenseTensor>();
   bool enable_int8 = op_desc.HasAttr("enable_int8");
@@ -49,11 +49,26 @@ void ConvertConv3d(TensorRTEngine* engine,
                         "The conv3d filter's dims size should be 5, but got %d",
                         Y_t->dims().size()));
 
-  const int n_output = Y_t->dims()[0];
-  const int n_input = Y_t->dims()[1];
-  const int filter_d = Y_t->dims()[2];
-  const int filter_h = Y_t->dims()[3];
-  const int filter_w = Y_t->dims()[4];
+  // TODO(large-tensor): downstream functors may still use int; guard until
+  // upgraded.
+  int64_t n_output = Y_t->dims()[0];
+
+  // TODO(large-tensor): downstream functors may still use int; guard until
+  // upgraded.
+  int64_t n_input = Y_t->dims()[1];
+
+  // TODO(large-tensor): downstream functors may still use int; guard until
+  // upgraded.
+  int64_t filter_d = Y_t->dims()[2];
+
+  // TODO(large-tensor): downstream functors may still use int; guard until
+  // upgraded.
+  int64_t filter_h = Y_t->dims()[3];
+
+  // TODO(large-tensor): downstream functors may still use int; guard until
+  // upgraded.
+  int64_t filter_w = Y_t->dims()[4];
+
   const int groups = PADDLE_GET_CONST(int, op_desc.GetAttr("groups"));
   const std::vector<int> dilations =
       PADDLE_GET_CONST(std::vector<int>, op_desc.GetAttr("dilations"));

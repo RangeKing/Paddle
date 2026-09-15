@@ -36,11 +36,11 @@ namespace paddle {
 namespace experimental {
 
 namespace detail {
-BackendSet GetTensorBackendSet(const phi::TensorBase& t);
-std::size_t CountLeadingZeros(uint32_t val);
+PADDLE_API BackendSet GetTensorBackendSet(const phi::TensorBase& t);
+PADDLE_API std::size_t CountLeadingZeros(uint32_t val);
 }  // namespace detail
 
-phi::DeviceContext* GetDeviceContextByBackend(phi::Backend backend);
+PADDLE_API phi::DeviceContext* GetDeviceContextByBackend(phi::Backend backend);
 
 enum class KernelType {
   DENSE_TENSOR_KERNEL,   // kernel for DenseTensor
@@ -57,10 +57,18 @@ struct KernelKeySet {
 
   // TODO(chenweihang): iterate all kernel key for kernel selection
   phi::KernelKey GetHighestPriorityKernelKey() {
-    return phi::KernelKey(static_cast<Backend>(32 - detail::CountLeadingZeros(
-                                                        backend_set.bitset())),
-                          layout,
-                          dtype);
+    uint32_t bitset_value = backend_set.bitset();
+#ifdef PADDLE_WITH_CUSTOM_DEVICE
+    if (backend_set.Has(Backend(4))) {
+      return phi::KernelKey(Backend(4), layout, dtype);
+    }
+#endif
+    std::size_t leading_zeros = detail::CountLeadingZeros(bitset_value);
+    Backend selected_backend = static_cast<Backend>(32 - leading_zeros);
+    VLOG(8) << "GetHighestPriorityKernelKey: selected_backend = "
+            << selected_backend;
+
+    return phi::KernelKey(selected_backend, layout, dtype);
   }
 };
 
@@ -101,7 +109,9 @@ struct KernelKeyParser : ArgsIterator<KernelKeyParser> {
     BackendSet tensor_backend_set = detail::GetTensorBackendSet(tensor);
     key_set.backend_set = key_set.backend_set | tensor_backend_set;
     // tensor's attribute use_gpudnn=False, explicitly disable gpudnn kernel
-    if (tensor_backend_set == BackendSet(Backend::GPU) || disable_gpudnn) {
+    if (tensor_backend_set ==
+            BackendSet(paddle::experimental::get_accelerat_backend()) ||
+        disable_gpudnn) {
       disable_gpudnn = true;
       key_set.backend_set = key_set.backend_set - BackendSet(Backend::GPUDNN);
       VLOG(8) << "Disable kernel backend: GPUDNN";
@@ -188,17 +198,17 @@ struct DistTensorTypeParser : ArgsIterator<DistTensorTypeParser> {
   void operator()(const std::vector<Tensor>& x) {
     if (!x.empty()) {
       for (auto& t : x) {
-        result = t.is_dist_tensor();
+        result = result || t.is_dist_tensor();
+        if (short_circuit()) break;
       }
     }
   }
 
   void operator()(const paddle::optional<std::vector<Tensor>>& x) {
-    if (x) {
-      if (!(x.get_ptr()->empty())) {
-        for (auto& t : *(x.get_ptr())) {
-          result = t.is_dist_tensor();
-        }
+    if (x && !x->empty()) {
+      for (auto& t : *(x.get_ptr())) {
+        result = result || t.is_dist_tensor();
+        if (short_circuit()) break;
       }
     }
   }
@@ -227,7 +237,7 @@ DataType ParseDataType(const Tensor& tensor);
 DataType ParseDataType(const std::vector<Tensor>& tensors);
 DataType ParseDataTypeWithInputOrder(DataType dtype, const Tensor& tensor);
 
-Backend ParseBackend(const Place& place);
+PADDLE_API Backend ParseBackend(const Place& place);
 Backend ParseBackend(const Tensor& tensor);
 template <typename T, typename... Args>
 Backend ParseBackend(T t, Args... args) {
@@ -238,7 +248,7 @@ Backend ParseBackend(T t, Args... args) {
 }
 Backend ParseBackendWithInputOrder(const Place& place, const Tensor& tensor);
 
-phi::DataLayout ParseLayout(phi::DataLayout layout);
+PADDLE_API phi::DataLayout ParseLayout(phi::DataLayout layout);
 phi::DataLayout ParseLayout(const Tensor& tensor);
 phi::DataLayout ParseLayoutWithInputOrder(phi::DataLayout layout,
                                           const Tensor& tensor);

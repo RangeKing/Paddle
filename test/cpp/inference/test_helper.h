@@ -26,7 +26,7 @@ limitations under the License. */
 #include "paddle/phi/common/port.h"
 #include "paddle/phi/core/platform/profiler.h"
 
-COMMON_DECLARE_bool(use_mkldnn);
+COMMON_DECLARE_bool(use_onednn);
 
 namespace paddle {
 bool gpu_place_used(const paddle::PaddlePlace& place) {
@@ -59,7 +59,7 @@ void SetupTensor(phi::DenseTensor* input,
   PADDLE_ENFORCE_EQ(common::product(dims),
                     static_cast<int64_t>(data.size()),
                     common::errors::InvalidArgument(
-                        "common::product(dims) and data.size() are not equal"
+                        "common::product(dims) and data.size() are not equal, "
                         "common::product(dims) is %d and data.size() is %d",
                         common::product(dims),
                         static_cast<int64_t>(data.size())));
@@ -173,11 +173,12 @@ std::vector<std::vector<int64_t>> GetFeedTargetShapes(
 }
 
 template <typename Place, bool CreateVars = true, bool PrepareContext = false>
-void TestInference(const std::string& dirname,
-                   const std::vector<phi::DenseTensor*>& cpu_feeds,
-                   const std::vector<paddle::framework::FetchType*>& cpu_fetchs,
-                   const int repeat = 1,
-                   const bool is_combined = false) {
+void TestInference(
+    const std::string& dirname,
+    const std::vector<phi::DenseTensor*>& cpu_feeds,
+    const std::vector<paddle::framework::FetchType*>& cpu_fetches,
+    const int repeat = 1,
+    const bool is_combined = false) {
   // 1. Define place, executor, scope
   auto place = Place();
   auto executor = paddle::framework::Executor(place);
@@ -231,11 +232,11 @@ void TestInference(const std::string& dirname,
   // 5. Define Tensor to get the outputs: set up maps for fetch targets
   std::map<std::string, paddle::framework::FetchType*> fetch_targets;
   for (size_t i = 0; i < fetch_target_names.size(); ++i) {
-    fetch_targets[fetch_target_names[i]] = cpu_fetchs[i];
+    fetch_targets[fetch_target_names[i]] = cpu_fetches[i];
   }
 
-  // 6. If export Flags_use_mkldnn=True, use onednn related ops.
-  if (FLAGS_use_mkldnn) executor.EnableMKLDNN(*inference_program);
+  // 6. If export Flags_use_onednn=True, use onednn related ops.
+  if (FLAGS_use_onednn) executor.EnableONEDNN(*inference_program);
 
   // 7. Run the inference program
   {

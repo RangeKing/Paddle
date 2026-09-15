@@ -12,13 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 import unittest
 
 import numpy as np
 from decorator_helper import prog_scope
 from gradient_checker import grad_check
-from op_test import OpTest, skip_check_grad_ci
+from op_test import (
+    OpTest,
+    get_device_place,
+    is_custom_device,
+    skip_check_grad_ci,
+)
 
 import paddle
 from paddle import base
@@ -64,16 +68,11 @@ class TestCholeskyOp(OpTest):
         self.check_output(check_pir=True)
 
     def test_check_grad(self):
-        places = []
-        if (
-            os.environ.get('FLAGS_CI_both_cpu_and_gpu', 'False').lower()
-            in ['1', 'true', 'on']
-            or not core.is_compiled_with_cuda()
-            or core.is_compiled_with_rocm()
+        places = [base.CPUPlace()]
+        if (core.is_compiled_with_cuda() or is_custom_device()) and (
+            not core.is_compiled_with_rocm()
         ):
-            places.append(base.CPUPlace())
-        if core.is_compiled_with_cuda() and (not core.is_compiled_with_rocm()):
-            places.append(base.CUDAPlace(0))
+            places.append(get_device_place())
         for p in places:
             self.func(p)
 
@@ -161,6 +160,11 @@ class TestCholeskyOp2D(TestCholeskyOp):
         self._input_shape = (32, 32)
 
 
+class TestCholeskyOpZeroSize(TestCholeskyOp):
+    def init_config(self):
+        self._input_shape = (0, 0)
+
+
 class TestDygraph(unittest.TestCase):
     def test_dygraph(self):
         if core.is_compiled_with_rocm():
@@ -176,27 +180,22 @@ class TestDygraph(unittest.TestCase):
 
 class TestCholeskySingularAPI(unittest.TestCase):
     def setUp(self):
-        self.places = []
-        if (
-            os.environ.get('FLAGS_CI_both_cpu_and_gpu', 'False').lower()
-            in ['1', 'true', 'on']
-            or not core.is_compiled_with_cuda()
-            or core.is_compiled_with_rocm()
+        self.places = [base.CPUPlace()]
+        if (core.is_compiled_with_cuda() or is_custom_device()) and (
+            not core.is_compiled_with_rocm()
         ):
-            self.places.append(base.CPUPlace())
-        if core.is_compiled_with_cuda() and (not core.is_compiled_with_rocm()):
-            self.places.append(base.CUDAPlace(0))
+            self.places.append(get_device_place())
 
-    def check_static_result(self, place, with_out=False):
+    def check_static_result(self, place, input_shape, with_out=False):
         with paddle.static.program_guard(
             paddle.static.Program(), paddle.static.Program()
         ):
             input = paddle.static.data(
-                name="input", shape=[4, 4], dtype="float64"
+                name="input", shape=input_shape, dtype="float64"
             )
             result = paddle.cholesky(input)
 
-            input_np = np.zeros([4, 4]).astype("float64")
+            input_np = np.zeros(input_shape).astype("float64")
 
             exe = base.Executor(place)
             try:
@@ -211,7 +210,9 @@ class TestCholeskySingularAPI(unittest.TestCase):
 
     def test_static(self):
         for place in self.places:
-            self.check_static_result(place=place)
+            self.check_static_result(place=place, input_shape=[4, 4])
+            self.check_static_result(place=place, input_shape=[0, 0])
+            self.check_static_result(place=place, input_shape=[5, 0, 0])
 
     def test_dygraph(self):
         for place in self.places:
@@ -222,13 +223,24 @@ class TestCholeskySingularAPI(unittest.TestCase):
                         [[10, 11, 12], [13, 14, 15], [16, 17, 18]],
                     ]
                 ).astype("float64")
+                input_np_zero = np.zeros((0, 3, 3), dtype="float64")
                 input = paddle.to_tensor(input_np)
+                input_zero = paddle.to_tensor(input_np_zero)
                 try:
                     result = paddle.cholesky(input)
+                    result_zero = paddle.cholesky(input_zero)
                 except RuntimeError as ex:
                     print("The mat is singular")
                 except ValueError as ex:
                     print("The mat is singular")
+
+
+class TestCholeskyAPIError_ZeroSize(unittest.TestCase):
+    def _test_case(self):
+        paddle.linalg.cholesky(paddle.randn([0, 5]))
+
+    def test_error(self):
+        self.assertRaises(ValueError, self._test_case)
 
 
 if __name__ == "__main__":

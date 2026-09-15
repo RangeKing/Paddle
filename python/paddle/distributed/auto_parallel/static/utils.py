@@ -183,12 +183,12 @@ def compute_compatible_dims_mapping(dims_mapping_list):
         return None
     length = len(dims_mapping_list[0])
     for dims_mapping in dims_mapping_list:
-        assert (
-            dims_mapping is not None
-        ), "Dims mapping must not be None for compatible computation"
-        assert (
-            len(dims_mapping) == length
-        ), "The length of dims_mapping in list must be same for compatible computation."
+        assert dims_mapping is not None, (
+            "Dims mapping must not be None for compatible computation"
+        )
+        assert len(dims_mapping) == length, (
+            "The length of dims_mapping in list must be same for compatible computation."
+        )
     compatible_result = []
     for dim_mappings in zip(*dims_mapping_list):
         compatible_dim_mapping = compute_compatible_dim_mapping(
@@ -252,9 +252,9 @@ def check_distributed_attr_for_program(program, dist_context=None):
 
     if dist_context is None:
         dist_context = get_default_distributed_context()
-    assert (
-        dist_context.is_initialized_for_program()
-    ), "Distributed attributes must be initialized before check."
+    assert dist_context.is_initialized_for_program(), (
+        "Distributed attributes must be initialized before check."
+    )
     for block in program.blocks:
         for tensor in block.vars.values():
             dist_tensor = dist_context.get_dist_tensor_for_graph(tensor)
@@ -309,9 +309,9 @@ def _get_comm_group(processes, shape, axis, rank):
 
     # NOTE _linear_idx2coordinate assume processes mesh start with 0 and continuous
     # tricks to support processes mesh when it is not start with 0 or continuous
-    assert (
-        rank in processes
-    ), f"rank [{rank}] is NOT in processes group {processes}"
+    assert rank in processes, (
+        f"rank [{rank}] is NOT in processes group {processes}"
+    )
     rank_relative = processes.index(rank)
     coordinate = _linear_idx2coordinate(shape, rank_relative)
     coordinates_in_group = [coordinate[:] for i in range(shape[axis])]
@@ -373,20 +373,20 @@ def _coordinate2linear_idx(mesh_shape, coordinate):
     # that the processes in mesh are
     #    1. starts from 0
     #    2. continuous
-    # it will be wrong if ths above condition does not meet,
+    # it will be wrong if the above condition does not meet,
     # e.g. process_mesh = { process_groups = [7, 8, 9,10, 12, 13, 14, 15], mesh = [2, 4]}
     # if you want a more general mapping, you should use cartesian product
 
-    assert len(mesh_shape) == len(
-        coordinate
-    ), f"coordinate should have the same size as mesh shape, but got shape: {mesh_shape}, coordinate: {coordinate}"
+    assert len(mesh_shape) == len(coordinate), (
+        f"coordinate should have the same size as mesh shape, but got shape: {mesh_shape}, coordinate: {coordinate}"
+    )
     for i in range(len(mesh_shape)):
-        assert (
-            coordinate[i] >= 0
-        ), f"index in dimension [{i}] is least than zero. coordinate: {coordinate}"
-        assert (
-            coordinate[i] < mesh_shape[i]
-        ), f"index beyond extent in dimension [{i}]. shape: {mesh_shape}, coordinate: {coordinate}"
+        assert coordinate[i] >= 0, (
+            f"index in dimension [{i}] is least than zero. coordinate: {coordinate}"
+        )
+        assert coordinate[i] < mesh_shape[i], (
+            f"index beyond extent in dimension [{i}]. shape: {mesh_shape}, coordinate: {coordinate}"
+        )
 
     base = mesh_shape[-1]
     linear_idx = coordinate[-1]
@@ -419,9 +419,9 @@ def _linear_idx2coordinate(mesh_shape, linear_idx):
     """
 
     assert linear_idx >= 0, f"linear index [{linear_idx}] is least than zero"
-    assert linear_idx < np.prod(
-        mesh_shape
-    ), f"linear index beyond the extent of mesh shape. shape: {mesh_shape}, linear index: {linear_idx}"
+    assert linear_idx < np.prod(mesh_shape), (
+        f"linear index beyond the extent of mesh shape. shape: {mesh_shape}, linear index: {linear_idx}"
+    )
 
     base = 1
     coordinate = [-1] * len(mesh_shape)
@@ -462,9 +462,9 @@ def _get_unshard_dist_shape(var, dist_attr):
     var_shape = var.shape
     mapping = dist_attr.dims_mapping
     mesh = dist_attr.process_mesh.shape
-    assert len(var_shape) == len(
-        mapping
-    ), f"variable shape [{var_shape}] and dim_mapping [{mapping}] is NOT match !"
+    assert len(var_shape) == len(mapping), (
+        f"variable shape [{var_shape}] and dim_mapping [{mapping}] is NOT match !"
+    )
     new_shape = []
     for idx in range(len(var_shape)):
         if var_shape[idx] == -1 or mapping[idx] == -1:
@@ -624,7 +624,7 @@ def save_distributed_checkpoint(
         None
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import os
             >>> from paddle.distributed.auto_parallel.static.utils import save_distributed_checkpoint
@@ -674,7 +674,7 @@ def load_distributed_checkpoint(checkpoint_path, dist_attr_path):
         The return, 'addition_info', is belonging to the first file of checkpoint_path by default.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +SKIP('Depends on external files.')
             >>> from paddle.distributed.auto_parallel.static.utils import load_distributed_checkpoint
@@ -687,11 +687,14 @@ def load_distributed_checkpoint(checkpoint_path, dist_attr_path):
             ...     './dist_attr_rank0.pdattr',
             ...     './dist_attr_rank1.pdattr',
             ... ]
-            >>> param_dict, dist_attr, add_info = load_distributed_checkpoint(ckpt_path, dist_attr_path)
+            >>> param_dict, dist_attr, add_info = load_distributed_checkpoint(
+            ...     ckpt_path,
+            ...     dist_attr_path,
+            ... )
     """
-    assert _check_valid_path(
-        checkpoint_path
-    ), "'checkpoint_path' cannot be None."
+    assert _check_valid_path(checkpoint_path), (
+        "'checkpoint_path' cannot be None."
+    )
     assert _check_valid_path(dist_attr_path), "'dist_attr_path' cannot be None."
 
     state_dict_info = _load_distributed_state_dict(checkpoint_path)
@@ -720,7 +723,7 @@ def load_checkpoint_into_program(
         The return, 'addition_info', is belonging to the first file of checkpoint_path by default.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +SKIP('Depends on external files.')
             >>> from paddle.distributed.auto_parallel.static.utils import load_checkpoint_into_program
@@ -739,9 +742,9 @@ def load_checkpoint_into_program(
     from .dist_context import get_default_distributed_context
 
     assert isinstance(program, paddle.static.Program)
-    assert _check_valid_path(
-        checkpoint_path
-    ), "'checkpoint_path' cannot be None."
+    assert _check_valid_path(checkpoint_path), (
+        "'checkpoint_path' cannot be None."
+    )
     assert _check_valid_path(dist_attr_path), "'dist_attr_path' cannot be None."
     if dist_context is None:
         dist_context = get_default_distributed_context()
@@ -794,9 +797,9 @@ def _load_distributed_attribute(dist_attr_path):
     for dist_attr_file in dist_attr_path:
         dist_attr = paddle.load(dist_attr_file)
         pre_world_size = dist_attr["world_size"]
-        assert pre_world_size == len(
-            dist_attr_path
-        ), "The number of 'dist_attr_path' must be equal to the last training world size."
+        assert pre_world_size == len(dist_attr_path), (
+            "The number of 'dist_attr_path' must be equal to the last training world size."
+        )
         for name, attr in dist_attr["model"].items():
             if name not in total_dist_attr:
                 total_dist_attr[name] = attr
@@ -825,9 +828,9 @@ def _load_distributed_state_dict(checkpoint_path):
     for idx, ckpt_file in enumerate(checkpoint_path):
         state_dict_info = paddle.load(ckpt_file, return_numpy=True)
         pre_world_size = state_dict_info["world_size"]
-        assert pre_world_size == len(
-            checkpoint_path
-        ), "The number of 'checkpoint_path' must be equal to the last training world size."
+        assert pre_world_size == len(checkpoint_path), (
+            "The number of 'checkpoint_path' must be equal to the last training world size."
+        )
         if idx == 0:
             addition_info = state_dict_info["addition_info"]
         for name, value in state_dict_info["model"].items():
@@ -909,9 +912,9 @@ def merge_and_slice_parameter(dist_param_dict, pre_dist_attr, cur_dist_attr):
         dist_param_dict(dict): parameters' value of current rank.
     """
     assert _check_dist_attr(pre_dist_attr), "'pre_dist_attr' cannot be None."
-    assert isinstance(
-        dist_param_dict, dict
-    ), f"The type of 'dist_param_dict' should be 'dict', but got {type(dist_param_dict)}."
+    assert isinstance(dist_param_dict, dict), (
+        f"The type of 'dist_param_dict' should be 'dict', but got {type(dist_param_dict)}."
+    )
     for name, value in dist_param_dict.items():
         if not isinstance(name, str):
             raise TypeError(
@@ -1010,9 +1013,9 @@ def _merge_parameter_with_dist_attr(param_list, dist_attr):
                 complete_shape,
             )
 
-    assert (
-        len(partition_param_list) == 1 or not partition_param_list
-    ), "Fail to merge parameter"
+    assert len(partition_param_list) == 1 or not partition_param_list, (
+        "Fail to merge parameter"
+    )
     complete_param = partition_param_list[0][0]
     return complete_param
 
@@ -1051,14 +1054,14 @@ def _merge_parameter(
         None
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import numpy as np
             >>> from paddle.distributed.auto_parallel.static.utils import _merge_parameter
 
-            >>> partition_param_list = [(np.array([[[1.11, 1.12]]]), [[0, 1],[0, 1],[0, 2]])]
+            >>> partition_param_list = [(np.array([[[1.11, 1.12]]]), [[0, 1], [0, 1], [0, 2]])]
             >>> param = np.array([[[1.13, 1.14]]])
-            >>> partition_index = [[0, 1],[0, 1],[2, 4]]
+            >>> partition_index = [[0, 1], [0, 1], [2, 4]]
             >>> complete_shape = [2, 2, 4]
 
             >>> _merge_parameter(partition_param_list, param, partition_index, complete_shape)
@@ -1127,10 +1130,15 @@ def _complete_op_dist_attr(program, block=None):
                 tmp_attr = operand.dist_attr()
                 if tmp_attr is None:
                     operand_attrs.append(pir.Attribute())
+                    value_mesh = None
+                    tmp_op_dist_attr = operand.get_defining_op().dist_attr
+                    if tmp_op_dist_attr is not None:
+                        value_mesh = tmp_op_dist_attr.process_mesh
                 else:
                     operand_attrs.append(tmp_attr)
-                    if tmp_attr.process_mesh not in meshes:
-                        meshes.append(tmp_attr.process_mesh)
+                    value_mesh = tmp_attr.process_mesh
+                if value_mesh is not None and value_mesh not in meshes:
+                    meshes.append(value_mesh)
 
             for result in op.results():
                 tmp_attr = result.dist_attr()
@@ -1160,7 +1168,7 @@ def _slice_parameter(complete_param, partition_index_list, length):
         sliced_param_list(list): sliced parameters with 'partition_index_list'
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import numpy as np
             >>> from paddle.distributed.auto_parallel.static.utils import _slice_parameter
@@ -1201,7 +1209,7 @@ def _get_sliced_param_index(
         sliced_param_index(int): the index of sliced param in sliced_param_list
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import numpy as np
             >>> from paddle.distributed.auto_parallel.static.utils import _get_sliced_param_index
@@ -1217,8 +1225,13 @@ def _get_sliced_param_index(
             >>> print(slice_param)
             [array([[[1.11, 1.12]]]), array([[[1.13, 1.14]]]), array([[[1.15, 1.16]]])]
 
-            >>> index = _get_sliced_param_index(rank, complete_shape, dims_mapping,
-            ...                                 process_shape, process_group)
+            >>> index = _get_sliced_param_index(
+            ...     rank,
+            ...     complete_shape,
+            ...     dims_mapping,
+            ...     process_shape,
+            ...     process_group,
+            ... )
             >>> print(index)
             2
     """
@@ -1251,7 +1264,7 @@ def _get_split_indices(
         split_indices_list(list): the split indices of every dimension of the parameter
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import numpy as np
             >>> from paddle.distributed.auto_parallel.static.utils import _get_split_indices
@@ -1351,9 +1364,9 @@ def get_loss_op(block):
     loss_ops = []
     for op in block.ops:
         if is_loss_op(op):
-            assert (
-                len(op.desc.output_arg_names()) == 1
-            ), "loss op should only output loss var"
+            assert len(op.desc.output_arg_names()) == 1, (
+                "loss op should only output loss var"
+            )
             loss_ops.append(op)
 
     assert len(loss_ops) == 1, "num of loss op is not equal to one"
@@ -1443,9 +1456,9 @@ def update_op_dims_mapping_by_default_dist_impl(dist_op):
         dims_mapping = op_dist_attr.get_input_dims_mapping(arg_name)
         if len(dims_mapping) > 1:
             for idx, mapping in enumerate(dims_mapping[1:]):
-                assert (
-                    mapping == -1
-                ), f"{op_desc.type()} only the batch dimension (0-dim) can be sharded, but the dimension {idx} is sharded by {mapping} part."
+                assert mapping == -1, (
+                    f"{op_desc.type()} only the batch dimension (0-dim) can be sharded, but the dimension {idx} is sharded by {mapping} part."
+                )
         if len(dims_mapping) >= 1:
             batch_dim_mappings.append(dims_mapping[0])
     for arg_name in op_desc.output_arg_names():
@@ -1456,26 +1469,26 @@ def update_op_dims_mapping_by_default_dist_impl(dist_op):
         if arg_name not in xshape_arg_names:
             if len(dims_mapping) > 1:
                 for idx, mapping in enumerate(dims_mapping[1:]):
-                    assert (
-                        mapping == -1
-                    ), f"{op_desc.type()} only the batch dimension (0-dim) can be sharded, but the dimension {idx} is sharded by {mapping} part."
+                    assert mapping == -1, (
+                        f"{op_desc.type()} only the batch dimension (0-dim) can be sharded, but the dimension {idx} is sharded by {mapping} part."
+                    )
             if len(dims_mapping) >= 1:
                 batch_dim_mappings.append(dims_mapping[0])
         else:
-            assert (
-                dims_mapping[0] == -1
-            ), f"{op_desc.type()} only the batch dimension (1-dim) of XShape can be sharded, but the dimension 0 is sharded by {mapping} part."
+            assert dims_mapping[0] == -1, (
+                f"{op_desc.type()} only the batch dimension (1-dim) of XShape can be sharded, but the dimension 0 is sharded by {mapping} part."
+            )
             if len(dims_mapping) > 2:
                 for idx, mapping in enumerate(dims_mapping[2:]):
-                    assert (
-                        mapping == -1
-                    ), f"{op_desc.type()} only the batch dimension (1-dim) of XShape can be sharded, but the dimension {idx} is sharded by {mapping} part."
+                    assert mapping == -1, (
+                        f"{op_desc.type()} only the batch dimension (1-dim) of XShape can be sharded, but the dimension {idx} is sharded by {mapping} part."
+                    )
             batch_dim_mappings.append(dims_mapping[1])
 
     compatible_dim_mapping = compute_compatible_dim_mapping(batch_dim_mappings)
-    assert (
-        compatible_dim_mapping is not None
-    ), "There is no compatible dim mapping."
+    assert compatible_dim_mapping is not None, (
+        "There is no compatible dim mapping."
+    )
     for arg_name in op_desc.input_arg_names():
         serial_tensor = dist_op.get_serial_input(arg_name)
         if serial_tensor.is_parameter:
@@ -1538,9 +1551,9 @@ def update_op_dims_mapping_by_elementwise_like_dist_impl(dist_op):
         dims_mapping_list.append(dims_mapping)
 
     compatible_dims_mapping = compute_compatible_dims_mapping(dims_mapping_list)
-    assert (
-        compatible_dims_mapping is not None
-    ), "There is no compatible dim mapping."
+    assert compatible_dims_mapping is not None, (
+        "There is no compatible dim mapping."
+    )
 
     for arg_name in input_arg_names:
         if input_dims_mapping_lens[arg_name] < max_dims_mapping_len:
@@ -1676,9 +1689,9 @@ def get_standalone_cost_data(distributed_programs):
                                 lambda x, y: x * y, var.shape
                             )
                         break
-        assert (
-            total_static_input_size > 0 and total_actual_input_size > 0
-        ), "Get input size failed."
+        assert total_static_input_size > 0 and total_actual_input_size > 0, (
+            "Get input size failed."
+        )
 
         actual_runtime = (
             total_actual_input_size / total_static_input_size * runtime
@@ -2191,21 +2204,21 @@ def insert_dependencies_for_two_ops(
     if is_sequential_run():
         return
 
-    assert (
-        len(prior_op.output_arg_names) >= 1
-    ), f"first op of dependency should at least have one output. [{prior_op}]"
-    assert (
-        len(posterior_op.input_arg_names) >= 1
-    ), f"second op of dependency should at least have one input. [{posterior_op}]"
+    assert len(prior_op.output_arg_names) >= 1, (
+        f"first op of dependency should at least have one output. [{prior_op}]"
+    )
+    assert len(posterior_op.input_arg_names) >= 1, (
+        f"second op of dependency should at least have one input. [{posterior_op}]"
+    )
     prior_op_mesh = dist_context.get_op_dist_attr_for_program(
         prior_op
     ).process_mesh
     posterior_mesh = dist_context.get_op_dist_attr_for_program(
         posterior_op
     ).process_mesh
-    assert (
-        prior_op_mesh == posterior_mesh
-    ), f"two ops of dependency should have same mesh but got [{prior_op_mesh}] and [{posterior_mesh}]"
+    assert prior_op_mesh == posterior_mesh, (
+        f"two ops of dependency should have same mesh but got [{prior_op_mesh}] and [{posterior_mesh}]"
+    )
 
     def _select_best_depend_var(vars):
         # parameter should not be dep var since it maybe partition in sharding pass
@@ -2369,8 +2382,8 @@ def get_sub_process_mesh_by_program(dist_program):
     all_ops = dist_program.global_block().ops
     process_meshes = []
 
-    for op in all_ops:
-        if "pd_op" in op.name():
+    for idx, op in enumerate(all_ops):
+        if "pd_op" in op.name() and op.dist_attr:
             process_mesh = op.dist_attr.process_mesh
             if process_mesh not in process_meshes:
                 process_meshes.append(process_mesh)
@@ -2426,9 +2439,9 @@ def get_pp_stage_by_process_mesh(process_mesh, pp_degree):
         if pp_stage_for_process_mesh is not None:
             if pp_stage != pp_stage_for_process_mesh:
                 return None
-            assert (
-                pp_stage == pp_stage_for_process_mesh
-            ), f"Can't get pp_stage by process_mesh with different pp_stage {pp_stage} and {pp_stage_for_process_mesh}"
+            assert pp_stage == pp_stage_for_process_mesh, (
+                f"Can't get pp_stage by process_mesh with different pp_stage {pp_stage} and {pp_stage_for_process_mesh}"
+            )
         pp_stage_for_process_mesh = pp_stage
 
     return pp_stage_for_process_mesh
@@ -2461,7 +2474,7 @@ def wrap_data_for_completion(
       attrs: dict, attribute map of the dist op
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +SKIP('Depends on other ops.')
             >>> from paddle.distributed.auto_parallel.static.utils import wrap_data_for_completion
@@ -2470,16 +2483,17 @@ def wrap_data_for_completion(
             >>> input_name_list = []
             >>> output_name_list = []
 
-            >>> input_name_list.append(op_desc.input('X')[0]) # 'X' is the arg name for op
+            >>> input_name_list.append(op_desc.input('X')[0])  # 'X' is the arg name for op
             >>> input_name_list.append(op_desc.input('Y')[0])
             >>> output_name_list.append(op_desc.output('Out')[0])
 
             >>> attr_name_list = ['trans_x', 'trans_y']
             >>> input_specs, output_specs, attrs = wrap_data_for_completion(
-            ...        dist_op,
-            ...        input_name_list,
-            ...        output_name_list,
-            ...        attr_name_list)
+            ...     dist_op,
+            ...     input_name_list,
+            ...     output_name_list,
+            ...     attr_name_list,
+            ... )
 
     """
 
@@ -2638,15 +2652,15 @@ def fuse_param_func(
 
     if is_qkv:
         # fuse_attention_qkv
-        assert (
-            num_heads
-        ), f"num_heads should be number of heads for Q, but got {num_heads}"
-        assert (
-            num_key_value_heads
-        ), f"num_key_value_heads should be number of key_value_heads for K and V, but got {num_key_value_heads}"
-        assert (
-            len(fuse_params) == 3
-        ), f"fuse_params length is not equal 3, it should be Q K V list. but got length {len(fuse_params)}"
+        assert num_heads, (
+            f"num_heads should be number of heads for Q, but got {num_heads}"
+        )
+        assert num_key_value_heads, (
+            f"num_key_value_heads should be number of key_value_heads for K and V, but got {num_key_value_heads}"
+        )
+        assert len(fuse_params) == 3, (
+            f"fuse_params length is not equal 3, it should be Q K V list. but got length {len(fuse_params)}"
+        )
         num_query_groups = num_heads // num_key_value_heads
         q_list = split_fn(fuse_params[0], num_heads, axis=-1)
         k_list = split_fn(fuse_params[1], num_key_value_heads, axis=-1)
@@ -2686,26 +2700,26 @@ def split_param_func(
         [gate_weight, up_weight] => [gate_weight], [up_weight]
 
     Args:
-        fused_param (_type_): len(fused_param)=1, only one weight to be splitted
+        fused_param (_type_): len(fused_param)=1, only one weight to be split
         split_nums (int, optional): split_nums. Defaults to 2.
         is_qkv (bool, optional): for attention qkv weights. Defaults to False.
         num_heads (_type_, optional): query heads. Defaults to None.
         num_key_value_heads (_type_, optional): key and value heads. Defaults to None.
 
     Returns:
-        _type_: splitted weights
+        _type_: split weights
     """
     concat_fn = paddle.concat
     split_fn = paddle.split
 
     if is_qkv:
         # fuse_attention_qkv
-        assert (
-            num_heads
-        ), f"num_heads should be number of heads for Q, but got {num_heads}"
-        assert (
-            num_key_value_heads
-        ), f"num_key_value_heads should be number of key_value_heads for K and V, but got {num_key_value_heads}"
+        assert num_heads, (
+            f"num_heads should be number of heads for Q, but got {num_heads}"
+        )
+        assert num_key_value_heads, (
+            f"num_key_value_heads should be number of key_value_heads for K and V, but got {num_key_value_heads}"
+        )
         num_query_groups = num_heads // num_key_value_heads
         q_list, k_list, v_list = [], [], []
         split_heads = split_fn(
@@ -2741,11 +2755,53 @@ def split_mesh(global_mesh: ProcessMesh, sub_mesh_dim: int):
         sub_mesh_dim += mesh_ndim
 
     process_ids = np.array(global_mesh.process_ids).reshape(mesh_shape)
-    splitted_process_ids = np.split(
+    split_process_ids = np.split(
         process_ids, mesh_shape[sub_mesh_dim], axis=sub_mesh_dim
     )
     sub_mesh_list = []
-    for sub_process_ids in splitted_process_ids:
-        sub_mesh_list.append(ProcessMesh(sub_process_ids))
+    for sub_process_ids in split_process_ids:
+        sub_mesh_list.append(
+            ProcessMesh(sub_process_ids, global_mesh.dim_names)
+        )
 
     return sub_mesh_list
+
+
+# Note: This function is intended for internal use within the PaddlePaddle framework for optimizing computational graphs.
+def update_pylayer_output(trivial_value):
+    """
+    Update the subblock within a pylayer operation by modifying its output argument.
+
+    This function optimizes a pylayer operation by removing unnecessary outputs from the 'cf.yield' step.
+
+    Args:
+        trivale_value (pir::Value): The output argument of the pylayer operation to be modified.
+
+    Example:
+        (1) Original pylayer operation:
+            (%1, %2) = "pd_op.pylayer" (%0) {
+                () = "cf.tuple_pop" [id:1]
+                (%3, %4) = "dist_op.xxx" [id:2]
+                () = "cf.yield" [id:3] (%3, %4)
+            }
+        (2) After calling `update_pylayer_output(%4)`, the updated pylayer operation removes the unused output:
+            (%1) = "pd_op.pylayer" (%0) {
+                () = "cf.tuple_pop" [id:1]
+                (%3) = "dist_op.xxx" [id:2]
+                () = "cf.yield" [id:3] (%3)
+            }
+
+    Args:
+        trivale_value(pir::Value): The output argument of the pylayer op to be updated.
+    """
+    define_op = trivial_value.get_defining_op()
+    if define_op.get_parent_block().parent_op.name() != "pd_op.pylayer":
+        return
+    paddle.pir.set_insertion_point(define_op)
+    fake_value = paddle.static.data(
+        name="_fake_pylayer_out",
+        shape=trivial_value.shape,
+        dtype=trivial_value.dtype,
+    )
+    fake_value.set_type(trivial_value.type())
+    trivial_value.replace_all_uses_with(fake_value)

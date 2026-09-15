@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "paddle/phi/kernels/comm_init_all_kernel.h"
 #include <string>
 #include "glog/logging.h"
 #include "paddle/phi/core/kernel_registry.h"
@@ -28,7 +29,7 @@ void CommInitAllKernel(const Context& dev_ctx,
 #if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL)
   std::vector<int> devices = devices_input;
   if (devices.empty()) {
-    devices = phi::backends::gpu::GetSelectedDevices();
+    devices = backends::gpu::GetSelectedDevices();
   }
 
   paddle::platform::NCCLCommContext::Instance().CreateAllNCCLComms(devices,

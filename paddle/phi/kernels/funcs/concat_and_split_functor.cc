@@ -13,6 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License. */
 
 #include "paddle/phi/kernels/funcs/concat_and_split_functor.h"
+#include "paddle/common/enforce.h"
 
 namespace phi::funcs {
 
@@ -21,11 +22,11 @@ namespace phi::funcs {
  * each dimension must be the same, except the axis dimension.
  */
 template <typename T>
-struct ConcatFunctor<phi::CPUContext, T> {
-  void operator()(const phi::CPUContext& context,
-                  const std::vector<phi::DenseTensor>& input,
+struct ConcatFunctor<CPUContext, T> {
+  void operator()(const CPUContext& context,
+                  const std::vector<DenseTensor>& input,
                   int axis,
-                  phi::DenseTensor* output) {
+                  DenseTensor* output) {
     // TODO(zcd): Add input data validity checking
     size_t num = input.size();
 
@@ -72,13 +73,13 @@ struct ConcatFunctor<phi::CPUContext, T> {
  * each dimension must be the same, except the axis dimension.
  */
 template <typename T>
-struct SplitFunctor<phi::CPUContext, T> {
+struct SplitFunctor<CPUContext, T> {
  public:
-  void operator()(const phi::CPUContext& context,
-                  const phi::DenseTensor& input,
-                  const std::vector<const phi::DenseTensor*>& ref_inputs,
+  void operator()(const CPUContext& context,
+                  const DenseTensor& input,
+                  const std::vector<const DenseTensor*>& ref_inputs,
                   int axis,
-                  std::vector<phi::DenseTensor*>* outputs) {
+                  std::vector<DenseTensor*>* outputs) {
     // NOTE(zhiqiu): split a tensor of shape [0,3,4] at axis=1, result in 3
     // tensors of shape [0,1,4]
     if (input.numel() == 0) {
@@ -88,31 +89,33 @@ struct SplitFunctor<phi::CPUContext, T> {
     // TODO(zcd): Add input data validity checking
     size_t num = outputs->size();
 
-    int input_rows = 1;
+    int64_t input_rows = 1;
     auto dim_0 = ref_inputs[0]->dims();
     for (int i = 0; i < axis; ++i) {
-      input_rows *= static_cast<int>(dim_0[i]);
+      input_rows *= dim_0[i];
     }
 
-    int input_cols = 0;
+    int64_t input_cols = 0;
 
     std::vector<int64_t> output_cols(outputs->size());
     for (size_t i = 0; i < num; ++i) {
-      int t_cols = static_cast<int>(ref_inputs[i]->numel() / input_rows);
+      int64_t t_cols = ref_inputs[i]->numel() / input_rows;
       input_cols += t_cols;
       output_cols[i] = t_cols;
     }
     auto cpu_place = context.GetPlace();
 
     // computation
-    for (int k = 0; k < input_rows; ++k) {
-      const T* src_ptr = input.data<T>() + k * input_cols;
-      int col_idx = 0;
+    for (int64_t k = 0; k < input_rows; ++k) {
+      const int64_t src_offset = k * input_cols;
+      const T* src_ptr = input.data<T>() + src_offset;
+      int64_t col_idx = 0;
       for (size_t j = 0; j < num; ++j) {
-        int col_len = static_cast<int>(output_cols[j]);
+        int64_t col_len = output_cols[j];
         auto* out_tensor = outputs->at(j);
         if (out_tensor != nullptr) {
-          T* dst_ptr = out_tensor->data<T>() + k * col_len;
+          const int64_t dst_offset = k * col_len;
+          T* dst_ptr = out_tensor->data<T>() + dst_offset;
           memory_utils::Copy(cpu_place,
                              dst_ptr,
                              cpu_place,
@@ -125,9 +128,9 @@ struct SplitFunctor<phi::CPUContext, T> {
   }
 };
 
-#define DEFINE_FUNCTOR(type)                           \
-  template class ConcatFunctor<phi::CPUContext, type>; \
-  template class SplitFunctor<phi::CPUContext, type>;
+#define DEFINE_FUNCTOR(type)                                 \
+  template class PADDLE_API ConcatFunctor<CPUContext, type>; \
+  template class PADDLE_API SplitFunctor<CPUContext, type>;
 
 FOR_ALL_TYPES(DEFINE_FUNCTOR);
 

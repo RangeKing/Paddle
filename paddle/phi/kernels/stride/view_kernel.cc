@@ -33,8 +33,8 @@ void ViewShapeStridedKernel(const Context& dev_ctx,
   }
   // infer dims
   auto infer_dim = -1;
-  auto new_size = 1;
-  auto numel = input.numel();
+  int64_t new_size = 1;
+  int64_t numel = input.numel();
   std::vector<int64_t> dims_copy = dims;
   for (int dim = 0, ndim = dims_copy.size(); dim < ndim; ++dim) {
     if (dims_copy[dim] == -1) {
@@ -49,10 +49,16 @@ void ViewShapeStridedKernel(const Context& dev_ctx,
       PADDLE_THROW(common::errors::OutOfRange("Tensor idx is out of range"));
     }
   }
-  PADDLE_ENFORCE_NE(new_size,
-                    0,
-                    common::errors::Unavailable(
-                        "cannot reshape tensor of 0 elements into shape "));
+  if (numel != 0) {
+    PADDLE_ENFORCE_NE(
+        new_size,
+        0,
+        common::errors::InvalidArgument(
+            "cannot reshape tensor with %d elements into shape %s because "
+            "the target shape has 0 elements",
+            numel,
+            common::make_ddim(dims_copy)));
+  }
   if (infer_dim >= 0 && new_size > 0 && numel % new_size == 0) {
     dims_copy[infer_dim] = numel / new_size;
   }
@@ -134,7 +140,7 @@ void ViewDtypeKernel(const Context& dev_ctx,
             input.dtype(),
             dtype,
             input.strides()[input.strides().size() - 1]));
-    size_t times = input_dtype_size / output_dtype_size;
+    size_t times = output_dtype_size / input_dtype_size;
     PADDLE_ENFORCE_EQ(
         input.dims()[input.dims().size() - 1] % times,
         0,
@@ -160,11 +166,11 @@ void ViewDtypeKernel(const Context& dev_ctx,
         output_dims[output_dims.size() - 1] / times;  // NOLINT
 
     DDim output_stride = input.strides();
-    for (int i = 0; i < output_stride.size(); i++) {
+    for (int i = 0; i < output_stride.size() - 1; i++) {
       PADDLE_ENFORCE_EQ(
           output_stride[i] % times,
           0,
-          common::errors::InvalidArgument("input.strides[%d](%d) must be be "
+          common::errors::InvalidArgument("input.strides[%d](%d) must be "
                                           "multiple of %d to view %s as %s",
                                           i,
                                           output_stride[i],
